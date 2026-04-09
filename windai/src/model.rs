@@ -1,6 +1,8 @@
 use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 
+use crate::adaptor::AdaptorType;
+
 #[derive(Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelType {
@@ -12,25 +14,20 @@ pub enum ModelType {
 }
 
 #[derive(Serialize, Deserialize, Builder)]
-pub struct ModelInfo {
+pub struct Model {
     #[builder(default)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    id: Option<i64>,
-    /// modalities of the model
+    id: String,
+    /// 当前模型的适配器类型。
+    /// 该类型决定了模型请求结果的处理方式
+    #[builder(default)]
+    adaptor_type: Option<AdaptorType>,
+    /// 模型的模态类型
     #[builder(default)]
     r#type: Vec<ModelType>,
-    /// model name
+    /// 模型名称
     #[builder(default)]
     name: String,
-    /// the model belongs to which provider
-    ///
-    /// if the providers have their own models, this value is equal to `sub_provider_name`.
+    /// 模型所属的提供商id
     #[builder(default)]
-    provider_name: String,
-    /// the sub-provider name, some providers does not own models,
-    /// they are just the agents for example: Siliconflow has DeepSeek models and other models.
-    ///
-    /// if the providers have their own models, this value is equal to `provider_name`.
-    #[builder(default)]
-    sub_provider_name: String,
+    provider_id: String,
 }

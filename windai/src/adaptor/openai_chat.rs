@@ -1,4 +1,4 @@
-//! OpenAI Chat API 数据结构
+//! OpenAI Chat Completion API 数据结构
 //! https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
 //!
 //! 国内模型大多使用该结构，不同厂商有细微差别
@@ -19,43 +19,84 @@ pub enum Role {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChatCompletionContentPartImage {
+    /// 图片url或者base64编码的图片
+    pub url: String,
+    /// 可选值："auto","low","high"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChatCompletionContentPartInputAudio {
+    pub data: String,
+    /// 可选值："wav","mp3"
+    pub format: String,
+}
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChatCompletionAudioParam {
+    /// 指定输出音频格式。必须是 wav、mp3、flac、opus或pcm16中的一种。
+    pub format: String,
+    /// `String` 或者 `{id:String}`
+    ///
+    /// 模型用于回应的声音。
+    /// 支持的内置语音有 alloy、ash、ballad、coral、echo、fable、nova、onyx、sage、shimmer、marin 和 cedar。
+    /// 您也可以提供一个自定义的语音对象，其中包含一个 id，例如 { "id": "voice_1234" }。
+    pub voice: Value,
+}
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FileContentPart {
+    /// base64编码的文件数据，当作为字符串将文件传递给模型时使用。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_data: Option<String>,
+    /// 已上传文件的ID，用作输入。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_id: Option<String>,
+    /// 文件名，当以字符串形式将文件传递给模型时使用。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+}
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ContentObject {
     pub r#type: String,
-    pub content: String,
-}
-impl ContentObject {
-    pub fn to_text(self) -> String {
-        serde_json::to_string(&self).unwrap()
-    }
+
+    /// [Self::type] == "text" 时传入
+    ///
+    /// 文本内容
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+
+    /// [Self::type] == "image_url" 时传入
+    ///
+    /// 图片url或者base64编码的图片
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_url: Option<ChatCompletionContentPartImage>,
+
+    /// [Self::type] == "input_audio" 时传入
+    ///
+    /// 音频数据
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_audio: Option<ChatCompletionContentPartInputAudio>,
+
+    /// [Self::type] == "file" 时传入
+    ///
+    /// 文件内容
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<FileContentPart>,
+
+    /// [Self::type] == "refusal" 时传入.
+    /// 存在 role: "assistant" 中。
+    ///
+    /// 模型生成的拒绝消息
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum Content {
     Text(String),
-    Texts(Vec<String>),
-    Object(ContentObject),
     Objects(Vec<ContentObject>),
 }
-impl Content {
-    /// convert content to text
-    pub fn to_text(self) -> String {
-        match self {
-            Content::Text(text) => text,
-            Content::Texts(texts) => texts.join(","),
-            Content::Object(object) => object.content,
-            Content::Objects(mut objects) => match objects.len() {
-                1 => objects.remove(0).content,
-                _ => objects
-                    .into_iter()
-                    .map(|object| object.to_text())
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            },
-        }
-    }
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TokenUsage {
     pub completion_tokens: i32,
@@ -72,37 +113,66 @@ pub struct TokenUsage {
 pub struct ChatCompletionRequest {
     /// 对话消息列表
     #[builder(default)]
-    pub messages: Vec<ChatCompletionRequestMessage>,
-
+    pub messages: Vec<ChatCompletionMessageParam>,
     /// 用于生成响应的模型ID
     #[builder(default)]
     pub model: String,
-
+    /// 音频输出参数。当请求音频输出且 modalities 字段设为["audio"]时必需。
+    #[builder(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio: Option<ChatCompletionAudioParam>,
     /// 数值范围在-2.0到2.0之间。正值会根据新词在文本中已有的出现频率进行惩罚，从而降低模型逐字重复相同内容的可能性。
     #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frequency_penalty: Option<f64>,
-
+    /// Hash<String, f64>
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logit_bias: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logprobs: Option<bool>,
+    /// 聊天完成中可以生成的最大token数量
+    ///
+    /// OpenAI 弃用[max_tokens]并改用该字段
+    /// # TODO
+    /// 适配器调整
+    #[builder(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_completion_tokens: Option<i32>,
     /// 聊天完成中可以生成的最大token数量
     ///
     /// OpenAI 已弃用，使用[Self::max_completion_tokens]。
     /// 国内模型使用该字段
+    /// # TODO
+    /// 适配器调整
     #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<i32>,
-
-    /// 聊天完成中可以生成的最大token数量
-    ///
-    /// OpenAI 弃用[max_tokens]并改用该字段
-    #[builder(default)]
+    /// Hash<String, String>
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_completion_tokens: Option<i32>,
-
+    pub metadata: Option<Value>,
+    /// "text" or "audio", 语音多模态需要填此参数
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modalities: Option<Vec<String>>,
+    /// 为每条输入消息生成多少个聊天完成选项。
+    /// 最小值：1
+    /// 最大值：128
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub n: Option<i32>,
+    /// 是否在工具使用期间启用并行函数调用。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parallel_tool_calls: Option<bool>,
+    /// 静态预测输出内容，例如正在重新生成的文本文件的内容。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prediction: Option<Content>,
     /// 数值在 -2.0 到 2.0 之间。正值会根据新标记是否已在文本中出现过进行惩罚，从而增加模型讨论新话题的可能性。
     #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub presence_penalty: Option<f64>,
-
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_key: Option<String>,
+    /// 提示缓存的保留策略。设置为24小时以启用扩展提示缓存，该功能可使缓存的提示前缀保持更长的活动时间，最长可达24小时。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_retention: Option<String>,
     /// 开启推理模式。
     ///
     /// DeepSeek中需要转换为
@@ -117,62 +187,159 @@ pub struct ChatCompletionRequest {
     #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<bool>,
-
     /// 开启推理模式，该字段只在OpenAI中生效
     ///
     /// OpenAI中可选值为[none], [minimal], [low], [medium], [high],[xhigh]
     /// [Self::reasoning] 为[true] 但不设置该值时，发送到OpenAI时该值应设置为[medium]
     #[builder(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
-
     /// 响应格式，默认为 text
     ///
     /// ```json
     /// {type: "text"|"json_object"}
     /// ```
     #[builder(default = Some(json!({ "type": "text" })))]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub response_format: Option<Value>,
-
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safety_identifier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
+    /// String 或 Vec<String>
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub store: Option<bool>,
     /// 若设置为 true，模型生成的响应数据将通过服务器发送事件（server-sent events）实时流式传输至客户端。
     #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
-
+    /// stream:true 时生效
+    ///
+    /// 值为
+    /// ```json
+    /// {
+    ///   include_obfuscation?:boolean,
+    ///   // 如果设置此选项，在数据流结束前会额外传输一个数据块：[DONE]消息。该数据块中的usage字段会显示整个请求的令牌使用统计信息，而choices字段将始终为空数组。
+    ///   // 所有其他数据块也会包含usage字段，但其值为null。注意：如果数据流中断，您可能无法接收到包含请求总令牌使用量的最终usage数据块。
+    ///   include_usage?:boolean
+    /// }
+    /// ```
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_options: Option<Value>,
     /// 采样温度应在0到2之间选择。较高的数值（如0.8）会使输出更具随机性，而较低的数值（如0.2）则会使输出更加聚焦和确定。
     /// 通常建议调整温度参数或top_p参数，但不要同时调整两者。
     #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
-
+    /// 控制模型调用何种工具（如有）
+    ///
+    /// none 表示模型不会调用任何工具，而是生成一条消息。
+    ///
+    /// auto 表示模型可以选择生成消息或调用一个或多个工具。
+    ///
+    /// required 表示模型必须调用一个或多个工具。
+    ///
+    /// 通过指定特定工具（如 {"type": "function", "function": {"name": "my_function"}}）可强制模型调用该工具。
+    ///
+    /// 当未提供工具时，默认值为 none。若存在可用工具，则默认值为 auto。
+    ///
+    /// 可能的值：
+    /// ```json
+    /// 1. "none" or "auto" or "required"
+    /// 2.
+    /// {
+    ///   allowed_tools: {
+    ///      mode: "auto|required",
+    ///   }
+    ///   type: "allowed_tools"
+    /// }
+    /// 3.
+    /// {
+    ///   function: {
+    ///      name: "function name",
+    ///   }
+    ///   type: "function"
+    /// }
+    /// 4.
+    /// {
+    ///   custom: {
+    ///      name: "function name",
+    ///   }
+    ///   type: "custom"
+    /// }
+    ///
+    /// ```
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<Value>,
     /// 模型可以调用的工具列表
     #[builder(default)]
     #[serde(skip_serializing_if = "is_none_or_empty_vec")]
     pub tools: Option<Vec<ToolCallRequest>>,
-
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_logprobs: Option<i32>,
     /// 一种替代温度采样的方法是核采样，在这种方法中，模型仅考虑那些累积概率达到 top_p 的候选token。
     /// 例如，当 top_p 设置为 0.1 时，模型只会考虑那些累计概率质量达到前 10% 的token。
     #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f64>,
+    /// "low" 或 "medium" 或 "high"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verbosity: Option<String>,
+    /// 此工具可在网络上搜索相关结果以用于生成回应
+    ///
+    /// 结构：
+    /// ```json
+    /// {
+    ///   search_context_size?: "low|medium|high",
+    ///   user_location?: {
+    ///     approximate：{
+    ///       city?: String,
+    ///       country?: String,
+    ///       region?: String,
+    ///       timezone?: String,
+    ///     },
+    ///     type: "approximate",
+    ///   },
+    /// }
+    /// ```
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web_search_options: Option<Value>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Builder, Clone)]
-#[builder(setter(strip_option, into))]
-pub struct ChatCompletionRequestMessage {
-    /// 消息作者的角色
-    #[builder(default = "Role::User")]
-    pub role: Role,
-
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChatCompletionMessageParam {
     /// 消息具体内容
-    #[builder(default = "Content::Text(String::new())")]
     pub content: Content,
 
+    /// 消息作者的角色
+    pub role: Role,
+
     /// 参与者的可选名称。为模型提供信息，以区分同一角色的不同参与者。
-    #[builder(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 
+    /// role: "assistant"
+    ///
+    /// 格式
+    /// ```json
+    /// {id: String}
+    /// ```
+    /// 关于模型先前音频响应的数据。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio: Option<Value>,
+
+    /// role: "assistant"
+    ///
+    /// 模型生成的工具调用，例如函数调用
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ChatCompletionMessageToolCall>>,
+
+    /// role: "tool"
+    ///
     /// 此消息所响应的工具调用标识符
-    #[builder(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
 }
 
@@ -255,6 +422,8 @@ pub struct ChatStreamCompletion {
 
     /// 用于聊天补全的模型名称。
     pub model: String,
+    pub object: String,
+    pub service_tier:Option<String>,
 
     /// 此指纹代表模型运行时的后端配置。
     /// 可与 seed 请求参数结合使用，以判断后端变更是否可能影响确定性。
@@ -273,24 +442,98 @@ pub struct ChatStreamCompletion {
 pub struct ChatCompletionMessage {
     /// 消息内容
     /// 流式消息中该字段可能为空
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
-
-    /// 模型可能返回的推理消息
-    pub reasoning_content: Option<String>,
-
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<String>,
     /// 消息作者的角色。
     /// 流式消息中该字段可能为空
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
-
+    /// deepseek: 模型可能返回的推理消息
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
+    /// 消息的注释（如适用），例如在使用网络搜索工具时。
+    /// # JSON 结构
+    /// ```json
+    /// {
+    ///     "type": "url_citation",
+    ///     "url_citation": {
+    ///         "end_index": number,
+    ///         "start_index": number,
+    ///         "title": "string",
+    ///         "url": "string"
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// # 字段说明
+    ///
+    /// ## type
+    /// 类型：`string`
+    /// 描述：URL 引用的类型。始终为 `"url_citation"`。
+    ///
+    /// ## url_citation
+    /// 类型：`object`
+    /// 描述：使用网络搜索时的 URL 引用对象。
+    ///
+    /// ### url_citation 对象字段
+    ///
+    /// #### end_index
+    /// 类型：`number`
+    /// 描述：URL 引用在消息中最后一个字符的索引位置。
+    ///
+    /// #### start_index
+    /// 类型：`number`
+    /// 描述：URL 引用在消息中第一个字符的索引位置。
+    ///
+    /// #### title
+    /// 类型：`string`
+    /// 描述：网络资源的标题。
+    ///
+    /// #### url
+    /// 类型：`string`
+    /// 描述：网络资源的 URL 地址。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<Value>,
+    /// 如果请求了音频输出模式，此对象包含模型音频响应的相关数据。
+    /// # JSON 结构
+    /// ```json
+    /// {
+    ///     "id": "string",
+    ///     "data": "string",
+    ///     "expires_at": number,
+    ///     "transcript": "string"
+    /// }
+    /// ```
+    ///
+    /// # 字段说明
+    ///
+    /// ## id
+    /// 类型：`string`
+    /// 描述：此音频响应的唯一标识符。
+    ///
+    /// ## data
+    /// 类型：`string`
+    /// 描述：模型生成的音频字节的 Base64 编码字符串，格式遵循请求中的指定。
+    ///
+    /// ## expires_at
+    /// 类型：`number`
+    /// 描述：此音频响应在服务器上不再可访问的 Unix 时间戳（以秒为单位），用于多轮对话场景。
+    ///
+    /// ## transcript
+    /// 类型：`string`
+    /// 描述：模型生成的音频转录文本。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio: Option<Value>,
     /// 模型返回的工具调用参数
     #[serde(skip_serializing_if = "is_none_or_empty_vec")]
     #[builder(default)]
-    pub tool_calls: Option<Vec<ToolCallResponse>>,
+    pub tool_calls: Option<Vec<ChatCompletionMessageToolCall>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ToolCallResponseParam {
+pub struct ChatCompletionMessageFunctionToolCallFunction {
     /// 模型选择的本地函数名称
     pub name: String,
 
@@ -301,17 +544,39 @@ pub struct ToolCallResponseParam {
     pub arguments: String,
 }
 
-/// 模型返回的工具调用参数
+/// 对模型创建的函数工具的一次调用。
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ToolCallResponse {
+pub struct ChatCompletionMessageFunctionToolCall {
     /// 工具调用的唯一标识符
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-
+    pub id: String,
     /// 模型调用的函数信息
-    pub function: ToolCallResponseParam,
-
+    pub function: ChatCompletionMessageFunctionToolCallFunction,
     /// 工具调用类型，固定值为 "function"
+    pub r#type: String,
+}
+/// 模型生成的工具调用
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(untagged)]
+pub enum ChatCompletionMessageToolCall {
+    Function(ChatCompletionMessageFunctionToolCall),
+    Custom(ChatCompletionMessageCustomToolCall),
+}
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChatCompletionMessageCustomToolCallFunction {
+    /// 模型生成的自定义工具调用的输入。
+    pub input: String,
+    /// 要调用的自定义工具的名称。
+    pub name: String,
+}
+
+/// 对模型创建的自定义工具的调用。
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChatCompletionMessageCustomToolCall {
+    /// 工具调用的唯一标识符
+    pub id: String,
+    /// 模型调用的函数信息
+    pub custom: ChatCompletionMessageCustomToolCallFunction,
+    /// 工具调用类型，固定值为 "custom"
     pub r#type: String,
 }
 
@@ -320,11 +585,50 @@ pub struct ChatCompletionChoice {
     pub finish_reason: String,
     pub index: i32,
     pub message: ChatCompletionMessage,
+    /// # JSON 结构
+    /// ```json
+    /// {
+    ///     "content": [
+    ///         {
+    ///             "token": "string",
+    ///             "bytes": [number] | null,
+    ///             "logprob": number,
+    ///             "top_logprobs": [
+    ///                 {
+    ///                     "token": "string",
+    ///                     "bytes": [number] | null,
+    ///                     "logprob": number
+    ///                 }
+    ///             ]
+    ///         }
+    ///     ],
+    ///     "refusal": [
+    ///         {
+    ///             "token": "string",
+    ///             "bytes": [number] | null,
+    ///             "logprob": number,
+    ///             "top_logprobs": [
+    ///                 {
+    ///                     "token": "string",
+    ///                     "bytes": [number] | null,
+    ///                     "logprob": number
+    ///                 }
+    ///             ]
+    ///         }
+    ///     ]
+    /// }
+    /// ```
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logprobs: Option<Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChatStreamCompletionChoice {
+    /// 由流式模型响应生成的聊天完成增量片段
+    pub delta: ChatCompletionMessage,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub finish_reason: Option<String>,
     pub index: i32,
-    pub delta: ChatCompletionMessage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logprobs: Option<Value>,
 }

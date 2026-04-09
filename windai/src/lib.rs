@@ -9,6 +9,7 @@ pub mod model;
 pub mod provider;
 pub mod proxy;
 pub mod adaptor;
+pub mod db;
 
 static ASYNC_RUNTIME: OnceLock<Runtime> = OnceLock::new();
 /// global async runtime, currently use tokio as default

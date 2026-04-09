@@ -21,3 +21,5 @@ bytes.workspace = true
 dotenvy.workspace = true
 mime.workspace = true
 thiserror.workspace = true
+async-stream.workspace = true
+rusqlite.workspace = true
