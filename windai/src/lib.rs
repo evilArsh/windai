@@ -4,12 +4,11 @@ use std::sync::{
 };
 use tokio::runtime::Runtime;
 
-pub mod message;
-pub mod model;
-pub mod provider;
-pub mod proxy;
 pub mod adaptor;
-pub mod db;
+pub(crate) mod env;
+pub mod models;
+pub mod proxy;
+pub(crate) mod storage;
 
 static ASYNC_RUNTIME: OnceLock<Runtime> = OnceLock::new();
 /// global async runtime, currently use tokio as default

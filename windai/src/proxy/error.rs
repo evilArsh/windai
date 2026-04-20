@@ -1,25 +1,27 @@
 use std::error::Error;
-
 use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum ProxyError {
-    #[error(transparent)]
+    #[error("io error: ${0}")]
     Io(#[from] std::io::Error),
 
-    #[error(transparent)]
+    #[error("json error: ${0}")]
     Json(#[from] serde_json::Error),
 
-    #[error(transparent)]
+    #[error("request error: ${0}")]
     Request(#[from] RequestError),
 
     #[error("internal error: {0}")]
     Internal(String),
+
+    #[error("url parse error: {0}")]
+    UrlParse(#[from] url::ParseError),
 }
 
 #[derive(Error, Debug)]
 pub enum RequestError {
-    #[error("[request error] code: {code}: {msg}")]
+    #[error("request error: code: {code}: {msg}")]
     Http {
         code: u16,
         msg: String,
@@ -27,7 +29,7 @@ pub enum RequestError {
         source: Option<reqwest::Error>,
     },
 
-    #[error("[request error] {msg}")]
+    #[error("request error: {msg}")]
     Other {
         msg: String,
         #[source]

@@ -1,6 +1,5 @@
 use reqwest::{Client, ClientBuilder};
 use std::{sync::OnceLock, time::Duration};
-// use futures::TryStreamExt;
 
 static HTTP_CLIENT: OnceLock<Client> = OnceLock::new();
 

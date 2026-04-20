@@ -50,7 +50,7 @@ pub async fn handle_response(response: Response) -> Result<Bytes, ProxyError> {
 }
 
 /// 处理流式数据
-pub async fn handle_stream<F>(response: Response) -> impl Stream<Item = Result<Bytes, ProxyError>> {
+pub fn handle_stream(response: Response) -> impl Stream<Item = Result<Bytes, ProxyError>> {
     stream! {
         let mut stream = response.bytes_stream();
         while let Some(item) = stream.next().await {

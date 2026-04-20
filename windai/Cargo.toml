@@ -23,3 +23,6 @@ mime.workspace = true
 thiserror.workspace = true
 async-stream.workspace = true
 rusqlite.workspace = true
+dirs.workspace = true
+log.workspace = true
+url.workspace = true
