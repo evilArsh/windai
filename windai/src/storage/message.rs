@@ -1,37 +1,36 @@
+use super::{Storage, StorageError, lock_db};
 use crate::{
-    dto::chat::MessageResponse,
-    models::{chat::Message, model::AdaptorType},
-    storage::{Storage, StorageError, lock_db},
+    api::response::ChatMessage,
+    domain::{adaptor::AdaptorType, chat::Message},
 };
 use std::str::FromStr;
 
 fn row_to_message(row: &rusqlite::Row<'_>) -> Result<Message, rusqlite::Error> {
+    let content_json: String = row.get(4)?;
+    let content = serde_json::from_str(&content_json).unwrap_or_default();
     Ok(Message {
         id: row.get(0)?,
         from_id: row.get(1)?,
-        role: row.get(2)?,
+        role: row.get::<_, String>(2)?.parse().map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e))
+        })?,
         raw_content: row.get(3)?,
-        content: row.get(4)?,
+        content,
         reasoning_content: row.get(5)?,
         transcript: row.get(6)?,
-        content_type: row.get::<_, String>(7)?.parse().map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(7, rusqlite::types::Type::Text, Box::new(e))
-        })?,
-        model_id: row.get(8)?,
-        topic_id: row.get(9)?,
-        index: row.get(10)?,
-        stream: row.get(11)?,
-        is_boundary: row.get(12)?,
-        input_tokens: row.get(13)?,
-        output_tokens: row.get(14)?,
-        created_at: row.get(15)?,
+        model_id: row.get(7)?,
+        topic_id: row.get(8)?,
+        index: row.get(9)?,
+        stream: row.get(10)?,
+        is_boundary: row.get(11)?,
+        input_tokens: row.get(12)?,
+        output_tokens: row.get(13)?,
+        created_at: row.get(14)?,
     })
 }
 
 impl Storage {
-    /// 创建消息
-    /// index 自动取当前 topic 下最大 index + 10，首次插入时为 10
-    pub fn create_message(&self, msg: &Message) -> Result<i64, StorageError> {
+    pub fn create_message(&self, msg: &mut Message) -> Result<(), StorageError> {
         let conn = lock_db!(&self);
         let max_index: i64 = conn.query_row(
             "SELECT COALESCE(MAX(index), 0) FROM messages WHERE topic_id = ?1",
@@ -39,17 +38,19 @@ impl Storage {
             |row| row.get(0),
         )?;
         let new_index = max_index + 10;
+        let content_json = serde_json::to_string(&msg.content)
+            .map_err(|e| StorageError::Internal(format!("failed to serialize content: {}", e)))?;
         let row_count = conn.execute(
-            "INSERT INTO messages (from_id, role, raw_content, content, reasoning_content, transcript, content_type, model_id, topic_id, index, stream, is_boundary, input_tokens, output_tokens)
+            "INSERT INTO messages (from_id, role, raw_content, content, reasoning_content, transcript,
+            model_id, topic_id, index, stream, is_boundary, input_tokens, output_tokens, created_at)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             (
                 msg.from_id,
-                &msg.role,
+                &msg.role.to_string(),
                 &msg.raw_content,
-                &msg.content,
+                &content_json,
                 &msg.reasoning_content,
                 &msg.transcript,
-                msg.content_type.to_string(),
                 msg.model_id,
                 msg.topic_id,
                 new_index,
@@ -57,19 +58,86 @@ impl Storage {
                 msg.is_boundary,
                 msg.input_tokens,
                 msg.output_tokens,
+                msg.created_at,
             ),
         )?;
         if row_count == 0 {
             return Err(StorageError::Internal("failed to insert message".into()));
         }
-        Ok(conn.last_insert_rowid())
+        msg.id = conn.last_insert_rowid();
+        msg.index = new_index;
+        Ok(())
+    }
+    /// 批量创建消息
+    /// - 消息可能属于不同的 topic_id
+    /// - index 值：按 topic_id 分组后，分别取当前 topic 下最大 index + 10 递增
+    /// - 传入的 msg 中 id 和 index 值会被忽略，插入后 id 和 index 会被设置为新值
+    pub fn create_messages(&self, mut msgs: Vec<&mut Message>) -> Result<(), StorageError> {
+        if msgs.is_empty() {
+            return Ok(());
+        }
+        let mut topic_groups: Vec<(i64, Vec<usize>)> = Vec::new();
+        for (i, msg) in msgs.iter().enumerate() {
+            if let Some((_, indices)) = topic_groups
+                .iter_mut()
+                .find(|(tid, _)| *tid == msg.topic_id)
+            {
+                indices.push(i);
+            } else {
+                topic_groups.push((msg.topic_id, vec![i]));
+            }
+        }
+        let mut conn = lock_db!(&self);
+        let tx = conn.transaction()?;
+        for (topic_id, indices) in &topic_groups {
+            let max_index: i64 = tx.query_row(
+                "SELECT COALESCE(MAX(index), 0) FROM messages WHERE topic_id = ?1",
+                [*topic_id],
+                |row| row.get(0),
+            )?;
+            for (offset, msg_idx) in indices.iter().enumerate() {
+                let msg = &mut msgs[*msg_idx];
+                let new_index = max_index + 10 * (offset as i64 + 1);
+                let content_json = serde_json::to_string(&msg.content).map_err(|e| {
+                    StorageError::Internal(format!("failed to serialize content: {}", e))
+                })?;
+                let row_count = tx.execute(
+                    "INSERT INTO messages (from_id, role, raw_content, content, reasoning_content, transcript,
+                    model_id, topic_id, index, stream, is_boundary, input_tokens, output_tokens, created_at)
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                    (
+                        msg.from_id,
+                        &msg.role.to_string(),
+                        &msg.raw_content,
+                        &content_json,
+                        &msg.reasoning_content,
+                        &msg.transcript,
+                        msg.model_id,
+                        msg.topic_id,
+                        new_index,
+                        msg.stream,
+                        msg.is_boundary,
+                        msg.input_tokens,
+                        msg.output_tokens,
+                        msg.created_at,
+                    ),
+                )?;
+                if row_count == 0 {
+                    return Err(StorageError::Internal("failed to insert message".into()));
+                }
+                msg.id = tx.last_insert_rowid();
+                msg.index = new_index;
+            }
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// 根据 id 查询消息
     pub fn get_message(&self, id: i64) -> Result<Option<Message>, StorageError> {
         let conn = lock_db!(&self);
         let mut stmt = conn.prepare(
-            "SELECT id, from_id, role, raw_content, content, reasoning_content, transcript, content_type, model_id, topic_id, index, stream, is_boundary, input_tokens, output_tokens, created_at
+            "SELECT id, from_id, role, raw_content, content, reasoning_content, transcript, model_id, topic_id, index, stream, is_boundary, input_tokens, output_tokens, created_at
             FROM messages WHERE id = ?1",
         )?;
         let msg = stmt.query_row([id], row_to_message).ok();
@@ -80,7 +148,7 @@ impl Storage {
     pub fn list_messages_by_topic(&self, topic_id: i64) -> Result<Vec<Message>, StorageError> {
         let conn = lock_db!(&self);
         let mut stmt = conn.prepare(
-            "SELECT id, from_id, role, raw_content, content, reasoning_content, content_type, model_id, topic_id, index, stream, is_boundary, input_tokens, output_tokens, created_at
+            "SELECT id, from_id, role, raw_content, content, reasoning_content, transcript, model_id, topic_id, index, stream, is_boundary, input_tokens, output_tokens, created_at
             FROM messages WHERE topic_id = ?1 ORDER BY index ASC",
         )?;
         let msgs = stmt
@@ -94,11 +162,11 @@ impl Storage {
     pub fn list_chat_messages_by_topic(
         &self,
         topic_id: i64,
-    ) -> Result<Vec<MessageResponse>, StorageError> {
+    ) -> Result<Vec<ChatMessage>, StorageError> {
         let conn = lock_db!(&self);
         let mut stmt = conn.prepare(
             "SELECT m.id, m.from_id, m.role, m.raw_content, m.content, m.reasoning_content, m.transcript,
-                m.content_type, m.model_id, m.topic_id, m.index, m.stream, m.is_boundary,
+                m.model_id, m.topic_id, m.index, m.stream, m.is_boundary,
                 m.input_tokens, m.output_tokens, m.created_at,
                 mo.adaptor, mo.name, p.name, p.id
             FROM messages m
@@ -108,42 +176,43 @@ impl Storage {
         )?;
         let msgs = stmt
             .query_map([topic_id], |row| {
-                let adaptor: AdaptorType = AdaptorType::from_str(&row.get::<_, String>(16)?)
+                let adaptor: AdaptorType = AdaptorType::from_str(&row.get::<_, String>(15)?)
                     .map_err(|e| {
                         rusqlite::Error::FromSqlConversionFailure(
-                            16,
+                            15,
                             rusqlite::types::Type::Text,
                             Box::new(e),
                         )
                     })?;
-                Ok(MessageResponse {
+                let content_json: String = row.get(4)?;
+                let content = serde_json::from_str(&content_json).unwrap_or_default();
+                Ok(ChatMessage {
                     base: Message {
                         id: row.get(0)?,
                         from_id: row.get(1)?,
-                        role: row.get(2)?,
-                        raw_content: row.get(3)?,
-                        content: row.get(4)?,
-                        reasoning_content: row.get(5)?,
-                        transcript: row.get(6)?,
-                        content_type: row.get::<_, String>(7)?.parse().map_err(|e| {
+                        role: row.get::<_, String>(2)?.parse().map_err(|e| {
                             rusqlite::Error::FromSqlConversionFailure(
-                                7,
+                                2,
                                 rusqlite::types::Type::Text,
                                 Box::new(e),
                             )
                         })?,
-                        model_id: row.get(8)?,
-                        topic_id: row.get(9)?,
-                        index: row.get(10)?,
-                        stream: row.get(11)?,
-                        is_boundary: row.get(12)?,
-                        input_tokens: row.get(13)?,
-                        output_tokens: row.get(14)?,
-                        created_at: row.get(15)?,
+                        raw_content: row.get(3)?,
+                        content,
+                        reasoning_content: row.get(5)?,
+                        transcript: row.get(6)?,
+                        model_id: row.get(7)?,
+                        topic_id: row.get(8)?,
+                        index: row.get(9)?,
+                        stream: row.get(10)?,
+                        is_boundary: row.get(11)?,
+                        input_tokens: row.get(12)?,
+                        output_tokens: row.get(13)?,
+                        created_at: row.get(14)?,
                     },
-                    model_name: row.get(17)?,
-                    provider_name: row.get(18)?,
-                    provider_id: row.get(19)?,
+                    model_name: row.get(16)?,
+                    provider_name: row.get(17)?,
+                    provider_id: row.get(18)?,
                     adaptor,
                 })
             })?
@@ -156,7 +225,7 @@ impl Storage {
     pub fn list_all_messages(&self) -> Result<Vec<Message>, StorageError> {
         let conn = lock_db!(&self);
         let mut stmt = conn.prepare(
-            "SELECT id, from_id, role, raw_content, content, reasoning_content, content_type, model_id, topic_id, index, stream, is_boundary, input_tokens, output_tokens, created_at
+            "SELECT id, from_id, role, raw_content, content, reasoning_content, transcript, model_id, topic_id, index, stream, is_boundary, input_tokens, output_tokens, created_at
             FROM messages ORDER BY created_at DESC",
         )?;
         let msgs = stmt
@@ -169,19 +238,20 @@ impl Storage {
     /// 更新消息
     pub fn update_message(&self, msg: &Message) -> Result<(), StorageError> {
         let conn = lock_db!(&self);
+        let content_json = serde_json::to_string(&msg.content)
+            .map_err(|e| StorageError::Internal(format!("failed to serialize content: {}", e)))?;
         conn.execute(
             "UPDATE messages SET from_id = ?1, role = ?2, raw_content = ?3,
-            content = ?4, reasoning_content = ?5, transcript = ?6, content_type = ?7, model_id = ?8, topic_id = ?9,
-            index = ?10, stream = ?11, is_boundary = ?12, input_tokens = ?13, output_tokens = ?14,
-            updated_at = strftime('%s', 'now') WHERE id = ?15",
+            content = ?4, reasoning_content = ?5, transcript = ?6, model_id = ?7, topic_id = ?8,
+            index = ?9, stream = ?10, is_boundary = ?11, input_tokens = ?12, output_tokens = ?13,
+            updated_at = strftime('%s', 'now') WHERE id = ?14",
             (
                 msg.from_id,
-                &msg.role,
+                &msg.role.to_string(),
                 &msg.raw_content,
-                &msg.content,
+                &content_json,
                 &msg.reasoning_content,
                 &msg.transcript,
-                msg.content_type.to_string(),
                 msg.model_id,
                 msg.topic_id,
                 msg.index,

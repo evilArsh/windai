@@ -5,8 +5,9 @@ use std::sync::{
 use tokio::runtime::Runtime;
 
 pub mod adaptor;
+pub mod api;
+pub mod domain;
 pub(crate) mod env;
-pub mod models;
 pub mod proxy;
 pub(crate) mod storage;
 

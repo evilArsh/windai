@@ -9,7 +9,7 @@ use bytes::Bytes;
 ///
 /// 五个字段对应 SSE 协议的五个字段前缀，并非所有字段都会同时出现。
 #[derive(Debug, Clone, Default)]
-pub struct SSEBlock {
+pub struct SseBlock {
     /// data: 消息数据，多行连续data: 会以\n拼接
     pub data: Option<String>,
     /// event: 事件类型
@@ -21,14 +21,13 @@ pub struct SSEBlock {
     /// comment: 以 : 开头的注释行
     pub comment: Option<String>,
 }
-impl SSEBlock {
+impl SseBlock {
     /// 解析原始 SSE bytes，返回所有解析的结果
-    ///
-    /// 输入可能包含多个拼接的事件，以空行分隔。
+    /// - 输入可能包含多个拼接的事件，以空行分隔。
     pub fn parse_all(input: Bytes) -> Vec<Self> {
         let text = String::from_utf8_lossy(&input);
         let mut events = Vec::new();
-        let mut current = SSEBlock::default();
+        let mut current = SseBlock::default();
         for line in text.lines() {
             if line.is_empty() {
                 // 空行表示当前事件结束

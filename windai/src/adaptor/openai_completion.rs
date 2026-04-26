@@ -2,21 +2,11 @@
 //! https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
 
 use super::is_none_or_empty_vec;
+use crate::domain::chat::Role;
 use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(
-    Debug, Serialize, Deserialize, PartialEq, Eq, Clone, strum::EnumString, strum::Display,
-)]
-#[serde(rename_all = "lowercase")]
-pub enum Role {
-    System,
-    User,
-    Assistant,
-    Tool,
-    Developer,
-}
 // ======================================================
 // ChatCompletion 请求
 // ======================================================
@@ -351,7 +341,7 @@ pub struct ToolCallRequestParams {
 #[builder(setter(strip_option, into))]
 pub struct ToolCallRequest {
     /// 工具调用类型，固定值为 "function"
-    #[builder(default = "\"function\"".to_string())]
+    #[builder(default = "String::from(\"function\")")]
     pub r#type: String,
 
     /// 工具调用请求参数
@@ -430,7 +420,7 @@ pub struct ChatCompletionMessage {
     /// 消息作者的角色。
     /// 流式消息中该字段可能为空
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
+    pub role: Option<Role>,
     /// 模型可能返回的推理消息
     ///
     /// TODO: 非标准，OpenAI无此字段

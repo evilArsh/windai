@@ -18,6 +18,9 @@ pub enum StorageError {
 
     #[error("database error: ${0}")]
     Database(#[from] rusqlite::Error),
+
+    #[error(transparent)]
+    StrumParse(#[from] strum::ParseError),
 }
 
 macro_rules! lock_db {
@@ -29,7 +32,7 @@ macro_rules! lock_db {
     };
 }
 
-pub(crate) use lock_db;
+use lock_db;
 
 pub struct Storage {
     conn: Mutex<Connection>,

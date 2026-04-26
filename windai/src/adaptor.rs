@@ -1,16 +1,14 @@
-use super::{
-    dto::chat::{MessageCommon, MessageResponse, RequestConfig},
-    models::AdaptorType,
-    proxy::error::ProxyError,
-};
+use crate::api::request::{ChatConfig, ChatMessageContext};
+use crate::api::response::ChatMessageBase;
+use crate::domain::adaptor::AdaptorType;
 use bytes::Bytes;
-use futures::stream::{Stream, StreamExt};
 use serde_json::Value;
 use thiserror::Error;
 
 pub mod openai;
 pub mod openai_completion;
 pub mod openai_response;
+pub mod sse;
 
 pub(crate) fn is_none_or_empty_vec<T>(opt: &Option<Vec<T>>) -> bool {
     opt.as_ref().map(|v| v.is_empty()).unwrap_or(true)
@@ -30,8 +28,8 @@ pub enum AdaptorError {
     #[error("invalid content type: {0}")]
     InvalidContentType(String),
 
-    #[error(transparent)]
-    Proxy(#[from] ProxyError),
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 /// 获取适配器默认的 endpoint
@@ -44,24 +42,20 @@ pub fn get_default_endpoint(adaptor: AdaptorType) -> String {
 
 pub trait Adaptor {
     fn get_type(&self) -> AdaptorType;
-    // fn include(&self, adaptor_type: AdaptorType) -> bool;
 }
+
 pub trait ChatAdaptor: Adaptor {
     /// 将统一请求配置和消息列表转换为提供商标准请求格式
     fn build_request(
         &self,
         model_name: &str,
-        config: &RequestConfig,
-        contexts: &Vec<MessageResponse>,
+        config: &ChatConfig,
+        contexts: &Vec<ChatMessageContext>,
     ) -> Result<Value, AdaptorError>;
-
-    /// 将提供商原始响应字节解析为统一格式消息
-    fn parse_response(&self, data: Bytes) -> Result<MessageCommon, AdaptorError>;
-    /// 将提供商原始流式响应字节解析为统一格式消息
-    fn parse_stream_response(
-        &self,
-        stream: impl Stream<Item = Result<Bytes, ProxyError>>,
-    ) -> impl Stream<Item = Result<MessageCommon, AdaptorError>>;
+    /// 将原始响应字节解析为统一格式消息
+    fn parse_response(&self, data: Bytes) -> Result<ChatMessageBase, AdaptorError>;
+    /// 将原始流式响应单块字节解析为统一格式消息
+    fn parse_stream_chunk(&self, data: Bytes) -> Result<Vec<ChatMessageBase>, AdaptorError>;
 }
 
 /// 根据 AdaptorType 获取对应的对话适配器实例

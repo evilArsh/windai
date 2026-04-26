@@ -1,8 +1,5 @@
-use crate::{
-    models::provider::{Credentials, Provider},
-    storage::{Storage, StorageError, lock_db},
-};
-
+use super::{Storage, StorageError, lock_db};
+use crate::domain::provider::{Credentials, Provider};
 fn row_to_provider(row: &rusqlite::Row<'_>) -> Result<Provider, rusqlite::Error> {
     Ok(Provider {
         id: row.get(0)?,

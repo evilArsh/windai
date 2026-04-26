@@ -2,8 +2,8 @@
 //!
 //! 目录结构:
 //! ```text
-//! ~/.windai/               (或 $WINDAI_ROOT_DIR)
-//!   windai.db              SQLite 数据库
+//! ~/.windai/      (或 $WINDAI_ROOT_DIR)
+//!   windai.db     SQLite 数据库
 //! ```
 //!
 //! 跨平台路径由 `dirs` crate 处理:
@@ -21,7 +21,6 @@ pub const DB_FILENAME: &str = "windai.db";
 static DIRS: OnceLock<AppDirs> = OnceLock::new();
 
 /// 应用数据目录
-#[derive(Debug, Clone)]
 pub struct AppDirs {
     pub root: PathBuf,
     pub db: PathBuf,
@@ -31,10 +30,8 @@ impl AppDirs {
     fn new() -> Self {
         let root = resolve_root();
         let db = root.join(DB_FILENAME);
-        for dir in [&root, &db] {
-            std::fs::create_dir_all(dir)
-                .unwrap_or_else(|e| panic!("failed to create directory '{}': {e}", dir.display()));
-        }
+        std::fs::create_dir_all(&root)
+            .unwrap_or_else(|e| panic!("failed to create directory '{}': {e}", root.display()));
         Self { root, db }
     }
 }
@@ -49,7 +46,6 @@ fn resolve_root() -> PathBuf {
 }
 
 /// 获取应用目录句柄
-///
 pub fn dirs() -> &'static AppDirs {
     DIRS.get_or_init(AppDirs::new)
 }

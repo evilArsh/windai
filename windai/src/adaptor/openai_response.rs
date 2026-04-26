@@ -2,7 +2,8 @@
 //! https://developers.openai.com/api/reference/resources/responses/methods/create
 
 use super::is_none_or_empty_vec;
-use super::openai_completion::{Role, ToolCallRequest};
+use super::openai_completion::ToolCallRequest;
+use crate::domain::chat::Role;
 use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -340,7 +341,7 @@ pub struct ResponseReasoning {
 #[derive(Debug, Serialize, Default, Deserialize, Clone, Builder)]
 pub struct ContextManagementConfig {
     ///  entry 类型。目前仅支持 'compaction'（压缩）。
-    #[builder(default="\"compaction\"".to_string())]
+    #[builder(default = "String::from(\"compaction\")")]
     pub r#type: String,
 
     /// 触发压缩的 Token 阈值。最小值通常为 1000。
@@ -408,7 +409,7 @@ pub enum ResponseIncludable {
 pub struct Message {
     /// 模型接收的文本、图像或音频输入，用于生成回应。也可包含先前的助手回应。
     ///
-    pub content: InputContent,
+    pub content: Vec<InputContent>,
     /// 角色
     ///
     /// role: "user" or "system" or "developer"
@@ -527,9 +528,9 @@ pub struct ResponseInputFile {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum InputContent {
-    ResponseInputText(Vec<ResponseInputText>),
-    ResponseInputImage(Vec<ResponseInputImage>),
-    ResponseInputFile(Vec<ResponseInputFile>),
+    ResponseInputText(ResponseInputText),
+    ResponseInputImage(ResponseInputImage),
+    ResponseInputFile(ResponseInputFile),
 }
 
 // ======================================================

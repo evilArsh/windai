@@ -1,6 +1,7 @@
-use crate::{
-    models::model::{AdaptorType, Model, ModelType},
-    storage::{Storage, StorageError, lock_db},
+use super::{Storage, StorageError, lock_db};
+use crate::domain::{
+    adaptor::AdaptorType,
+    model::{Model, ModelType},
 };
 
 fn row_to_model(row: &rusqlite::Row<'_>) -> Result<Model, rusqlite::Error> {

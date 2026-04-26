@@ -1,5 +1,4 @@
-use super::{Storage, StorageError};
-use crate::storage::lock_db;
+use super::{Storage, StorageError, lock_db};
 use rusqlite::Connection;
 
 impl Storage {
@@ -58,10 +57,9 @@ CREATE TABLE IF NOT EXISTS messages (
     from_id         INTEGER,
     role            TEXT    NOT NULL,
     raw_content     TEXT    NOT NULL DEFAULT '',
-    content         TEXT    NOT NULL DEFAULT '',
+    content         TEXT    NOT NULL DEFAULT '[]',
     reasoning_content TEXT,
     transcript      TEXT,
-    content_type    TEXT    NOT NULL,
     model_id        INTEGER NOT NULL,
     topic_id        INTEGER NOT NULL,
     index           INTEGER NOT NULL DEFAULT 10,

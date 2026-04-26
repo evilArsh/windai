@@ -1,7 +1,5 @@
-use crate::{
-    models::chat::Topic,
-    storage::{Storage, StorageError, lock_db},
-};
+use super::{Storage, StorageError, lock_db};
+use crate::domain::chat::Topic;
 
 fn row_to_topic(row: &rusqlite::Row<'_>) -> Result<Topic, rusqlite::Error> {
     Ok(Topic {
