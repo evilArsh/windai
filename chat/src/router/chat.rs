@@ -1,10 +1,7 @@
-use super::{ProxyError, forward};
-use crate::adaptor::{self, ChatAdaptor, get_chat_adaptor};
+use crate::adaptor::{self, AdaptorError, ChatAdaptor, get_chat_adaptor};
 use crate::api::request::{ChatConfig, ChatInput};
 use crate::api::response::ChatMessage;
-use crate::domain::chat::{Message, MessageBuilder, Role, Topic};
-use crate::domain::model::Model;
-use crate::domain::provider::Provider;
+use crate::client::{self, ClientError};
 use crate::storage;
 use async_stream::stream;
 use chrono::Utc;
@@ -12,6 +9,9 @@ use futures::stream::Stream;
 use reqwest::Method;
 use serde_json::Value;
 use url::Url;
+use windai_domain::chat::{Message, MessageBuilder, Role, Topic};
+use windai_domain::model::Model;
+use windai_domain::provider::Provider;
 
 #[derive(Debug)]
 pub enum ChatStreamEventStatus {
@@ -23,20 +23,25 @@ pub enum ChatStreamEventStatus {
 pub struct ChatStreamEvent {
     pub status: ChatStreamEventStatus,
     pub data: Option<ChatMessage>,
-    pub error: Option<String>,
+    pub error: Option<ClientError>,
 }
-impl From<ProxyError> for ChatStreamEvent {
-    fn from(value: ProxyError) -> Self {
+impl From<ClientError> for ChatStreamEvent {
+    fn from(value: ClientError) -> Self {
         ChatStreamEvent {
             status: ChatStreamEventStatus::Error,
             data: None,
-            error: Some(value.to_string()),
+            error: Some(value),
         }
     }
 }
-
-fn proxy_err<E: Into<ProxyError>>(e: E) -> ChatStreamEvent {
-    e.into().into()
+impl From<AdaptorError> for ChatStreamEvent {
+    fn from(value: AdaptorError) -> Self {
+        ChatStreamEvent {
+            status: ChatStreamEventStatus::Error,
+            data: None,
+            error: Some(value.into()),
+        }
+    }
 }
 
 struct StreamContext {
@@ -54,20 +59,20 @@ fn build_stream_context(
     topic_id: i64,
     model_id: i64,
     config: &ChatConfig,
-) -> Result<StreamContext, ProxyError> {
+) -> Result<StreamContext, ClientError> {
     let db = storage::global();
     let is_stream = config.stream.unwrap_or(false);
     let model = db
         .get_model(model_id)?
-        .ok_or_else(|| ProxyError::Internal(format!("cannot find model: {}", model_id)))?;
+        .ok_or_else(|| ClientError::Internal(format!("cannot find model: {}", model_id)))?;
     let chat_adaptor = get_chat_adaptor(model.adaptor);
 
-    let topic = db
-        .get_topic(topic_id)?
-        .ok_or_else(|| ProxyError::Internal(format!("cannot find topic: {}", model.provider_id)))?;
+    let topic = db.get_topic(topic_id)?.ok_or_else(|| {
+        ClientError::Internal(format!("cannot find topic: {}", model.provider_id))
+    })?;
 
     let provider = db.get_provider(model.provider_id)?.ok_or_else(|| {
-        ProxyError::Internal(format!("cannot find provider: {}", model.provider_id))
+        ClientError::Internal(format!("cannot find provider: {}", model.provider_id))
     })?;
 
     let mut messages = db.list_chat_messages_by_topic(topic_id)?;
@@ -82,7 +87,7 @@ fn build_stream_context(
             .topic_id(topic_id)
             .is_boundary(false)
             .build()
-            .map_err(|e| ProxyError::Internal(e.to_string()))?,
+            .map_err(|e| ClientError::Internal(e.to_string()))?,
         model_name: model.name.clone(),
         provider_name: provider.name,
         provider_id: provider.id,
@@ -106,11 +111,11 @@ fn build_stream_context(
         .next()
         .map(|credent| credent.key)
         .ok_or_else(|| {
-            ProxyError::Internal(format!("no credentials found for model: {}", model.name))
+            ClientError::Internal(format!("no credentials found for model: {}", model.name))
         })?;
 
     let base_url = provider.base_url.ok_or_else(|| {
-        ProxyError::Internal(format!(
+        ClientError::Internal(format!(
             "base_url is not configured for provider: {}",
             model.provider_id
         ))
@@ -142,7 +147,7 @@ fn forward_chat_stream(
 ) -> impl Stream<Item = ChatStreamEvent> {
     stream! {
         if is_stream {
-            let response = match forward::request_sse(
+            let response = match client::request_sse(
                 url.as_str(),
                 Method::POST,
                 |req| req.json(&req_body).bearer_auth(&api_key),
@@ -150,13 +155,13 @@ fn forward_chat_stream(
                 Ok(r) => r,
                 Err(e) => { yield e.into(); return; }
             };
-            let stream = forward::handle_stream(response);
+            let stream = client::handle_stream(response);
             for await result in stream {
                 match result {
                     Ok(bytes) => {
                         let msg_chunks = match chat_adaptor.parse_stream_chunk(bytes) {
                             Ok(c) => c,
-                            Err(e) => { yield proxy_err(e); return; }
+                            Err(e) => { yield e.into(); return; }
                         };
                         for msg_chunk in msg_chunks {
                             msg_chunk.apply_to_message(&mut chat_msg.base);
@@ -170,7 +175,7 @@ fn forward_chat_stream(
                     Err(err) => yield ChatStreamEvent {
                         status: ChatStreamEventStatus::Error,
                         data: None,
-                        error: Some(err.to_string()),
+                        error: Some(err),
                     }
                 };
             }
@@ -180,21 +185,21 @@ fn forward_chat_stream(
                 error: None,
             }
         } else {
-            let response = match forward::request(
+            let response = match client::request(
                 url.as_str(),
                 Method::POST,
                 |req| req.json(&req_body).bearer_auth(&api_key),
             ).await {
                 Ok(r) => r,
-                Err(e) => { yield proxy_err(e); return; }
+                Err(e) => { yield e.into(); return; }
             };
-            let res = match forward::handle_response(response).await {
+            let res = match client::handle_response(response).await {
                 Ok(r) => r,
-                Err(e) => { yield proxy_err(e); return; }
+                Err(e) => { yield e.into(); return; }
             };
             let response = match chat_adaptor.parse_response(res) {
                 Ok(r) => r,
-                Err(e) => { yield proxy_err(e); return; }
+                Err(e) => { yield e.into(); return; }
             };
             response.apply_to_message(&mut chat_msg.base);
             yield ChatStreamEvent {
@@ -362,12 +367,12 @@ mod test {
     use crate::adaptor::get_chat_adaptor;
     use crate::api::request::{ChatConfig, ChatMessageContext};
     use crate::api::response::ChatMessage;
-    use crate::domain::adaptor::AdaptorType;
-    use crate::domain::chat::{ContentType, MessageBuilder, MessageContent, Role};
-    use crate::domain::provider::Credentials;
     use futures::StreamExt;
     use tokio::pin;
     use url::Url;
+    use windai_domain::adaptor::AdaptorType;
+    use windai_domain::chat::{ContentType, MessageBuilder, MessageContent, Role};
+    use windai_domain::provider::Credentials;
 
     #[tokio::test]
     async fn forward_chat_stream() {
@@ -378,7 +383,7 @@ mod test {
             temperature: None,
             top_p: None,
             max_tokens: None,
-            stream: Some(true),
+            stream: Some(false),
             presence_penalty: None,
             frequency_penalty: None,
             parallel_tool_calls: None,
@@ -407,7 +412,7 @@ mod test {
             .unwrap();
         let mut chat_msg = ChatMessage {
             base: MessageBuilder::default()
-                .stream(true)
+                .stream(chat_config.stream.unwrap())
                 .role(Role::Assistant)
                 .from_id(1)
                 .model_id(1)
@@ -421,11 +426,17 @@ mod test {
             adaptor: AdaptorType::OpenAICompletion,
         };
         let cred = Credentials::from_env();
-        println!("{:?}",cred.key);
         if cred.key.is_empty() {
             return;
         }
-        let res = super::forward_chat_stream(&mut chat_msg, chat_adaptor, true, url, req, cred.key);
+        let res = super::forward_chat_stream(
+            &mut chat_msg,
+            chat_adaptor,
+            chat_config.stream.unwrap(),
+            url,
+            req,
+            cred.key,
+        );
         pin!(res);
         while let Some(value) = res.next().await {
             println!("[data]\n{:?}", value);

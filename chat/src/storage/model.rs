@@ -1,5 +1,5 @@
 use super::{Storage, StorageError, lock_db};
-use crate::domain::{
+use windai_domain::{
     adaptor::AdaptorType,
     model::{Model, ModelType},
 };

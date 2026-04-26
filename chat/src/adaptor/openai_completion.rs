@@ -2,10 +2,10 @@
 //! https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
 
 use super::is_none_or_empty_vec;
-use crate::domain::chat::Role;
 use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use windai_domain::chat::Role;
 
 // ======================================================
 // ChatCompletion 请求

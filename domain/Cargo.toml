@@ -1,0 +1,15 @@
+[package]
+name = "windai-domain"
+description = """
+Global domain
+"""
+edition.workspace = true
+version.workspace = true
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+strum.workspace = true
+serde.workspace = true
+derive_builder.workspace = true

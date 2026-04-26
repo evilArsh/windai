@@ -9,13 +9,14 @@ use crate::adaptor::openai_response::{
 };
 use crate::adaptor::sse::SseBlock;
 use crate::adaptor::{Adaptor, AdaptorError, ChatAdaptor, openai_completion};
+use crate::api::request::ChatConfig;
 use crate::api::request::ChatMessageContext;
 use crate::api::response::ChatMessageBase;
-use crate::domain::adaptor::AdaptorType;
-use crate::domain::chat::ContentType;
-use crate::{api::request::ChatConfig, domain::chat::Role};
 use bytes::Bytes;
 use serde_json::{Value, json};
+use windai_domain::adaptor::AdaptorType;
+use windai_domain::chat::ContentType;
+use windai_domain::chat::Role;
 
 pub struct OpenAICompletionAdaptor;
 

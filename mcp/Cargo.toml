@@ -1,0 +1,12 @@
+[package]
+name = "mcp"
+description = """
+Model Context Protocol library
+"""
+edition.workspace = true
+version.workspace = true
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]

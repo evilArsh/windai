@@ -1,10 +1,7 @@
 use super::{Storage, StorageError, lock_db};
-use crate::{
-    api::response::ChatMessage,
-    domain::{adaptor::AdaptorType, chat::Message},
-};
+use crate::api::response::ChatMessage;
 use std::str::FromStr;
-
+use windai_domain::{adaptor::AdaptorType, chat::Message};
 fn row_to_message(row: &rusqlite::Row<'_>) -> Result<Message, rusqlite::Error> {
     let content_json: String = row.get(4)?;
     let content = serde_json::from_str(&content_json).unwrap_or_default();

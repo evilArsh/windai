@@ -1,21 +1,17 @@
-pub mod chat;
-pub mod client;
-pub mod forward;
-
 use crate::adaptor::AdaptorError;
 use crate::storage::StorageError;
 use std::error::Error;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum ProxyError {
+pub enum ClientError {
     #[error("io error: ${0}")]
     Io(#[from] std::io::Error),
 
     #[error("json error: ${0}")]
     Json(#[from] serde_json::Error),
 
-    #[error("request error: ${0}")]
+    #[error(transparent)]
     Request(#[from] RequestError),
 
     #[error("internal error: {0}")]
@@ -72,8 +68,8 @@ impl RequestError {
         }
     }
 }
-impl From<reqwest::Error> for ProxyError {
+impl From<reqwest::Error> for ClientError {
     fn from(err: reqwest::Error) -> Self {
-        ProxyError::Request(RequestError::from_reqwest(err))
+        ClientError::Request(RequestError::from_reqwest(err))
     }
 }

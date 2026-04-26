@@ -1,6 +1,6 @@
-use crate::domain::chat::{ContentType, MessageContent, Role};
 use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
+use windai_domain::chat::{ContentType, MessageContent, Role};
 
 /// LLM 对话请求配置
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]

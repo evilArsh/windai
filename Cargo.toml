@@ -1,6 +1,8 @@
 [workspace]
 members = [
-    "windai",
+    "domain",
+    "chat",
+    "mcp",
     # 
 ]
 resolver = "3"
@@ -14,6 +16,9 @@ license = "MIT OR Apache-2.0"
 
 
 [workspace.dependencies]
+windai-domain = { path = "domain" }
+windai-chat = { path = "chat" }
+mcp = { path = "mcp" }
 futures = "0.3"
 regex = "1.12"
 tokio = { version = "1", features = ["full"] }

@@ -1,7 +1,7 @@
 [package]
-name = "windai"
+name = "windai-chat"
 description = """
-Cross-platform AI basic capability library
+Chat module
 """
 edition.workspace = true
 version.workspace = true
@@ -26,3 +26,4 @@ dirs.workspace = true
 log.workspace = true
 url.workspace = true
 chrono.workspace = true
+windai-domain.workspace = true

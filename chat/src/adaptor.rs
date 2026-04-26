@@ -1,9 +1,9 @@
 use crate::api::request::{ChatConfig, ChatMessageContext};
 use crate::api::response::ChatMessageBase;
-use crate::domain::adaptor::AdaptorType;
 use bytes::Bytes;
 use serde_json::Value;
 use thiserror::Error;
+use windai_domain::adaptor::AdaptorType;
 
 pub mod openai;
 pub mod openai_completion;

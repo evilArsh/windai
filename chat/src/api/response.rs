@@ -1,12 +1,10 @@
-use crate::{
-    api::request::ChatMessageContext,
-    domain::{
-        adaptor::AdaptorType,
-        chat::{ContentType, Message, MessageContent, Role},
-    },
-};
+use crate::api::request::ChatMessageContext;
 use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
+use windai_domain::{
+    adaptor::AdaptorType,
+    chat::{ContentType, Message, MessageContent, Role},
+};
 
 /// 提供商响应消息的统一转换格式
 #[derive(Debug, Serialize, Deserialize, Clone, Builder)]

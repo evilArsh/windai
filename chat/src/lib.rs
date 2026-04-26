@@ -6,10 +6,11 @@ use tokio::runtime::Runtime;
 
 pub mod adaptor;
 pub mod api;
-pub mod domain;
-pub(crate) mod env;
+mod client;
+mod env;
 pub mod proxy;
-pub(crate) mod storage;
+pub mod router;
+mod storage;
 
 static ASYNC_RUNTIME: OnceLock<Runtime> = OnceLock::new();
 /// global async runtime, currently use tokio as default

@@ -3,10 +3,10 @@
 
 use super::is_none_or_empty_vec;
 use super::openai_completion::ToolCallRequest;
-use crate::domain::chat::Role;
 use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use windai_domain::chat::Role;
 
 // ======================================================
 // Responses 请求
