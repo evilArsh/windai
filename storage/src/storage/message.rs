@@ -1,5 +1,5 @@
 use super::{Storage, StorageError, lock_db};
-use crate::api::response::ChatMessage;
+use crate::{api::response::ChatMessage, storage::utils::value_or_none};
 use std::str::FromStr;
 use windai_domain::{adaptor::AdaptorType, chat::Message};
 fn row_to_message(row: &rusqlite::Row<'_>) -> Result<Message, rusqlite::Error> {
@@ -27,7 +27,7 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> Result<Message, rusqlite::Error> {
 }
 
 impl Storage {
-    pub fn create_message(&self, msg: &mut Message) -> Result<(), StorageError> {
+    pub fn create_message(&self, msg: &mut Message) -> Result<usize, StorageError> {
         let conn = lock_db!(&self);
         let max_index: i64 = conn.query_row(
             "SELECT COALESCE(MAX(index), 0) FROM messages WHERE topic_id = ?1",
@@ -35,8 +35,7 @@ impl Storage {
             |row| row.get(0),
         )?;
         let new_index = max_index + 10;
-        let content_json = serde_json::to_string(&msg.content)
-            .map_err(|e| StorageError::Internal(format!("failed to serialize content: {}", e)))?;
+        let content_json = serde_json::to_string(&msg.content)?;
         let row_count = conn.execute(
             "INSERT INTO messages (from_id, role, raw_content, content, reasoning_content, transcript,
             model_id, topic_id, index, stream, is_boundary, input_tokens, output_tokens, created_at)
@@ -58,12 +57,9 @@ impl Storage {
                 msg.created_at,
             ),
         )?;
-        if row_count == 0 {
-            return Err(StorageError::Internal("failed to insert message".into()));
-        }
         msg.id = conn.last_insert_rowid();
         msg.index = new_index;
-        Ok(())
+        Ok(row_count)
     }
     /// 批量创建消息
     /// - 消息可能属于不同的 topic_id
@@ -95,10 +91,8 @@ impl Storage {
             for (offset, msg_idx) in indices.iter().enumerate() {
                 let msg = &mut msgs[*msg_idx];
                 let new_index = max_index + 10 * (offset as i64 + 1);
-                let content_json = serde_json::to_string(&msg.content).map_err(|e| {
-                    StorageError::Internal(format!("failed to serialize content: {}", e))
-                })?;
-                let row_count = tx.execute(
+                let content_json = serde_json::to_string(&msg.content)?;
+                let _ = tx.execute(
                     "INSERT INTO messages (from_id, role, raw_content, content, reasoning_content, transcript,
                     model_id, topic_id, index, stream, is_boundary, input_tokens, output_tokens, created_at)
                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
@@ -119,9 +113,6 @@ impl Storage {
                         msg.created_at,
                     ),
                 )?;
-                if row_count == 0 {
-                    return Err(StorageError::Internal("failed to insert message".into()));
-                }
                 msg.id = tx.last_insert_rowid();
                 msg.index = new_index;
             }
@@ -137,8 +128,9 @@ impl Storage {
             "SELECT id, from_id, role, raw_content, content, reasoning_content, transcript, model_id, topic_id, index, stream, is_boundary, input_tokens, output_tokens, created_at
             FROM messages WHERE id = ?1",
         )?;
-        let msg = stmt.query_row([id], row_to_message).ok();
-        Ok(msg)
+
+        let result = stmt.query_row([id], row_to_message);
+        value_or_none(result)
     }
 
     /// 根据 topic_id 查询该会话下的所有消息，按 index 排序
@@ -150,8 +142,7 @@ impl Storage {
         )?;
         let msgs = stmt
             .query_map([topic_id], row_to_message)?
-            .filter_map(|r| r.ok())
-            .collect();
+            .collect::<Result<Vec<Message>, rusqlite::Error>>()?; // 保证所有数据都正常才返回
         Ok(msgs)
     }
 
@@ -213,8 +204,7 @@ impl Storage {
                     adaptor,
                 })
             })?
-            .filter_map(|r| r.ok())
-            .collect();
+            .collect::<Result<Vec<ChatMessage>, rusqlite::Error>>()?;
         Ok(msgs)
     }
 
@@ -227,17 +217,15 @@ impl Storage {
         )?;
         let msgs = stmt
             .query_map([], row_to_message)?
-            .filter_map(|r| r.ok())
-            .collect();
+            .collect::<Result<Vec<Message>, rusqlite::Error>>()?;
         Ok(msgs)
     }
 
     /// 更新消息
-    pub fn update_message(&self, msg: &Message) -> Result<(), StorageError> {
+    pub fn update_message(&self, msg: &Message) -> Result<usize, StorageError> {
         let conn = lock_db!(&self);
-        let content_json = serde_json::to_string(&msg.content)
-            .map_err(|e| StorageError::Internal(format!("failed to serialize content: {}", e)))?;
-        conn.execute(
+        let content_json = serde_json::to_string(&msg.content)?;
+        Ok(conn.execute(
             "UPDATE messages SET from_id = ?1, role = ?2, raw_content = ?3,
             content = ?4, reasoning_content = ?5, transcript = ?6, model_id = ?7, topic_id = ?8,
             index = ?9, stream = ?10, is_boundary = ?11, input_tokens = ?12, output_tokens = ?13,
@@ -258,8 +246,7 @@ impl Storage {
                 msg.output_tokens,
                 msg.id,
             ),
-        )?;
-        Ok(())
+        )?)
     }
 
     /// 根据 id 删除消息

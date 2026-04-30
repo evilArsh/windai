@@ -1,3 +1,5 @@
+use crate::storage::utils::value_or_none;
+
 use super::{Storage, StorageError, lock_db};
 use windai_domain::provider::{Credentials, Provider};
 fn row_to_provider(row: &rusqlite::Row<'_>) -> Result<Provider, rusqlite::Error> {
@@ -22,7 +24,8 @@ fn row_to_credentials(row: &rusqlite::Row<'_>) -> Result<Credentials, rusqlite::
 
 impl Storage {
     /// 创建提供商
-    pub fn create_provider(&self, provider: &Provider) -> Result<i64, StorageError> {
+    /// - 创建成功后将 id 设置到 credentials 中
+    pub fn create_provider(&self, provider: &mut Provider) -> Result<usize, StorageError> {
         let conn = lock_db!(&self);
         let row_count = conn.execute(
             "INSERT INTO providers (name, alias, description, base_url, doc, active)
@@ -36,10 +39,8 @@ impl Storage {
                 provider.active,
             ),
         )?;
-        if row_count == 0 {
-            return Err(StorageError::Internal("failed to insert provider".into()));
-        }
-        Ok(conn.last_insert_rowid())
+        provider.id = conn.last_insert_rowid();
+        Ok(row_count)
     }
 
     /// 根据 id 查询提供商
@@ -49,8 +50,7 @@ impl Storage {
             "SELECT id, name, alias, description, base_url, doc, active
             FROM providers WHERE id = ?1",
         )?;
-        let provider = stmt.query_row([id], row_to_provider).ok();
-        Ok(provider)
+        value_or_none(stmt.query_row([id], row_to_provider))
     }
 
     /// 根据 name 查询提供商
@@ -60,8 +60,7 @@ impl Storage {
             "SELECT id, name, alias, description, base_url, doc, active
             FROM providers WHERE name = ?1",
         )?;
-        let provider = stmt.query_row([name], row_to_provider).ok();
-        Ok(provider)
+        value_or_none(stmt.query_row([name], row_to_provider))
     }
 
     /// 查询所有提供商
@@ -79,9 +78,9 @@ impl Storage {
     }
 
     /// 更新提供商
-    pub fn update_provider(&self, provider: &Provider) -> Result<(), StorageError> {
+    pub fn update_provider(&self, provider: &Provider) -> Result<usize, StorageError> {
         let conn = lock_db!(&self);
-        conn.execute(
+        Ok(conn.execute(
             "UPDATE providers SET name = ?1, alias = ?2, description = ?3, base_url = ?4,
             doc = ?5, active = ?6, updated_at = strftime('%s', 'now') WHERE id = ?7",
             (
@@ -93,33 +92,29 @@ impl Storage {
                 provider.active,
                 provider.id,
             ),
-        )?;
-        Ok(())
+        )?)
     }
 
     /// 根据 id 删除提供商
-    pub fn delete_provider(&self, id: i64) -> Result<(), StorageError> {
+    pub fn delete_provider(&self, id: i64) -> Result<usize, StorageError> {
         let conn = lock_db!(&self);
-        conn.execute("DELETE FROM providers WHERE id = ?1", [id])?;
-        Ok(())
+
+        Ok(conn.execute("DELETE FROM providers WHERE id = ?1", [id])?)
     }
 
     // ========== Credentials ==========
 
     /// 创建凭证
-    pub fn create_credentials(&self, credentials: &Credentials) -> Result<i64, StorageError> {
+    /// - 创建成功后将 id 设置到 credentials 中
+    pub fn create_credentials(&self, credentials: &mut Credentials) -> Result<usize, StorageError> {
         let conn = lock_db!(&self);
         let row_count = conn.execute(
             "INSERT INTO credentials (provider_id, api_key, active)
             VALUES (?1, ?2, ?3)",
             (credentials.provider_id, &credentials.key, 1),
         )?;
-        if row_count == 0 {
-            return Err(StorageError::Internal(
-                "failed to insert credentials".into(),
-            ));
-        }
-        Ok(conn.last_insert_rowid())
+        credentials.id = conn.last_insert_rowid();
+        Ok(row_count)
     }
 
     /// 根据 id 查询凭证
@@ -129,8 +124,7 @@ impl Storage {
             "SELECT id, provider_id, api_key, active, created_at, updated_at
             FROM credentials WHERE id = ?1",
         )?;
-        let credentials = stmt.query_row([id], row_to_credentials).ok();
-        Ok(credentials)
+        value_or_none(stmt.query_row([id], row_to_credentials))
     }
 
     /// 根据 provider_id 查询该提供商下的所有凭证
@@ -145,26 +139,23 @@ impl Storage {
         )?;
         let credentials = stmt
             .query_map([provider_id], row_to_credentials)?
-            .filter_map(|r| r.ok())
-            .collect();
+            .collect::<Result<Vec<Credentials>, rusqlite::Error>>()?;
         Ok(credentials)
     }
 
     /// 更新凭证
-    pub fn update_credentials(&self, credentials: &Credentials) -> Result<(), StorageError> {
+    pub fn update_credentials(&self, credentials: &Credentials) -> Result<usize, StorageError> {
         let conn = lock_db!(&self);
-        conn.execute(
+        Ok(conn.execute(
             "UPDATE credentials SET provider_id = ?1, api_key = ?2, active = ?3,
             updated_at = strftime('%s', 'now') WHERE id = ?4",
             (credentials.provider_id, &credentials.key, 1, credentials.id),
-        )?;
-        Ok(())
+        )?)
     }
 
     /// 根据 id 删除凭证
-    pub fn delete_credentials(&self, id: i64) -> Result<(), StorageError> {
+    pub fn delete_credentials(&self, id: i64) -> Result<usize, StorageError> {
         let conn = lock_db!(&self);
-        conn.execute("DELETE FROM credentials WHERE id = ?1", [id])?;
-        Ok(())
+        Ok(conn.execute("DELETE FROM credentials WHERE id = ?1", [id])?)
     }
 }

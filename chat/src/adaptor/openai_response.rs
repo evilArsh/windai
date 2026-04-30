@@ -3,17 +3,17 @@
 
 use super::is_none_or_empty_vec;
 use super::openai_completion::ToolCallRequest;
+use crate::Role;
 use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use windai_domain::chat::Role;
 
 // ======================================================
 // Responses 请求
 // ======================================================
 
 /// 响应创建请求的主结构体
-#[derive(Debug, Serialize, Deserialize, Default, Clone, Builder)]
+#[derive(Debug, Serialize, Default, Clone, Builder)]
 pub struct ResponseRequest {
     /// 是否在后台运行模型响应。
     #[builder(default)]
@@ -38,8 +38,7 @@ pub struct ResponseRequest {
 
     /// 输入内容，可以是简单的字符串，也可以是消息对象数组。
     #[builder(default)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub input: Option<InputItem>,
+    pub input: Vec<InputItem>,
 
     /// 插入到模型上下文中的系统（或开发者）消息。
     /// 与 `previous_response_id` 一起使用时，先前响应的指令不会延续到下一个响应。
@@ -434,65 +433,65 @@ pub struct Message {
 pub enum InputItem {
     // TextInput(String),
     // EasyInput(Vec<EasyInputMessage>),
-    Message(Vec<Message>),
-    ResponseOutputMessage(Vec<ResponseOutputMessage>),
-    FileSearchCall(Vec<FileSearchCall>),
-    ComputerCall(Vec<ComputerCall>),
-    ComputerCallOutput(Vec<ComputerCallOutput>),
-    WebSearchCall(Vec<WebSearchCall>),
-    FunctionCall(Vec<FunctionCall>),
-    FunctionCallOutput(Vec<FunctionCallOutput>),
-    ToolSearchCall(Vec<ToolSearchCall>),
-    ToolSearchOutput(Vec<ToolSearchOutput>),
-    Reasoning(Vec<Reasoning>),
-    Compaction(Vec<Compaction>),
-    ImageGenerationCall(Vec<ImageGenerationCall>),
-    CodeInterpreterCall(Vec<CodeInterpreterCall>),
-    LocalShellCall(Vec<LocalShellCall>),
-    LocalShellCallOutput(Vec<LocalShellCallOutput>),
-    ShellCall(Vec<ShellCall>),
-    ShellCallOutput(Vec<ShellCallOutput>),
-    ApplyPatchCall(Vec<ApplyPatchCall>),
-    ApplyPatchCallOutput(Vec<ApplyPatchCallOutput>),
-    McpListTools(Vec<McpListTools>),
-    McpApprovalRequest(Vec<McpApprovalRequest>),
-    McpApprovalResponse(Vec<McpApprovalResponse>),
-    McpCall(Vec<McpCall>),
-    CustomToolCallOutput(Vec<CustomToolCallOutput>),
-    CustomToolCall(Vec<CustomToolCall>),
-    ItemReference(Vec<ItemReference>),
+    Message(Message),
+    ResponseOutputMessage(ResponseOutputMessage),
+    FileSearchCall(FileSearchCall),
+    ComputerCall(ComputerCall),
+    ComputerCallOutput(ComputerCallOutput),
+    WebSearchCall(WebSearchCall),
+    FunctionCall(FunctionCall),
+    FunctionCallOutput(FunctionCallOutput),
+    ToolSearchCall(ToolSearchCall),
+    ToolSearchOutput(ToolSearchOutput),
+    Reasoning(Reasoning),
+    Compaction(Compaction),
+    ImageGenerationCall(ImageGenerationCall),
+    CodeInterpreterCall(CodeInterpreterCall),
+    LocalShellCall(LocalShellCall),
+    LocalShellCallOutput(LocalShellCallOutput),
+    ShellCall(ShellCall),
+    ShellCallOutput(ShellCallOutput),
+    ApplyPatchCall(ApplyPatchCall),
+    ApplyPatchCallOutput(ApplyPatchCallOutput),
+    McpListTools(McpListTools),
+    McpApprovalRequest(McpApprovalRequest),
+    McpApprovalResponse(McpApprovalResponse),
+    McpCall(McpCall),
+    CustomToolCallOutput(CustomToolCallOutput),
+    CustomToolCall(CustomToolCall),
+    ItemReference(ItemReference),
 }
 
 /// 输出内容的变体
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum OutputItem {
-    ResponseOutputMessage(Vec<ResponseOutputMessage>),
-    FileSearchCall(Vec<FileSearchCall>),
-    ComputerCall(Vec<ComputerCall>),
-    ComputerCallOutput(Vec<ComputerCallOutput>),
-    WebSearchCall(Vec<WebSearchCall>),
-    FunctionCall(Vec<FunctionCall>),
-    FunctionCallOutput(Vec<FunctionCallOutput>),
-    ToolSearchCall(Vec<ToolSearchCall>),
-    ToolSearchOutput(Vec<ToolSearchOutput>),
-    Reasoning(Vec<Reasoning>),
-    Compaction(Vec<Compaction>),
-    ImageGenerationCall(Vec<ImageGenerationCall>),
-    CodeInterpreterCall(Vec<CodeInterpreterCall>),
-    LocalShellCall(Vec<LocalShellCall>),
-    LocalShellCallOutput(Vec<LocalShellCallOutput>),
-    ShellCall(Vec<ShellCall>),
-    ShellCallOutput(Vec<ShellCallOutput>),
-    ApplyPatchCall(Vec<ApplyPatchCall>),
-    ApplyPatchCallOutput(Vec<ApplyPatchCallOutput>),
-    McpListTools(Vec<McpListTools>),
-    McpApprovalRequest(Vec<McpApprovalRequest>),
-    McpApprovalResponse(Vec<McpApprovalResponse>),
-    McpCall(Vec<McpCall>),
-    CustomToolCallOutput(Vec<CustomToolCallOutput>),
-    CustomToolCall(Vec<CustomToolCall>),
-    ItemReference(Vec<ItemReference>),
+    ResponseOutputMessage(ResponseOutputMessage),
+    FileSearchCall(FileSearchCall),
+    ComputerCall(ComputerCall),
+    ComputerCallOutput(ComputerCallOutput),
+    WebSearchCall(WebSearchCall),
+    FunctionCall(FunctionCall),
+    FunctionCallOutput(FunctionCallOutput),
+    ToolSearchCall(ToolSearchCall),
+    ToolSearchOutput(ToolSearchOutput),
+    Reasoning(Reasoning),
+    Compaction(Compaction),
+    ImageGenerationCall(ImageGenerationCall),
+    CodeInterpreterCall(CodeInterpreterCall),
+    LocalShellCall(LocalShellCall),
+    LocalShellCallOutput(LocalShellCallOutput),
+    ShellCall(ShellCall),
+    ShellCallOutput(ShellCallOutput),
+    ApplyPatchCall(ApplyPatchCall),
+    ApplyPatchCallOutput(ApplyPatchCallOutput),
+    McpListTools(McpListTools),
+    McpApprovalRequest(McpApprovalRequest),
+    McpApprovalResponse(McpApprovalResponse),
+    McpCall(McpCall),
+    CustomToolCallOutput(CustomToolCallOutput),
+    CustomToolCall(CustomToolCall),
+    ItemReference(ItemReference),
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -550,7 +549,7 @@ pub struct Response {
     /// Responses 的唯一标识符。
     pub id: String,
     /// 聊天补全创建时间的 Unix 时间戳（秒级）。
-    pub created: i64,
+    pub created_at: i64,
     /// 模型未能生成响应时返回的错误对象。
     ///
     /// 返回格式：
@@ -699,6 +698,7 @@ pub struct ResponseStream {
     /// 事件
     /// - response.content_part.added
     /// - response.content_part.done
+    /// - response.content_part.added
     /// - response.output_text.delta
     /// - response.output_text.done
     /// - response.refusal.delta
@@ -748,24 +748,20 @@ pub struct ResponseStream {
     pub log_probs: Option<Value>,
     /// 事件
     /// - response.output_text.delta
-    /// - response.output_text.done
     /// - response.refusal.delta
-    /// - response.refusal.done
     /// - response.function_call_arguments.delta
-    /// - response.function_call_arguments.done
     /// - response.reasoning_summary_text.delta
-    /// - response.reasoning_summary_text.done
     /// - response.reasoning_text.delta
-    /// - response.reasoning_text.done
     /// - response.mcp_call_arguments.delta
-    /// - response.mcp_call_arguments.done
     /// - response.code_interpreter_call_code.delta
-    /// - response.code_interpreter_call_code.done
     /// - response.custom_tool_call_input.delta
-    /// - response.audio.transcript.done
+    /// - response.audio.transcript.delta
     /// - response.audio.delta
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delta: Option<String>,
+    /// - response.function_call_arguments.done
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// - response.output_text.done
     /// - response.reasoning_text.done
     /// - response.reasoning_summary_text.done
@@ -780,7 +776,6 @@ pub struct ResponseStream {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
     /// 事件
-    /// - response.mcp_call_arguments.delta
     /// - response.mcp_call_arguments.done
     /// - response.function_call_arguments.done
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -844,6 +839,7 @@ pub struct ResponseStream {
     /// - response.image_generation_call.partial_image
     #[serde(skip_serializing_if = "Option::is_none")]
     pub partial_image_index: Option<i32>,
+    /// - response.content_part.added
     /// - response.output_text.delta
     /// - response.output_text.done
     /// - response.refusal.delta
@@ -1339,8 +1335,7 @@ pub struct WebSearchCall {
     #[serde(rename = "type")]
     pub type_field: String,
 }
-/// 函数调用工具调用对象
-/// 用于运行函数的工具调用。有关更多信息，请参阅函数调用指南。
+/// 函数调用工具调用对象，由模型生成并返回
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionCall {
     /// 要传递给函数的参数的JSON字符串
@@ -1362,7 +1357,7 @@ pub struct FunctionCall {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
 }
-/// 函数工具调用的输出
+/// 函数工具调用的输出，本地函数调用结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionCallOutput {
     /// 模型生成的函数工具调用的唯一ID
@@ -1795,7 +1790,7 @@ pub struct ResponseOutputMessage {
     /// 响应消息的唯一标识符。
     pub id: Option<String>,
     /// 模型响应的文本内容
-    pub content: ResponseOutput,
+    pub content: Vec<ResponseOutput>,
     /// 模型输出的角色。
     pub role: Role,
     /// 状态："in_progress" or "completed" or "incomplete"
@@ -1819,7 +1814,7 @@ pub enum ResponseOutput {
 pub struct ResponseOutputText {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Value::Object 类型
-    pub annotations: Option<Annotations>,
+    pub annotations: Option<Vec<Annotations>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Value::Array
     pub logprobs: Option<Value>,

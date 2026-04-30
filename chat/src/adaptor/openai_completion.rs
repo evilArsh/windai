@@ -2,10 +2,9 @@
 //! https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
 
 use super::is_none_or_empty_vec;
-use derive_builder::Builder;
+use crate::Role;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use windai_domain::chat::Role;
 
 // ======================================================
 // ChatCompletion 请求
@@ -308,44 +307,36 @@ pub struct ChatCompletionMessageParam {
     /// role: "tool"
     ///
     /// 用于标识工具调用的 id，此时 content 为本地函数调用的返回值，需要将该消息放到消息上下文中。
-    /// 模型最终识别调用结果并返回响应内容
+    /// 模型将调用结果转换为自然语言输出
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Builder, Clone, Default)]
-#[builder(setter(strip_option, into))]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ToolCallRequestParams {
     /// 要调用的函数名称
-    #[builder(default)]
     pub name: String,
 
     /// 函数描述。模型根据此描述决定是否调用该函数。
-    #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 
     /// 描述函数参数的 JSON schema 对象
-    #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parameters: Option<Value>,
 
     /// 是否强制执行严格的参数验证
-    #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strict: Option<bool>,
 }
 
 /// 发送给模型的工具调用参数
-#[derive(Debug, Serialize, Deserialize, Builder, Clone)]
-#[builder(setter(strip_option, into))]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ToolCallRequest {
     /// 工具调用类型，固定值为 "function"
-    #[builder(default = "String::from(\"function\")")]
     pub r#type: String,
 
     /// 工具调用请求参数
-    #[builder(default)]
     pub function: ToolCallRequestParams,
 }
 
@@ -408,8 +399,7 @@ pub struct ChatStreamCompletion {
 }
 
 /// 对话消息
-#[derive(Debug, Serialize, Deserialize, Builder, Clone)]
-#[builder(setter(strip_option, into))]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatCompletionMessage {
     /// 消息内容
     /// 流式消息中该字段可能为空
@@ -446,7 +436,6 @@ pub struct ChatCompletionMessage {
     pub audio: Option<ChatCompletionMessageAudio>,
     /// 模型返回的工具调用参数
     #[serde(skip_serializing_if = "is_none_or_empty_vec")]
-    #[builder(default)]
     pub tool_calls: Option<Vec<ChatCompletionMessageToolCall>>,
 }
 

@@ -1,9 +1,7 @@
-use crate::api::request::{ChatConfig, ChatMessageContext};
-use crate::api::response::ChatMessageBase;
+use crate::{AdaptorType, Context, Message, ReqConfig};
 use bytes::Bytes;
 use serde_json::Value;
 use thiserror::Error;
-use windai_domain::adaptor::AdaptorType;
 
 pub mod openai;
 pub mod openai_completion;
@@ -35,8 +33,8 @@ pub enum AdaptorError {
 /// 获取适配器默认的 endpoint
 pub fn get_default_endpoint(adaptor: AdaptorType) -> String {
     match adaptor {
-        AdaptorType::OpenAICompletion => "/chat/completions".to_string(),
-        AdaptorType::OpenAIResponse => "/responses".to_string(),
+        AdaptorType::OpenAICompletion => String::from("/chat/completions"),
+        AdaptorType::OpenAIResponse => String::from("/responses"),
     }
 }
 
@@ -49,13 +47,13 @@ pub trait ChatAdaptor: Adaptor {
     fn build_request(
         &self,
         model_name: &str,
-        config: &ChatConfig,
-        contexts: &Vec<ChatMessageContext>,
+        config: ReqConfig,
+        contexts: Vec<Context>,
     ) -> Result<Value, AdaptorError>;
     /// 将原始响应字节解析为统一格式消息
-    fn parse_response(&self, data: Bytes) -> Result<ChatMessageBase, AdaptorError>;
+    fn parse_response(&self, data: Bytes) -> Result<Message, AdaptorError>;
     /// 将原始流式响应单块字节解析为统一格式消息
-    fn parse_stream_chunk(&self, data: Bytes) -> Result<Vec<ChatMessageBase>, AdaptorError>;
+    fn parse_stream_chunk(&self, data: Bytes) -> Result<Vec<Message>, AdaptorError>;
 }
 
 /// 根据 AdaptorType 获取对应的对话适配器实例

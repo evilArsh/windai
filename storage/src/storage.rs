@@ -8,19 +8,23 @@ mod model;
 mod provider;
 mod schema;
 mod topic;
+mod utils;
 
 static GLOBAL_DATABASE: OnceLock<Storage> = OnceLock::new();
 
 #[derive(Error, Debug)]
 pub enum StorageError {
-    #[error("internal error: {0}")]
-    Internal(String),
+    #[error("lock error: {0}")]
+    Lock(String),
 
     #[error("database error: ${0}")]
     Database(#[from] rusqlite::Error),
 
-    #[error(transparent)]
+    #[error("strum parse error: ${0}")]
     StrumParse(#[from] strum::ParseError),
+
+    #[error("json handle error: ${0}")]
+    Serd(#[from] serde_json::Error),
 }
 
 macro_rules! lock_db {
@@ -28,7 +32,7 @@ macro_rules! lock_db {
         $storage
             .conn
             .lock()
-            .map_err(|e| StorageError::Internal(e.to_string()))?
+            .map_err(|e| StorageError::Lock(e.to_string()))?
     };
 }
 

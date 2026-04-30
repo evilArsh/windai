@@ -1,3 +1,5 @@
+use crate::storage::utils::value_or_none;
+
 use super::{Storage, StorageError, lock_db};
 use windai_domain::{
     adaptor::AdaptorType,
@@ -28,10 +30,10 @@ fn row_to_model(row: &rusqlite::Row<'_>) -> Result<Model, rusqlite::Error> {
 }
 impl Storage {
     /// 创建模型
-    pub fn create_model(&self, model: &Model) -> Result<i64, StorageError> {
+    /// - 创建成功后将 id 设置到 model 中
+    pub fn create_model(&self, model: &mut Model) -> Result<usize, StorageError> {
         let conn = lock_db!(&self);
-        let modalities = serde_json::to_string(&model.modalities)
-            .map_err(|e| StorageError::Internal(e.to_string()))?;
+        let modalities = serde_json::to_string(&model.modalities)?;
         let row_count = conn.execute(
             "INSERT INTO models (name, alias, provider_id, adaptor, modalities, active, icon, endpoint, frequency)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -47,10 +49,8 @@ impl Storage {
                 model.frequency,
             ),
         )?;
-        if row_count == 0 {
-            return Err(StorageError::Internal("failed to insert model".into()));
-        }
-        Ok(conn.last_insert_rowid())
+        model.id = conn.last_insert_rowid();
+        Ok(row_count)
     }
 
     /// 根据 id 查询模型
@@ -60,8 +60,8 @@ impl Storage {
             "SELECT id, name, alias, provider_id, adaptor, modalities, active, icon, endpoint, frequency
             FROM models WHERE id = ?1",
         )?;
-        let model = stmt.query_row([id], row_to_model).ok();
-        Ok(model)
+        let result = stmt.query_row([id], row_to_model);
+        value_or_none(result)
     }
 
     /// 根据 name 查询模型
@@ -71,8 +71,8 @@ impl Storage {
             "SELECT id, name, alias, provider_id, adaptor, modalities, active, icon, endpoint, frequency
             FROM models WHERE name = ?1",
         )?;
-        let model = stmt.query_row([name], row_to_model).ok();
-        Ok(model)
+        let result = stmt.query_row([name], row_to_model);
+        value_or_none(result)
     }
 
     /// 根据 provider_id 查询该提供商下的所有模型
@@ -84,8 +84,8 @@ impl Storage {
         )?;
         let models = stmt
             .query_map([provider_id], row_to_model)?
-            .filter_map(|r| r.ok())
-            .collect();
+            // .filter_map(|r| r.ok())
+            .collect::<Result<Vec<Model>, rusqlite::Error>>()?;
         Ok(models)
     }
 
@@ -98,17 +98,17 @@ impl Storage {
         )?;
         let models = stmt
             .query_map([], row_to_model)?
-            .filter_map(|r| r.ok())
-            .collect();
+            // .filter_map(|r| r.ok())
+            .collect::<Result<Vec<Model>, rusqlite::Error>>()?;
         Ok(models)
     }
 
     /// 更新模型
-    pub fn update_model(&self, model: &Model) -> Result<(), StorageError> {
+    pub fn update_model(&self, model: &Model) -> Result<usize, StorageError> {
         let conn = lock_db!(&self);
-        let modalities = serde_json::to_string(&model.modalities)
-            .map_err(|e| StorageError::Internal(e.to_string()))?;
-        conn.execute(
+        let modalities = serde_json::to_string(&model.modalities)?;
+
+        Ok(conn.execute(
             "UPDATE models SET name = ?1, alias = ?2, provider_id = ?3, adaptor = ?4,
             modalities = ?5, active = ?6, icon = ?7, endpoint = ?8, frequency = ?9,
             updated_at = strftime('%s', 'now') WHERE id = ?10",
@@ -124,25 +124,23 @@ impl Storage {
                 model.frequency,
                 model.id,
             ),
-        )?;
-        Ok(())
+        )?)
     }
 
     /// 增加模型使用次数
-    pub fn increment_model_frequency(&self, id: i64) -> Result<(), StorageError> {
+    pub fn increment_model_frequency(&self, id: i64) -> Result<usize, StorageError> {
         let conn = lock_db!(&self);
-        conn.execute(
+
+        Ok(conn.execute(
             "UPDATE models SET frequency = COALESCE(frequency, 0) + 1,
             updated_at = strftime('%s', 'now') WHERE id = ?1",
             [id],
-        )?;
-        Ok(())
+        )?)
     }
 
     /// 根据 id 删除模型
-    pub fn delete_model(&self, id: i64) -> Result<(), StorageError> {
+    pub fn delete_model(&self, id: i64) -> Result<usize, StorageError> {
         let conn = lock_db!(&self);
-        conn.execute("DELETE FROM models WHERE id = ?1", [id])?;
-        Ok(())
+        Ok(conn.execute("DELETE FROM models WHERE id = ?1", [id])?)
     }
 }

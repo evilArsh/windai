@@ -1,4 +1,4 @@
-use crate::api::request::ChatMessageContext;
+use crate::api::request::ChatContext;
 use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 use windai_domain::{
@@ -94,8 +94,8 @@ pub struct ChatMessage {
 
 impl ChatMessage {
     /// 将响应消息转换为统一消息请求上下文
-    pub fn to_context(self) -> ChatMessageContext {
-        ChatMessageContext {
+    pub fn to_context(self) -> ChatContext {
+        ChatContext {
             role: self.base.role,
             content: self.base.content,
         }

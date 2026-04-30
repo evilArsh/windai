@@ -1,24 +1,43 @@
 use crate::adaptor::openai_completion::{
     ChatCompletion, ChatCompletionContentPartImage, ChatCompletionMessage,
-    ChatCompletionMessageParam, ChatCompletionRequest, ChatStreamCompletion, ContentObject,
-    FileContentPart,
+    ChatCompletionMessageFunctionToolCall, ChatCompletionMessageFunctionToolCallFunction,
+    ChatCompletionMessageParam, ChatCompletionMessageToolCall, ChatCompletionRequest,
+    ChatStreamCompletion, ContentObject, FileContentPart, ToolCallRequest, ToolCallRequestParams,
 };
 use crate::adaptor::openai_response::{
-    self, InputContent, InputItem, OutputItem, Response, ResponseInputFile, ResponseInputImage,
-    ResponseInputText, ResponseOutput, ResponseReasoning, ResponseRequest, ResponseStream,
+    self, FunctionCall, FunctionCallOutput, InputContent, InputItem, OutputItem, Response,
+    ResponseInputFile, ResponseInputImage, ResponseInputText, ResponseOutput, ResponseReasoning,
+    ResponseRequest, ResponseStream,
 };
 use crate::adaptor::sse::SseBlock;
 use crate::adaptor::{Adaptor, AdaptorError, ChatAdaptor, openai_completion};
-use crate::api::request::ChatConfig;
-use crate::api::request::ChatMessageContext;
-use crate::api::response::ChatMessageBase;
+use crate::{
+    AdaptorType, Content, ContentType, Context, Message, ReqConfig, Role, ToolCallParam,
+    ToolCallRes,
+};
 use bytes::Bytes;
 use serde_json::{Value, json};
-use windai_domain::adaptor::AdaptorType;
-use windai_domain::chat::ContentType;
-use windai_domain::chat::Role;
 
 pub struct OpenAICompletionAdaptor;
+
+fn transfer_tools(tools: Option<Vec<ToolCallParam>>) -> Option<Vec<ToolCallRequest>> {
+    tools
+        .map(|tools| {
+            tools
+                .into_iter()
+                .map(|tool| ToolCallRequest {
+                    r#type: String::from("function"),
+                    function: ToolCallRequestParams {
+                        name: tool.name,
+                        description: tool.description,
+                        parameters: tool.parameters,
+                        strict: tool.strict,
+                    },
+                })
+                .collect::<Vec<ToolCallRequest>>()
+        })
+        .or(None)
+}
 
 impl Adaptor for OpenAICompletionAdaptor {
     fn get_type(&self) -> AdaptorType {
@@ -29,10 +48,10 @@ impl OpenAICompletionAdaptor {
     fn parse_common(
         &self,
         msg: ChatCompletionMessage,
-        raw_content: String,
+        raw_content: Option<String>,
         usage: Option<openai_completion::TokenUsage>,
         created_at: i64,
-    ) -> Result<ChatMessageBase, AdaptorError> {
+    ) -> Result<Message, AdaptorError> {
         let content = msg.content.unwrap_or(String::new());
         let (content_type, transcript, content) = match msg.audio {
             Some(audio) => (ContentType::Audio, audio.transcript, audio.data),
@@ -42,17 +61,37 @@ impl OpenAICompletionAdaptor {
             Some(usage) => (usage.prompt_tokens, usage.completion_tokens),
             None => (0, 0),
         };
-        Ok(ChatMessageBase {
+        Ok(Message {
             role: msg.role.unwrap_or(Role::Assistant),
             raw_content,
-            content,
             reasoning_content: Some(msg.reasoning_content.unwrap_or(String::new())),
-            content_type,
             transcript,
-            stream: false,
             input_tokens,
             output_tokens,
             created_at,
+            content: Some(Content::new(content_type, content)),
+            tool_calls: match msg.tool_calls {
+                Some(tools) => tools
+                    .into_iter()
+                    .map(|tool| match tool {
+                        openai_completion::ChatCompletionMessageToolCall::Function(tool) => {
+                            Some(ToolCallRes {
+                                call_id: tool.id,
+                                name: tool.function.name,
+                                arguments: tool.function.arguments,
+                            })
+                        }
+                        openai_completion::ChatCompletionMessageToolCall::Custom(tool) => {
+                            Some(ToolCallRes {
+                                call_id: tool.id,
+                                name: tool.custom.name,
+                                arguments: tool.custom.input,
+                            })
+                        }
+                    })
+                    .collect(),
+                None => None,
+            },
         })
     }
 }
@@ -60,73 +99,116 @@ impl ChatAdaptor for OpenAICompletionAdaptor {
     fn build_request(
         &self,
         model_name: &str,
-        config: &ChatConfig,
-        contexts: &Vec<ChatMessageContext>,
+        config: ReqConfig,
+        contexts: Vec<Context>,
     ) -> Result<Value, AdaptorError> {
+        let tools = transfer_tools(config.tools);
         let input_messages = contexts
-            .iter()
+            .into_iter()
             .map(|ctx| {
-                let contents = if let Some(content) = ctx.content.last()
-                    && ctx.content.len() == 1
-                    && content.content_type == ContentType::Text
+                if let Some(tool_calls) = ctx.tool_call_args
+                    && let Some(tool_name) = ctx.tool_call_name
+                    && let Some(tool_id) = ctx.tool_call_id
                 {
-                    openai_completion::Content::Text(ctx.content[0].content.clone())
+                    // 函数调用参数上下文
+                    ChatCompletionMessageParam {
+                        content: openai_completion::Content::Text(String::new()),
+                        role: Role::Assistant,
+                        name: None,
+                        audio: None,
+                        tool_calls: Some(vec![ChatCompletionMessageToolCall::Function(
+                            ChatCompletionMessageFunctionToolCall {
+                                id: tool_id,
+                                function: ChatCompletionMessageFunctionToolCallFunction {
+                                    name: tool_name,
+                                    arguments: tool_calls,
+                                },
+                                r#type: String::from("function"),
+                            },
+                        )]),
+                        tool_call_id: None,
+                    }
+                } else if let Some(tool_id) = ctx.tool_call_id {
+                    // 用户函数调用结果上下文
+                    ChatCompletionMessageParam {
+                        content: openai_completion::Content::Text(
+                            ctx.content
+                                .into_iter()
+                                .next()
+                                .map(|c| c.content)
+                                .unwrap_or_default(),
+                        ),
+                        role: Role::Tool,
+                        name: None,
+                        audio: None,
+                        tool_calls: None,
+                        tool_call_id: Some(tool_id),
+                    }
                 } else {
-                    openai_completion::Content::Objects(
-                        ctx.content
-                            .iter()
-                            .map(|c| match c.content_type {
-                                ContentType::Text => ContentObject {
-                                    r#type: "text".to_string(),
-                                    text: Some(c.content.clone()),
-                                    image_url: None,
-                                    input_audio: None,
-                                    file: None,
-                                    refusal: None,
-                                },
-                                ContentType::Audio => ContentObject {
-                                    r#type: "input_audio".to_string(),
-                                    text: Some(c.content.clone()),
-                                    image_url: None,
-                                    input_audio: None,
-                                    file: None,
-                                    refusal: None,
-                                },
-                                ContentType::Image => ContentObject {
-                                    r#type: "image_url".to_string(),
-                                    text: None,
-                                    image_url: Some(ChatCompletionContentPartImage {
-                                        url: c.content.clone(),
-                                        detail: Some("auto".to_string()),
-                                    }),
-                                    input_audio: None,
-                                    file: None,
-                                    refusal: None,
-                                },
-                                ContentType::File => ContentObject {
-                                    r#type: "file".to_string(),
-                                    text: None,
-                                    file: Some(FileContentPart {
-                                        file_data: Some(c.content.clone()),
-                                        file_id: None,
-                                        filename: None,
-                                    }),
-                                    input_audio: None,
-                                    image_url: None,
-                                    refusal: None,
-                                },
-                            })
-                            .collect::<Vec<ContentObject>>(),
-                    )
-                };
-                return ChatCompletionMessageParam {
-                    content: contents,
-                    role: ctx.role,
-                    name: None,
-                    audio: None,
-                    tool_calls: None,
-                    tool_call_id: None,
-                };
+                    // 正常用户信息上下文
+                    let contents = if let Some(content) = ctx.content.last()
+                        && ctx.content.len() == 1
+                        && content.content_type == ContentType::Text
+                    {
+                        openai_completion::Content::Text(ctx.content[0].content.clone())
+                    } else {
+                        openai_completion::Content::Objects(
+                            ctx.content
+                                .iter()
+                                .map(|c| match c.content_type {
+                                    ContentType::Text => ContentObject {
+                                        r#type: "text".to_string(),
+                                        text: Some(c.content.clone()),
+                                        image_url: None,
+                                        input_audio: None,
+                                        file: None,
+                                        refusal: None,
+                                    },
+                                    ContentType::Audio => ContentObject {
+                                        r#type: "input_audio".to_string(),
+                                        text: Some(c.content.clone()),
+                                        image_url: None,
+                                        input_audio: None,
+                                        file: None,
+                                        refusal: None,
+                                    },
+                                    ContentType::Image => ContentObject {
+                                        r#type: "image_url".to_string(),
+                                        text: None,
+                                        image_url: Some(ChatCompletionContentPartImage {
+                                            url: c.content.clone(),
+                                            detail: Some("auto".to_string()),
+                                        }),
+                                        input_audio: None,
+                                        file: None,
+                                        refusal: None,
+                                    },
+                                    ContentType::File => ContentObject {
+                                        r#type: "file".to_string(),
+                                        text: None,
+                                        file: Some(FileContentPart {
+                                            file_data: Some(c.content.clone()),
+                                            file_id: None,
+                                            filename: None,
+                                        }),
+                                        input_audio: None,
+                                        image_url: None,
+                                        refusal: None,
+                                    },
+                                })
+                                .collect::<Vec<ContentObject>>(),
+                        )
+                    };
+
+                    ChatCompletionMessageParam {
+                        content: contents,
+                        role: ctx.role,
+                        name: None,
+                        audio: None,
+                        tool_calls: None,
+                        tool_call_id: None,
+                    }
+                }
             })
             .collect::<Vec<ChatCompletionMessageParam>>();
 
@@ -169,7 +251,7 @@ impl ChatAdaptor for OpenAICompletionAdaptor {
                 _ => None,
             },
             tool_choice: None,
-            tools: None,
+            tools,
             top_logprobs: None,
             verbosity: None,
             web_search_options: None,
@@ -177,24 +259,22 @@ impl ChatAdaptor for OpenAICompletionAdaptor {
         Ok(serde_json::to_value(&req)?)
     }
 
-    fn parse_response(&self, data: Bytes) -> Result<ChatMessageBase, AdaptorError> {
+    fn parse_response(&self, data: Bytes) -> Result<Message, AdaptorError> {
+        log::debug!(
+            "[raw completion]\n{}",
+            String::from_utf8_lossy(data.as_ref())
+        );
         let completion: ChatCompletion = serde_json::from_slice(&data)?;
-        let raw_content = String::new();
         let choice = completion
             .choices
             .into_iter()
             .next()
             .ok_or_else(|| AdaptorError::Transfer("no choices in response".into()))?;
 
-        self.parse_common(
-            choice.message,
-            raw_content,
-            completion.usage,
-            completion.created,
-        )
+        self.parse_common(choice.message, None, completion.usage, completion.created)
     }
 
-    fn parse_stream_chunk(&self, data: Bytes) -> Result<Vec<ChatMessageBase>, AdaptorError> {
+    fn parse_stream_chunk(&self, data: Bytes) -> Result<Vec<Message>, AdaptorError> {
         let blocks = SseBlock::parse_all(data);
         blocks
             .into_iter()
@@ -204,21 +284,15 @@ impl ChatAdaptor for OpenAICompletionAdaptor {
                         .data
                         .ok_or(AdaptorError::Transfer("empty sse block".into()))?,
                 )?;
-                let raw_content = String::new();
                 let choice = completion
                     .choices
                     .into_iter()
                     .next()
                     .ok_or_else(|| AdaptorError::Transfer("no choices in response".into()))?;
 
-                self.parse_common(
-                    choice.delta,
-                    raw_content,
-                    completion.usage,
-                    completion.created,
-                )
+                self.parse_common(choice.delta, None, completion.usage, completion.created)
             })
-            .collect::<Result<Vec<ChatMessageBase>, AdaptorError>>()
+            .collect::<Result<Vec<Message>, AdaptorError>>()
     }
 }
 
@@ -234,53 +308,86 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
     fn build_request(
         &self,
         model_name: &str,
-        config: &ChatConfig,
-        contexts: &Vec<ChatMessageContext>,
+        config: ReqConfig,
+        contexts: Vec<Context>,
     ) -> Result<Value, AdaptorError> {
+        let tools = transfer_tools(config.tools);
         let input_messages = contexts
-            .iter()
+            .into_iter()
             .map(|ctx| {
-                let content: Vec<InputContent> = ctx
-                    .content
-                    .iter()
-                    .map(|c| match c.content_type {
-                        ContentType::Text => InputContent::ResponseInputText(ResponseInputText {
-                            text: c.content.clone(),
-                            r#type: "input_text".to_string(),
-                        }),
-                        ContentType::Image => {
-                            InputContent::ResponseInputImage(ResponseInputImage {
-                                detail: None,
-                                r#type: "input_image".to_string(),
-                                file_id: None,
-                                image_url: Some(c.content.clone()),
-                            })
-                        }
-                        ContentType::File | ContentType::Audio => {
-                            InputContent::ResponseInputFile(ResponseInputFile {
-                                r#type: "input_file".to_string(),
-                                file_data: Some(c.content.clone()),
-                                file_id: None,
-                                file_url: None,
-                                filename: None,
-                            })
-                        }
+                if let Some(tool_calls) = ctx.tool_call_args
+                    && let Some(tool_name) = ctx.tool_call_name
+                    && let Some(tool_id) = ctx.tool_call_id
+                {
+                    // 函数调用参数上下文
+                    InputItem::FunctionCall(FunctionCall {
+                        arguments: tool_calls,
+                        call_id: tool_id,
+                        name: tool_name,
+                        type_field: String::from("function_call"),
+                        id: None,
+                        namespace: None,
+                        status: None,
                     })
-                    .collect::<Vec<InputContent>>();
-
-                Ok(openai_response::Message {
-                    content,
-                    role: ctx.role,
-                    phase: None,
-                    status: None,
-                    r#type: Some("message".to_string()),
-                })
+                } else if let Some(tool_id) = ctx.tool_call_id {
+                    // 用户函数调用结果上下文
+                    InputItem::FunctionCallOutput(FunctionCallOutput {
+                        call_id: tool_id,
+                        output: Value::String(
+                            ctx.content
+                                .into_iter()
+                                .next()
+                                .map(|c| c.content)
+                                .unwrap_or_default(),
+                        ),
+                        type_field: String::from("function_call_output"),
+                        id: None,
+                        status: None,
+                    })
+                } else {
+                    // 正常用户信息上下文
+                    InputItem::Message(openai_response::Message {
+                        content: ctx
+                            .content
+                            .iter()
+                            .map(|c| match c.content_type {
+                                ContentType::Text => {
+                                    InputContent::ResponseInputText(ResponseInputText {
+                                        text: c.content.clone(),
+                                        r#type: "input_text".to_string(),
+                                    })
+                                }
+                                ContentType::Image => {
+                                    InputContent::ResponseInputImage(ResponseInputImage {
+                                        detail: None,
+                                        r#type: "input_image".to_string(),
+                                        file_id: None,
+                                        image_url: Some(c.content.clone()),
+                                    })
+                                }
+                                ContentType::File | ContentType::Audio => {
+                                    InputContent::ResponseInputFile(ResponseInputFile {
+                                        r#type: "input_file".to_string(),
+                                        file_data: Some(c.content.clone()),
+                                        file_id: None,
+                                        file_url: None,
+                                        filename: None,
+                                    })
+                                }
+                            })
+                            .collect(),
+                        role: ctx.role,
+                        phase: None,
+                        status: None,
+                        r#type: None,
+                    })
+                }
             })
-            .collect::<Result<Vec<openai_response::Message>, AdaptorError>>()?;
+            .collect::<Vec<InputItem>>();
 
         let req = serde_json::to_value(&ResponseRequest {
             model: Some(model_name.to_string()),
-            input: Some(InputItem::Message(input_messages)),
+            input: input_messages,
             stream: config.stream,
             temperature: config.temperature,
             top_p: config.top_p,
@@ -310,147 +417,280 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
             stream_options: None,
             text: None,
             tool_choice: None,
-            tools: None,
+            tools,
             top_logprobs: None,
             truncation: None,
         })?;
         Ok(req)
     }
 
-    fn parse_response(&self, data: Bytes) -> Result<ChatMessageBase, AdaptorError> {
+    fn parse_response(&self, data: Bytes) -> Result<Message, AdaptorError> {
+        log::debug!("[raw response]\n{}", String::from_utf8_lossy(data.as_ref()));
         let response: Response = serde_json::from_slice(&data)?;
-        let raw_content = String::new();
-
-        let mut role = Role::Assistant;
-        let mut content = String::new();
-        let mut reasoning_content: Option<String> = None;
-        let mut content_type = ContentType::Text;
-
-        let output = response
-            .output
-            .into_iter()
-            .next()
-            .ok_or_else(|| AdaptorError::Transfer("no output in response".into()))?;
-
-        match output {
-            OutputItem::ResponseOutputMessage(msgs) => {
-                let msg = msgs.into_iter().next().ok_or_else(|| {
-                    AdaptorError::Transfer("no output message in response".into())
-                })?;
-                role = msg.role;
-                content = match msg.content {
-                    ResponseOutput::ResponseOutputText(output_text) => output_text.text,
-                    ResponseOutput::ResponseOutputRefusal(refusal) => refusal.refusal,
-                };
-            }
-            OutputItem::Reasoning(reasons) => {
-                role = Role::Assistant;
-                reasoning_content = reasons
-                    .into_iter()
-                    .next()
-                    .and_then(|reason_obj| reason_obj.content)
-                    .and_then(|content_vec| content_vec.into_iter().next())
-                    .map(|content| content.text)
-                    .or(Some(String::new()));
-            }
-            OutputItem::ImageGenerationCall(calls) => {
-                role = Role::Assistant;
-                content_type = ContentType::Image;
-                content = calls
-                    .into_iter()
-                    .next()
-                    .map(|i| i.result)
-                    .unwrap_or_default();
-            }
-            _ => {}
-        }
 
         let (input_tokens, output_tokens) = match response.usage {
             Some(usage) => (usage.input_tokens, usage.output_tokens),
             None => (0, 0),
         };
 
-        Ok(ChatMessageBase {
-            stream: false,
-            role,
-            raw_content,
-            content,
-            reasoning_content,
-            transcript: None,
-            content_type,
-            created_at: response.created,
-            input_tokens,
-            output_tokens,
-        })
-    }
+        let mut output_msg: Option<Message> = None;
+        let mut output_reasoning: Option<Message> = None;
+        let mut output_img: Option<Message> = None;
+        let mut output_toolcalls: Option<Message> = None;
 
-    fn parse_stream_chunk(&self, data: Bytes) -> Result<Vec<ChatMessageBase>, AdaptorError> {
+        for output in response.output.into_iter() {
+            match output {
+                // for output in response.output{}
+                OutputItem::ResponseOutputMessage(msg) => {
+                    if output_msg.is_some() {
+                        log::warn!("multiple output messages in response");
+                        continue;
+                    }
+                    let c = msg.content.into_iter().next().ok_or_else(|| {
+                        AdaptorError::Transfer("no output message in response".into())
+                    })?;
+                    output_msg = Some(Message {
+                        role: msg.role,
+                        raw_content: None,
+                        content: Some(Content::new(
+                            ContentType::Text,
+                            match c {
+                                ResponseOutput::ResponseOutputText(output_text) => output_text.text,
+                                ResponseOutput::ResponseOutputRefusal(refusal) => refusal.refusal,
+                            },
+                        )),
+                        reasoning_content: None,
+                        transcript: None,
+                        created_at: response.created_at,
+                        input_tokens,
+                        output_tokens,
+                        tool_calls: None,
+                    });
+                }
+                OutputItem::Reasoning(reason) => {
+                    if output_reasoning.is_some() {
+                        log::warn!("multiple output reasoning messages in response");
+                        continue;
+                    }
+                    output_reasoning = Some(Message {
+                        role: Role::Assistant,
+                        raw_content: None,
+                        content: None,
+                        reasoning_content: reason
+                            .content
+                            .and_then(|content_vec| content_vec.into_iter().next())
+                            .map(|content| content.text)
+                            .or(Some(String::new())),
+                        transcript: None,
+                        created_at: response.created_at,
+                        input_tokens,
+                        output_tokens,
+                        tool_calls: None,
+                    });
+                }
+                OutputItem::ImageGenerationCall(call) => {
+                    if output_img.is_some() {
+                        log::warn!("multiple output image generation in response");
+                        continue;
+                    }
+                    output_img = Some(Message {
+                        role: Role::Assistant,
+                        raw_content: None,
+                        content: Some(Content::new(ContentType::Image, call.result)),
+                        reasoning_content: None,
+                        transcript: None,
+                        created_at: response.created_at,
+                        input_tokens,
+                        output_tokens,
+                        tool_calls: None,
+                    });
+                }
+                OutputItem::FunctionCall(c) => {
+                    let new_call = ToolCallRes {
+                        call_id: c.call_id,
+                        name: c.name,
+                        arguments: c.arguments,
+                    };
+                    match &mut output_toolcalls {
+                        Some(call) => match &mut call.tool_calls {
+                            Some(tool_calls) => tool_calls.push(new_call),
+                            None => call.tool_calls = Some(vec![new_call]),
+                        },
+                        None => {
+                            output_toolcalls = Some(Message {
+                                role: Role::Assistant,
+                                raw_content: None,
+                                content: None,
+                                reasoning_content: None,
+                                transcript: None,
+                                created_at: response.created_at,
+                                input_tokens,
+                                output_tokens,
+                                tool_calls: Some(vec![new_call]),
+                            });
+                        }
+                    }
+                }
+                _ => {
+                    break;
+                }
+            }
+        }
+
+        if let Some(toolcalls) = output_toolcalls {
+            return Ok(toolcalls);
+        }
+        if let Some(img) = output_img {
+            return Ok(img);
+        }
+        if let Some(reasoning) = output_reasoning {
+            return Ok(reasoning);
+        }
+        if let Some(msg) = output_msg {
+            return Ok(msg);
+        }
+        Ok(Message::default_assistant())
+    }
+    fn parse_stream_chunk(&self, data: Bytes) -> Result<Vec<Message>, AdaptorError> {
         let blocks = SseBlock::parse_all(data);
         blocks
             .into_iter()
             .map(|block| {
+                log::debug!("[raw response chunk]\n{:?}", &block);
                 let response: ResponseStream = serde_json::from_str(
                     &block
                         .data
                         .ok_or_else(|| AdaptorError::Transfer("empty sse block".into()))?,
                 )?;
-                let raw_content = String::new();
-                let mut role = Role::Assistant;
-                let mut content = String::new();
-                let mut reasoning_content: Option<String> = None;
-                let mut content_type = ContentType::Text;
-                let mut input_tokens = 0;
-                let mut output_tokens = 0;
-                let mut created_at = 0;
+                log::debug!("[response chunk]\n{:?}", &response);
 
                 match response.r#type.as_ref() {
                     "response.completed" | "response.failed" | "response.incomplete" => {
                         if let Some(resp) = response.response {
-                            role = Role::Assistant;
-                            (input_tokens, output_tokens) = resp
+                            let (input_tokens, output_tokens) = resp
                                 .usage
                                 .map(|i| (i.input_tokens, i.output_tokens))
                                 .unwrap_or((0, 0));
-                            created_at = resp.created;
+
+                            Ok(Message {
+                                role: Role::Assistant,
+                                raw_content: None,
+                                content: None,
+                                reasoning_content: None,
+                                transcript: None,
+                                created_at: resp.created_at,
+                                input_tokens,
+                                output_tokens,
+                                tool_calls: None,
+                            })
+                        } else {
+                            Err(AdaptorError::Transfer("no data in response".into()))
                         }
                     }
 
-                    "response.output_text.delta" | "response.function_call_arguments.delta" => {
-                        role = Role::Assistant;
-                        content = response.delta.unwrap_or_default();
-                    }
+                    "response.function_call_arguments.done" => Ok(Message {
+                        role: Role::Assistant,
+                        raw_content: None,
+                        content: None,
+                        reasoning_content: None,
+                        transcript: None,
+                        created_at: 0,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        tool_calls: Some(vec![ToolCallRes {
+                            call_id: response.item_id.unwrap_or_default(),
+                            name: response.name.unwrap_or_default(),
+                            arguments: String::new(),
+                        }]),
+                    }),
 
-                    "response.reasoning_text.delta" => {
-                        role = Role::Assistant;
-                        reasoning_content = Some(response.delta.unwrap_or_default());
-                    }
+                    "response.function_call_arguments.delta" => Ok(Message {
+                        role: Role::Assistant,
+                        raw_content: None,
+                        content: None,
+                        reasoning_content: None,
+                        transcript: None,
+                        created_at: 0,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        tool_calls: Some(vec![ToolCallRes {
+                            call_id: response.item_id.unwrap_or_default(),
+                            name: String::new(),
+                            arguments: response.delta.unwrap_or_default(),
+                        }]),
+                    }),
 
-                    "response.audio.transcript.delta" => {
-                        role = Role::Assistant;
-                        content_type = ContentType::Audio;
-                    }
+                    "response.output_text.delta" => Ok(Message {
+                        role: Role::Assistant,
+                        raw_content: None,
+                        content: Some(Content::new(
+                            ContentType::Text,
+                            response.delta.unwrap_or_default(),
+                        )),
+                        reasoning_content: None,
+                        transcript: None,
+                        created_at: 0,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        tool_calls: None,
+                    }),
 
-                    "response.image_generation_call.partial_image" => {
-                        role = Role::Assistant;
-                        content_type = ContentType::Image;
-                        content = response.partial_image_b64.unwrap_or_default();
-                    }
+                    "response.reasoning_text.delta" => Ok(Message {
+                        role: Role::Assistant,
+                        raw_content: None,
+                        content: None,
+                        reasoning_content: Some(response.delta.unwrap_or_default()),
+                        transcript: None,
+                        created_at: 0,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        tool_calls: None,
+                    }),
 
-                    _ => {}
+                    "response.audio.delta" => Ok(Message {
+                        role: Role::Assistant,
+                        raw_content: None,
+                        content: Some(Content::new(
+                            ContentType::Audio,
+                            response.delta.unwrap_or_default(),
+                        )),
+                        reasoning_content: None,
+                        transcript: None,
+                        created_at: 0,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        tool_calls: None,
+                    }),
+
+                    "response.audio.transcript.delta" => Ok(Message {
+                        role: Role::Assistant,
+                        raw_content: None,
+                        content: None,
+                        reasoning_content: None,
+                        transcript: Some(response.delta.unwrap_or_default()),
+                        created_at: 0,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        tool_calls: None,
+                    }),
+
+                    "response.image_generation_call.partial_image" => Ok(Message {
+                        role: Role::Assistant,
+                        raw_content: None,
+                        content: Some(Content::new(
+                            ContentType::Image,
+                            response.partial_image_b64.unwrap_or_default(),
+                        )),
+                        transcript: None,
+                        reasoning_content: None,
+                        created_at: 0,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        tool_calls: None,
+                    }),
+                    _ => Ok(Message::default_assistant()),
                 }
-                Ok(ChatMessageBase {
-                    stream: true,
-                    role,
-                    raw_content,
-                    content,
-                    reasoning_content,
-                    transcript: None,
-                    content_type,
-                    created_at,
-                    input_tokens,
-                    output_tokens,
-                })
             })
-            .collect::<Result<Vec<ChatMessageBase>, AdaptorError>>()
+            .collect::<Result<Vec<Message>, AdaptorError>>()
     }
 }
