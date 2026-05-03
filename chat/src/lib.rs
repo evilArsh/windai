@@ -187,22 +187,29 @@ impl Message {
         }
 
         if let Some(new_tool_calls) = partial.tool_calls {
-            if let Some(self_tool_calls) = self.tool_calls.as_mut() {
-                for new_tc in new_tool_calls {
-                    if let Some(existing) = self_tool_calls
-                        .iter_mut()
-                        .find(|tc| tc.call_id == new_tc.call_id)
-                    {
-                        if !new_tc.name.is_empty() {
-                            existing.name = new_tc.name;
+            for new_tool_call in new_tool_calls {
+                if !new_tool_call.call_id.is_empty() {
+                    match self.tool_calls.as_mut() {
+                        Some(self_tool_calls) => {
+                            self_tool_calls.push(new_tool_call);
                         }
-                        existing.arguments.push_str(&new_tc.arguments);
-                    } else {
-                        self_tool_calls.push(new_tc);
+                        None => self.tool_calls = Some(vec![new_tool_call]),
+                    }
+                } else {
+                    match self.tool_calls.as_mut() {
+                        Some(self_tool_calls) => {
+                            // call_id 为空表示延续上一个 tool_call，追加 arguments 和补充 name
+                            if let Some(last) = self_tool_calls.last_mut() {
+                                if !new_tool_call.name.is_empty() {
+                                    last.name = new_tool_call.name;
+                                }
+                                last.arguments += &new_tool_call.arguments;
+                            }
+                        }
+                        // drop
+                        _ => {}
                     }
                 }
-            } else {
-                self.tool_calls = Some(new_tool_calls);
             }
         }
 
@@ -308,11 +315,13 @@ pub struct ReqConfig {
 }
 
 /// 聊天统一响应事件
-#[derive(Debug, strum::Display)]
+#[derive(Debug, PartialEq, Eq, strum::Display)]
 pub enum ResEventStatus {
     /// 用于流式消息
     Partial,
+    /// 流式/非流式 数据接收完毕
     Finish,
+    /// 发生错误后，终止请求并且返回具体错误
     Error,
 }
 #[derive(Debug)]

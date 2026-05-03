@@ -25,22 +25,16 @@ async fn test_handle_chat() {
         adaptor: AdaptorType::OpenAICompletion,
         endpoint: None,
     };
-    let user_input = vec![Content {
-        content: String::from("who are you"),
-        content_type: ContentType::Text,
-    }];
+    let user_input = vec![Content::new(ContentType::Text, String::from("who are you"))];
 
-    let contexts = vec![Context {
-        role: Role::System,
-        content: vec![Content {
+    let contexts = vec![Context::new_simple(
+        Role::System,
+        vec![Content {
             content: String::from("you are a helpful assistant, response in Chinese"),
             content_type: ContentType::Text,
         }],
-        reasoning_content: None,
-        tool_call_id: None,
-        tool_call_name: None,
-        tool_call_args: None,
-    }];
+        None,
+    )];
     let api_key = env::var("API_KEY").unwrap_or(String::new());
     let res = handle_chat(Some(user_input), contexts, chat_config, model, url, api_key);
     pin!(res);
@@ -74,22 +68,15 @@ async fn test_handle_chat_response() {
         adaptor: AdaptorType::OpenAIResponse,
         endpoint: None,
     };
-    let user_input = vec![Content {
-        content: String::from("who are you"),
-        content_type: ContentType::Text,
-    }];
-
-    let contexts = vec![Context {
-        role: Role::System,
-        content: vec![Content {
+    let user_input = vec![Content::new(ContentType::Text, String::from("who are you"))];
+    let contexts = vec![Context::new_simple(
+        Role::System,
+        vec![Content {
             content: String::from("you are a helpful assistant, response in Chinese"),
             content_type: ContentType::Text,
         }],
-        reasoning_content: None,
-        tool_call_id: None,
-        tool_call_name: None,
-        tool_call_args: None,
-    }];
+        None,
+    )];
     let res = handle_chat(
         Some(user_input),
         contexts,
@@ -125,28 +112,22 @@ fn test_build_request() {
     };
 
     let contexts = vec![
-        Context {
-            role: Role::System,
-            content: vec![Content {
+        Context::new_simple(
+            Role::System,
+            vec![Content {
                 content: String::from("you are a helpful assistant and MUST response in Chinese"),
                 content_type: ContentType::Text,
             }],
-            reasoning_content: None,
-            tool_call_id: None,
-            tool_call_name: None,
-            tool_call_args: None,
-        },
-        Context {
-            role: Role::User,
-            content: vec![Content {
+            None,
+        ),
+        Context::new_simple(
+            Role::User,
+            vec![Content {
                 content: String::from("who are you"),
                 content_type: ContentType::Text,
             }],
-            reasoning_content: None,
-            tool_call_id: None,
-            tool_call_name: None,
-            tool_call_args: None,
-        },
+            None,
+        ),
     ];
 
     let chat_adaptor = get_chat_adaptor(AdaptorType::OpenAICompletion);

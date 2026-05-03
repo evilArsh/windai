@@ -380,26 +380,6 @@ pub enum ResponseIncludable {
     ReasoningEncryptedContent,
 }
 
-// #[derive(Debug, Serialize, Deserialize, Clone)]
-// /// 输入模型的消息带有指示遵循角色层次结构的指令。
-// /// 以开发者或系统角色给出的指令优先于以用户角色给出的指令。
-// /// 带有助手角色的消息被假定为模型在先前交互中生成的。
-// pub struct EasyInputMessage {
-//     /// 模型接收的文本、图像或音频输入，用于生成回应。也可包含先前的助手回应。
-//     pub content: EasyInputContent,
-//     /// 角色
-//     ///
-//     /// role: "user" or "assistant" or "system" or "developer"
-//     pub role: Role,
-//     /// 将助手消息标记为中间评论（commentary）或最终答案（final_answer）。
-//     /// 对于像gpt-5.3-codex及更高版本的模型，在发送后续请求时，需保留并重新发送所有助手消息的阶段标签——删除它们可能会降低性能。
-//     /// 此标签不用于用户消息。
-//     #[serde(skip_serializing_if = "Option::is_none")]
-//     pub phase: Option<String>,
-//     /// 总是 "message"
-//     #[serde(skip_serializing_if = "Option::is_none")]
-//     pub r#type: Option<String>,
-// }
 #[derive(Debug, Serialize, Deserialize, Clone)]
 /// 输入模型的消息带有指示遵循角色层级的指令。
 /// 以开发者或系统角色给出的指令优先于以用户角色给出的指令。

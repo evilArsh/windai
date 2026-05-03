@@ -75,10 +75,11 @@ impl OpenAICompletionAdaptor {
                     .into_iter()
                     .map(|tool| match tool {
                         openai_completion::ChatCompletionMessageToolCall::Function(tool) => {
+                            let func = tool.function.unwrap_or_default();
                             Some(ToolCallRes {
-                                call_id: tool.id,
-                                name: tool.function.name,
-                                arguments: tool.function.arguments,
+                                call_id: tool.id.unwrap_or_default(),
+                                name: func.name.unwrap_or_default(),
+                                arguments: func.arguments.unwrap_or_default(),
                             })
                         }
                         openai_completion::ChatCompletionMessageToolCall::Custom(tool) => {
@@ -110,7 +111,7 @@ impl ChatAdaptor for OpenAICompletionAdaptor {
                     && let Some(tool_name) = ctx.tool_call_name
                     && let Some(tool_id) = ctx.tool_call_id
                 {
-                    // 函数调用参数上下文
+                    // 模型返回的函数调用参数
                     ChatCompletionMessageParam {
                         content: openai_completion::Content::Text(String::new()),
                         role: Role::Assistant,
@@ -118,18 +119,18 @@ impl ChatAdaptor for OpenAICompletionAdaptor {
                         audio: None,
                         tool_calls: Some(vec![ChatCompletionMessageToolCall::Function(
                             ChatCompletionMessageFunctionToolCall {
-                                id: tool_id,
-                                function: ChatCompletionMessageFunctionToolCallFunction {
-                                    name: tool_name,
-                                    arguments: tool_calls,
-                                },
-                                r#type: String::from("function"),
+                                id: Some(tool_id),
+                                function: Some(ChatCompletionMessageFunctionToolCallFunction {
+                                    name: Some(tool_name),
+                                    arguments: Some(tool_calls),
+                                }),
+                                r#type: Some(String::from("function")),
                             },
                         )]),
                         tool_call_id: None,
                     }
                 } else if let Some(tool_id) = ctx.tool_call_id {
-                    // 用户函数调用结果上下文
+                    // 用户函数调用结果
                     ChatCompletionMessageParam {
                         content: openai_completion::Content::Text(
                             ctx.content
@@ -556,14 +557,11 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
         blocks
             .into_iter()
             .map(|block| {
-                log::debug!("[raw response chunk]\n{:?}", &block);
                 let response: ResponseStream = serde_json::from_str(
                     &block
                         .data
                         .ok_or_else(|| AdaptorError::Transfer("empty sse block".into()))?,
                 )?;
-                log::debug!("[response chunk]\n{:?}", &response);
-
                 match response.r#type.as_ref() {
                     "response.completed" | "response.failed" | "response.incomplete" => {
                         if let Some(resp) = response.response {

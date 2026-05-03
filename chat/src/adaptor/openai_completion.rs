@@ -442,13 +442,23 @@ pub struct ChatCompletionMessage {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatCompletionMessageFunctionToolCallFunction {
     /// 模型选择的本地函数名称
-    pub name: String,
+    /// - 流式消息中，该字段可能分批次返回，
+    pub name: Option<String>,
 
     /// 调用函数时使用的参数，由模型生成的 JSON 格式字符串。
     /// 注意：模型生成的 JSON 不一定总是有效的，且可能产生函数模式中未定义的参数。
     /// 在调用函数前，请务必在代码中验证这些参数。
     /// 需要通过 JSON schema 进行验证
-    pub arguments: String,
+    /// - 流式消息中，该字段可能分批次返回
+    pub arguments: Option<String>,
+}
+impl Default for ChatCompletionMessageFunctionToolCallFunction {
+    fn default() -> Self {
+        ChatCompletionMessageFunctionToolCallFunction {
+            name: Some(String::new()),
+            arguments: Some(String::new()),
+        }
+    }
 }
 
 /// 模型生成的音频数据
@@ -468,11 +478,11 @@ pub struct ChatCompletionMessageAudio {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatCompletionMessageFunctionToolCall {
     /// 工具调用的唯一标识符
-    pub id: String,
-    pub function: ChatCompletionMessageFunctionToolCallFunction,
+    pub id: Option<String>,
+    pub function: Option<ChatCompletionMessageFunctionToolCallFunction>,
     /// 模型调用的函数信息
     /// 工具调用类型，固定值为 "function"
-    pub r#type: String,
+    pub r#type: Option<String>,
 }
 /// 模型生成的工具调用
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -4,58 +4,6 @@
 //! 参考：https://html.spec.whatwg.org/multipage/server-sent-events.html#dispatchMessage
 
 use bytes::Bytes;
-// /// 有状态的 SSE 解析器，维护内部缓冲区以处理跨 chunk 的不完整事件。
-// ///
-// /// SSE 协议以 `\n\n` 分隔事件。当流式数据在事件中间被拆分时，
-// /// 缓冲区会保存不完整的数据，等待下一个 chunk 到达后拼接再解析。
-// #[derive(Debug, Default)]
-// pub struct SseParser {
-//     buffer: BytesMut,
-// }
-
-// impl SseParser {
-//     pub fn new() -> Self {
-//         Self { buffer: BytesMut::with_capacity(256) }
-//     }
-
-//     /// 返回所有可解析的完整 `SseBlock`。
-//     /// - 内部缓冲区会保留不完整的尾部数据，等待下一次调用时拼接。
-//     pub fn parse(&mut self, input: Bytes) -> Vec<SseBlock> {
-//         self.buffer.extend_from_slice(input);
-
-//         let boundary = find_last_event_boundary(&self.buffer);
-//         if boundary == 0 {
-//             return Vec::new();
-//         }
-
-//         let complete = Bytes::copy_from_slice(&self.buffer[..boundary]);
-//         self.buffer.drain(..boundary);
-
-//         SseBlock::parse_all(complete)
-//     }
-
-//     /// 流结束时调用，清空缓冲区并尝试解析剩余数据。
-//     pub fn flush(&mut self) -> Vec<SseBlock> {
-//         if self.buffer.is_empty() {
-//             return Vec::new();
-//         }
-//         let remaining = std::mem::take(&mut self.buffer);
-//         SseBlock::parse_all(Bytes::from(remaining))
-//     }
-// }
-
-// /// 找到缓冲区中最后一个完整 SSE 事件的结束位置（最后一个 `\n\n` 之后）。
-// /// 返回 0 表示没有完整事件。
-// fn find_last_event_boundary(buffer: &[u8]) -> usize {
-//     buffer
-//         .windows(2)
-//         .enumerate()
-//         .rev()
-//         .find(|(_, w)| w[0] == b'\n' && w[1] == b'\n')
-//         .map(|(i, _)| i + 2)
-//         .unwrap_or(0)
-// }
-
 /// 解析后的单个 SSE 事件
 ///
 /// 五个字段对应 SSE 协议的五个字段前缀，并非所有字段都会同时出现。
@@ -129,7 +77,6 @@ impl SseBlock {
     }
     /// 追加数据,如果已经有数据，会先追加一个\n，最终的字符串末尾不会添加\n
     pub fn append_data(&mut self, value: &str) {
-        log::debug!("[sse data block] {:?}", value);
         if value == "[DONE]" {
             return;
         }
