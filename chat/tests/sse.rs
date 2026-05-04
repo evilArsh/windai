@@ -209,3 +209,28 @@ fn openai_chat_sse() {
         dbg!(&b.data);
     });
 }
+
+#[test]
+fn function_call_sse() {
+    let _ = env_logger::builder().is_test(true).try_init();
+
+    let raw = r#"data: {"id":"resp_01457e2c8e82466e0169f8b485868c8191b1f44690071f996c","object":"chat.completion.chunk","created":1777906821,"model":"gpt-5.2","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+    data: {"id":"resp_01457e2c8e82466e0169f8b485868c8191b1f44690071f996c","object":"chat.completion.chunk","created":1777906821,"model":"gpt-5.2","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_ZogyTlZEZW1UhS1KNyH7b1O2","type":"function","function":{"name":"get_local_weather","arguments":""}}]},"finish_reason":null}]}
+
+    data: {"id":"resp_01457e2c8e82466e0169f8b485868c8191b1f44690071f996c","object":"chat.completion.chunk","created":1777906821,"model":"gpt-5.2","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"","arguments":"{\"area\":\"Shanghai\"}"}}]},"finish_reason":null}]}
+
+    data: {"id":"resp_01457e2c8e82466e0169f8b485868c8191b1f44690071f996c","object":"chat.completion.chunk","created":1777906821,"model":"gpt-5.2","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_MEdPCSVxuSuiCiUW04tsaxuH","type":"function","function":{"name":"get_local_date","arguments":""}}]},"finish_reason":null}]}
+
+    data: {"id":"resp_01457e2c8e82466e0169f8b485868c8191b1f44690071f996c","object":"chat.completion.chunk","created":1777906821,"model":"gpt-5.2","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"name":"","arguments":"{\"area\":\"Beijing\"}"}}]},"finish_reason":null}]}
+
+    data: {"id":"resp_01457e2c8e82466e0169f8b485868c8191b1f44690071f996c","object":"chat.completion.chunk","created":1777906821,"model":"gpt-5.2","choices":[{"index":0,"delta":{"content":""},"finish_reason":"tool_calls"}]}
+
+    data: {"id":"resp_01457e2c8e82466e0169f8b485868c8191b1f44690071f996c","object":"chat.completion.chunk","created":1777906821,"model":"gpt-5.2","choices":[],"usage":{"prompt_tokens":146,"completion_tokens":81,"total_tokens":227}}
+
+    data: [DONE]"#;
+    let data = bytes::Bytes::from(raw);
+    let block = SseBlock::parse_all(data);
+    println!("{:?}", block);
+    assert_eq!(block.len(), 7);
+}

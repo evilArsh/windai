@@ -266,32 +266,36 @@ impl ChatAdaptor for OpenAICompletionAdaptor {
             String::from_utf8_lossy(data.as_ref())
         );
         let completion: ChatCompletion = serde_json::from_slice(&data)?;
-        let choice = completion
-            .choices
-            .into_iter()
-            .next()
-            .ok_or_else(|| AdaptorError::Transfer("no choices in response".into()))?;
-
-        self.parse_common(choice.message, None, completion.usage, completion.created)
+        if let Some(choice) = completion.choices.into_iter().next() {
+            self.parse_common(choice.message, None, completion.usage, completion.created)
+        } else {
+            return Ok(Message::default_assistant());
+        }
     }
 
     fn parse_stream_chunk(&self, data: Bytes) -> Result<Vec<Message>, AdaptorError> {
         let blocks = SseBlock::parse_all(data);
         blocks
             .into_iter()
-            .map(|block| {
-                let completion: ChatStreamCompletion = serde_json::from_str(
-                    &block
-                        .data
-                        .ok_or(AdaptorError::Transfer("empty sse block".into()))?,
-                )?;
-                let choice = completion
-                    .choices
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| AdaptorError::Transfer("no choices in response".into()))?;
-
-                self.parse_common(choice.delta, None, completion.usage, completion.created)
+            .filter_map(|block| {
+                let block_data = block.data?;
+                if block_data.is_empty() {
+                    return None;
+                }
+                let completion: ChatStreamCompletion = match serde_json::from_str(&block_data) {
+                    Ok(r) => r,
+                    Err(e) => return Some(Err(e.into())),
+                };
+                if let Some(choice) = completion.choices.into_iter().next() {
+                    Some(self.parse_common(
+                        choice.delta,
+                        None,
+                        completion.usage,
+                        completion.created,
+                    ))
+                } else {
+                    Some(Ok(Message::default_assistant()))
+                }
             })
             .collect::<Result<Vec<Message>, AdaptorError>>()
     }
@@ -556,13 +560,16 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
         let blocks = SseBlock::parse_all(data);
         blocks
             .into_iter()
-            .map(|block| {
-                let response: ResponseStream = serde_json::from_str(
-                    &block
-                        .data
-                        .ok_or_else(|| AdaptorError::Transfer("empty sse block".into()))?,
-                )?;
-                match response.r#type.as_ref() {
+            .filter_map(|block| {
+                let block_data = block.data?;
+                if block_data.is_empty() {
+                    return None;
+                }
+                let response: ResponseStream = match serde_json::from_str(&block_data) {
+                    Ok(r) => r,
+                    Err(e) => return Some(Err(e.into())),
+                };
+                let result = match response.r#type.as_ref() {
                     "response.completed" | "response.failed" | "response.incomplete" => {
                         if let Some(resp) = response.response {
                             let (input_tokens, output_tokens) = resp
@@ -687,7 +694,8 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
                         tool_calls: None,
                     }),
                     _ => Ok(Message::default_assistant()),
-                }
+                };
+                Some(result)
             })
             .collect::<Result<Vec<Message>, AdaptorError>>()
     }

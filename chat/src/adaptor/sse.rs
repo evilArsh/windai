@@ -25,7 +25,7 @@ impl SseBlock {
     /// - 输入可能包含多个拼接的事件，以空行分隔。
     pub fn parse_all(input: Bytes) -> Vec<Self> {
         let text = String::from_utf8_lossy(&input);
-        log::debug!("[sse block raw] {:?}", text);
+        log::debug!("[sse block raw]\n{}", text);
         let mut events = Vec::new();
         let mut current = SseBlock::default();
         for line in text.lines() {
@@ -44,8 +44,8 @@ impl SseBlock {
             let Some((key, value)) = line.split_once(':') else {
                 continue;
             };
-            let value = value.strip_prefix(' ').unwrap_or(value);
-            match key {
+            let value = value.trim();
+            match key.trim() {
                 "data" => current.append_data(value),
                 "event" => current.event = Some(value.to_string()),
                 "id" => current.id = Some(value.to_string()),

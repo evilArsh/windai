@@ -1,5 +1,5 @@
 use futures::StreamExt;
-use std::env;
+use std::{env, str::FromStr};
 use tokio::pin;
 use windai_chat::{
     AdaptorType, Content, ContentType, Context, Model, ReqConfig, Role, adaptor::get_chat_adaptor,
@@ -8,55 +8,24 @@ use windai_chat::{
 
 #[tokio::test]
 async fn test_handle_chat() {
-    let url = String::from("https://api.deepseek.com");
-    let chat_config = ReqConfig {
-        temperature: None,
-        top_p: None,
-        max_tokens: None,
-        stream: Some(true),
-        presence_penalty: None,
-        frequency_penalty: None,
-        parallel_tool_calls: None,
-        reasoning: Some(true),
-        tools: None,
-    };
-    let model = Model {
-        name: String::from("deepseek-v4-flash"),
-        adaptor: AdaptorType::OpenAICompletion,
-        endpoint: None,
-    };
-    let user_input = vec![Content::new(ContentType::Text, String::from("who are you"))];
-
-    let contexts = vec![Context::new_simple(
-        Role::System,
-        vec![Content {
-            content: String::from("you are a helpful assistant, response in Chinese"),
-            content_type: ContentType::Text,
-        }],
-        None,
-    )];
-    let api_key = env::var("API_KEY").unwrap_or(String::new());
-    let res = handle_chat(Some(user_input), contexts, chat_config, model, url, api_key);
-    pin!(res);
-    while let Some(value) = res.next().await {
-        println!("[data]\n{:?}", value);
-    }
-}
-
-#[tokio::test]
-async fn test_handle_chat_response() {
     // https://api.openai.com/v1"
     let _ = env_logger::builder().is_test(true).try_init();
 
-    let api_url = env::var("API_BASE_URL").unwrap_or(String::new());
+    let stream = env::var("STREAM")
+        .map(|s| s.parse::<bool>().unwrap())
+        .unwrap_or(true);
+    let api_url = env::var("API_BASE_URL").unwrap_or(String::from("https://api.deepseek.com"));
     let api_key = env::var("API_KEY").unwrap_or(String::new());
-    let model = env::var("MODEL").unwrap_or(String::new());
+    let model = env::var("MODEL").unwrap_or(String::from("deepseek-v4-flash"));
+    let adaptor = env::var("ADAPTOR")
+        .map(|a| AdaptorType::from_str(&a).unwrap())
+        .unwrap_or(AdaptorType::OpenAICompletion);
 
     let chat_config = ReqConfig {
         temperature: None,
         top_p: None,
         max_tokens: None,
-        stream: Some(true),
+        stream: Some(stream),
         presence_penalty: None,
         frequency_penalty: None,
         parallel_tool_calls: None,
@@ -65,7 +34,7 @@ async fn test_handle_chat_response() {
     };
     let model = Model {
         name: model,
-        adaptor: AdaptorType::OpenAIResponse,
+        adaptor,
         endpoint: None,
     };
     let user_input = vec![Content::new(ContentType::Text, String::from("who are you"))];

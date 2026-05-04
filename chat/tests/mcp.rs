@@ -1,53 +1,36 @@
 use futures::StreamExt;
 use serde_json::json;
-use std::env;
+use std::{env, str::FromStr};
 use tokio::pin;
 use windai_chat::{
     AdaptorType, Content, ContentType, Context, Model, ReqConfig, ResEventStatus, Role,
     ToolCallParam, handle_chat,
 };
 
-fn build_default() -> (ReqConfig, Model, Vec<Content>, Vec<Context>) {
-    let _ = env_logger::builder().is_test(true).try_init();
-
-    let chat_config = ReqConfig {
-        temperature: None,
-        top_p: None,
-        max_tokens: None,
-        stream: Some(true),
-        presence_penalty: None,
-        frequency_penalty: None,
-        parallel_tool_calls: None,
-        reasoning: Some(true),
-        tools: None,
-    };
-    let model = Model {
-        name: String::from("deepseek-v4-flash"),
-        adaptor: AdaptorType::OpenAICompletion,
-        endpoint: None,
-    };
-    let user_input = vec![Content::new(
-        ContentType::Text,
-        String::from("what's the weather in Shanghai? and what's the date now in Beijing?"),
-    )];
-
-    let contexts = vec![Context::new_simple(
-        Role::System,
-        vec![Content::new(
-            ContentType::Text,
-            String::from("you are a helpful assistant"),
-        )],
-        None,
-    )];
-
-    (chat_config, model, user_input, contexts)
-}
-
 #[tokio::test]
 async fn test_handle_chat_mcp() {
     unsafe {
         env::set_var("RUST_LOG", "debug");
     }
+
+    let stream = env::var("STREAM")
+        .map(|s| s.parse::<bool>().unwrap())
+        .unwrap_or(true);
+    let api_url = env::var("API_BASE_URL").unwrap_or(String::from("https://api.deepseek.com"));
+    let api_key = env::var("API_KEY").unwrap_or(String::new());
+    let adaptor = env::var("ADAPTOR")
+        .map(|a| AdaptorType::from_str(&a).unwrap())
+        .unwrap_or(AdaptorType::OpenAICompletion);
+    let model = env::var("MODEL").unwrap_or(String::from("deepseek-v4-flash"));
+
+    let _ = env_logger::builder().is_test(true).try_init();
+
+    let model = Model {
+        name: model,
+        adaptor,
+        endpoint: None,
+    };
+
     let tools = vec![
         ToolCallParam {
             name: "get_local_weather".to_string(),
@@ -81,12 +64,42 @@ async fn test_handle_chat_mcp() {
         },
     ];
 
-    let url = String::from("https://api.deepseek.com");
-    let (mut chat_config, model, user_input, contexts) = build_default();
+    let mut chat_config = ReqConfig {
+        temperature: None,
+        top_p: None,
+        max_tokens: None,
+        stream: Some(stream),
+        presence_penalty: None,
+        frequency_penalty: None,
+        parallel_tool_calls: None,
+        reasoning: Some(true),
+        tools: None,
+    };
+
+    let user_input = vec![Content::new(
+        ContentType::Text,
+        String::from("what's the weather in Shanghai? and what's the date now in Beijing?"),
+    )];
+
+    let contexts = vec![Context::new_simple(
+        Role::System,
+        vec![Content::new(
+            ContentType::Text,
+            String::from("you are a helpful assistant"),
+        )],
+        None,
+    )];
+
     chat_config.tools = Some(tools);
 
-    let api_key = env::var("API_KEY").unwrap_or(String::new());
-    let res = handle_chat(Some(user_input), contexts, chat_config, model, url, api_key);
+    let res = handle_chat(
+        Some(user_input),
+        contexts,
+        chat_config,
+        model,
+        api_url,
+        api_key,
+    );
     pin!(res);
     while let Some(event) = res.next().await {
         println!("[data]\n{:?}", &event);
