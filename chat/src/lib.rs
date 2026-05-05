@@ -108,6 +108,7 @@ pub struct ToolCallParam {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parameters: Option<Value>,
     /// 是否强制执行严格的参数验证
+    /// - 一些中间厂商可能不支持该参数
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strict: Option<bool>,
 }

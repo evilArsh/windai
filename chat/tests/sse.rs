@@ -234,3 +234,38 @@ fn function_call_sse() {
     println!("{:?}", block);
     assert_eq!(block.len(), 7);
 }
+
+#[test]
+fn function_call_response_sse() {
+    let _ = env_logger::builder().is_test(true).try_init();
+    let raw = r#"event: response.output_item.added
+    data: {"type":"response.output_item.added","item":{"id":"fc_03c724975b1dc3ab0169f9f80264288191a6f887f3d05b81ef","type":"function_call","status":"in_progress","arguments":"","call_id":"call_pYUWuWYa6bvE25kogvRkLNrf","name":"get_local_weather"},"output_index":0,"sequence_number":2}
+
+    event: response.function_call_arguments.delta
+    data: {"type":"response.function_call_arguments.delta","delta":"{\"area\":\"Shanghai\"}","item_id":"fc_03c724975b1dc3ab0169f9f80264288191a6f887f3d05b81ef","obfuscation":"6Vq5uirp4nzIG","output_index":0,"sequence_number":3}
+
+    event: response.function_call_arguments.done
+    data: {"type":"response.function_call_arguments.done","arguments":"{\"area\":\"Shanghai\"}","item_id":"fc_03c724975b1dc3ab0169f9f80264288191a6f887f3d05b81ef","output_index":0,"sequence_number":4}
+
+    event: response.output_item.done
+    data: {"type":"response.output_item.done","item":{"id":"fc_03c724975b1dc3ab0169f9f80264288191a6f887f3d05b81ef","type":"function_call","status":"completed","arguments":"{\"area\":\"Shanghai\"}","call_id":"call_pYUWuWYa6bvE25kogvRkLNrf","name":"get_local_weather"},"output_index":0,"sequence_number":5}
+
+    event: response.output_item.added
+    data: {"type":"response.output_item.added","item":{"id":"fc_03c724975b1dc3ab0169f9f802643c819197aab6a2258c1fd0","type":"function_call","status":"in_progress","arguments":"","call_id":"call_dCn8RbrFpaX0ng3zhIt9IL66","name":"get_local_date"},"output_index":1,"sequence_number":6}
+
+    event: response.function_call_arguments.delta
+    data: {"type":"response.function_call_arguments.delta","delta":"{\"area\":\"Beijing\"}","item_id":"fc_03c724975b1dc3ab0169f9f802643c819197aab6a2258c1fd0","obfuscation":"o3W3uJnrGpccwW","output_index":1,"sequence_number":7}
+
+    event: response.function_call_arguments.done
+    data: {"type":"response.function_call_arguments.done","arguments":"{\"area\":\"Beijing\"}","item_id":"fc_03c724975b1dc3ab0169f9f802643c819197aab6a2258c1fd0","output_index":1,"sequence_number":8}
+
+    event: response.output_item.done
+    data: {"type":"response.output_item.done","item":{"id":"fc_03c724975b1dc3ab0169f9f802643c819197aab6a2258c1fd0","type":"function_call","status":"completed","arguments":"{\"area\":\"Beijing\"}","call_id":"call_dCn8RbrFpaX0ng3zhIt9IL66","name":"get_local_date"},"output_index":1,"sequence_number":9}
+
+    event: response.completed
+    data: {"type":"response.completed","response":{"id":"resp_03c724975b1dc3ab0169f9f800e9ac819196212334c1889489","object":"response","created_at":1777989632,"status":"completed","background":false,"completed_at":1777989634,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":"You are a helpful coding assistant.","max_output_tokens":null,"max_tool_calls":null,"model":"gpt-5.4","moderation":null,"output":[],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":"5f05c2a2-92b7-4aaf-b5c6-e9e9bf5d721e","prompt_cache_retention":"24h","reasoning":{"effort":"none","summary":null},"safety_identifier":"user-xF6Vy8Q10Oaiori4gfaCK4fK","service_tier":"default","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":"auto","tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[{"type":"function","description":"根据输入的地区查询当地的天气情况","name":"get_local_weather","parameters":{"properties":{"area":{"description":"要查询的指定地区的拼音简写. 比如: 北京 -> Beijing","type":"string"}},"required":["area"],"type":"object","additionalProperties":false},"strict":true},{"type":"function","description":"根据输入的地区查询该地区当前的时间","name":"get_local_date","parameters":{"properties":{"area":{"description":"要查询的指定地区的拼音简写. 比如: 北京 -> Beijing","type":"string"}},"required":["area"],"type":"object","additionalProperties":false},"strict":true}],"top_logprobs":0,"top_p":0.98,"truncation":"disabled","usage":{"input_tokens":146,"input_tokens_details":{"cached_tokens":0},"output_tokens":51,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":197},"user":null,"metadata":{}},"sequence_number":10}"#;
+
+    let data = bytes::Bytes::from(raw);
+    let block = SseBlock::parse_all(data);
+    println!("{:?}", block);
+}

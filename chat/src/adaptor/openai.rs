@@ -32,7 +32,8 @@ fn transfer_response_tools(tools: Option<Vec<ToolCallParam>>) -> Option<Vec<Tool
                         name: tool.name,
                         description: tool.description,
                         parameters: tool.parameters,
-                        strict: tool.strict,
+                        // strict: tool.strict,
+                        strict: None,
                         defer_loading: None,
                     })
                 })
@@ -313,7 +314,7 @@ impl ChatAdaptor for OpenAICompletionAdaptor {
                         completion.created,
                     ))
                 } else {
-                    Some(Ok(Message::default_assistant()))
+                    None
                 }
             })
             .collect::<Result<Vec<Message>, AdaptorError>>()
@@ -417,13 +418,12 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
             top_p: config.top_p,
             max_output_tokens: config.max_tokens,
             parallel_tool_calls: config.parallel_tool_calls,
-            reasoning: config.reasoning.map(|r| ResponseReasoning {
-                effort: if r {
-                    Some("medium".to_string())
-                } else {
-                    Some("none".to_string())
-                },
-            }),
+            reasoning: match config.reasoning {
+                Some(true) => Some(ResponseReasoning {
+                    effort: Some("medium".to_string()),
+                }),
+                _ => None,
+            },
             background: None,
             context_management: None,
             conversation: None,
@@ -596,7 +596,7 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
                                 .map(|i| (i.input_tokens, i.output_tokens))
                                 .unwrap_or((0, 0));
 
-                            Ok(Message {
+                            Ok(Some(Message {
                                 role: Role::Assistant,
                                 raw_content: None,
                                 content: None,
@@ -606,29 +606,36 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
                                 input_tokens,
                                 output_tokens,
                                 tool_calls: None,
-                            })
+                            }))
                         } else {
                             Err(AdaptorError::Transfer("no data in response".into()))
                         }
                     }
 
-                    "response.function_call_arguments.done" => Ok(Message {
-                        role: Role::Assistant,
-                        raw_content: None,
-                        content: None,
-                        reasoning_content: None,
-                        transcript: None,
-                        created_at: 0,
-                        input_tokens: 0,
-                        output_tokens: 0,
-                        tool_calls: Some(vec![ToolCallRes {
-                            call_id: response.item_id.unwrap_or_default(),
-                            name: response.name.unwrap_or_default(),
-                            arguments: String::new(),
-                        }]),
-                    }),
+                    "response.output_item.added" => match response.item {
+                        Some(item) => match item {
+                            OutputItem::FunctionCall(call) => Ok(Some(Message {
+                                role: Role::Assistant,
+                                raw_content: None,
+                                content: None,
+                                reasoning_content: None,
+                                transcript: None,
+                                created_at: 0,
+                                input_tokens: 0,
+                                output_tokens: 0,
+                                tool_calls: Some(vec![ToolCallRes {
+                                    call_id: call.call_id,
+                                    name: call.name,
+                                    arguments: String::new(),
+                                }]),
+                            })),
+                            // TODO: more
+                            _ => Ok(None),
+                        },
+                        _ => Ok(None),
+                    },
 
-                    "response.function_call_arguments.delta" => Ok(Message {
+                    "response.function_call_arguments.delta" => Ok(Some(Message {
                         role: Role::Assistant,
                         raw_content: None,
                         content: None,
@@ -638,13 +645,13 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
                         input_tokens: 0,
                         output_tokens: 0,
                         tool_calls: Some(vec![ToolCallRes {
-                            call_id: response.item_id.unwrap_or_default(),
+                            call_id: String::new(),
                             name: String::new(),
                             arguments: response.delta.unwrap_or_default(),
                         }]),
-                    }),
+                    })),
 
-                    "response.output_text.delta" => Ok(Message {
+                    "response.output_text.delta" => Ok(Some(Message {
                         role: Role::Assistant,
                         raw_content: None,
                         content: Some(Content::new(
@@ -657,9 +664,9 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
                         input_tokens: 0,
                         output_tokens: 0,
                         tool_calls: None,
-                    }),
+                    })),
 
-                    "response.reasoning_text.delta" => Ok(Message {
+                    "response.reasoning_text.delta" => Ok(Some(Message {
                         role: Role::Assistant,
                         raw_content: None,
                         content: None,
@@ -669,9 +676,9 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
                         input_tokens: 0,
                         output_tokens: 0,
                         tool_calls: None,
-                    }),
+                    })),
 
-                    "response.audio.delta" => Ok(Message {
+                    "response.audio.delta" => Ok(Some(Message {
                         role: Role::Assistant,
                         raw_content: None,
                         content: Some(Content::new(
@@ -684,9 +691,9 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
                         input_tokens: 0,
                         output_tokens: 0,
                         tool_calls: None,
-                    }),
+                    })),
 
-                    "response.audio.transcript.delta" => Ok(Message {
+                    "response.audio.transcript.delta" => Ok(Some(Message {
                         role: Role::Assistant,
                         raw_content: None,
                         content: None,
@@ -696,9 +703,9 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
                         input_tokens: 0,
                         output_tokens: 0,
                         tool_calls: None,
-                    }),
+                    })),
 
-                    "response.image_generation_call.partial_image" => Ok(Message {
+                    "response.image_generation_call.partial_image" => Ok(Some(Message {
                         role: Role::Assistant,
                         raw_content: None,
                         content: Some(Content::new(
@@ -711,10 +718,15 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
                         input_tokens: 0,
                         output_tokens: 0,
                         tool_calls: None,
-                    }),
-                    _ => Ok(Message::default_assistant()),
+                    })),
+                    _ => Ok(None),
                 };
-                Some(result)
+
+                match result {
+                    Ok(Some(message)) => Some(Ok(message)),
+                    Ok(None) => None,
+                    Err(err) => Some(Err(err)),
+                }
             })
             .collect::<Result<Vec<Message>, AdaptorError>>()
     }
