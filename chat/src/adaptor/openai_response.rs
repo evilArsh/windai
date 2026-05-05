@@ -2,7 +2,6 @@
 //! https://developers.openai.com/api/reference/resources/responses/methods/create
 
 use super::is_none_or_empty_vec;
-use super::openai_completion::ToolCallRequest;
 use crate::Role;
 use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
@@ -205,7 +204,7 @@ pub struct ResponseRequest {
     /// 模型可以调用的工具列表
     #[builder(default)]
     #[serde(skip_serializing_if = "is_none_or_empty_vec")]
-    pub tools: Option<Vec<ToolCallRequest>>,
+    pub tools: Option<Vec<Tools>>,
 
     /// 一种替代温度采样的方法是核采样，在这种方法中，模型仅考虑那些累积概率达到 top_p 的候选token。
     /// 例如，当 top_p 设置为 0.1 时，模型只会考虑那些累计概率质量达到前 10% 的token。
@@ -258,17 +257,15 @@ pub struct ToolChoiceAllowed {
     /// array<map<unknown>>
     /// ```
     pub tools: Value,
-    /// 允许的工具配置类型。始终为allowed_tools
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 允许的工具配置类型。始终为 allowed_tools
+    pub r#type: String,
 }
 
 /// 表示模型应使用内置工具生成响应
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolChoiceTypes {
     /// 模型应使用的托管工具类型
-    #[serde(rename = "type")]
-    pub type_field: String,
+    pub r#type: String,
 }
 
 /// 使用此选项强制模型调用特定函数
@@ -277,8 +274,7 @@ pub struct ToolChoiceFunction {
     /// 要调用的函数的名称
     pub name: String,
     /// 对于函数调用，类型始终为function
-    #[serde(rename = "type")]
-    pub type_field: String,
+    pub r#type: String,
 }
 
 /// 使用此选项强制模型调用远程MCP服务器上的特定工具
@@ -287,8 +283,7 @@ pub struct ToolChoiceMcp {
     /// 要使用的MCP服务器的标签
     pub server_label: String,
     /// 对于MCP工具，类型始终为mcp
-    #[serde(rename = "type")]
-    pub type_field: String,
+    pub r#type: String,
     /// 要在服务器上调用的工具的名称
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -300,24 +295,21 @@ pub struct ToolChoiceCustom {
     /// 要调用的自定义工具的名称
     pub name: String,
     /// 对于自定义工具调用，类型始终为custom
-    #[serde(rename = "type")]
-    pub type_field: String,
+    pub r#type: String,
 }
 
 /// 强制模型在执行工具调用时调用apply_patch工具
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolChoiceApplyPatch {
     /// 要调用的工具。始终为apply_patch
-    #[serde(rename = "type")]
-    pub type_field: String,
+    pub r#type: String,
 }
 
 /// 强制模型在需要工具调用时调用shell工具
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolChoiceShell {
     /// 要调用的工具。始终为shell
-    #[serde(rename = "type")]
-    pub type_field: String,
+    pub r#type: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone, Builder)]
@@ -559,7 +551,7 @@ pub struct Response {
     pub tool_choice: Option<ToolChoice>,
     /// 模型可以调用的工具列表
     #[serde(skip_serializing_if = "is_none_or_empty_vec")]
-    pub tools: Option<Vec<Tool>>,
+    pub tools: Option<Vec<Tools>>,
     pub top_p: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub background: Option<bool>,
@@ -860,10 +852,11 @@ pub struct ResponseStream {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub param: Option<String>,
 }
+
 /// 模型在生成响应时可以调用的工具数组
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum Tool {
+pub enum Tools {
     /// 函数工具
     Function(FunctionTool),
     /// 文件搜索工具
@@ -905,13 +898,12 @@ pub struct FunctionTool {
     /// ```json
     /// map<unknown>
     /// ```
-    pub parameters: Value,
+    pub parameters: Option<Value>,
     /// 是否强制执行严格的参数验证。默认为true
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strict: Option<bool>,
     /// 函数工具的类型。始终为function
-    #[serde(rename = "type")]
-    pub type_field: String,
+    pub r#type: String,
     /// 此函数是否被延迟并通过工具搜索加载
     #[serde(skip_serializing_if = "Option::is_none")]
     pub defer_loading: Option<bool>,
@@ -924,8 +916,7 @@ pub struct FunctionTool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileSearchTool {
     /// 文件搜索工具的类型。始终为file_search
-    #[serde(rename = "type")]
-    pub type_field: String,
+    pub r#type: String,
     /// 要搜索的向量存储的ID
     pub vector_store_ids: Vec<String>,
     /// 要应用的过滤器
@@ -955,31 +946,28 @@ pub struct FileSearchTool {
 /// 控制虚拟计算机的工具
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComputerTool {
-    /// 计算机工具的类型。始终为computer
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 计算机工具的类型。始终为 computer
+    pub r#type: String,
 }
 
 /// 控制虚拟计算机的工具
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComputerUsePreviewTool {
     /// 计算机显示器的高度
-    pub display_height: Value,
+    pub display_height: i32,
     /// 计算机显示器的宽度
-    pub display_width: Value,
+    pub display_width: i32,
     /// 要控制的计算机环境类型
     pub environment: String,
-    /// 计算机使用工具的类型。始终为computer_use_preview
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 计算机使用工具的类型。始终为 computer_use_preview
+    pub r#type: String,
 }
 
 /// 搜索与提示相关的互联网资源的工具
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebSearchTool {
     /// 网络搜索工具的类型。web_search或web_search_2025_08_26之一
-    #[serde(rename = "type")]
-    pub type_field: String,
+    pub r#type: String,
     /// 搜索的过滤器
     /// ```json
     /// {
@@ -1010,9 +998,8 @@ pub struct WebSearchTool {
 pub struct McpTool {
     /// 此MCP服务器的标签，用于在工具调用中标识它
     pub server_label: String,
-    /// MCP工具的类型。始终为mcp
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// MCP工具的类型。始终为 mcp
+    pub r#type: String,
     /// 允许的工具名称列表或过滤器对象
     /// ```json
     /// array<string> | {
@@ -1073,17 +1060,15 @@ pub struct CodeInterpreterTool {
     /// }
     /// ```
     pub container: Value,
-    /// 代码解释器工具的类型。始终为code_interpreter
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 代码解释器工具的类型。始终为 code_interpreter
+    pub r#type: String,
 }
 
 /// 使用GPT图像模型生成图像的工具
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageGenerationTool {
-    /// 图像生成工具的类型。始终为image_generation
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 图像生成工具的类型。始终为 image_generation
+    pub r#type: String,
     /// 是生成新图像还是编辑现有图像。默认为auto
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
@@ -1128,17 +1113,15 @@ pub struct ImageGenerationTool {
 /// 允许模型在本地环境中执行shell命令的工具
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalShellTool {
-    /// 本地shell工具的类型。始终为local_shell
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 本地shell工具的类型。始终为 local_shell
+    pub r#type: String,
 }
 
 /// 允许模型执行shell命令的工具
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShellTool {
-    /// shell工具的类型。始终为shell
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// shell工具的类型。始终为 shell
+    pub r#type: String,
     /// 执行shell命令的环境
     /// ```json
     /// ContainerAuto | LocalEnvironment | ContainerReference
@@ -1152,9 +1135,8 @@ pub struct ShellTool {
 pub struct CustomTool {
     /// 自定义工具的名称，用于在工具调用中标识它
     pub name: String,
-    /// 自定义工具的类型。始终为custom
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 自定义工具的类型。始终为 custom
+    pub r#type: String,
     /// 此工具是否应被延迟并通过工具搜索发现
     #[serde(skip_serializing_if = "Option::is_none")]
     pub defer_loading: Option<bool>,
@@ -1187,17 +1169,15 @@ pub struct NamespaceTool {
     /// array<Function | Custom>
     /// ```
     pub tools: Value,
-    /// 工具的类型。始终为namespace
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 工具的类型。始终为 namespace
+    pub r#type: String,
 }
 
 /// 延迟工具的托管或BYOT工具搜索配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSearchTool {
-    /// 工具的类型。始终为tool_search
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 工具的类型。始终为 tool_search
+    pub r#type: String,
     /// 为客户端执行的工具搜索工具显示给模型的描述
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -1213,8 +1193,7 @@ pub struct ToolSearchTool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebSearchPreviewTool {
     /// 网络搜索工具的类型。web_search_preview或web_search_preview_2025_03_11之一
-    #[serde(rename = "type")]
-    pub type_field: String,
+    pub r#type: String,
     /// 搜索内容类型
     #[serde(skip_serializing_if = "Option::is_none")]
     pub search_content_types: Option<Value>,
@@ -1238,9 +1217,8 @@ pub struct WebSearchPreviewTool {
 /// 允许助手使用统一差异创建、删除或更新文件
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApplyPatchTool {
-    /// 工具的类型。始终为apply_patch
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 工具的类型。始终为 apply_patch
+    pub r#type: String,
 }
 /// 文件搜索工具调用结果对象
 /// 文件搜索工具调用的结果。有关更多信息，请参阅文件搜索指南。
@@ -1252,9 +1230,8 @@ pub struct FileSearchCall {
     pub queries: Vec<String>,
     /// 文件搜索工具调用的状态。可能为in_progress、searching、completed、incomplete或failed之一
     pub status: String,
-    /// 文件搜索工具调用的类型。始终为file_search_call
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 文件搜索工具调用的类型。始终为 file_search_call
+    pub r#type: String,
     /// 文件搜索工具调用的结果
     #[serde(skip_serializing_if = "Option::is_none")]
     pub results: Option<Value>,
@@ -1271,9 +1248,8 @@ pub struct ComputerCall {
     pub pending_safety_checks: Value,
     /// 项目的状态。可能为in_progress、completed或incomplete之一。通过API返回项目时填充
     pub status: String,
-    /// 计算机调用的类型。始终为computer_call
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 计算机调用的类型。始终为 computer_call
+    pub r#type: String,
     /// 点击操作
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<Value>,
@@ -1288,9 +1264,8 @@ pub struct ComputerCallOutput {
     pub call_id: String,
     /// 与计算机使用工具一起使用的计算机截图图像
     pub output: Value,
-    /// 计算机工具调用输出的类型。始终为computer_call_output
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 计算机工具调用输出的类型。始终为 computer_call_output
+    pub r#type: String,
     /// 计算机工具调用输出的ID
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -1311,9 +1286,8 @@ pub struct WebSearchCall {
     pub action: Value,
     /// 网络搜索工具调用的状态
     pub status: String,
-    /// 网络搜索工具调用的类型。始终为web_search_call
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 网络搜索工具调用的类型。始终为 web_search_call
+    pub r#type: String,
 }
 /// 函数调用工具调用对象，由模型生成并返回
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1324,9 +1298,8 @@ pub struct FunctionCall {
     pub call_id: String,
     /// 要运行的函数名称
     pub name: String,
-    /// 函数工具调用的类型。始终为function_call
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 函数工具调用的类型。始终为 function_call
+    pub r#type: String,
     /// 函数工具调用的唯一ID
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -1347,9 +1320,8 @@ pub struct FunctionCallOutput {
     /// string | array<ResponseInputTextContent | ResponseInputImageContent | ResponseInputFileContent>
     /// ```
     pub output: Value,
-    /// 函数工具调用输出的类型。始终为function_call_output
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 函数工具调用输出的类型。始终为 function_call_output
+    pub r#type: String,
     /// 函数工具调用输出的唯一ID。通过API返回此项时填充
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -1363,9 +1335,8 @@ pub struct FunctionCallOutput {
 pub struct ToolSearchCall {
     /// 提供给工具搜索调用的参数
     pub arguments: Value,
-    /// 项目类型。始终为tool_search_call
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 项目类型。始终为 tool_search_call
+    pub r#type: String,
     /// 此工具搜索调用的唯一ID
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -1402,9 +1373,8 @@ pub struct ToolSearchOutput {
     /// | ApplyPatch>
     /// ```
     pub tools: Value,
-    /// 项目类型。始终为tool_search_output
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 项目类型。始终为 tool_search_output
+    pub r#type: String,
     /// 此工具搜索输出的唯一ID
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -1429,9 +1399,8 @@ pub struct Reasoning {
     /// array<SummaryTextContent>
     /// ```
     pub summary: Value,
-    /// 对象的类型。始终为reasoning
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 对象的类型。始终为 reasoning
+    pub r#type: String,
     /// 推理文本内容
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<Vec<ReasoningContent>>,
@@ -1453,9 +1422,8 @@ pub struct ReasoningContent {
 pub struct Compaction {
     /// 压缩摘要的加密内容
     pub encrypted_content: String,
-    /// 项目的类型。始终为compaction
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 项目的类型。始终为 compaction
+    pub r#type: String,
     /// 压缩项目的ID
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -1470,9 +1438,8 @@ pub struct ImageGenerationCall {
     pub result: String,
     /// 图像生成调用的状态
     pub status: String,
-    /// 图像生成调用的类型。始终为image_generation_call
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 图像生成调用的类型。始终为 image_generation_call
+    pub r#type: String,
 }
 
 /// 运行代码的工具调用
@@ -1491,9 +1458,8 @@ pub struct CodeInterpreterCall {
     pub outputs: Value,
     /// 代码解释器工具调用的状态。有效值为in_progress、completed、incomplete、interpreting和failed
     pub status: String,
-    /// 代码解释器工具调用的类型。始终为code_interpreter_call
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 代码解释器工具调用的类型。始终为 code_interpreter_call
+    pub r#type: String,
 }
 
 /// 在本地shell上运行命令的工具调用
@@ -1517,9 +1483,8 @@ pub struct LocalShellCall {
     pub call_id: String,
     /// 本地shell调用的状态
     pub status: String,
-    /// 本地shell调用的类型。始终为local_shell_call
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 本地shell调用的类型。始终为 local_shell_call
+    pub r#type: String,
 }
 /// 本地shell工具调用的输出
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1528,9 +1493,8 @@ pub struct LocalShellCallOutput {
     pub id: String,
     /// 本地shell工具调用的输出JSON字符串
     pub output: String,
-    /// 本地shell工具调用输出的类型。始终为local_shell_call_output
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 本地shell工具调用输出的类型。始终为 local_shell_call_output
+    pub r#type: String,
     /// 项目的状态。in_progress、completed或incomplete之一
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
@@ -1550,9 +1514,8 @@ pub struct ShellCall {
     pub action: Value,
     /// 模型生成的shell工具调用的唯一ID
     pub call_id: String,
-    /// 项目的类型。始终为shell_call
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 项目的类型。始终为 shell_call
+    pub r#type: String,
     /// shell工具调用的唯一ID。通过API返回此项时填充
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -1577,9 +1540,8 @@ pub struct ShellCallOutput {
     /// array<ResponseFunctionShellCallOutputContent>
     /// ```
     pub output: Value,
-    /// 项目的类型。始终为shell_call_output
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 项目的类型。始终为 shell_call_output
+    pub r#type: String,
     /// shell工具调用输出的唯一ID。通过API返回此项时填充
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -1603,9 +1565,8 @@ pub struct ApplyPatchCall {
     pub operation: Value,
     /// apply patch工具调用的状态。in_progress或completed之一
     pub status: String,
-    /// 项目的类型。始终为apply_patch_call
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 项目的类型。始终为 apply_patch_call
+    pub r#type: String,
     /// apply patch工具调用的唯一ID。通过API返回此项时填充
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -1618,9 +1579,8 @@ pub struct ApplyPatchCallOutput {
     pub call_id: String,
     /// apply patch工具调用输出的状态。completed或failed之一
     pub status: String,
-    /// 项目的类型。始终为apply_patch_call_output
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 项目的类型。始终为 apply_patch_call_output
+    pub r#type: String,
     /// apply patch工具调用输出的唯一ID。通过API返回此项时填充
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -1646,9 +1606,8 @@ pub struct McpListTools {
     /// }>
     /// ```
     pub tools: Value,
-    /// 项目的类型。始终为mcp_list_tools
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 项目的类型。始终为 mcp_list_tools
+    pub r#type: String,
     /// 如果服务器无法列出工具，则为错误消息
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -1665,9 +1624,8 @@ pub struct McpApprovalRequest {
     pub name: String,
     /// 发出请求的MCP服务器的标签
     pub server_label: String,
-    /// 项目的类型。始终为mcp_approval_request
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 项目的类型。始终为 mcp_approval_request
+    pub r#type: String,
 }
 
 /// MCP批准请求的响应
@@ -1677,9 +1635,8 @@ pub struct McpApprovalResponse {
     pub approval_request_id: String,
     /// 请求是否被批准
     pub approve: bool,
-    /// 项目的类型。始终为mcp_approval_response
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 项目的类型。始终为 mcp_approval_response
+    pub r#type: String,
     /// 批准响应的唯一ID
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -1699,9 +1656,8 @@ pub struct McpCall {
     pub name: String,
     /// 运行工具的MCP服务器的标签
     pub server_label: String,
-    /// 项目的类型。始终为mcp_call
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 项目的类型。始终为 mcp_call
+    pub r#type: String,
     /// MCP工具调用批准请求的唯一标识符
     #[serde(skip_serializing_if = "Option::is_none")]
     pub approval_request_id: Option<String>,
@@ -1726,9 +1682,8 @@ pub struct CustomToolCallOutput {
     /// string | array<ResponseInputText | ResponseInputImage | ResponseInputFile>
     /// ```
     pub output: Value,
-    /// 自定义工具调用输出的类型。始终为custom_tool_call_output
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 自定义工具调用输出的类型。始终为 custom_tool_call_output
+    pub r#type: String,
     /// 自定义工具调用输出在OpenAI平台中的唯一ID
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -1743,9 +1698,8 @@ pub struct CustomToolCall {
     pub input: String,
     /// 被调用的自定义工具的名称
     pub name: String,
-    /// 自定义工具调用的类型。始终为custom_tool_call
-    #[serde(rename = "type")]
-    pub type_field: String,
+    /// 自定义工具调用的类型。始终为 custom_tool_call
+    pub r#type: String,
     /// 自定义工具调用在OpenAI平台中的唯一ID
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -1759,10 +1713,9 @@ pub struct CustomToolCall {
 pub struct ItemReference {
     /// 要引用的项目的ID
     pub id: String,
-    /// 要引用的项目的类型。始终为item_reference
-    #[serde(rename = "type")]
+    /// 要引用的项目的类型。始终为 item_reference
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub type_field: Option<String>,
+    pub r#type: Option<String>,
 }
 /// 模型响应内容
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1829,7 +1782,6 @@ pub struct FileCitation {
     /// The index of the file in the list of files.
     pub index: i32,
     /// The type of the file citation. Always "file_citation".
-    #[serde(rename = "type")]
     pub citation_type: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1840,8 +1792,7 @@ pub struct URLCitation {
     pub start_index: i32,
     /// 网络资源的标题
     pub title: String,
-    /// URL引用的类型。始终为 "url_citation"
-    #[serde(rename = "type")]
+    /// URL引用的类型。始终为  "url_citation"
     pub citation_type: String,
     /// 网络资源的URL
     pub url: String,
@@ -1858,8 +1809,7 @@ pub struct ContainerFileCitation {
     pub filename: String,
     /// 容器文件引用在消息中第一个字符的索引
     pub start_index: i32,
-    /// 容器文件引用的类型。始终为 "container_file_citation"
-    #[serde(rename = "type")]
+    /// 容器文件引用的类型。始终为  "container_file_citation"
     pub citation_type: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1868,7 +1818,6 @@ pub struct FilePath {
     pub file_id: String,
     /// 文件在文件列表中的索引
     pub index: i32,
-    /// 文件路径的类型。始终为 "file_path"
-    #[serde(rename = "type")]
+    /// 文件路径的类型。始终为  "file_path"
     pub path_type: String,
 }

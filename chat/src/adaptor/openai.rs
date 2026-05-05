@@ -5,9 +5,9 @@ use crate::adaptor::openai_completion::{
     ChatStreamCompletion, ContentObject, FileContentPart, ToolCallRequest, ToolCallRequestParams,
 };
 use crate::adaptor::openai_response::{
-    self, FunctionCall, FunctionCallOutput, InputContent, InputItem, OutputItem, Response,
-    ResponseInputFile, ResponseInputImage, ResponseInputText, ResponseOutput, ResponseReasoning,
-    ResponseRequest, ResponseStream,
+    self, FunctionCall, FunctionCallOutput, FunctionTool, InputContent, InputItem, OutputItem,
+    Response, ResponseInputFile, ResponseInputImage, ResponseInputText, ResponseOutput,
+    ResponseReasoning, ResponseRequest, ResponseStream, Tools,
 };
 use crate::adaptor::sse::SseBlock;
 use crate::adaptor::{Adaptor, AdaptorError, ChatAdaptor, openai_completion};
@@ -20,21 +20,23 @@ use serde_json::{Value, json};
 
 pub struct OpenAICompletionAdaptor;
 
-fn transfer_tools(tools: Option<Vec<ToolCallParam>>) -> Option<Vec<ToolCallRequest>> {
+/// 只转换成 [Tools::Function]
+fn transfer_response_tools(tools: Option<Vec<ToolCallParam>>) -> Option<Vec<Tools>> {
     tools
         .map(|tools| {
             tools
                 .into_iter()
-                .map(|tool| ToolCallRequest {
-                    r#type: String::from("function"),
-                    function: ToolCallRequestParams {
+                .map(|tool| {
+                    Tools::Function(FunctionTool {
+                        r#type: String::from("function"),
                         name: tool.name,
                         description: tool.description,
                         parameters: tool.parameters,
                         strict: tool.strict,
-                    },
+                        defer_loading: None,
+                    })
                 })
-                .collect::<Vec<ToolCallRequest>>()
+                .collect::<Vec<Tools>>()
         })
         .or(None)
 }
@@ -103,7 +105,24 @@ impl ChatAdaptor for OpenAICompletionAdaptor {
         config: ReqConfig,
         contexts: Vec<Context>,
     ) -> Result<Value, AdaptorError> {
-        let tools = transfer_tools(config.tools);
+        let tools = config
+            .tools
+            .map(|tools| {
+                tools
+                    .into_iter()
+                    .map(|tool| ToolCallRequest {
+                        r#type: String::from("function"),
+                        function: ToolCallRequestParams {
+                            name: tool.name,
+                            description: tool.description,
+                            parameters: tool.parameters,
+                            strict: tool.strict,
+                        },
+                    })
+                    .collect::<Vec<ToolCallRequest>>()
+            })
+            .or(None);
+
         let input_messages = contexts
             .into_iter()
             .map(|ctx| {
@@ -316,7 +335,7 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
         config: ReqConfig,
         contexts: Vec<Context>,
     ) -> Result<Value, AdaptorError> {
-        let tools = transfer_tools(config.tools);
+        let tools = transfer_response_tools(config.tools);
         let input_messages = contexts
             .into_iter()
             .map(|ctx| {
@@ -329,7 +348,7 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
                         arguments: tool_calls,
                         call_id: tool_id,
                         name: tool_name,
-                        type_field: String::from("function_call"),
+                        r#type: String::from("function_call"),
                         id: None,
                         namespace: None,
                         status: None,
@@ -345,7 +364,7 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
                                 .map(|c| c.content)
                                 .unwrap_or_default(),
                         ),
-                        type_field: String::from("function_call_output"),
+                        r#type: String::from("function_call_output"),
                         id: None,
                         status: None,
                     })

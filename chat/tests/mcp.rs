@@ -72,7 +72,7 @@ async fn test_handle_chat_mcp() {
         presence_penalty: None,
         frequency_penalty: None,
         parallel_tool_calls: None,
-        reasoning: Some(true),
+        reasoning: Some(false),
         tools: None,
     };
 
