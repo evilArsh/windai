@@ -52,7 +52,6 @@ impl OpenAICompletionAdaptor {
         &self,
         msg: ChatCompletionMessage,
         raw_content: Option<String>,
-        usage: Option<openai_completion::TokenUsage>,
         created_at: i64,
     ) -> Result<Message, AdaptorError> {
         let content = msg.content.unwrap_or(String::new());
@@ -60,17 +59,13 @@ impl OpenAICompletionAdaptor {
             Some(audio) => (ContentType::Audio, audio.transcript, audio.data),
             None => (ContentType::Text, None, content),
         };
-        let (input_tokens, output_tokens) = match usage {
-            Some(usage) => (usage.prompt_tokens, usage.completion_tokens),
-            None => (0, 0),
-        };
         Ok(Message {
             role: msg.role.unwrap_or(Role::Assistant),
             raw_content,
             reasoning_content: Some(msg.reasoning_content.unwrap_or(String::new())),
             transcript,
-            input_tokens,
-            output_tokens,
+            input_tokens: 0,
+            output_tokens: 0,
             created_at,
             content: Some(Content::new(content_type, content)),
             tool_calls: match msg.tool_calls {
@@ -286,8 +281,16 @@ impl ChatAdaptor for OpenAICompletionAdaptor {
             String::from_utf8_lossy(data.as_ref())
         );
         let completion: ChatCompletion = serde_json::from_slice(&data)?;
+        let (input_tokens, output_tokens) = match completion.usage {
+            Some(usage) => (usage.prompt_tokens, usage.completion_tokens),
+            None => (0, 0),
+        };
         if let Some(choice) = completion.choices.into_iter().next() {
-            self.parse_common(choice.message, None, completion.usage, completion.created)
+            let mut msg = self.parse_common(choice.message, None, completion.created)?;
+            msg.input_tokens = input_tokens;
+            msg.output_tokens = output_tokens;
+            msg.created_at = completion.created;
+            Ok(msg)
         } else {
             return Ok(Message::default_assistant());
         }
@@ -306,15 +309,25 @@ impl ChatAdaptor for OpenAICompletionAdaptor {
                     Ok(r) => r,
                     Err(e) => return Some(Err(e.into())),
                 };
+                let (input_tokens, output_tokens) = match completion.usage {
+                    Some(usage) => (usage.prompt_tokens, usage.completion_tokens),
+                    None => (0, 0),
+                };
                 if let Some(choice) = completion.choices.into_iter().next() {
-                    Some(self.parse_common(
-                        choice.delta,
-                        None,
-                        completion.usage,
-                        completion.created,
-                    ))
+                    let mut msg = match self.parse_common(choice.delta, None, completion.created) {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    msg.input_tokens = input_tokens;
+                    msg.output_tokens = output_tokens;
+                    Some(Ok(msg))
                 } else {
-                    None
+                    let mut msg = Message::default_assistant();
+                    msg.input_tokens = input_tokens;
+                    msg.output_tokens = output_tokens;
+                    msg.role = Role::Assistant;
+                    msg.created_at = completion.created;
+                    Some(Ok(msg))
                 }
             })
             .collect::<Result<Vec<Message>, AdaptorError>>()

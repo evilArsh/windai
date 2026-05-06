@@ -214,10 +214,12 @@ impl Message {
             }
         }
 
+        if partial.created_at != 0 {
+            self.created_at = partial.created_at;
+        }
+        self.raw_content = partial.raw_content;
         self.input_tokens += partial.input_tokens;
         self.output_tokens += partial.output_tokens;
-        self.created_at = partial.created_at;
-        self.raw_content = partial.raw_content;
     }
 }
 
@@ -240,6 +242,7 @@ pub struct Context {
 }
 impl Context {
     /// 构建一个简单的上下文，用于直接放入文本数据
+    #[inline]
     pub fn new_simple(
         role: Role,
         content: Vec<Content>,
@@ -255,6 +258,7 @@ impl Context {
         }
     }
     /// 构建一个函数调用结果上下文，放入本地调用结果
+    #[inline]
     pub fn new_toolcall(tool_call_id: String, call_value: String) -> Self {
         Self {
             role: Role::Tool,
@@ -266,6 +270,7 @@ impl Context {
         }
     }
     /// 构建一个模型返回的函数调用选择上下文
+    #[inline]
     pub fn new_toolcall_res(
         tool_call_id: String,
         tool_call_name: String,
@@ -331,6 +336,33 @@ pub struct ResEvent {
     pub data: Option<Message>,
     pub error: Option<ChatError>,
 }
+impl ResEvent {
+    #[inline]
+    pub fn new_partial(data: Message) -> Self {
+        Self {
+            status: ResEventStatus::Partial,
+            data: Some(data),
+            error: None,
+        }
+    }
+    #[inline]
+    pub fn new_finish(data: Message) -> Self {
+        Self {
+            status: ResEventStatus::Finish,
+            data: Some(data),
+            error: None,
+        }
+    }
+    #[inline]
+    pub fn new_error(error: ChatError) -> Self {
+        Self {
+            status: ResEventStatus::Error,
+            data: None,
+            error: Some(error),
+        }
+    }
+}
+
 impl Display for ResEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -438,27 +470,15 @@ pub fn handle_chat(
                             };
                             for chunk in chunks {
                                 msg.append_partial(chunk);
-                                yield ResEvent {
-                                    status: ResEventStatus::Partial,
-                                    data: Some(msg.clone()),
-                                    error: None,
-                                }
+                                yield ResEvent::new_partial(msg.clone());
                             }
                         }
                         Err(err) => {
-                            yield ResEvent {
-                                status: ResEventStatus::Error,
-                                data: None,
-                                error: Some(err.into()),
-                            }
+                            yield ResEvent::new_error(err.into());
                         }
                     };
                 }
-                yield ResEvent {
-                    status: ResEventStatus::Finish,
-                    data: Some(msg.clone()),
-                    error: None,
-                }
+                yield ResEvent::new_finish(msg.clone());
             }
             _ => {
                 let response = match client::request(url.as_str(), Method::POST, |req| {
@@ -489,11 +509,7 @@ pub fn handle_chat(
                         return;
                     }
                 };
-                yield ResEvent {
-                    status: ResEventStatus::Finish,
-                    data: Some(response),
-                    error: None,
-                }
+                yield ResEvent::new_finish(response);
             }
         }
     }

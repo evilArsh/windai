@@ -1,5 +1,8 @@
 use bytes::Bytes;
-use windai_chat::adaptor::sse::SseBlock;
+use windai_chat::{
+    Message,
+    adaptor::{self, sse::SseBlock},
+};
 
 fn b(s: &str) -> Bytes {
     Bytes::from(s.to_string())
@@ -230,9 +233,15 @@ fn function_call_sse() {
 
     data: [DONE]"#;
     let data = bytes::Bytes::from(raw);
-    let block = SseBlock::parse_all(data);
-    println!("{:?}", block);
-    assert_eq!(block.len(), 7);
+    let chat_adaptor = adaptor::get_chat_adaptor(windai_chat::AdaptorType::OpenAICompletion);
+    let mut msg = Message::default_assistant();
+    let chunks = chat_adaptor.parse_stream_chunk(data).unwrap();
+    for chunk in chunks {
+        msg.append_partial(chunk);
+    }
+    println!("{:?}", msg);
+    assert!(msg.tool_calls.is_some());
+    assert!(msg.tool_calls.unwrap().len() == 2);
 }
 
 #[test]
@@ -266,6 +275,13 @@ fn function_call_response_sse() {
     data: {"type":"response.completed","response":{"id":"resp_03c724975b1dc3ab0169f9f800e9ac819196212334c1889489","object":"response","created_at":1777989632,"status":"completed","background":false,"completed_at":1777989634,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":"You are a helpful coding assistant.","max_output_tokens":null,"max_tool_calls":null,"model":"gpt-5.4","moderation":null,"output":[],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":"5f05c2a2-92b7-4aaf-b5c6-e9e9bf5d721e","prompt_cache_retention":"24h","reasoning":{"effort":"none","summary":null},"safety_identifier":"user-xF6Vy8Q10Oaiori4gfaCK4fK","service_tier":"default","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":"auto","tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[{"type":"function","description":"根据输入的地区查询当地的天气情况","name":"get_local_weather","parameters":{"properties":{"area":{"description":"要查询的指定地区的拼音简写. 比如: 北京 -> Beijing","type":"string"}},"required":["area"],"type":"object","additionalProperties":false},"strict":true},{"type":"function","description":"根据输入的地区查询该地区当前的时间","name":"get_local_date","parameters":{"properties":{"area":{"description":"要查询的指定地区的拼音简写. 比如: 北京 -> Beijing","type":"string"}},"required":["area"],"type":"object","additionalProperties":false},"strict":true}],"top_logprobs":0,"top_p":0.98,"truncation":"disabled","usage":{"input_tokens":146,"input_tokens_details":{"cached_tokens":0},"output_tokens":51,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":197},"user":null,"metadata":{}},"sequence_number":10}"#;
 
     let data = bytes::Bytes::from(raw);
-    let block = SseBlock::parse_all(data);
-    println!("{:?}", block);
+    let chat_adaptor = adaptor::get_chat_adaptor(windai_chat::AdaptorType::OpenAIResponse);
+    let mut msg = Message::default_assistant();
+    let chunks = chat_adaptor.parse_stream_chunk(data).unwrap();
+    for chunk in chunks {
+        msg.append_partial(chunk);
+    }
+    println!("{:?}", msg);
+    assert!(msg.tool_calls.is_some());
+    assert!(msg.tool_calls.unwrap().len() == 2);
 }
