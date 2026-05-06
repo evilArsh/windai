@@ -280,6 +280,10 @@ pub struct TokenUsage {
 pub struct ChatCompletionMessageParam {
     /// 消息具体内容
     pub content: Content,
+    /// 模型生成的推理消息
+    /// - 非 OpenAI 标准参数
+    /// - DeepSeek tool_calls 思维链
+    pub reasoning_content: Option<String>,
 
     /// 消息作者的角色
     pub role: Role,

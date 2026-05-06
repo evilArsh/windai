@@ -3,8 +3,8 @@ use serde_json::json;
 use std::{env, str::FromStr};
 use tokio::pin;
 use windai_chat::{
-    AdaptorType, Content, ContentType, Context, Model, ReqConfig, ResEventStatus, Role,
-    ToolCallParam, handle_chat,
+    AdaptorType, Content, ContentType, Context, Message, Model, ReqConfig, ResEventStatus, Role,
+    ToolCallSchema, handle_chat,
 };
 
 #[tokio::test]
@@ -32,7 +32,7 @@ async fn test_handle_chat_mcp() {
     };
 
     let tools = vec![
-        ToolCallParam {
+        ToolCallSchema {
             name: "get_local_weather".to_string(),
             description: Some("根据输入的地区查询当地的天气情况".to_string()),
             parameters: Some(json!({
@@ -47,7 +47,7 @@ async fn test_handle_chat_mcp() {
             })),
             strict: Some(true),
         },
-        ToolCallParam {
+        ToolCallSchema {
             name: "get_local_date".to_string(),
             description: Some("根据输入的地区查询该地区当前的时间".to_string()),
             parameters: Some(json!({
@@ -76,43 +76,79 @@ async fn test_handle_chat_mcp() {
         tools: None,
     };
 
-    let user_input = vec![Content::new(
-        ContentType::Text,
-        String::from("what's the weather in Shanghai? and what's the date now in Beijing?"),
-    )];
-
-    let contexts = vec![Context::new_simple(
-        Role::System,
-        vec![Content::new(
-            ContentType::Text,
-            String::from("you are a helpful assistant"),
-        )],
-        None,
-    )];
+    let mut contexts = vec![
+        Context::new_simple(
+            Role::System,
+            vec![Content::new(
+                ContentType::Text,
+                String::from("you are a helpful assistant"),
+            )],
+            None,
+        ),
+        Context::new_simple(
+            Role::User,
+            vec![Content::new(
+                ContentType::Text,
+                String::from("what's the weather in Shanghai? and what's the date now in Beijing?"),
+            )],
+            None,
+        ),
+    ];
 
     chat_config.tools = Some(tools);
 
     let res = handle_chat(
-        Some(user_input),
-        contexts,
-        chat_config,
-        model,
-        api_url,
-        api_key,
+        contexts.clone(),
+        chat_config.clone(),
+        model.clone(),
+        &api_url,
+        &api_key,
     );
+    let mut msg = Message::default_assistant();
     pin!(res);
     while let Some(event) = res.next().await {
-        println!("[data]\n{:?}", &event);
+        // println!("[data]\n{:?}", &event);
         if event.status == ResEventStatus::Error {
-            println!("[error]\n{:?}", &event.error);
+            log::error!("[error]\n{:?}", &event.error);
+            return;
         }
         if event.status == ResEventStatus::Finish
             && let Some(data) = event.data
         {
-            println!("[success]\n{:?}", &data);
-            assert!(data.tool_calls.is_some());
-            let calls = data.tool_calls.unwrap();
-            assert_eq!(calls.len(), 2);
+            log::info!("[success]\n{:?}", &data);
+            assert!(&data.tool_calls.is_some());
+            assert_eq!(data.tool_calls.as_ref().unwrap().len(), 2);
+            msg = data;
+        }
+    }
+
+    let tools = msg.tool_calls.unwrap();
+    contexts.push(Context::new_tool_request(
+        tools.clone(),
+        msg.reasoning_content,
+    ));
+
+    // mcp 调用
+    tools.into_iter().for_each(|tc| {
+        let res = match tc.name.as_ref() {
+            "get_local_weather" => "{area: '上海',weather: '晴天 24℃'}".to_string(),
+            "get_local_date" | _ => "{area: '北京',date: '2026/05/06 14:50'}".to_string(),
+        };
+        contexts.push(Context::new_tool_result(tc.call_id, res));
+    });
+
+    let res = handle_chat(contexts.clone(), chat_config, model, &api_url, &api_key);
+    pin!(res);
+    while let Some(event) = res.next().await {
+        // println!("[data]\n{:?}", &event);
+        if event.status == ResEventStatus::Error {
+            log::error!("[mcp error]\n{:?}", &event.error);
+            return;
+        }
+        if event.status == ResEventStatus::Finish
+            && let Some(data) = event.data
+        {
+            log::info!("[mcp success]\n{:?}", &data);
         }
     }
 }

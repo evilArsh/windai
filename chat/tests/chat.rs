@@ -37,23 +37,22 @@ async fn test_handle_chat() {
         adaptor,
         endpoint: None,
     };
-    let user_input = vec![Content::new(ContentType::Text, String::from("who are you"))];
-    let contexts = vec![Context::new_simple(
-        Role::System,
-        vec![Content {
-            content: String::from("you are a helpful assistant, response in Chinese"),
-            content_type: ContentType::Text,
-        }],
-        None,
-    )];
-    let res = handle_chat(
-        Some(user_input),
-        contexts,
-        chat_config,
-        model,
-        api_url,
-        api_key,
-    );
+    let contexts = vec![
+        Context::new_simple(
+            Role::System,
+            vec![Content {
+                content: String::from("you are a helpful assistant, response in Chinese"),
+                content_type: ContentType::Text,
+            }],
+            None,
+        ),
+        Context::new_simple(
+            Role::User,
+            vec![Content::new(ContentType::Text, String::from("who are you"))],
+            None,
+        ),
+    ];
+    let res = handle_chat(contexts, chat_config, model, &api_url, &api_key);
     pin!(res);
     while let Some(value) = res.next().await {
         println!("[data]\n{}", value);

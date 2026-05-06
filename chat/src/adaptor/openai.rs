@@ -12,8 +12,8 @@ use crate::adaptor::openai_response::{
 use crate::adaptor::sse::SseBlock;
 use crate::adaptor::{Adaptor, AdaptorError, ChatAdaptor, openai_completion};
 use crate::{
-    AdaptorType, Content, ContentType, Context, Message, ReqConfig, Role, ToolCallParam,
-    ToolCallRes,
+    AdaptorType, Content, ContentType, Context, Message, ReqConfig, Role, ToolCallInfo,
+    ToolCallSchema,
 };
 use bytes::Bytes;
 use serde_json::{Value, json};
@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 pub struct OpenAICompletionAdaptor;
 
 /// 只转换成 [Tools::Function]
-fn transfer_response_tools(tools: Option<Vec<ToolCallParam>>) -> Option<Vec<Tools>> {
+fn transfer_response_tools(tools: Option<Vec<ToolCallSchema>>) -> Option<Vec<Tools>> {
     tools
         .map(|tools| {
             tools
@@ -74,14 +74,14 @@ impl OpenAICompletionAdaptor {
                     .map(|tool| match tool {
                         openai_completion::ChatCompletionMessageToolCall::Function(tool) => {
                             let func = tool.function.unwrap_or_default();
-                            Some(ToolCallRes {
+                            Some(ToolCallInfo {
                                 call_id: tool.id.unwrap_or_default(),
                                 name: func.name.unwrap_or_default(),
                                 arguments: func.arguments.unwrap_or_default(),
                             })
                         }
                         openai_completion::ChatCompletionMessageToolCall::Custom(tool) => {
-                            Some(ToolCallRes {
+                            Some(ToolCallInfo {
                                 call_id: tool.id,
                                 name: tool.custom.name,
                                 arguments: tool.custom.input,
@@ -122,29 +122,9 @@ impl ChatAdaptor for OpenAICompletionAdaptor {
         let input_messages = contexts
             .into_iter()
             .map(|ctx| {
-                if let Some(tool_calls) = ctx.tool_call_args
-                    && let Some(tool_name) = ctx.tool_call_name
+                if ctx.role == Role::Tool
                     && let Some(tool_id) = ctx.tool_call_id
                 {
-                    // 模型返回的函数调用参数
-                    ChatCompletionMessageParam {
-                        content: openai_completion::Content::Text(String::new()),
-                        role: Role::Assistant,
-                        name: None,
-                        audio: None,
-                        tool_calls: Some(vec![ChatCompletionMessageToolCall::Function(
-                            ChatCompletionMessageFunctionToolCall {
-                                id: Some(tool_id),
-                                function: Some(ChatCompletionMessageFunctionToolCallFunction {
-                                    name: Some(tool_name),
-                                    arguments: Some(tool_calls),
-                                }),
-                                r#type: Some(String::from("function")),
-                            },
-                        )]),
-                        tool_call_id: None,
-                    }
-                } else if let Some(tool_id) = ctx.tool_call_id {
                     // 用户函数调用结果
                     ChatCompletionMessageParam {
                         content: openai_completion::Content::Text(
@@ -155,10 +135,42 @@ impl ChatAdaptor for OpenAICompletionAdaptor {
                                 .unwrap_or_default(),
                         ),
                         role: Role::Tool,
+                        reasoning_content: None,
                         name: None,
                         audio: None,
                         tool_calls: None,
                         tool_call_id: Some(tool_id),
+                    }
+                } else if ctx.role == Role::Assistant
+                    && let Some(tools) = ctx.tool_calls
+                {
+                    // 模型返回的函数调用参数
+                    ChatCompletionMessageParam {
+                        content: openai_completion::Content::Text(String::new()),
+                        role: Role::Assistant,
+                        name: None,
+                        audio: None,
+                        reasoning_content: ctx.reasoning_content,
+                        tool_calls: Some(
+                            tools
+                                .into_iter()
+                                .map(|tool| {
+                                    ChatCompletionMessageToolCall::Function(
+                                        ChatCompletionMessageFunctionToolCall {
+                                            id: Some(tool.call_id),
+                                            function: Some(
+                                                ChatCompletionMessageFunctionToolCallFunction {
+                                                    name: Some(tool.name),
+                                                    arguments: Some(tool.arguments),
+                                                },
+                                            ),
+                                            r#type: Some(String::from("function")),
+                                        },
+                                    )
+                                })
+                                .collect(),
+                        ),
+                        tool_call_id: None,
                     }
                 } else {
                     // 正常用户信息上下文
@@ -219,6 +231,7 @@ impl ChatAdaptor for OpenAICompletionAdaptor {
                     ChatCompletionMessageParam {
                         content: contents,
                         role: ctx.role,
+                        reasoning_content: None,
                         name: None,
                         audio: None,
                         tool_calls: None,
@@ -352,24 +365,31 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
         let tools = transfer_response_tools(config.tools);
         let input_messages = contexts
             .into_iter()
-            .map(|ctx| {
-                if let Some(tool_calls) = ctx.tool_call_args
-                    && let Some(tool_name) = ctx.tool_call_name
+            .flat_map(|ctx| {
+                if ctx.role == Role::Assistant
+                    && let Some(tools) = ctx.tool_calls
+                {
+                    tools
+                        .into_iter()
+                        .map(|tool| {
+                            InputItem::FunctionCall(FunctionCall {
+                                arguments: tool.arguments,
+                                call_id: tool.call_id,
+                                name: tool.name,
+                                r#type: String::from("function_call"),
+                                id: None,
+                                namespace: None,
+                                status: None,
+                            })
+                        })
+                        .collect::<Vec<InputItem>>()
+
+                    // 函数调用参数上下文
+                } else if ctx.role == Role::Tool
                     && let Some(tool_id) = ctx.tool_call_id
                 {
-                    // 函数调用参数上下文
-                    InputItem::FunctionCall(FunctionCall {
-                        arguments: tool_calls,
-                        call_id: tool_id,
-                        name: tool_name,
-                        r#type: String::from("function_call"),
-                        id: None,
-                        namespace: None,
-                        status: None,
-                    })
-                } else if let Some(tool_id) = ctx.tool_call_id {
                     // 用户函数调用结果上下文
-                    InputItem::FunctionCallOutput(FunctionCallOutput {
+                    vec![InputItem::FunctionCallOutput(FunctionCallOutput {
                         call_id: tool_id,
                         output: Value::String(
                             ctx.content
@@ -381,10 +401,10 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
                         r#type: String::from("function_call_output"),
                         id: None,
                         status: None,
-                    })
+                    })]
                 } else {
                     // 正常用户信息上下文
-                    InputItem::Message(openai_response::Message {
+                    vec![InputItem::Message(openai_response::Message {
                         content: ctx
                             .content
                             .iter()
@@ -418,7 +438,7 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
                         phase: None,
                         status: None,
                         r#type: None,
-                    })
+                    })]
                 }
             })
             .collect::<Vec<InputItem>>();
@@ -543,7 +563,7 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
                     });
                 }
                 OutputItem::FunctionCall(c) => {
-                    let new_call = ToolCallRes {
+                    let new_call = ToolCallInfo {
                         call_id: c.call_id,
                         name: c.name,
                         arguments: c.arguments,
@@ -636,7 +656,7 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
                                 created_at: 0,
                                 input_tokens: 0,
                                 output_tokens: 0,
-                                tool_calls: Some(vec![ToolCallRes {
+                                tool_calls: Some(vec![ToolCallInfo {
                                     call_id: call.call_id,
                                     name: call.name,
                                     arguments: String::new(),
@@ -657,7 +677,7 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
                         created_at: 0,
                         input_tokens: 0,
                         output_tokens: 0,
-                        tool_calls: Some(vec![ToolCallRes {
+                        tool_calls: Some(vec![ToolCallInfo {
                             call_id: String::new(),
                             name: String::new(),
                             arguments: response.delta.unwrap_or_default(),

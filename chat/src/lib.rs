@@ -45,7 +45,7 @@ pub enum AdaptorType {
     OpenAIResponse,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct Model {
     /// 提供商提供的模型名称
     pub name: String,
@@ -64,9 +64,7 @@ pub struct Model {
 /// - Image: 图片消息（分析图像并将其用作生成文本或音频的输入）
 /// - Audio: 音频消息（音频和文本的输入与输出）
 /// - File: 文件消息
-#[derive(
-    Debug, Serialize, Deserialize, PartialEq, Copy, Eq, Clone, strum::EnumString, strum::Display,
-)]
+#[derive(Debug, Serialize, PartialEq, Copy, Eq, Clone, strum::EnumString, strum::Display)]
 #[serde(rename_all = "lowercase")]
 pub enum ContentType {
     Text,
@@ -76,7 +74,7 @@ pub enum ContentType {
 }
 
 /// 消息内容
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 pub struct Content {
     /// 消息内容
     /// - 纯文本消息
@@ -96,9 +94,9 @@ impl Content {
         }
     }
 }
-/// 函数调用请求参数
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ToolCallParam {
+/// 工具调用请求参数
+#[derive(Debug, Serialize, Clone)]
+pub struct ToolCallSchema {
     /// 要调用的函数名称
     pub name: String,
     /// 函数描述。模型根据此描述决定是否调用该函数。
@@ -113,16 +111,19 @@ pub struct ToolCallParam {
     pub strict: Option<bool>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-/// 模型返回的 tool_call 参数
-pub struct ToolCallRes {
+#[derive(Debug, Serialize, Clone)]
+/// 工具调用信息
+pub struct ToolCallInfo {
+    /// 工具调用 ID
     pub call_id: String,
+    /// 函数名称
     pub name: String,
+    /// 模型生成的工具调用参数
     pub arguments: String,
 }
 
 /// 模型响应消息
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 pub struct Message {
     pub role: Role,
     /// 提供商返回的原始消息内容
@@ -141,8 +142,8 @@ pub struct Message {
     pub input_tokens: i32,
     /// 模型输出的token数
     pub output_tokens: i32,
-    /// 模型返回的函数调用列表
-    pub tool_calls: Option<Vec<ToolCallRes>>,
+    /// 模型返回的工具调用列表
+    pub tool_calls: Option<Vec<ToolCallInfo>>,
 }
 impl Message {
     pub fn default_assistant() -> Self {
@@ -224,7 +225,7 @@ impl Message {
 }
 
 /// 消息上下文结构
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 pub struct Context {
     /// 角色
     pub role: Role,
@@ -232,13 +233,13 @@ pub struct Context {
     /// - TODO: 如果将音频数据放入上下文，放入返回的字节数据还是翻译后的 `transcript`
     pub content: Vec<Content>,
     /// 模型推理消息，一些模型可能需要该消息
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
-    /// 函数调用 ID, 该值存在时，本地调用结果会放入 content 中
+    /// 工具调用上下文
+    pub tool_calls: Option<Vec<ToolCallInfo>>,
+    /// 工具调用 ID, 该值存在时，本地调用结果会放入 content 中。
+    /// 此时该上下文为工具调用结果
     pub tool_call_id: Option<String>,
-    /// 模型返回的函数调用名称
-    pub tool_call_name: Option<String>,
-    /// 模型返回的函数调用参数
-    pub tool_call_args: Option<String>,
 }
 impl Context {
     /// 构建一个简单的上下文，用于直接放入文本数据
@@ -252,43 +253,41 @@ impl Context {
             role,
             content,
             reasoning_content,
+            tool_calls: None,
             tool_call_id: None,
-            tool_call_name: None,
-            tool_call_args: None,
         }
     }
-    /// 构建一个函数调用结果上下文，放入本地调用结果
+    /// 构建一个工具调用结果上下文，放入本地调用结果
     #[inline]
-    pub fn new_toolcall(tool_call_id: String, call_value: String) -> Self {
+    pub fn new_tool_result(tool_call_id: String, call_value: String) -> Self {
         Self {
             role: Role::Tool,
             content: vec![Content::new(ContentType::Text, call_value)],
             reasoning_content: None,
             tool_call_id: Some(tool_call_id),
-            tool_call_name: None,
-            tool_call_args: None,
+            tool_calls: None,
         }
     }
-    /// 构建一个模型返回的函数调用选择上下文
+
+    /// 构建一个模型返回的工具调用选择上下文
+    /// - reasoning_content: 模型推理消息，一些模型可能需要该消息(DeepSeek)
     #[inline]
-    pub fn new_toolcall_res(
-        tool_call_id: String,
-        tool_call_name: String,
-        tool_call_args: String,
+    pub fn new_tool_request(
+        call_res: Vec<ToolCallInfo>,
+        reasoning_content: Option<String>,
     ) -> Self {
         Self {
             role: Role::Assistant,
             content: vec![],
-            reasoning_content: None,
-            tool_call_id: Some(tool_call_id),
-            tool_call_name: Some(tool_call_name),
-            tool_call_args: Some(tool_call_args),
+            reasoning_content,
+            tool_calls: Some(call_res),
+            tool_call_id: None,
         }
     }
 }
 
 /// 对话请求参数
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct ReqConfig {
     /// 采样温度，范围 0~2。较高值使输出更随机，较低值使输出更聚焦。
     /// 通常建议只调 temperature 或 top_p 之一。
@@ -309,15 +308,15 @@ pub struct ReqConfig {
     /// 频率惩罚，-2.0 ~ 2.0。正值降低模型逐字重复的可能性。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frequency_penalty: Option<f64>,
-    /// 是否在工具调用期间启用并行函数调用。
+    /// 是否在工具调用期间启用并行工具调用。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parallel_tool_calls: Option<bool>,
     /// 是否开启推理模式。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<bool>,
-    /// 函数调用列表
+    /// 工具调用列表
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tools: Option<Vec<ToolCallParam>>,
+    pub tools: Option<Vec<ToolCallSchema>>,
 }
 
 /// 聊天统一响应事件
@@ -402,15 +401,13 @@ impl From<url::ParseError> for ResEvent {
 
 /// 发送一次对话请求
 pub fn handle_chat(
-    user_input: Option<Vec<Content>>,
     contexts: Vec<Context>,
     config: ReqConfig,
     model: Model,
-    api_base: String,
-    api_key: String,
+    api_base: &str,
+    api_key: &str,
 ) -> impl Stream<Item = ResEvent> {
     stream! {
-        let mut contexts = contexts;
         let chat_adaptor = adaptor::get_chat_adaptor(model.adaptor);
         let endpoint = model
             .endpoint
@@ -427,9 +424,6 @@ pub fn handle_chat(
                 return;
             }
         };
-        if let Some(user_input) = user_input {
-            contexts.push(Context::new_simple(Role::User, user_input, None));
-        }
         let is_stream = config.stream;
         let req_body = match chat_adaptor.build_request(&model.name, config, contexts) {
             Ok(body) => body,
@@ -445,7 +439,7 @@ pub fn handle_chat(
         match is_stream {
             Some(true) => {
                 let response = match client::request_sse(url.as_str(), Method::POST, |req| {
-                    req.json(&req_body).bearer_auth(&api_key)
+                    req.json(&req_body).bearer_auth(api_key)
                 })
                 .await
                 {
@@ -482,7 +476,7 @@ pub fn handle_chat(
             }
             _ => {
                 let response = match client::request(url.as_str(), Method::POST, |req| {
-                    req.json(&req_body).bearer_auth(&api_key)
+                    req.json(&req_body).bearer_auth(api_key)
                 })
                 .await
                 {
