@@ -315,6 +315,7 @@ pub struct ReqConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<bool>,
     /// 工具调用列表
+    /// - TODO: responses 风格中包含更多类型的工具调用
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolCallSchema>>,
 }

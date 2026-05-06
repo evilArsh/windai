@@ -490,23 +490,14 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
             None => (0, 0),
         };
 
-        let mut output_msg: Option<Message> = None;
-        let mut output_reasoning: Option<Message> = None;
-        let mut output_img: Option<Message> = None;
-        let mut output_toolcalls: Option<Message> = None;
-
+        let mut res = Message::default_assistant();
         for output in response.output.into_iter() {
             match output {
-                // for output in response.output{}
                 OutputItem::ResponseOutputMessage(msg) => {
-                    if output_msg.is_some() {
-                        log::warn!("multiple output messages in response");
-                        continue;
-                    }
                     let c = msg.content.into_iter().next().ok_or_else(|| {
                         AdaptorError::Transfer("no output message in response".into())
                     })?;
-                    output_msg = Some(Message {
+                    res = Message {
                         role: msg.role,
                         raw_content: None,
                         content: Some(Content::new(
@@ -522,35 +513,10 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
                         input_tokens,
                         output_tokens,
                         tool_calls: None,
-                    });
-                }
-                OutputItem::Reasoning(reason) => {
-                    if output_reasoning.is_some() {
-                        log::warn!("multiple output reasoning messages in response");
-                        continue;
-                    }
-                    output_reasoning = Some(Message {
-                        role: Role::Assistant,
-                        raw_content: None,
-                        content: None,
-                        reasoning_content: reason
-                            .content
-                            .and_then(|content_vec| content_vec.into_iter().next())
-                            .map(|content| content.text)
-                            .or(Some(String::new())),
-                        transcript: None,
-                        created_at: response.created_at,
-                        input_tokens,
-                        output_tokens,
-                        tool_calls: None,
-                    });
+                    };
                 }
                 OutputItem::ImageGenerationCall(call) => {
-                    if output_img.is_some() {
-                        log::warn!("multiple output image generation in response");
-                        continue;
-                    }
-                    output_img = Some(Message {
+                    res = Message {
                         role: Role::Assistant,
                         raw_content: None,
                         content: Some(Content::new(ContentType::Image, call.result)),
@@ -560,7 +526,17 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
                         input_tokens,
                         output_tokens,
                         tool_calls: None,
-                    });
+                    };
+                }
+                OutputItem::Reasoning(reason) => {
+                    res.reasoning_content = reason
+                        .content
+                        .and_then(|content_vec| content_vec.into_iter().next())
+                        .map(|content| content.text)
+                        .or(Some(String::new()));
+                    res.created_at = response.created_at;
+                    res.input_tokens = input_tokens;
+                    res.output_tokens = output_tokens;
                 }
                 OutputItem::FunctionCall(c) => {
                     let new_call = ToolCallInfo {
@@ -568,23 +544,13 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
                         name: c.name,
                         arguments: c.arguments,
                     };
-                    match &mut output_toolcalls {
-                        Some(call) => match &mut call.tool_calls {
-                            Some(tool_calls) => tool_calls.push(new_call),
-                            None => call.tool_calls = Some(vec![new_call]),
-                        },
+                    match &mut res.tool_calls {
+                        Some(tool_calls) => tool_calls.push(new_call),
                         None => {
-                            output_toolcalls = Some(Message {
-                                role: Role::Assistant,
-                                raw_content: None,
-                                content: None,
-                                reasoning_content: None,
-                                transcript: None,
-                                created_at: response.created_at,
-                                input_tokens,
-                                output_tokens,
-                                tool_calls: Some(vec![new_call]),
-                            });
+                            res.created_at = response.created_at;
+                            res.tool_calls = Some(vec![new_call]);
+                            res.input_tokens = input_tokens;
+                            res.output_tokens = output_tokens;
                         }
                     }
                 }
@@ -594,19 +560,7 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
             }
         }
 
-        if let Some(toolcalls) = output_toolcalls {
-            return Ok(toolcalls);
-        }
-        if let Some(img) = output_img {
-            return Ok(img);
-        }
-        if let Some(reasoning) = output_reasoning {
-            return Ok(reasoning);
-        }
-        if let Some(msg) = output_msg {
-            return Ok(msg);
-        }
-        Ok(Message::default_assistant())
+        Ok(res)
     }
     fn parse_stream_chunk(&self, data: Bytes) -> Result<Vec<Message>, AdaptorError> {
         let blocks = SseBlock::parse_all(data);
