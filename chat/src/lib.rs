@@ -244,7 +244,7 @@ pub struct Context {
 impl Context {
     /// 构建一个简单的上下文，用于直接放入文本数据
     #[inline]
-    pub fn new_simple(
+    pub fn new_normal(
         role: Role,
         content: Vec<Content>,
         reasoning_content: Option<String>,

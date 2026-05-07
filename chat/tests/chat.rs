@@ -38,7 +38,7 @@ async fn test_handle_chat() {
         endpoint: None,
     };
     let contexts = vec![
-        Context::new_simple(
+        Context::new_normal(
             Role::System,
             vec![Content {
                 content: String::from("you are a helpful assistant, response in Chinese"),
@@ -46,7 +46,7 @@ async fn test_handle_chat() {
             }],
             None,
         ),
-        Context::new_simple(
+        Context::new_normal(
             Role::User,
             vec![Content::new(ContentType::Text, String::from("who are you"))],
             None,
@@ -80,7 +80,7 @@ fn test_build_request() {
     };
 
     let contexts = vec![
-        Context::new_simple(
+        Context::new_normal(
             Role::System,
             vec![Content {
                 content: String::from("you are a helpful assistant and MUST response in Chinese"),
@@ -88,7 +88,7 @@ fn test_build_request() {
             }],
             None,
         ),
-        Context::new_simple(
+        Context::new_normal(
             Role::User,
             vec![Content {
                 content: String::from("who are you"),

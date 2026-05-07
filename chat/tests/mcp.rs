@@ -77,7 +77,7 @@ async fn test_handle_chat_mcp() {
     };
 
     let mut contexts = vec![
-        Context::new_simple(
+        Context::new_normal(
             Role::System,
             vec![Content::new(
                 ContentType::Text,
@@ -85,7 +85,7 @@ async fn test_handle_chat_mcp() {
             )],
             None,
         ),
-        Context::new_simple(
+        Context::new_normal(
             Role::User,
             vec![Content::new(
                 ContentType::Text,

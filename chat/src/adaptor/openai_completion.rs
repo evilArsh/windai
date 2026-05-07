@@ -10,7 +10,7 @@ use serde_json::Value;
 // ChatCompletion 请求
 // ======================================================
 
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Clone, Default)]
 pub struct ChatCompletionRequest {
     /// 对话消息列表
     pub messages: Vec<ChatCompletionMessageParam>,
@@ -190,7 +190,7 @@ pub struct ChatCompletionRequest {
     pub web_search_options: Option<Value>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 pub struct ChatCompletionContentPartImage {
     /// 图片url或者base64编码的图片
     pub url: String,
@@ -198,13 +198,13 @@ pub struct ChatCompletionContentPartImage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
 }
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 pub struct ChatCompletionContentPartInputAudio {
     pub data: String,
     /// 可选值："wav","mp3"
     pub format: String,
 }
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 pub struct ChatCompletionAudioParam {
     /// 指定输出音频格式。必须是 wav、mp3、flac、opus或pcm16中的一种。
     pub format: String,
@@ -215,7 +215,7 @@ pub struct ChatCompletionAudioParam {
     /// 您也可以提供一个自定义的语音对象，其中包含一个 id，例如 { "id": "voice_1234" }。
     pub voice: Value,
 }
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 pub struct FileContentPart {
     /// base64编码的文件数据，当作为字符串将文件传递给模型时使用。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -227,7 +227,7 @@ pub struct FileContentPart {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filename: Option<String>,
 }
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 pub struct ContentObject {
     pub r#type: String,
 
@@ -263,20 +263,20 @@ pub struct ContentObject {
     pub refusal: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 #[serde(untagged)]
 pub enum Content {
     Text(String),
     Objects(Vec<ContentObject>),
 }
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct TokenUsage {
     pub completion_tokens: i32,
     pub prompt_tokens: i32,
     pub total_tokens: i32,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 pub struct ChatCompletionMessageParam {
     /// 消息具体内容
     pub content: Content,
@@ -316,7 +316,7 @@ pub struct ChatCompletionMessageParam {
     pub tool_call_id: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Clone, Default)]
 pub struct ToolCallRequestParams {
     /// 要调用的函数名称
     pub name: String,
@@ -335,7 +335,7 @@ pub struct ToolCallRequestParams {
 }
 
 /// 发送给模型的工具调用参数
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 pub struct ToolCallRequest {
     /// 工具调用类型，固定值为 "function"
     pub r#type: String,
@@ -348,7 +348,7 @@ pub struct ToolCallRequest {
 // ChatCompletion 响应
 // ======================================================
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct ChatCompletion {
     /// 聊天补全的唯一标识符。
     pub id: String,
@@ -374,7 +374,7 @@ pub struct ChatCompletion {
 }
 
 /// 实时流式传输聊天完成。使用服务器发送事件接收模型返回的完成片段。
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct ChatStreamCompletion {
     /// 聊天补全的唯一标识符。
     pub id: String,
@@ -403,7 +403,7 @@ pub struct ChatStreamCompletion {
 }
 
 /// 对话消息
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct ChatCompletionMessage {
     /// 消息内容
     /// 流式消息中该字段可能为空
@@ -466,7 +466,7 @@ impl Default for ChatCompletionMessageFunctionToolCallFunction {
 }
 
 /// 模型生成的音频数据
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct ChatCompletionMessageAudio {
     /// 唯一标识符
     pub id: String,
@@ -514,7 +514,7 @@ pub struct ChatCompletionMessageCustomToolCall {
     pub r#type: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct ChatCompletionChoice {
     pub finish_reason: String,
     pub index: i32,
@@ -556,7 +556,7 @@ pub struct ChatCompletionChoice {
     pub logprobs: Option<Value>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct ChatStreamCompletionChoice {
     /// 由流式模型响应生成的聊天完成增量片段
     pub delta: ChatCompletionMessage,

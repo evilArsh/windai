@@ -312,7 +312,7 @@ pub struct ToolChoiceShell {
     pub r#type: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Default, Clone, Builder)]
+#[derive(Debug, Serialize, Default, Clone, Builder)]
 pub struct ResponseReasoning {
     /// 可选值： none, minimal, low, medium, high, xhigh
     ///
@@ -329,7 +329,7 @@ pub struct ResponseReasoning {
 }
 
 /// 上下文管理配置
-#[derive(Debug, Serialize, Default, Deserialize, Clone, Builder)]
+#[derive(Debug, Serialize, Default, Clone, Builder)]
 pub struct ContextManagementConfig {
     ///  entry 类型。目前仅支持 'compaction'（压缩）。
     #[builder(default = "String::from(\"compaction\")")]
@@ -342,7 +342,7 @@ pub struct ContextManagementConfig {
 }
 
 /// 会话参数，支持直接传入会话 ID 或对象
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 #[serde(untagged)]
 pub enum ConversationParam {
     /// 唯一的会话 ID 字符串
@@ -352,7 +352,7 @@ pub enum ConversationParam {
 }
 
 /// 可选包含的附加输出项枚举
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 pub enum ResponseIncludable {
     #[serde(rename = "web_search_call.action.sources")]
     WebSearchSources,
@@ -372,7 +372,7 @@ pub enum ResponseIncludable {
     ReasoningEncryptedContent,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 /// 输入模型的消息带有指示遵循角色层级的指令。
 /// 以开发者或系统角色给出的指令优先于以用户角色给出的指令。
 ///
@@ -400,7 +400,7 @@ pub struct Message {
 }
 
 /// 输入内容的变体
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 #[serde(untagged)]
 pub enum InputItem {
     // TextInput(String),
@@ -435,7 +435,7 @@ pub enum InputItem {
 }
 
 /// 输出内容的变体
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum OutputItem {
     ResponseOutputMessage(ResponseOutputMessage),
@@ -466,13 +466,13 @@ pub enum OutputItem {
     ItemReference(ItemReference),
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 pub struct ResponseInputText {
     pub text: String,
     /// 总是 "input_text"
     pub r#type: String,
 }
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 pub struct ResponseInputImage {
     /// One of `high`, `low`, `auto`, or `original`. Defaults to `auto`.
     pub detail: Option<String>,
@@ -482,7 +482,7 @@ pub struct ResponseInputImage {
     /// 要发送给模型的图像的URL。可以是完全限定的URL，也可以是数据URL中base64编码的图像。
     pub image_url: Option<String>,
 }
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 pub struct ResponseInputFile {
     /// 输入项的类型。始终为 "input_file"。
     pub r#type: String,
@@ -496,7 +496,7 @@ pub struct ResponseInputFile {
     pub filename: Option<String>,
 }
 /// 易用的输入消息结构
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 #[serde(untagged)]
 pub enum InputContent {
     ResponseInputText(ResponseInputText),
@@ -508,7 +508,7 @@ pub enum InputContent {
 // Responses 响应
 // ======================================================
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct TokenUsage {
     pub input_tokens: i32,
     pub output_tokens: i32,
@@ -516,7 +516,7 @@ pub struct TokenUsage {
 }
 
 /// Responses 响应结构体
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct Response {
     /// Responses 的唯一标识符。
     pub id: String,
@@ -646,7 +646,7 @@ pub struct Response {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<TokenUsage>,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct ResponseStream {
     /// 所有事件的响应
     pub r#type: String,
