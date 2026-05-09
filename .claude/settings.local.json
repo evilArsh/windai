@@ -2,7 +2,12 @@
   "permissions": {
     "allow": [
       "Bash(cargo check:*)",
-      "Bash(cargo clippy:*)"
+      "Bash(cargo clippy:*)",
+      "Bash(cargo metadata *)",
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\([p['manifest_path'] for p in d['packages'] if p['name']=='rmcp'][0]\\)\")"
     ]
+  },
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": true
   }
 }

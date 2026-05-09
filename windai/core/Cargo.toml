@@ -25,7 +25,6 @@ async-stream.workspace = true
 log.workspace = true
 url.workspace = true
 chrono.workspace = true
-# windai-domain.workspace = true
 
 [dev-dependencies]
 env_logger.workspace = true

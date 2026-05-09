@@ -8,19 +8,19 @@ mod schema;
 
 #[derive(Error, Debug)]
 pub enum AdaptorError {
-    #[error("transfer error: {0}")]
+    #[error("Transfer error: {0}")]
     Transfer(String),
 
-    #[error("json error: {0}")]
+    #[error("Json error: {0}")]
     Json(#[from] serde_json::Error),
 
-    #[error("parse error: {0}")]
+    #[error("Parse error: {0}")]
     ParseError(#[from] strum::ParseError),
 
-    #[error("invalid content type: {0}")]
+    #[error("Invalid content type: {0}")]
     InvalidContentType(String),
 
-    #[error("io error: {0}")]
+    #[error("Io error: {0}")]
     Io(#[from] std::io::Error),
 }
 

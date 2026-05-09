@@ -8,6 +8,6 @@ pub enum ProviderError {
     #[error(transparent)]
     Adaptor(#[from] AdaptorError),
 
-    #[error("url parse error: {0}")]
+    #[error("Url parse error: {0}")]
     UrlParse(#[from] url::ParseError),
 }
