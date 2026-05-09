@@ -1,8 +1,9 @@
 //! OpenAI Chat Completion API 数据结构
 //! https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
+#![allow(dead_code)]
 
 use super::is_none_or_empty_vec;
-use crate::Role;
+use crate::message::Role;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -279,10 +280,12 @@ pub struct TokenUsage {
 #[derive(Debug, Serialize, Clone)]
 pub struct ChatCompletionMessageParam {
     /// 消息具体内容
-    pub content: Content,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<Content>,
     /// 模型生成的推理消息
     /// - 非 OpenAI 标准参数
     /// - DeepSeek tool_calls 思维链
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
 
     /// 消息作者的角色

@@ -32,27 +32,26 @@
 //     };
 // }
 
-
 // fn build_stream_context(
 //     user_input: Vec<ChatInput>,
 //     topic_id: i64,
 //     model_id: i64,
 //     config: &ChatConfigParams,
-// ) -> Result<StreamContext, ChatError> {
+// ) -> Result<StreamContext, ProviderError> {
 //     let db = storage::global();
 //     let is_stream = config.stream.unwrap_or(false);
 //     let model = db
 //         .get_model(model_id)?
-//         .ok_or_else(|| ChatError::Internal(format!("cannot find model: {}", model_id)))?;
+//         .ok_or_else(|| ProviderError::Internal(format!("cannot find model: {}", model_id)))?;
 
 //     let chat_adaptor = get_chat_adaptor(model.adaptor);
 
 //     let topic = db
 //         .get_topic(topic_id)?
-//         .ok_or_else(|| ChatError::Internal(format!("cannot find topic: {}", model.provider_id)))?;
+//         .ok_or_else(|| ProviderError::Internal(format!("cannot find topic: {}", model.provider_id)))?;
 
 //     let provider = db.get_provider(model.provider_id)?.ok_or_else(|| {
-//         ChatError::Internal(format!("cannot find provider: {}", model.provider_id))
+//         ProviderError::Internal(format!("cannot find provider: {}", model.provider_id))
 //     })?;
 
 //     let mut messages = db.list_chat_messages_by_topic(topic_id)?;
@@ -67,7 +66,7 @@
 //             .topic_id(topic_id)
 //             .is_boundary(false)
 //             .build()
-//             .map_err(|e| ChatError::Internal(e.to_string()))?,
+//             .map_err(|e| ProviderError::Internal(e.to_string()))?,
 //         model_name: model.name.clone(),
 //         provider_name: provider.name,
 //         provider_id: provider.id,
@@ -91,11 +90,11 @@
 //         .next()
 //         .map(|credent| credent.key)
 //         .ok_or_else(|| {
-//             ChatError::Internal(format!("no credentials found for model: {}", model.name))
+//             ProviderError::Internal(format!("no credentials found for model: {}", model.name))
 //         })?;
 
 //     let base_url = provider.base_url.ok_or_else(|| {
-//         ChatError::Internal(format!(
+//         ProviderError::Internal(format!(
 //             "base_url is not configured for provider: {}",
 //             model.provider_id
 //         ))

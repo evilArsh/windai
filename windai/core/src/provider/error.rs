@@ -1,7 +1,7 @@
-use crate::{adaptor::AdaptorError, client::ClientError};
+use crate::provider::{adaptor::AdaptorError, client::ClientError};
 
 #[derive(thiserror::Error, Debug)]
-pub enum ChatError {
+pub enum ProviderError {
     #[error(transparent)]
     Client(#[from] ClientError),
 

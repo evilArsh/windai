@@ -1,9 +1,9 @@
 use futures::StreamExt;
 use std::{env, str::FromStr};
 use tokio::pin;
-use windai_chat::{
-    AdaptorType, Content, ContentType, Context, Model, ReqConfig, Role, adaptor::get_chat_adaptor,
-    handle_chat,
+use windai_core::{
+    message::{AdaptorType, Content, Message, Model, ReqConfig, Role},
+    provider::{adaptor::get_chat_adaptor, handle_chat},
 };
 
 #[tokio::test]
@@ -30,7 +30,6 @@ async fn test_handle_chat() {
         frequency_penalty: None,
         parallel_tool_calls: None,
         reasoning: Some(true),
-        tools: None,
     };
     let model = Model {
         name: model,
@@ -38,21 +37,20 @@ async fn test_handle_chat() {
         endpoint: None,
     };
     let contexts = vec![
-        Context::new_normal(
+        Message::new_simple(
             Role::System,
-            vec![Content {
-                content: String::from("you are a helpful assistant, response in Chinese"),
-                content_type: ContentType::Text,
-            }],
+            vec![Content::new_text(String::from(
+                "you are a helpful assistant, response in Chinese",
+            ))],
             None,
         ),
-        Context::new_normal(
+        Message::new_simple(
             Role::User,
-            vec![Content::new(ContentType::Text, String::from("who are you"))],
+            vec![Content::new_text(String::from("who are you"))],
             None,
         ),
     ];
-    let res = handle_chat(contexts, chat_config, model, &api_url, &api_key);
+    let res = handle_chat(&contexts, &chat_config, &model, &api_url, &api_key, None);
     pin!(res);
     while let Some(value) = res.next().await {
         println!("[data]\n{}", value);
@@ -61,6 +59,8 @@ async fn test_handle_chat() {
 
 #[test]
 fn test_build_request() {
+    let _ = env_logger::builder().is_test(true).try_init();
+
     let model = Model {
         name: String::from("deepseek-v4-flash"),
         adaptor: AdaptorType::OpenAICompletion,
@@ -75,25 +75,20 @@ fn test_build_request() {
         presence_penalty: None,
         frequency_penalty: None,
         parallel_tool_calls: None,
-        reasoning: Some(false),
-        tools: None,
+        reasoning: Some(true),
     };
 
     let contexts = vec![
-        Context::new_normal(
+        Message::new_simple(
             Role::System,
-            vec![Content {
-                content: String::from("you are a helpful assistant and MUST response in Chinese"),
-                content_type: ContentType::Text,
-            }],
+            vec![Content::new_text(String::from(
+                "you are a helpful assistant and MUST response in Chinese",
+            ))],
             None,
         ),
-        Context::new_normal(
+        Message::new_simple(
             Role::User,
-            vec![Content {
-                content: String::from("who are you"),
-                content_type: ContentType::Text,
-            }],
+            vec![Content::new_text(String::from("who are you"))],
             None,
         ),
     ];
@@ -101,10 +96,14 @@ fn test_build_request() {
     let chat_adaptor = get_chat_adaptor(AdaptorType::OpenAICompletion);
     let stream = chat_config.stream;
     let req_body = chat_adaptor
-        .build_request(&model.name, chat_config, contexts)
+        .build_request(&model.name, &chat_config, &contexts, None)
         .unwrap();
 
     let obj = req_body.as_object().unwrap();
+    log::info!(
+        "[body]\n{}",
+        serde_json::to_string_pretty(&req_body).unwrap()
+    );
     assert!(obj.contains_key("stream"));
     assert!(obj.contains_key("reasoning_effort"));
 

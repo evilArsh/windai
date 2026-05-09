@@ -1,16 +1,10 @@
-use crate::{AdaptorType, Context, Message, ReqConfig};
-use bytes::Bytes;
+use crate::message::{AdaptorType, Message, ReqConfig, tool::Tools};
 use serde_json::Value;
 use thiserror::Error;
 
-pub mod openai;
-pub mod openai_completion;
-pub mod openai_response;
-pub mod sse;
-
-pub(crate) fn is_none_or_empty_vec<T>(opt: &Option<Vec<T>>) -> bool {
-    opt.as_ref().map(|v| v.is_empty()).unwrap_or(true)
-}
+mod openai_completion;
+mod openai_responses;
+mod schema;
 
 #[derive(Error, Debug)]
 pub enum AdaptorError {
@@ -47,19 +41,20 @@ pub trait ChatAdaptor: Adaptor {
     fn build_request(
         &self,
         model_name: &str,
-        config: ReqConfig,
-        contexts: Vec<Context>,
+        config: &ReqConfig,
+        contexts: &Vec<Message>,
+        tools: Option<&Vec<Tools>>,
     ) -> Result<Value, AdaptorError>;
     /// 将原始响应字节解析为统一格式消息
-    fn parse_response(&self, data: Bytes) -> Result<Message, AdaptorError>;
+    fn parse_response(&self, data: &[u8]) -> Result<Message, AdaptorError>;
     /// 将原始流式响应单块字节解析为统一格式消息
-    fn parse_stream_chunk(&self, data: Bytes) -> Result<Vec<Message>, AdaptorError>;
+    fn parse_stream_chunk(&self, data: &[u8]) -> Result<Vec<Message>, AdaptorError>;
 }
 
 /// 根据 AdaptorType 获取对应的对话适配器实例
 pub fn get_chat_adaptor(adaptor: AdaptorType) -> Box<dyn ChatAdaptor> {
     match adaptor {
-        AdaptorType::OpenAICompletion => Box::new(openai::OpenAICompletionAdaptor),
-        AdaptorType::OpenAIResponse => Box::new(openai::OpenAIResponseAdaptor),
+        AdaptorType::OpenAICompletion => Box::new(openai_completion::OpenAICompletionAdaptor),
+        AdaptorType::OpenAIResponse => Box::new(openai_responses::OpenAIResponseAdaptor),
     }
 }

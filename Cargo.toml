@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "chat",
+    "windai/*",
     # 
 ]
 resolver = "3"
@@ -14,9 +14,6 @@ license = "MIT OR Apache-2.0"
 
 
 [workspace.dependencies]
-windai-domain = { path = "domain" }
-windai-chat = { path = "chat" }
-mcp = { path = "mcp" }
 futures = "0.3"
 regex = "1.12"
 tokio = { version = "1", features = ["full"] }
@@ -38,3 +35,6 @@ log = "0.4"
 env_logger = "0.11"
 url = "2"
 chrono = "0.4"
+schemars = { version = "1.0" }
+rmcp = { version = "1", features = ["schemars", "auth"] }
+test-case = "*"

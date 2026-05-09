@@ -1,9 +1,9 @@
 //! OpenAI Response API 数据结构
 //! https://developers.openai.com/api/reference/resources/responses/methods/create
+#![allow(dead_code)]
 
 use super::is_none_or_empty_vec;
-use crate::Role;
-use derive_builder::Builder;
+use crate::message::Role;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -12,49 +12,41 @@ use serde_json::Value;
 // ======================================================
 
 /// 响应创建请求的主结构体
-#[derive(Debug, Serialize, Default, Clone, Builder)]
+#[derive(Debug, Serialize, Clone)]
 pub struct ResponseRequest {
     /// 是否在后台运行模型响应。
-    #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub background: Option<bool>,
 
     /// 此请求的上下文管理配置。
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[builder(default)]
     pub context_management: Option<Vec<ContextManagementConfig>>,
 
     /// 此响应所属的会话。
     /// 该会话的项目将自动添加并更新。
-    #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conversation: Option<ConversationParam>,
 
     /// 指定要在模型响应中包含的附加输出数据。
-    #[builder(default)]
     #[serde(skip_serializing_if = "is_none_or_empty_vec")]
     pub include: Option<Vec<ResponseIncludable>>,
 
     /// 输入内容，可以是简单的字符串，也可以是消息对象数组。
-    #[builder(default)]
     pub input: Vec<InputItem>,
 
     /// 插入到模型上下文中的系统（或开发者）消息。
     /// 与 `previous_response_id` 一起使用时，先前响应的指令不会延续到下一个响应。
     /// 这使得在新响应中替换系统（或开发者）消息变得简单。
-    #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
 
     /// 响应可生成的token数量上限，包括可见输出token和推理token。
-    #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<i32>,
 
     /// 内置工具在单个响应中可处理的总调用次数上限。
     /// 此上限适用于所有内置工具调用的总和，而非单个工具的调用次数。
     /// 若模型尝试进行超出此限制的工具调用，后续调用将被忽略。
-    #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tool_calls: Option<i32>,
 
@@ -62,51 +54,42 @@ pub struct ResponseRequest {
     /// 这对于以结构化格式存储有关对象的附加信息非常有用，
     /// 并且可以通过API或仪表板查询对象。
     /// 键是最大长度为64个字符的字符串。值是最大长度为512个字符的字符串。
-    #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
 
     /// 模型名称。
-    #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
 
     /// 是否允许模型并行运行工具调用。
-    #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parallel_tool_calls: Option<bool>,
 
     /// 模型先前响应的唯一ID。用于创建多轮对话。
     /// 不能与 `conversation` 同时使用。
-    #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous_response_id: Option<String>,
 
     /// 对提示模板及其变量的引用。
-    #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt: Option<Value>,
 
     /// 由OpenAI用于缓存类似请求的响应以优化缓存命中率。替换 `user` 字段。
-    #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_cache_key: Option<String>,
 
     /// 提示缓存的保留策略。设置为 `24h` 以启用扩展提示缓存，
     /// 这将使缓存的前缀保持更长时间，最长可达24小时。
-    #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_cache_retention: Option<String>,
 
     /// 模型推理开关
-    #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<ResponseReasoning>,
 
     /// 用于帮助检测可能违反OpenAI使用政策的应用程序用户的稳定标识符。
     /// ID应为唯一标识每个用户的字符串，最大长度为64个字符。
     /// 我们建议对其用户名或电子邮件地址进行哈希处理，以避免向我们发送任何识别信息。
-    #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub safety_identifier: Option<String>,
 
@@ -119,17 +102,14 @@ pub struct ResponseRequest {
     /// - 未设置时，默认行为是 'auto'。
     /// 当设置 `service_tier` 参数时，响应体将包含基于实际用于服务请求的处理模式的 `service_tier` 值。
     /// 此响应值可能与参数中设置的值不同。
-    #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<String>,
 
     /// 是否存储生成的模型响应以供以后通过API检索。
-    #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub store: Option<bool>,
 
     /// 若设置为 true，模型生成的响应数据将通过服务器发送事件（server-sent events）实时流式传输至客户端。
-    #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
 
@@ -141,38 +121,15 @@ pub struct ResponseRequest {
     ///   include_obfuscation?:boolean,
     /// }
     /// ```
-    #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_options: Option<Value>,
 
     /// 采样温度应在0到2之间选择。较高的数值（如0.8）会使输出更具随机性，而较低的数值（如0.2）则会使输出更加聚焦和确定。
     /// 通常建议调整温度参数或top_p参数，但不要同时调整两者。
-    #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
 
     /// 模型文本响应的配置选项。可以是纯文本或结构化JSON数据
-    ///
-    /// JSON 结构示例：
-    /// ```json
-    /// {
-    ///   "format": {
-    ///     "type": "json_schema",
-    ///     "name": "weather_response",
-    ///     "schema": {
-    ///       "type": "object",
-    ///       "properties": {
-    ///         "temperature": { "type": "number" },
-    ///         "condition": { "type": "string" }
-    ///       },
-    ///       "required": ["temperature", "condition"]
-    ///     },
-    ///     "description": "天气信息响应格式",
-    ///     "strict": true
-    ///   },
-    ///   "verbosity": "medium"
-    /// }
-    /// ```
     ///
     /// 或使用默认文本格式：
     /// ```json
@@ -192,33 +149,27 @@ pub struct ResponseRequest {
     ///   }
     /// }
     /// ```
-    #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<Value>,
 
     /// 模型在生成响应时应如何选择使用哪个工具（或哪些工具）
-    #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
 
     /// 模型可以调用的工具列表
-    #[builder(default)]
     #[serde(skip_serializing_if = "is_none_or_empty_vec")]
     pub tools: Option<Vec<Tools>>,
 
     /// 一种替代温度采样的方法是核采样，在这种方法中，模型仅考虑那些累积概率达到 top_p 的候选token。
     /// 例如，当 top_p 设置为 0.1 时，模型只会考虑那些累计概率质量达到前 10% 的token。
-    #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f64>,
 
-    #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_logprobs: Option<f64>,
 
     /// - auto: 如果此响应的输入超出模型的上下文窗口大小，模型将通过丢弃对话开头的项目来截断响应，以适应上下文窗口。
     /// - disabled（默认）：如果输入大小将超出模型的上下文窗口大小，请求将以400错误失败。
-    #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncation: Option<String>,
 }
@@ -312,7 +263,7 @@ pub struct ToolChoiceShell {
     pub r#type: String,
 }
 
-#[derive(Debug, Serialize, Default, Clone, Builder)]
+#[derive(Debug, Serialize, Default, Clone)]
 pub struct ResponseReasoning {
     /// 可选值： none, minimal, low, medium, high, xhigh
     ///
@@ -329,14 +280,12 @@ pub struct ResponseReasoning {
 }
 
 /// 上下文管理配置
-#[derive(Debug, Serialize, Default, Clone, Builder)]
+#[derive(Debug, Serialize, Default, Clone)]
 pub struct ContextManagementConfig {
     ///  entry 类型。目前仅支持 'compaction'（压缩）。
-    #[builder(default = "String::from(\"compaction\")")]
     pub r#type: String,
 
     /// 触发压缩的 Token 阈值。最小值通常为 1000。
-    #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compact_threshold: Option<f64>,
 }
