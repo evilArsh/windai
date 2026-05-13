@@ -4,17 +4,20 @@ use super::schema::openai_responses::{
     ResponseReasoning, ResponseRequest, ResponseStream, Tools,
 };
 use super::{Adaptor, AdaptorError, ChatAdaptor};
-use crate::message::{self, AdaptorType, Content, Message, MessageBuilder, ReqConfig, Role, tool};
+use crate::conversation::message::{
+    self, AdaptorType, Content, Message, MessageBuilder, ReqConfig, Role,
+};
+use crate::conversation::tool;
 use crate::provider::sse::SseBlock;
 use serde_json::Value;
 
-fn transfer_response_tools(tools: Option<&Vec<message::tool::Tools>>) -> Option<Vec<Tools>> {
+fn transfer_response_tools(tools: Option<&Vec<tool::Tools>>) -> Option<Vec<Tools>> {
     tools
         .map(|tools| {
             tools
                 .into_iter()
                 .filter_map(|tool| match tool {
-                    message::tool::Tools::Function(func_tool) => {
+                    tool::Tools::Function(func_tool) => {
                         Some(Tools::Function(FunctionTool {
                             r#type: String::from("function"),
                             name: func_tool.name.clone(),
@@ -45,7 +48,7 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
         model_name: &str,
         config: &ReqConfig,
         contexts: &Vec<Message>,
-        tools: Option<&Vec<message::tool::Tools>>,
+        tools: Option<&Vec<tool::Tools>>,
     ) -> Result<Value, AdaptorError> {
         let tools = transfer_response_tools(tools);
         let input_messages = contexts

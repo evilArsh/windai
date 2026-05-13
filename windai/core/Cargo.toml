@@ -10,6 +10,9 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+# dotenvy.workspace = true
+# rusqlite.workspace = true
+# dirs.workspace = true
 reqwest.workspace = true
 strum.workspace = true
 serde.workspace = true
@@ -17,14 +20,16 @@ serde_json.workspace = true
 derive_builder.workspace = true
 futures.workspace = true
 bytes.workspace = true
-# dotenvy.workspace = true
 thiserror.workspace = true
 async-stream.workspace = true
-# rusqlite.workspace = true
-# dirs.workspace = true
 log.workspace = true
 url.workspace = true
 chrono.workspace = true
+
+rmcp.workspace = true
+schemars.workspace = true
+tokio.workspace = true
+
 
 [dev-dependencies]
 env_logger.workspace = true

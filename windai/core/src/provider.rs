@@ -11,7 +11,10 @@ pub mod error;
 
 mod sse;
 
-use super::message::{Message, Model, ReqConfig, tool::Tools};
+use super::conversation::{
+    message::{Message, Model, ReqConfig},
+    tool::Tools,
+};
 use adaptor::AdaptorError;
 use client::ClientError;
 use error::ProviderError;

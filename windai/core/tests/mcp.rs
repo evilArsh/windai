@@ -3,8 +3,8 @@ use serde_json::json;
 use std::{env, str::FromStr};
 use tokio::pin;
 use windai_core::{
-    message::{
-        AdaptorType, Content, Message, Model, ReqConfig, Role,
+    conversation::{
+        message::{AdaptorType, Content, Message, Model, ReqConfig, Role},
         tool::{FunctionCallOutput, FunctionTool, Tools},
     },
     provider::{ResEventStatus, handle_chat},

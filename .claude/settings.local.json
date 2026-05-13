@@ -4,7 +4,12 @@
       "Bash(cargo check:*)",
       "Bash(cargo clippy:*)",
       "Bash(cargo metadata *)",
-      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\([p['manifest_path'] for p in d['packages'] if p['name']=='rmcp'][0]\\)\")"
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\([p['manifest_path'] for p in d['packages'] if p['name']=='rmcp'][0]\\)\")",
+      "Bash(npx --help)",
+      "Bash(bun --help)",
+      "Bash(uvx --help)",
+      "Bash(uv run *)",
+      "Bash(bunx --help)"
     ]
   },
   "enabledPlugins": {

@@ -6,8 +6,8 @@ use super::schema::openai_completion::{
     ContentObject, FileContentPart, ToolCallRequest, ToolCallRequestParams,
 };
 use super::{Adaptor, AdaptorError, ChatAdaptor};
-use crate::message::tool::{FunctionCall, Tools};
-use crate::message::{self, AdaptorType, Message, MessageBuilder, ReqConfig, Role};
+use crate::conversation::message::{self, AdaptorType, Message, MessageBuilder, ReqConfig, Role};
+use crate::conversation::tool::{FunctionCall, Tools};
 use crate::provider::sse::SseBlock;
 use serde_json::{Value, json};
 

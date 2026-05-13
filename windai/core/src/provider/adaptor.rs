@@ -1,4 +1,7 @@
-use crate::message::{AdaptorType, Message, ReqConfig, tool::Tools};
+use crate::conversation::{
+    message::{AdaptorType, Message, ReqConfig},
+    tool::Tools,
+};
 use serde_json::Value;
 use thiserror::Error;
 

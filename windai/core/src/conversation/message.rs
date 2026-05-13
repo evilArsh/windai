@@ -1,11 +1,9 @@
+use super::tool::{FunctionCall, FunctionCallOutput};
 use chrono::Utc;
 use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt;
-use tool::{FunctionCall, FunctionCallOutput};
-
-pub mod tool;
 
 #[derive(
     Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Copy, strum::EnumString, strum::Display,
