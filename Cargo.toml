@@ -44,5 +44,6 @@ rmcp = { version = "1", features = [
     "transport-streamable-http-client-reqwest",
     "transport-streamable-http-server",
 ] }
+rquickjs = { version = "0.11" }
 test-case = "*"
 serial_test = "*"
