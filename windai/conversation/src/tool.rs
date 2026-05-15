@@ -29,8 +29,9 @@ pub struct FunctionTool {
 /// 模型返回的函数调用信息
 #[derive(Debug, Serialize, Clone)]
 pub struct FunctionCall {
+    /// 函数调用ID，由模型生成
     pub id: String,
-    /// 函数名称
+    /// 函数工具名称
     pub name: String,
     /// 模型生成的函数调用参数
     pub arguments: String,
@@ -39,6 +40,7 @@ pub struct FunctionCall {
 /// 函数调用结果
 #[derive(Debug, Serialize, Clone)]
 pub struct FunctionCallOutput {
+    /// 函数调用ID，由模型生成
     pub id: String,
     /// 本地函数调用结果
     pub content: Value,

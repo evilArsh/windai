@@ -1,10 +1,11 @@
 use super::McpError;
 use super::connector::ServerHandle;
-use super::{ClientEvent, ClientSnapshot, ClientStatus, ServerParams};
-use rmcp::model::{CallToolResult, Prompt, Resource, Tool};
-use serde_json::Value;
+use super::{
+    CallToolParam, CallToolResult, ClientEvent, ClientSnapshot, ClientStatus, Prompt, Resource,
+    ServerParams, Tool,
+};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 // static REGISTRY: OnceLock<RegistryHandle> = OnceLock::new();
@@ -42,7 +43,6 @@ impl ServerEntry {
 
     fn snapshot(&self) -> ClientSnapshot {
         ClientSnapshot {
-            id: self.params.get_id().into_owned(),
             name: self.params.get_name().into_owned(),
             transport: self.params.get_transport(),
             status: self.status(),
@@ -50,8 +50,6 @@ impl ServerEntry {
         }
     }
 }
-
-// ─── 内部请求 ───
 
 enum RegistryRequest {
     Acquire {
@@ -61,40 +59,39 @@ enum RegistryRequest {
     },
     Release {
         session_id: String,
-        id: String,
+        name: String,
         reply: oneshot::Sender<Result<ClientSnapshot, McpError>>,
     },
     ListClients {
         reply: oneshot::Sender<Vec<ClientSnapshot>>,
     },
     GetClient {
-        id: String,
+        name: String,
         reply: oneshot::Sender<Option<ClientSnapshot>>,
     },
     ListTools {
-        id: String,
+        name: String,
+        reply: oneshot::Sender<Result<Vec<Tool>, McpError>>,
+    },
+    ListAllTools {
         reply: oneshot::Sender<Result<Vec<Tool>, McpError>>,
     },
     ListPrompts {
-        id: String,
+        name: String,
         reply: oneshot::Sender<Result<Vec<Prompt>, McpError>>,
     },
     ListResources {
-        id: String,
+        name: String,
         reply: oneshot::Sender<Result<Vec<Resource>, McpError>>,
     },
     CallTool {
-        id: String,
-        name: String,
-        arguments: Option<Value>,
+        param: CallToolParam,
         reply: oneshot::Sender<Result<CallToolResult, McpError>>,
     },
     Shutdown {
         reply: oneshot::Sender<()>,
     },
 }
-
-// ─── 公共 Handle ───
 
 #[derive(Clone)]
 pub struct RegistryHandle {
@@ -103,10 +100,14 @@ pub struct RegistryHandle {
 }
 
 impl RegistryHandle {
+    /// 订阅 MCP 服务事件
     pub fn subscribe(&self) -> broadcast::Receiver<ClientEvent> {
         self.event_tx.subscribe()
     }
 
+    /// 启动一个 MCP 服务
+    /// - 不同的 client 使用相同的 package 启动服务时，同时只能启动一个服务，其它的 client 等待服务启动完毕后继续启动
+    /// - 不同的 session 共享同一个 Stdio 服务
     pub async fn acquire(
         &self,
         session_id: &str,
@@ -124,12 +125,15 @@ impl RegistryHandle {
         rx.await.map_err(|_| McpError::ManagerShutdown)?
     }
 
-    pub async fn release(&self, session_id: &str, id: &str) -> Result<ClientSnapshot, McpError> {
+    /// 停止一个 MCP 服务
+    /// - 如果 MCP 服务正在被多个 session 共享，则只删除该 session 的引用
+    /// - 没有 session 使用该服务时，服务将停止
+    pub async fn release(&self, session_id: &str, name: &str) -> Result<ClientSnapshot, McpError> {
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(RegistryRequest::Release {
                 session_id: session_id.to_string(),
-                id: id.to_string(),
+                name: name.to_string(),
                 reply,
             })
             .await
@@ -137,29 +141,32 @@ impl RegistryHandle {
         rx.await.map_err(|_| McpError::ManagerShutdown)?
     }
 
+    /// 列出所有 MCP 客户端
     pub async fn list_clients(&self) -> Vec<ClientSnapshot> {
         let (reply, rx) = oneshot::channel();
         let _ = self.tx.send(RegistryRequest::ListClients { reply }).await;
         rx.await.unwrap_or_default()
     }
 
-    pub async fn get_client(&self, id: &str) -> Option<ClientSnapshot> {
+    /// 根据 server name 获取对应 MCP 客户端
+    pub async fn get_client(&self, name: &str) -> Option<ClientSnapshot> {
         let (reply, rx) = oneshot::channel();
         let _ = self
             .tx
             .send(RegistryRequest::GetClient {
-                id: id.to_string(),
+                name: name.to_string(),
                 reply,
             })
             .await;
         rx.await.ok()?
     }
 
-    pub async fn list_tools(&self, id: &str) -> Result<Vec<Tool>, McpError> {
+    /// 列出指定 server name 的工具
+    pub async fn list_tools(&self, name: &str) -> Result<Vec<Tool>, McpError> {
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(RegistryRequest::ListTools {
-                id: id.to_string(),
+                name: name.to_string(),
                 reply,
             })
             .await
@@ -167,11 +174,22 @@ impl RegistryHandle {
         rx.await.map_err(|_| McpError::ManagerShutdown)?
     }
 
-    pub async fn list_prompts(&self, id: &str) -> Result<Vec<Prompt>, McpError> {
+    /// 列出所有工具
+    pub async fn list_all_tools(&self) -> Result<Vec<Tool>, McpError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(RegistryRequest::ListAllTools { reply })
+            .await
+            .map_err(|_| McpError::ManagerShutdown)?;
+        rx.await.map_err(|_| McpError::ManagerShutdown)?
+    }
+
+    /// 列出指定 server id 的提示
+    pub async fn list_prompts(&self, name: &str) -> Result<Vec<Prompt>, McpError> {
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(RegistryRequest::ListPrompts {
-                id: id.to_string(),
+                name: name.to_string(),
                 reply,
             })
             .await
@@ -179,11 +197,12 @@ impl RegistryHandle {
         rx.await.map_err(|_| McpError::ManagerShutdown)?
     }
 
-    pub async fn list_resources(&self, id: &str) -> Result<Vec<Resource>, McpError> {
+    /// 列出指定 server name 的资源
+    pub async fn list_resources(&self, name: &str) -> Result<Vec<Resource>, McpError> {
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(RegistryRequest::ListResources {
-                id: id.to_string(),
+                name: name.to_string(),
                 reply,
             })
             .await
@@ -191,18 +210,12 @@ impl RegistryHandle {
         rx.await.map_err(|_| McpError::ManagerShutdown)?
     }
 
-    pub async fn call_tool(
-        &self,
-        id: &str,
-        name: &str,
-        arguments: Option<Value>,
-    ) -> Result<CallToolResult, McpError> {
+    /// 调用工具
+    pub async fn call_tool(&self, param: &CallToolParam) -> Result<CallToolResult, McpError> {
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(RegistryRequest::CallTool {
-                id: id.to_string(),
-                name: name.to_string(),
-                arguments,
+                param: param.clone(),
                 reply,
             })
             .await
@@ -216,8 +229,6 @@ impl RegistryHandle {
         let _ = rx.await;
     }
 }
-
-// ─── Actor ───
 
 pub struct Registry {
     rx: mpsc::Receiver<RegistryRequest>,
@@ -250,6 +261,37 @@ impl Registry {
         let _ = self.event_tx.send(event);
     }
 
+    #[inline]
+    fn get_handle(&self, server_name: &str) -> Result<&ServerHandle, McpError> {
+        let entry = self.get_entry(server_name)?;
+        let handle = entry
+            .handle
+            .as_ref()
+            .ok_or(McpError::ServerNotFound(server_name.to_string()))?;
+
+        Ok(handle)
+    }
+
+    #[inline]
+    fn get_entry(&self, server_name: &str) -> Result<&ServerEntry, McpError> {
+        let entry = self
+            .servers
+            .get(server_name)
+            .ok_or(McpError::ServerNotFound(server_name.to_string()))?;
+
+        Ok(entry)
+    }
+
+    #[inline]
+    fn get_entry_mut(&mut self, server_name: &str) -> Result<&mut ServerEntry, McpError> {
+        let entry = self
+            .servers
+            .get_mut(server_name)
+            .ok_or(McpError::ServerNotFound(server_name.to_string()))?;
+
+        Ok(entry)
+    }
+
     async fn run(mut self) {
         loop {
             let Some(request) = self.rx.recv().await else {
@@ -267,34 +309,32 @@ impl Registry {
                 }
                 RegistryRequest::Release {
                     session_id,
-                    id,
+                    name,
                     reply,
                 } => {
-                    let result = self.release(&session_id, &id).await;
+                    let result = self.release(&session_id, &name).await;
                     let _ = reply.send(result);
                 }
                 RegistryRequest::ListClients { reply } => {
                     let _ = reply.send(self.list_clients());
                 }
-                RegistryRequest::GetClient { id, reply } => {
-                    let _ = reply.send(self.get_client(&id));
+                RegistryRequest::GetClient { name, reply } => {
+                    let _ = reply.send(self.get_client(&name));
                 }
-                RegistryRequest::ListTools { id, reply } => {
-                    let _ = reply.send(self.list_tools(&id).await);
+                RegistryRequest::ListTools { name, reply } => {
+                    let _ = reply.send(self.list_tools(&name).await);
                 }
-                RegistryRequest::ListPrompts { id, reply } => {
-                    let _ = reply.send(self.list_prompts(&id).await);
+                RegistryRequest::ListAllTools { reply } => {
+                    let _ = reply.send(self.list_all_tools().await);
                 }
-                RegistryRequest::ListResources { id, reply } => {
-                    let _ = reply.send(self.list_resources(&id).await);
+                RegistryRequest::ListPrompts { name, reply } => {
+                    let _ = reply.send(self.list_prompts(&name).await);
                 }
-                RegistryRequest::CallTool {
-                    id,
-                    name,
-                    arguments,
-                    reply,
-                } => {
-                    let _ = reply.send(self.call_tool(&id, &name, arguments).await);
+                RegistryRequest::ListResources { name, reply } => {
+                    let _ = reply.send(self.list_resources(&name).await);
+                }
+                RegistryRequest::CallTool { param, reply } => {
+                    let _ = reply.send(self.call_tool(&param).await);
                 }
                 RegistryRequest::Shutdown { reply } => {
                     self.shutdown().await;
@@ -310,9 +350,8 @@ impl Registry {
         session_id: &str,
         params: ServerParams,
     ) -> Result<ClientSnapshot, McpError> {
-        let id = params.get_id().into_owned();
         let name = params.get_name().into_owned();
-        if let Some(entry) = self.servers.get_mut(&id) {
+        if let Some(entry) = self.servers.get_mut(&name) {
             match &entry.state {
                 ServerState::Connected => {
                     entry.ref_sessions.insert(session_id.to_string());
@@ -323,7 +362,7 @@ impl Registry {
                     return self.wait_for_connecting(waiter).await;
                 }
                 ServerState::Disconnecting => {
-                    self.servers.remove(&id);
+                    self.servers.remove(&name);
                 }
             }
         }
@@ -334,7 +373,7 @@ impl Registry {
         });
 
         self.servers.insert(
-            id.clone(),
+            name.clone(),
             ServerEntry {
                 state: ServerState::Connecting { waiter },
                 ref_sessions: HashSet::from([session_id.to_string()]),
@@ -343,25 +382,17 @@ impl Registry {
             },
         );
 
-        self.broadcast(ClientEvent::Connecting {
-            id: id.clone(),
-            name: name.clone(),
-        });
+        self.broadcast(ClientEvent::Connecting { name: name.clone() });
 
         let connect_result = ServerHandle::connect(&params).await;
 
-        let entry = match self.servers.get_mut(&id) {
+        let entry = match self.servers.get_mut(&name) {
             Some(entry) => entry,
             None => {
-                log::error!(
-                    "Error after connection, server not found, id: {}, name: {}",
-                    &id,
-                    &name
-                );
-                return Err(McpError::ServerNotFound(id));
+                log::error!("Error after connection, server not found,  name: {}", &name);
+                return Err(McpError::ServerNotFound(name));
             }
         };
-        let id = entry.params.get_id().into_owned();
         let name = entry.params.get_name().into_owned();
         match connect_result {
             Ok(handle) => {
@@ -373,12 +404,11 @@ impl Registry {
                     *w.result.lock().unwrap() = Some(WaiterResult::Connected(snapshot.clone()));
                     w.notify.notify_waiters();
 
-                    self.broadcast(ClientEvent::Connected { id, name });
+                    self.broadcast(ClientEvent::Connected { name });
                     return Ok(snapshot);
                 } else {
                     log::warn!(
-                        "server's previous state was not 'Connecting' after connected, id: {}, name: {}",
-                        &id,
+                        "server's previous state was not 'Connecting' after connected, name: {}",
                         &name
                     );
                 }
@@ -396,10 +426,9 @@ impl Registry {
                     w.notify.notify_waiters();
                 }
 
-                self.servers.remove(&id);
+                self.servers.remove(&name);
 
                 self.broadcast(ClientEvent::Error {
-                    id,
                     name,
                     error: error_msg.clone(),
                 });
@@ -427,30 +456,21 @@ impl Registry {
         }
     }
 
-    async fn release(&mut self, session_id: &str, id: &str) -> Result<ClientSnapshot, McpError> {
-        let entry = self
-            .servers
-            .get_mut(id)
-            .ok_or(McpError::ServerNotFound(id.to_string()))?;
-
+    async fn release(&mut self, session_id: &str, name: &str) -> Result<ClientSnapshot, McpError> {
+        let entry = self.get_entry_mut(name)?;
         entry.ref_sessions.remove(session_id);
-
         if !entry.ref_sessions.is_empty() {
             return Ok(entry.snapshot());
         }
-
         entry.state = ServerState::Disconnecting;
-
         if let Some(handle) = entry.handle.take() {
             handle.disconnect().await;
         }
-
         let snapshot = entry.snapshot();
         let name = entry.params.get_name().into_owned();
-        self.servers.remove(id);
+        self.servers.remove(&name);
 
         self.broadcast(ClientEvent::Disconnected {
-            id: id.to_string(),
             name,
             reason: "normal shutdown".to_string(),
         });
@@ -462,74 +482,71 @@ impl Registry {
         self.servers.values().map(|e| e.snapshot()).collect()
     }
 
-    fn get_client(&self, id: &str) -> Option<ClientSnapshot> {
-        self.servers.get(id).map(|e| e.snapshot())
+    fn get_client(&self, name: &str) -> Option<ClientSnapshot> {
+        self.servers.get(name).map(|e| e.snapshot())
     }
 
-    async fn list_tools(&self, id: &str) -> Result<Vec<Tool>, McpError> {
-        let entry = self
-            .servers
-            .get(id)
-            .ok_or(McpError::ServerNotFound(id.to_string()))?;
-
-        let handle = entry
-            .handle
-            .as_ref()
-            .ok_or(McpError::ServerNotFound(id.to_string()))?;
-
-        handle.list_tools().await
+    async fn list_tools(&self, name: &str) -> Result<Vec<Tool>, McpError> {
+        let handle = self.get_handle(name)?;
+        Ok(handle
+            .list_tools()
+            .await?
+            .into_iter()
+            .map(|t| Tool::new(name, &t))
+            .collect())
     }
 
-    async fn list_prompts(&self, id: &str) -> Result<Vec<Prompt>, McpError> {
-        let entry = self
+    async fn list_all_tools(&self) -> Result<Vec<Tool>, McpError> {
+        let handles: Vec<(String, &ServerHandle)> = self
             .servers
-            .get(id)
-            .ok_or(McpError::ServerNotFound(id.to_string()))?;
+            .values()
+            .filter_map(|entry| {
+                entry
+                    .handle
+                    .as_ref()
+                    .map(|h| (entry.params.get_name().into_owned(), h))
+            })
+            .collect();
 
-        let handle = entry
-            .handle
-            .as_ref()
-            .ok_or(McpError::ServerNotFound(id.to_string()))?;
-
-        handle.list_prompts().await
-    }
-
-    async fn list_resources(&self, id: &str) -> Result<Vec<Resource>, McpError> {
-        let entry = self
-            .servers
-            .get(id)
-            .ok_or(McpError::ServerNotFound(id.to_string()))?;
-
-        let handle = entry
-            .handle
-            .as_ref()
-            .ok_or(McpError::ServerNotFound(id.to_string()))?;
-
-        handle.list_resources().await
-    }
-
-    async fn call_tool(
-        &self,
-        id: &str,
-        name: &str,
-        arguments: Option<Value>,
-    ) -> Result<CallToolResult, McpError> {
-        let entry = self
-            .servers
-            .get(id)
-            .ok_or(McpError::ServerNotFound(id.to_string()))?;
-
-        let handle = entry
-            .handle
-            .as_ref()
-            .ok_or(McpError::ServerNotFound(id.to_string()))?;
-
-        let args = arguments.and_then(|v| match v {
-            Value::Object(map) => Some(map),
-            _ => None,
+        let futures = handles.into_iter().map(|(name, handle)| async move {
+            let tools = handle
+                .list_tools()
+                .await?
+                .into_iter()
+                .map(|t| Tool::new(&name, &t))
+                .collect::<Vec<Tool>>();
+            Ok::<Vec<Tool>, McpError>(tools)
         });
 
-        handle.call_tool(name, args).await
+        let results = futures::future::try_join_all(futures).await?;
+        Ok(results.into_iter().flat_map(|v| v).collect())
+    }
+    async fn list_prompts(&self, name: &str) -> Result<Vec<Prompt>, McpError> {
+        let handle = self.get_handle(name)?;
+        Ok(handle
+            .list_prompts()
+            .await?
+            .into_iter()
+            .map(|t| t.into())
+            .collect())
+    }
+
+    async fn list_resources(&self, name: &str) -> Result<Vec<Resource>, McpError> {
+        let handle = self.get_handle(name)?;
+        Ok(handle
+            .list_resources()
+            .await?
+            .into_iter()
+            .map(|t| t.into())
+            .collect())
+    }
+
+    async fn call_tool(&self, param: &CallToolParam) -> Result<CallToolResult, McpError> {
+        let handle = self.get_handle(&param.server_name)?;
+        handle
+            .call_tool(&param.tool_name, param.arguments.as_ref())
+            .await
+            .map(CallToolResult::from)
     }
 
     async fn shutdown(&mut self) {
@@ -540,7 +557,6 @@ impl Registry {
                     handle.disconnect().await;
                 }
                 self.broadcast(ClientEvent::Disconnected {
-                    id: entry.params.get_id().into_owned(),
                     name: entry.params.get_name().into_owned(),
                     reason: "shutdown".to_string(),
                 });
@@ -552,15 +568,14 @@ impl Registry {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::mcp_client::{StdioParams, TransportType};
+    use crate::client::StdioParams;
 
     // use std::sync::OnceLock;
     // static REGISTRY: OnceLock<RegistryHandle> = OnceLock::new();
 
     fn everything_params() -> ServerParams {
         ServerParams::Stdio(StdioParams {
-            id: "test-everything".to_string(),
-            name: "server-everything".to_string(),
+            name: "test-everything".to_string(),
             description: None,
             command: "npx".to_string(),
             args: vec![
@@ -614,17 +629,17 @@ mod test {
                 event = rx.recv() => {
                     if let Ok(event) = event {
                         match &event {
-                            ClientEvent::Connecting { id, .. } if id == "test-everything" => {
-                                log::debug!("Got Connecting event for {}", id);
+                            ClientEvent::Connecting { name, .. } if name == "test-everything" => {
+                                log::debug!("Got Connecting event for {}", name);
                                 got_connecting = true;
                             }
-                            ClientEvent::Connected { id, .. } if id == "test-everything" => {
-                                log::debug!("Got Connected event for {}", id);
+                            ClientEvent::Connected { name, .. } if name == "test-everything" => {
+                                log::debug!("Got Connected event for {}", name);
                                 got_connected = true;
                                 break;
                             }
-                            ClientEvent::Disconnected { id, .. } if id == "test-everything" => {
-                                log::debug!("Got Disconnected event for {}", id);
+                            ClientEvent::Disconnected { name, .. } if name == "test-everything" => {
+                                log::debug!("Got Disconnected event for {}", name);
                                 break;
                             }
                             _ => {
@@ -652,7 +667,7 @@ mod test {
     async fn test_duplicate_acquire_same_id() {
         let handle = setup_registry();
         let params = everything_params();
-        let id = params.get_id();
+        let name = params.get_name();
 
         let snapshot1 = handle
             .acquire("session-1", params.clone())
@@ -663,9 +678,9 @@ mod test {
             .acquire("session-2", params.clone())
             .await
             .expect("second acquire");
-        assert_eq!(snapshot1.id, snapshot2.id);
+        assert_eq!(snapshot1.name, snapshot2.name);
 
-        let client = handle.get_client(&id).await;
+        let client = handle.get_client(&name).await;
         assert!(client.is_some());
         assert_eq!(client.unwrap().ref_sessions.len(), 2);
 
@@ -677,7 +692,7 @@ mod test {
     async fn test_release_single_session() {
         let handle = setup_registry();
         let params = everything_params();
-        let id = params.get_id();
+        let id = params.get_name();
 
         handle
             .acquire("session-1", params.clone())
@@ -699,7 +714,7 @@ mod test {
     async fn test_release_shared_session_keeps_server() {
         let handle = setup_registry();
         let params = everything_params();
-        let id = params.get_id();
+        let id = params.get_name();
 
         handle
             .acquire("session-1", params.clone())
@@ -725,7 +740,7 @@ mod test {
     async fn test_release_emits_disconnected_event() {
         let handle = setup_registry();
         let params = everything_params();
-        let p_id = params.get_id();
+        let p_name = params.get_name();
 
         handle
             .acquire("session-1", params.clone())
@@ -744,8 +759,8 @@ mod test {
             tokio::select! {
                 event = rx.recv() => {
                     if let Ok(event) = event {
-                        if let ClientEvent::Disconnected { id, .. } = event {
-                            if id == p_id {
+                        if let ClientEvent::Disconnected { name, .. } = event {
+                            if name == p_name {
                                 got_disconnected = true;
                                 break;
                             }
@@ -768,7 +783,7 @@ mod test {
     async fn test_full_lifecycle_acquire_use_release() {
         let handle = setup_registry();
         let params = everything_params();
-        let id = params.get_id();
+        let name = params.get_name();
 
         // 1. Acquire
         let snapshot = handle
@@ -778,19 +793,22 @@ mod test {
         assert_eq!(snapshot.status, ClientStatus::Connected);
 
         // 2. List tools
-        let tools = handle.list_tools(&id).await.expect("list tools");
+        let tools = handle.list_tools(&name).await.expect("list tools");
         assert!(!tools.is_empty());
 
         // 3. Call a tool
         let result = handle
-            .call_tool(
-                &id,
-                "echo",
-                Some(serde_json::json!({ "message": "lifecycle test" })),
-            )
+            .call_tool(&CallToolParam {
+                server_name: name.into_owned(),
+                tool_name: "echo".to_string(),
+                arguments: Some(
+                    serde_json::from_value(serde_json::json!({ "message": "lifecycle test" }))
+                        .unwrap(),
+                ),
+            })
             .await
             .expect("echo call");
-        assert!(!result.is_error.is_some());
+        assert!(!result.is_error.is_some_and(|f| f == true));
 
         // 4. Release
         let released = handle

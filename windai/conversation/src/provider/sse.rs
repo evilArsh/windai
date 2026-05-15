@@ -122,7 +122,8 @@ impl SseBlock {
 
 #[cfg(test)]
 mod tests {
-    use crate::conversation::message::{AdaptorType, Message};
+    use crate::message::Message;
+    use crate::model::AdaptorType;
     use crate::provider::adaptor;
 
     use super::*;

@@ -192,7 +192,6 @@ mod tests {
 
     fn params(command: &str, args: &[&str]) -> StdioParams {
         StdioParams {
-            id: "test".to_string(),
             name: "test".to_string(),
             description: None,
             command: command.to_string(),

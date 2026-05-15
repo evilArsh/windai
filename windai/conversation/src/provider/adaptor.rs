@@ -1,5 +1,6 @@
-use crate::conversation::{
-    message::{AdaptorType, Message, ReqConfig},
+use crate::{
+    message::{Message, ReqConfig},
+    model::AdaptorType,
     tool::Tools,
 };
 use serde_json::Value;

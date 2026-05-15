@@ -1,14 +1,201 @@
 use futures::StreamExt;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{env, str::FromStr};
 use tokio::pin;
-use windai_core::{
-    conversation::{
-        message::{AdaptorType, Content, Message, Model, ReqConfig, Role},
-        tool::{FunctionCallOutput, FunctionTool, Tools},
-    },
+use windai_conversation::{
+    message::{Content, Message, ReqConfig, Role},
+    model::{AdaptorType, Model},
     provider::{ResEventStatus, handle_chat},
+    tool::{FunctionCallOutput, FunctionTool, Tools},
 };
+use windai_mcp::client::{self, CallToolParam, Tool};
+
+fn everything_params() -> client::ServerParams {
+    client::ServerParams::Stdio(client::StdioParams {
+        name: "test-everything".to_string(),
+        description: None,
+        command: "npx".to_string(),
+        args: vec![
+            "-y".to_string(),
+            "@modelcontextprotocol/server-everything".to_string(),
+        ],
+        env: serde_json::from_str(
+            r#"{
+            "NPM_CONFIG_REGISTRY": "https://registry.npmmirror.com",
+        }"#,
+        )
+        .ok(),
+    })
+}
+
+fn fetch_params() -> client::ServerParams {
+    client::ServerParams::Stdio(client::StdioParams {
+        name: "mcp-server-fetch".to_string(),
+        description: None,
+        command: "uvx".to_string(),
+        args: vec!["mcp-server-fetch".to_string()],
+        env: serde_json::from_str(
+            r#"{
+            "UV_DEFAULT_INDEX": "https://pypi.tuna.tsinghua.edu.cn/simple/",
+            "PIP_INDEX_URL": "https://pypi.tuna.tsinghua.edu.cn/simple/",
+        }"#,
+        )
+        .ok(),
+    })
+}
+
+async fn handle_chat_mcp_real(
+    stream: bool,
+    api_url: String,
+    api_key: String,
+    model: String,
+    adaptor: AdaptorType,
+) {
+    unsafe {
+        env::set_var("RUST_LOG", "debug");
+    }
+    let _ = env_logger::builder().is_test(true).try_init();
+    let mcp = client::registry::Registry::new();
+    let session_id = "test-session-id";
+
+    let r1 = mcp.acquire(session_id, everything_params()).await.unwrap();
+    log::info!("[acquire]\n{:#?}", &r1);
+    let r2 = mcp.acquire(session_id, fetch_params()).await.unwrap();
+    log::info!("[acquire]\n{:#?}", &r2);
+
+    let tools = mcp.list_all_tools().await.unwrap();
+    log::info!("[list_all_tools]\n{:#?}", &tools);
+
+    let model = Model {
+        name: model,
+        adaptor,
+        endpoint: None,
+    };
+
+    let chat_config = ReqConfig {
+        temperature: None,
+        top_p: None,
+        max_tokens: None,
+        stream: Some(stream),
+        presence_penalty: None,
+        frequency_penalty: None,
+        parallel_tool_calls: None,
+        reasoning: Some(false),
+    };
+
+    let mut contexts = vec![
+        Message::new_simple(
+            Role::System,
+            vec![Content::new_text(String::from(
+                "you are a helpful assistant, respond in Chinese",
+            ))],
+            None,
+        ),
+        Message::new_simple(
+            Role::User,
+            vec![Content::new_text(String::from(
+                "I want to know the content in https://vivcode.cn/; and then add sum of two numbers: 1000 and 2000",
+            ))],
+            None,
+        ),
+    ];
+
+    let tools = tools
+        .iter()
+        .map(|tool| {
+            Tools::Function(FunctionTool {
+                name: tool.name.clone(),
+                description: tool.description.clone(),
+                parameters: Some(Value::Object((*tool.input_schema).clone())),
+                strict: None,
+            })
+        })
+        .collect::<Vec<Tools>>();
+
+    let mut msg = Message::default();
+    loop {
+        {
+            let res = handle_chat(
+                &contexts,
+                &chat_config,
+                &model,
+                &api_url,
+                &api_key,
+                Some(&tools),
+            );
+            pin!(res);
+            while let Some(event) = res.next().await {
+                if event.status == ResEventStatus::Error {
+                    log::error!("[error]\n{:?}", &event.error);
+                    return;
+                }
+                if event.status == ResEventStatus::Finish
+                    && let Some(data) = event.data
+                {
+                    log::info!("[success]\n{}", &data);
+                    msg = data;
+                }
+            }
+        }
+        if let Some(tool_calls) = msg.tool_calls
+            && tool_calls.len() > 0
+        {
+            contexts.push(Message::new_tool_request(
+                tool_calls.clone(),
+                msg.reasoning_content,
+            ));
+
+            let params = tool_calls
+                .iter()
+                .filter_map(|tool| {
+                    let (server_name, tool_name) = Tool::parse_name(&tool.name);
+                    match server_name {
+                        Some(name) => Some(CallToolParam {
+                            server_name: name,
+                            tool_name,
+                            arguments: Some(serde_json::from_str(&tool.arguments).unwrap()),
+                        }),
+                        None => {
+                            log::error!(
+                                "cannot parse mcp server name, invalid tool name: {}",
+                                tool.name
+                            );
+                            None
+                        }
+                    }
+                })
+                .collect::<Vec<CallToolParam>>();
+
+            let tools_len = params.len();
+
+            let pending = params.into_iter().map(|param| {
+                let mcp_clone = mcp.clone();
+                async move {
+                    let res = mcp_clone.call_tool(&param).await;
+                    res
+                }
+            });
+            let results = futures::future::try_join_all(pending).await.unwrap();
+            assert!(results.len() == tools_len);
+
+            contexts.push(Message::new_tool_result(
+                results
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, res)| FunctionCallOutput {
+                        id: tool_calls[index].id.clone(),
+                        content: res.content,
+                    })
+                    .collect(),
+            ));
+        } else {
+            break;
+        }
+        msg = Message::default();
+    }
+
+    mcp.shutdown().await;
+}
 
 async fn handle_chat_mcp(
     stream: bool,
@@ -17,10 +204,10 @@ async fn handle_chat_mcp(
     model: String,
     adaptor: AdaptorType,
 ) {
-    let _ = env_logger::builder().is_test(true).try_init();
     unsafe {
         env::set_var("RUST_LOG", "debug");
     }
+    let _ = env_logger::builder().is_test(true).try_init();
 
     let model = Model {
         name: model,
@@ -247,4 +434,40 @@ async fn test_chat_mcp_env() {
         return;
     }
     handle_chat_mcp(stream, api_url, api_key, model, adaptor).await;
+}
+
+// -------------
+
+#[tokio::test]
+async fn test_chat_mcp_completion_real() {
+    let api_key = env::var("API_KEY").unwrap_or(String::new());
+    if api_key.is_empty() {
+        log::warn!("[warning] api key is empty");
+        return;
+    }
+    handle_chat_mcp_real(
+        false,
+        String::from("https://api.deepseek.com"),
+        api_key,
+        String::from("deepseek-v4-flash"),
+        AdaptorType::OpenAICompletion,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn test_chat_mcp_completion_stream_real() {
+    let api_key = env::var("API_KEY").unwrap_or(String::new());
+    if api_key.is_empty() {
+        log::warn!("[warning] api key is empty");
+        return;
+    }
+    handle_chat_mcp_real(
+        true,
+        String::from("https://api.deepseek.com"),
+        api_key,
+        String::from("deepseek-v4-flash"),
+        AdaptorType::OpenAICompletion,
+    )
+    .await;
 }

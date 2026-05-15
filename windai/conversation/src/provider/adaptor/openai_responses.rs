@@ -4,11 +4,10 @@ use super::schema::openai_responses::{
     ResponseReasoning, ResponseRequest, ResponseStream, Tools,
 };
 use super::{Adaptor, AdaptorError, ChatAdaptor};
-use crate::conversation::message::{
-    self, AdaptorType, Content, Message, MessageBuilder, ReqConfig, Role,
-};
-use crate::conversation::tool;
+use crate::message::{self, Content, Message, MessageBuilder, ReqConfig, Role};
+use crate::model::AdaptorType;
 use crate::provider::sse::SseBlock;
+use crate::tool;
 use serde_json::Value;
 
 fn transfer_response_tools(tools: Option<&Vec<tool::Tools>>) -> Option<Vec<Tools>> {

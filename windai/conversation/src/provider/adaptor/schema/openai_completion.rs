@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 
 use super::is_none_or_empty_vec;
-use crate::conversation::message::Role;
+use crate::message::Role;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

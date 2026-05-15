@@ -2365,6 +2365,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "windai-conversation"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "bytes",
+ "chrono",
+ "derive_builder",
+ "env_logger",
+ "futures",
+ "log",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "strum",
+ "test-case",
+ "thiserror 2.0.18",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "windai-core"
 version = "0.1.0"
 dependencies = [
@@ -2385,6 +2406,23 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "url",
+ "windai-conversation",
+ "windai-mcp",
+]
+
+[[package]]
+name = "windai-mcp"
+version = "0.1.0"
+dependencies = [
+ "env_logger",
+ "futures",
+ "log",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "test-case",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

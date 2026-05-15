@@ -1,8 +1,9 @@
 use futures::StreamExt;
 use std::{env, str::FromStr};
 use tokio::pin;
-use windai_core::{
-    conversation::message::{AdaptorType, Content, Message, Model, ReqConfig, Role},
+use windai_conversation::{
+    message::{Content, Message, ReqConfig, Role},
+    model::{AdaptorType, Model},
     provider::{adaptor::get_chat_adaptor, handle_chat},
 };
 

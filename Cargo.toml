@@ -12,7 +12,6 @@ repository = "https://github.com/evilArsh/windai"
 authors = ["arsh <arshdebian@163.com>"]
 license = "MIT OR Apache-2.0"
 
-
 [workspace.dependencies]
 futures = "0.3"
 regex = "1.12"

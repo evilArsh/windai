@@ -11,13 +11,12 @@ pub mod error;
 
 mod sse;
 
-use super::conversation::{
-    message::{Message, Model, ReqConfig},
+use crate::{
+    message::{Message, ReqConfig},
+    model::Model,
+    provider::{adaptor::AdaptorError, client::ClientError, error::ProviderError},
     tool::Tools,
 };
-use adaptor::AdaptorError;
-use client::ClientError;
-use error::ProviderError;
 
 /// 聊天统一响应事件
 #[derive(Debug, PartialEq, Eq, strum::Display)]

@@ -1,6 +1,6 @@
 use super::McpError;
 use super::cmd_normalizer;
-use super::{ServerParams, StdioParams, TransportType};
+use super::{ServerParams, StdioParams};
 use rmcp::model::{CallToolRequestParams, CallToolResult, Prompt, Resource, Tool};
 use rmcp::service::RunningService;
 use rmcp::transport::{ConfigureCommandExt, StreamableHttpClientTransport, TokioChildProcess};
@@ -22,9 +22,8 @@ static DEDUP_MAP: LazyLock<Mutex<HashMap<String, DedupState>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub struct ServerHandle {
-    pub id: String,
-    pub name: String,
-    pub transport: TransportType,
+    // pub name: String,
+    // pub transport: TransportType,
     service: ClientService,
 }
 
@@ -35,8 +34,8 @@ impl ServerHandle {
                 if let Some(normalized) = cmd_normalizer::normalize(stdio) {
                     Self::connect_with_dedup(stdio, &normalized).await
                 } else {
-                    // Self::connect_direct(params).await
-                    return Err(McpError::UnsupportedStdioCommand(stdio.command.clone()));
+                    Self::connect_direct(params).await
+                    // return Err(McpError::UnsupportedStdioCommand(stdio.command.clone()));
                 }
             }
             ServerParams::Streamable(_) => Self::connect_direct(params).await,
@@ -64,9 +63,8 @@ impl ServerHandle {
         };
 
         Ok(Self {
-            id: params.get_id().into_owned(),
-            name: params.get_name().into_owned(),
-            transport: params.get_transport(),
+            // name: params.get_name().into_owned(),
+            // transport: params.get_transport(),
             service,
         })
     }
@@ -126,11 +124,11 @@ impl ServerHandle {
     pub async fn call_tool(
         &self,
         name: &str,
-        arguments: Option<Map<String, Value>>,
+        arguments: Option<&Map<String, Value>>,
     ) -> Result<CallToolResult, McpError> {
         let params = CallToolRequestParams::new(name.to_owned());
         let params = if let Some(args) = arguments {
-            params.with_arguments(args)
+            params.with_arguments(args.clone())
         } else {
             params
         };
