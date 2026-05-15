@@ -1,7 +1,7 @@
 use crate::storage::utils::value_or_none;
 
 use super::{Storage, StorageError, lock_db};
-use windai_domain::chat::Topic;
+use wind_domain::chat::Topic;
 
 fn row_to_topic(row: &rusqlite::Row<'_>) -> Result<Topic, rusqlite::Error> {
     Ok(Topic {

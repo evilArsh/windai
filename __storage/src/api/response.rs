@@ -1,7 +1,7 @@
 use crate::api::request::ChatContext;
 use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
-use windai_domain::{
+use wind_domain::{
     adaptor::AdaptorType,
     chat::{ContentType, Message, MessageContent, Role},
 };

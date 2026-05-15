@@ -1,7 +1,7 @@
 use crate::storage::utils::value_or_none;
 
 use super::{Storage, StorageError, lock_db};
-use windai_domain::provider::{Credentials, Provider};
+use wind_domain::provider::{Credentials, Provider};
 fn row_to_provider(row: &rusqlite::Row<'_>) -> Result<Provider, rusqlite::Error> {
     Ok(Provider {
         id: row.get(0)?,

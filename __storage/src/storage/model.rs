@@ -1,7 +1,7 @@
 use crate::storage::utils::value_or_none;
 
 use super::{Storage, StorageError, lock_db};
-use windai_domain::{
+use wind_domain::{
     adaptor::AdaptorType,
     model::{Model, ModelType},
 };

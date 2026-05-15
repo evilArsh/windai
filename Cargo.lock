@@ -2365,7 +2365,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "windai-conversation"
+name = "wind-ai"
 version = "0.1.0"
 dependencies = [
  "async-stream",
@@ -2386,7 +2386,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "windai-core"
+name = "wind-core"
 version = "0.1.0"
 dependencies = [
  "async-stream",
@@ -2406,12 +2406,12 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "url",
- "windai-conversation",
- "windai-mcp",
+ "wind-ai",
+ "wind-mcp",
 ]
 
 [[package]]
-name = "windai-mcp"
+name = "wind-mcp"
 version = "0.1.0"
 dependencies = [
  "env_logger",

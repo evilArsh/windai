@@ -5,18 +5,13 @@ use reqwest::Method;
 use std::fmt::Display;
 use url::Url;
 
-pub mod adaptor;
-mod client;
-pub mod error;
-
-mod sse;
-
-use crate::{
+use super::{
     message::{Message, ReqConfig},
     model::Model,
-    provider::{adaptor::AdaptorError, client::ClientError, error::ProviderError},
+    provider::{adaptor::AdaptorError, error::ProviderError},
     tool::Tools,
 };
+use crate::provider::{adaptor, client};
 
 /// 聊天统一响应事件
 #[derive(Debug, PartialEq, Eq, strum::Display)]
@@ -76,8 +71,8 @@ impl Display for ResEvent {
         write!(f, "}}")
     }
 }
-impl From<ClientError> for ResEvent {
-    fn from(value: ClientError) -> Self {
+impl From<client::ClientError> for ResEvent {
+    fn from(value: client::ClientError) -> Self {
         ResEvent {
             status: ResEventStatus::Error,
             data: None,

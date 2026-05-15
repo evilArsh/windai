@@ -1,10 +1,11 @@
 use futures::StreamExt;
 use std::{env, str::FromStr};
 use tokio::pin;
-use windai_conversation::{
+use wind_ai::{
+    chat,
     message::{Content, Message, ReqConfig, Role},
     model::{AdaptorType, Model},
-    provider::{adaptor::get_chat_adaptor, handle_chat},
+    provider::adaptor::get_chat_adaptor,
 };
 
 #[tokio::test]
@@ -51,7 +52,7 @@ async fn test_handle_chat() {
             None,
         ),
     ];
-    let res = handle_chat(&contexts, &chat_config, &model, &api_url, &api_key, None);
+    let res = chat::handle_chat(&contexts, &chat_config, &model, &api_url, &api_key, None);
     pin!(res);
     while let Some(value) = res.next().await {
         println!("[data]\n{}", value);

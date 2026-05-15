@@ -2,13 +2,13 @@ use futures::StreamExt;
 use serde_json::{Value, json};
 use std::{env, str::FromStr};
 use tokio::pin;
-use windai_conversation::{
+use wind_ai::{
+    chat::{ResEventStatus, handle_chat},
     message::{Content, Message, ReqConfig, Role},
     model::{AdaptorType, Model},
-    provider::{ResEventStatus, handle_chat},
     tool::{FunctionCallOutput, FunctionTool, Tools},
 };
-use windai_mcp::client::{self, CallToolParam, Tool};
+use wind_mcp::client::{self, CallToolParam, Tool};
 
 fn everything_params() -> client::ServerParams {
     client::ServerParams::Stdio(client::StdioParams {

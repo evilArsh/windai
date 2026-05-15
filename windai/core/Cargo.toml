@@ -1,7 +1,7 @@
 [package]
-name = "windai-core"
+name = "wind-core"
 description = """
-windai core
+wind ai core
 """
 edition.workspace = true
 version.workspace = true
@@ -13,8 +13,8 @@ license.workspace = true
 # dotenvy.workspace = true
 # rusqlite.workspace = true
 # dirs.workspace = true
-windai-mcp = { path = "../mcp" }
-windai-conversation = { path = "../conversation" }
+wind-mcp = { path = "../mcp" }
+wind-ai = { path = "../ai" }
 
 reqwest.workspace = true
 strum.workspace = true

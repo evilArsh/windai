@@ -1,5 +1,5 @@
 [package]
-name = "windai-mcp"
+name = "wind-mcp"
 description = """
 MCP client management for windai
 """

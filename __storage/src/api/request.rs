@@ -1,6 +1,6 @@
 use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
-use windai_domain::chat::{ContentType, MessageContent, Role};
+use wind_domain::chat::{ContentType, MessageContent, Role};
 
 /// LLM 对话用户输入消息
 #[derive(Debug, Serialize, Deserialize, Clone, Builder)]

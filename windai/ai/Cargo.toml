@@ -1,5 +1,5 @@
 [package]
-name = "windai-conversation"
+name = "wind-ai"
 description = """
 Conversation and provider adaptor for windai
 """

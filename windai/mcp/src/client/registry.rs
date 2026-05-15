@@ -106,8 +106,8 @@ impl RegistryHandle {
     }
 
     /// 启动一个 MCP 服务
-    /// - 不同的 client 使用相同的 package 启动服务时，同时只能启动一个服务，其它的 client 等待服务启动完毕后继续启动
     /// - 不同的 session 共享同一个 Stdio 服务
+    /// - 多个 stdio MCP 服务同时启动`同一个` node/python 包时，必须按序等待执行完毕，以避免其 cli 工具发生文件写冲突
     pub async fn acquire(
         &self,
         session_id: &str,
