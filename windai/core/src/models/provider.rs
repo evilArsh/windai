@@ -1,12 +1,12 @@
+use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 use std::env;
-
 /// 提供商账号信息
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Builder)]
 pub struct Credentials {
+    #[builder(setter(skip))]
     pub id: i64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider_id: Option<i64>,
+    pub provider_id: i64,
     pub key: String,
 }
 impl Credentials {
@@ -14,7 +14,7 @@ impl Credentials {
         let api_key = env::var("API_KEY").unwrap_or(String::new());
         Credentials {
             id: 0,
-            provider_id: None,
+            provider_id: 0,
             key: api_key,
         }
     }

@@ -1,6 +1,5 @@
 use futures::StreamExt;
 use std::{env, str::FromStr};
-use tokio::pin;
 use wind_ai::{
     chat,
     message::{Content, Message, ReqConfig, Role},
@@ -65,7 +64,7 @@ async fn test_handle_chat() {
                 &api_key,
                 None,
             );
-            pin!(res);
+            let mut res = Box::pin(res);
             while let Some(value) = res.next().await {
                 println!("[data]\n{}", value);
             }
