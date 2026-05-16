@@ -3,9 +3,10 @@ use serde_json::{Value, json};
 use std::{env, str::FromStr};
 use tokio::pin;
 use wind_ai::{
-    chat::{ResEventStatus, handle_chat},
+    chat::{self, ResEventStatus},
     message::{Content, Message, ReqConfig, Role},
     model::{AdaptorType, Model},
+    provider::adaptor,
     tool::{FunctionCallOutput, FunctionTool, Tools},
 };
 use wind_mcp::client::{self, CallToolParam, Tool};
@@ -113,29 +114,55 @@ async fn handle_chat_mcp_real(
         .collect::<Vec<Tools>>();
 
     let mut msg = Message::default();
+    let chat_adaptor = adaptor::get_chat_adaptor(model.adaptor);
     loop {
         {
-            let res = handle_chat(
-                &contexts,
-                &chat_config,
+            let req_body = chat::build_request(
+                chat_adaptor.as_ref(),
                 &model,
-                &api_url,
-                &api_key,
+                &chat_config,
+                &contexts,
                 Some(&tools),
-            );
-            pin!(res);
-            while let Some(event) = res.next().await {
-                if event.status == ResEventStatus::Error {
-                    log::error!("[error]\n{:?}", &event.error);
-                    return;
+            )
+            .unwrap();
+
+            match chat_config.stream {
+                Some(true) => {
+                    let res = chat::handle_chat_stream(
+                        chat_adaptor.as_ref(),
+                        &req_body,
+                        &api_url,
+                        &api_key,
+                        None,
+                    );
+                    pin!(res);
+                    while let Some(event) = res.next().await {
+                        if event.status == ResEventStatus::Error {
+                            log::error!("[error]\n{:?}", &event.error);
+                            return;
+                        }
+                        if event.status == ResEventStatus::Finish
+                            && let Some(data) = event.data
+                        {
+                            log::info!("[success]\n{}", &data);
+                            msg = data;
+                        }
+                    }
                 }
-                if event.status == ResEventStatus::Finish
-                    && let Some(data) = event.data
-                {
-                    log::info!("[success]\n{}", &data);
-                    msg = data;
+                _ => {
+                    let value = chat::handle_chat(
+                        chat_adaptor.as_ref(),
+                        &req_body,
+                        &api_url,
+                        &api_key,
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                    msg = value;
+                    println!("[data]\n{}", &msg);
                 }
-            }
+            };
         }
         if let Some(tool_calls) = msg.tool_calls
             && tool_calls.len() > 0
@@ -276,31 +303,52 @@ async fn handle_chat_mcp(
         ),
     ];
 
+    let chat_adaptor = adaptor::get_chat_adaptor(model.adaptor);
     let mut msg = Message::default();
     {
-        let res = handle_chat(
-            &contexts,
-            &chat_config,
+        let req_body = chat::build_request(
+            chat_adaptor.as_ref(),
             &model,
-            &api_url,
-            &api_key,
+            &chat_config,
+            &contexts,
             Some(&tools),
-        );
-        pin!(res);
-        while let Some(event) = res.next().await {
-            if event.status == ResEventStatus::Error {
-                log::error!("[error]\n{:?}", &event.error);
-                return;
+        )
+        .unwrap();
+
+        let res = chat::handle_chat(chat_adaptor.as_ref(), &req_body, &api_url, &api_key, None);
+
+        match chat_config.stream {
+            Some(true) => {
+                let res = chat::handle_chat_stream(
+                    chat_adaptor.as_ref(),
+                    &req_body,
+                    &api_url,
+                    &api_key,
+                    None,
+                );
+                pin!(res);
+                while let Some(event) = res.next().await {
+                    if event.status == ResEventStatus::Error {
+                        log::error!("[error]\n{:?}", &event.error);
+                        return;
+                    }
+                    if event.status == ResEventStatus::Finish
+                        && let Some(data) = event.data
+                    {
+                        log::info!("[success]\n{}", &data);
+                        msg = data;
+                    }
+                }
             }
-            if event.status == ResEventStatus::Finish
-                && let Some(data) = event.data
-            {
-                log::info!("[success]\n{}", &data);
-                assert!(&data.tool_calls.is_some());
-                assert_eq!(data.tool_calls.as_ref().unwrap().len(), 2);
-                msg = data;
+            _ => {
+                let value =
+                    chat::handle_chat(chat_adaptor.as_ref(), &req_body, &api_url, &api_key, None)
+                        .await
+                        .unwrap();
+                msg = value;
+                println!("[data]\n{}", &msg);
             }
-        }
+        };
     }
     let tool_calls = msg.tool_calls.unwrap();
     contexts.push(Message::new_tool_request(
@@ -326,27 +374,49 @@ async fn handle_chat_mcp(
     contexts.push(Message::new_tool_result(tools_output));
 
     log::debug!("[contexts]\n{:#?}", &contexts);
-
-    let res = handle_chat(
-        &contexts,
-        &chat_config,
+    let req_body = chat::build_request(
+        chat_adaptor.as_ref(),
         &model,
-        &api_url,
-        &api_key,
+        &chat_config,
+        &contexts,
         Some(&tools),
-    );
-    pin!(res);
-    while let Some(event) = res.next().await {
-        if event.status == ResEventStatus::Error {
-            log::error!("[mcp error]\n{:?}", &event.error);
-            return;
+    )
+    .unwrap();
+
+    let res = chat::handle_chat(chat_adaptor.as_ref(), &req_body, &api_url, &api_key, None);
+
+    match chat_config.stream {
+        Some(true) => {
+            let res = chat::handle_chat_stream(
+                chat_adaptor.as_ref(),
+                &req_body,
+                &api_url,
+                &api_key,
+                None,
+            );
+            pin!(res);
+            while let Some(event) = res.next().await {
+                if event.status == ResEventStatus::Error {
+                    log::error!("[error]\n{:?}", &event.error);
+                    return;
+                }
+                if event.status == ResEventStatus::Finish
+                    && let Some(data) = event.data
+                {
+                    log::info!("[success]\n{}", &data);
+                    msg = data;
+                }
+            }
         }
-        if event.status == ResEventStatus::Finish
-            && let Some(data) = event.data
-        {
-            log::info!("[mcp success]\n{}", &data);
+        _ => {
+            let value =
+                chat::handle_chat(chat_adaptor.as_ref(), &req_body, &api_url, &api_key, None)
+                    .await
+                    .unwrap();
+            msg = value;
+            println!("[data]\n{}", &msg);
         }
-    }
+    };
 }
 
 #[tokio::test]

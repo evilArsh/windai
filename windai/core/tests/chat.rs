@@ -5,7 +5,7 @@ use wind_ai::{
     chat,
     message::{Content, Message, ReqConfig, Role},
     model::{AdaptorType, Model},
-    provider::adaptor::get_chat_adaptor,
+    provider::adaptor::{self, get_chat_adaptor},
 };
 
 #[tokio::test]
@@ -52,11 +52,32 @@ async fn test_handle_chat() {
             None,
         ),
     ];
-    let res = chat::handle_chat(&contexts, &chat_config, &model, &api_url, &api_key, None);
-    pin!(res);
-    while let Some(value) = res.next().await {
-        println!("[data]\n{}", value);
-    }
+    let chat_adaptor = adaptor::get_chat_adaptor(model.adaptor);
+    let req_body =
+        chat::build_request(chat_adaptor.as_ref(), &model, &chat_config, &contexts, None).unwrap();
+
+    match chat_config.stream {
+        Some(true) => {
+            let res = chat::handle_chat_stream(
+                chat_adaptor.as_ref(),
+                &req_body,
+                &api_url,
+                &api_key,
+                None,
+            );
+            pin!(res);
+            while let Some(value) = res.next().await {
+                println!("[data]\n{}", value);
+            }
+        }
+        _ => {
+            let value =
+                chat::handle_chat(chat_adaptor.as_ref(), &req_body, &api_url, &api_key, None)
+                    .await
+                    .unwrap();
+            println!("[data]\n{}", value);
+        }
+    };
 }
 
 #[test]

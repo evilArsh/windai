@@ -40,6 +40,8 @@ pub trait Adaptor {
     fn get_type(&self) -> AdaptorType;
 }
 
+
+/// 文本对话适配器
 pub trait ChatAdaptor: Adaptor {
     /// 将统一请求配置和消息列表转换为提供商标准请求格式
     fn build_request(

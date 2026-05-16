@@ -1,5 +1,4 @@
 pub mod adaptor;
-pub mod error;
 
 mod sse;
 
