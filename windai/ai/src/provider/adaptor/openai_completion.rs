@@ -107,7 +107,7 @@ impl ChatAdaptor for OpenAICompletionAdaptor {
                         ),
                         tool_call_id: None,
                     }]
-                } else if ctx.role == Role::Tool {
+                } else if ctx.is_tool_result() {
                     ctx.content
                         .iter()
                         .filter_map(|content| {

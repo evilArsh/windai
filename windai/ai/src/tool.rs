@@ -1,6 +1,6 @@
 use std::fmt;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Debug, Serialize, Clone)]
@@ -27,7 +27,7 @@ pub struct FunctionTool {
 }
 
 /// 模型返回的函数调用信息
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FunctionCall {
     /// 函数调用ID，由模型生成
     pub id: String,
@@ -38,7 +38,7 @@ pub struct FunctionCall {
 }
 
 /// 函数调用结果
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FunctionCallOutput {
     /// 函数调用ID，由模型生成
     pub id: String,

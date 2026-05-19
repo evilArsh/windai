@@ -184,13 +184,18 @@ pub struct Tool {
 impl Tool {
     /// 解析出MCP服务名和真实工具名
     /// - (MCP server name, tool name)
-    pub fn parse_name(tool_name: &str) -> (Option<String>, String) {
+    pub fn parse_name(tool_name: &str) -> Result<(String, String), McpError> {
         if let Some(pos) = tool_name.find(MCP_TOOL_IDENTIFIER) {
             let server_name = tool_name[..pos].to_string();
             let tool_name = tool_name[pos + MCP_TOOL_IDENTIFIER.len()..].to_string();
-            (Some(server_name), tool_name)
+            Ok((server_name, tool_name))
         } else {
-            (None, tool_name.to_string())
+            let err = format!(
+                "cannot parse mcp server name, invalid tool name: {}",
+                tool_name
+            );
+            log::error!("{}", err);
+            Err(McpError::Other(err))
         }
     }
 

@@ -55,28 +55,11 @@ async fn test_handle_chat() {
     let req_body =
         chat::build_request(chat_adaptor.as_ref(), &model, &chat_config, &contexts, None).unwrap();
 
-    match chat_config.stream {
-        Some(true) => {
-            let res = chat::handle_chat_stream(
-                chat_adaptor.as_ref(),
-                &req_body,
-                &api_url,
-                &api_key,
-                None,
-            );
-            let mut res = Box::pin(res);
-            while let Some(value) = res.next().await {
-                println!("[data]\n{}", value);
-            }
-        }
-        _ => {
-            let value =
-                chat::handle_chat(chat_adaptor.as_ref(), &req_body, &api_url, &api_key, None)
-                    .await
-                    .unwrap();
-            println!("[data]\n{}", value);
-        }
-    };
+    let res = chat::handle_chat(chat_adaptor.as_ref(), &req_body, &api_url, &api_key, None);
+    let mut res = Box::pin(res);
+    while let Some(value) = res.next().await {
+        println!("[data]\n{}", value);
+    }
 }
 
 #[test]

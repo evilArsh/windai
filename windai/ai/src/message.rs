@@ -18,7 +18,7 @@ pub enum Role {
 }
 
 /// 音频消息内容
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AudioContent {
     /// 编码, eg: mp3, wav
     pub format: String,
@@ -27,7 +27,7 @@ pub struct AudioContent {
 }
 
 /// 消息内容
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Content {
     Text(String),
@@ -63,17 +63,26 @@ impl Content {
 }
 
 /// 模型请求或响应信息
-#[derive(Debug, Serialize, Clone, Builder)]
+#[derive(Debug, Serialize, Deserialize, Clone, Builder)]
 #[builder(setter(strip_option, into))]
 pub struct Message {
     #[builder(default = "Role::Assistant")]
     pub role: Role,
     /// 响应和请求消息，涵盖以下类型：
-    /// - 多种模态的消息：文本，图片，语音
+    ///
+    /// - 请求消息
+    ///
+    /// 1. 用户可能同时输入多种模态的消息：文本，图片，语音
+    /// 2. 本地/远程 tool_calls 调用结果
+    ///
+    /// # 响应消息
+    ///
+    /// 模型可能响应文本，图片，语音数据。
+    ///
+    /// 模型为用户选择的 tool_calls 信息包含在单独的 [Self::tool_calls] 中。
     #[builder(default)]
     pub content: Vec<Content>,
     /// 推理消息
-    #[serde(skip_serializing_if = "Option::is_none")]
     #[builder(default)]
     pub reasoning_content: Option<String>,
     /// 创建时间
@@ -86,7 +95,7 @@ pub struct Message {
     #[builder(default)]
     pub output_tokens: i32,
     /// 工具调用信息
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// - 模型为用户选择的工具调用信息，用户根据返回的信息调用MCP工具
     #[builder(default)]
     pub tool_calls: Option<Vec<FunctionCall>>,
 }
@@ -161,6 +170,24 @@ impl Message {
         self.output_tokens += partial.output_tokens;
     }
 
+    /// 简单消息，不包含任何 tool_call
+    #[inline]
+    pub fn is_simple(&self) -> bool {
+        self.tool_calls.is_none() && (self.role == Role::User || self.role == Role::Assistant)
+    }
+
+    /// 是否为 tool_call 调用结果
+    #[inline]
+    pub fn is_tool_result(&self) -> bool {
+        self.role == Role::Tool
+    }
+
+    /// 判断条件为：角色为 Assistant 并且 tool_calls 有值
+    #[inline]
+    pub fn is_tool_request(&self) -> bool {
+        self.role == Role::Assistant && self.tool_calls.as_ref().is_some_and(|c| !c.is_empty())
+    }
+
     /// 构建一个简单的上下文，用于直接放入文本数据
     #[inline]
     pub fn new_simple(
@@ -178,6 +205,7 @@ impl Message {
             tool_calls: None,
         }
     }
+
     /// 构建一个工具调用结果上下文，放入本地调用结果
     #[inline]
     pub fn new_tool_result(value: Vec<FunctionCallOutput>) -> Self {
@@ -254,7 +282,7 @@ impl Default for Message {
 }
 
 /// 对话请求参数
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, Default)]
 pub struct ReqConfig {
     /// 采样温度，范围 0~2。较高值使输出更随机，较低值使输出更聚焦。
     /// 通常建议只调 temperature 或 top_p 之一。

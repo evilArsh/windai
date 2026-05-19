@@ -135,30 +135,10 @@ fn parse_url(
         endpoint.trim_start_matches("/")
     ))
 }
-/// 发送一次对话请求
-pub async fn handle_chat(
-    chat_adaptor: &dyn ChatAdaptor,
-    req_body: &Value,
-    api_key: &str,
-    api_base_url: &str,
-    api_endpoint: Option<&str>,
-) -> Result<Message, ProviderError> {
-    let api_url = parse_url(chat_adaptor, api_base_url, api_endpoint)?;
-
-    let response = client::request(api_url.as_str(), Method::POST, |req| {
-        req.json(&req_body).bearer_auth(api_key)
-    })
-    .await?;
-
-    let res = client::handle_response(response).await?;
-
-    let response = chat_adaptor.parse_response(&res)?;
-
-    Ok(response)
-}
-
-/// 发送一次流式对话请求
-pub fn handle_chat_stream(
+/// 一次对话请求
+///
+/// 根据 `req_body` 中的 `stream` 字段来决定启用流式或者非流式对话请求
+pub fn handle_chat(
     chat_adaptor: &dyn ChatAdaptor,
     req_body: &Value,
     api_key: &str,
@@ -167,48 +147,94 @@ pub fn handle_chat_stream(
 ) -> impl Stream<Item = ResEvent> {
     stream! {
         let api_url = match parse_url(chat_adaptor, api_base_url, api_endpoint) {
-            Ok(r) => r,
-            Err(e) => {
-                yield e.into();
+            Ok(api_url) => api_url,
+            Err(err) => {
+                yield err.into();
                 return;
             }
         };
+        let is_stream = req_body
+            .get("stream")
+            .and_then(|v| v.as_bool())
+            .unwrap_or_else(|| false);
+        match is_stream {
+            true => {
+                let api_url = match parse_url(chat_adaptor, api_base_url, api_endpoint) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        yield e.into();
+                        return;
+                    }
+                };
 
-        let response = match client::request_sse(api_url.as_str(), Method::POST, |req| {
-            req.json(&req_body).bearer_auth(api_key)
-        })
-        .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                yield e.into();
-                return;
-            }
-        };
-        let stream = client::handle_stream(response);
-        let mut msg = Message::default();
-        for await result in stream {
-            match result {
-                Ok(bytes) => {
-                    let chunks = match chat_adaptor.parse_stream_chunk(&bytes) {
-                        Ok(c) => c,
-                        Err(e) => {
-                            log::error!("[parse_stream_chunk error]\n{}", e.to_string());
-                            yield e.into();
-                            return;
+                let response = match client::request_sse(api_url.as_str(), Method::POST, |req| {
+                    req.json(req_body).bearer_auth(api_key)
+                })
+                .await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        yield e.into();
+                        return;
+                    }
+                };
+                let stream = client::handle_stream(response);
+                let mut msg = Message::default();
+                for await result in stream {
+                    match result {
+                        Ok(bytes) => {
+                            let chunks = match chat_adaptor.parse_stream_chunk(&bytes) {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    log::error!("[parse_stream_chunk error]\n{}", e.to_string());
+                                    yield e.into();
+                                    return;
+                                }
+                            };
+                            for chunk in chunks {
+                                // log::debug!("[chunk]\n{}", &chunk);
+                                msg.append_chunk(chunk);
+                                yield ResEvent::new_partial(msg.clone());
+                            }
+                        }
+                        Err(err) => {
+                            yield ResEvent::new_error(err.into());
                         }
                     };
-                    for chunk in chunks {
-                        log::debug!("[chunk]\n{}", &chunk);
-                        msg.append_chunk(chunk);
-                        yield ResEvent::new_partial(msg.clone());
+                }
+                yield ResEvent::new_finish(msg);
+            }
+            _ => {
+                let response = match client::request(api_url.as_str(), Method::POST, |req| {
+                    req.json(req_body).bearer_auth(api_key)
+                })
+                .await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        log::error!("[response error] status:{}, text: {}", e.code, e.msg);
+                        yield e.into();
+                        return;
                     }
-                }
-                Err(err) => {
-                    yield ResEvent::new_error(err.into());
-                }
-            };
+                };
+                let res = match client::handle_response(response).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        log::error!("[handle_response error]\n{}", e);
+                        yield e.into();
+                        return;
+                    }
+                };
+                let response = match chat_adaptor.parse_response(&res) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        log::error!("[parse response error]\n{}", e);
+                        yield e.into();
+                        return;
+                    }
+                };
+                yield ResEvent::new_finish(response);
+            }
         }
-        yield ResEvent::new_finish(msg);
     }
 }

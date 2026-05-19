@@ -3209,6 +3209,7 @@ dependencies = [
  "log",
  "reqwest",
  "rmcp",
+ "rquickjs",
  "schemars",
  "serde",
  "serde_json",
@@ -3219,6 +3220,7 @@ dependencies = [
  "tokio",
  "url",
  "wind-ai",
+ "wind-js",
  "wind-mcp",
 ]
 

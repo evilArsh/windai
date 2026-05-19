@@ -9,7 +9,9 @@
       "Bash(bun --help)",
       "Bash(uvx --help)",
       "Bash(uv run *)",
-      "Bash(bunx --help)"
+      "Bash(bunx --help)",
+      "Bash(sqlite3 :memory: *)",
+      "Bash(cargo test *)"
     ]
   },
   "enabledPlugins": {

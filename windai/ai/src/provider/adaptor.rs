@@ -40,9 +40,8 @@ pub trait Adaptor {
     fn get_type(&self) -> AdaptorType;
 }
 
-
 /// 文本对话适配器
-pub trait ChatAdaptor: Adaptor {
+pub trait ChatAdaptor: Adaptor + Send + Sync {
     /// 将统一请求配置和消息列表转换为提供商标准请求格式
     fn build_request(
         &self,
@@ -58,7 +57,7 @@ pub trait ChatAdaptor: Adaptor {
 }
 
 /// 根据 AdaptorType 获取对应的对话适配器实例
-pub fn get_chat_adaptor(adaptor: AdaptorType) -> Box<dyn ChatAdaptor> {
+pub fn get_chat_adaptor(adaptor: AdaptorType) -> Box<dyn ChatAdaptor + Send + Sync> {
     match adaptor {
         AdaptorType::OpenAICompletion => Box::new(openai_completion::OpenAICompletionAdaptor),
         AdaptorType::OpenAIResponse => Box::new(openai_responses::OpenAIResponseAdaptor),
