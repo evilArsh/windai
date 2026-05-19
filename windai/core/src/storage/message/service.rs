@@ -26,7 +26,7 @@ impl MessageService {
         self.repo
             .get(id)
             .await?
-            .ok_or(CoreError::NotFound("created provider".into()))
+            .ok_or(CoreError::NotFound("created message".into()))
     }
 
     /// 更新消息

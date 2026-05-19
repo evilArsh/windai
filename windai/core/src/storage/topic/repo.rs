@@ -12,10 +12,10 @@ impl TopicRepo {
         Self { db }
     }
 
-    pub async fn get_next_topic_index(&self, parent_topic_id: Option<i64>) -> Result<i64> {
+    pub async fn get_next_topic_index(&self, topic_id: Option<i64>) -> Result<i64> {
         let row =
-            sqlx::query(r#"SELECT COALESCE(MAX(topic_index), 0) FROM topics WHERE topic_id = ?"#)
-                .bind(parent_topic_id)
+            sqlx::query(r#"SELECT COALESCE(MAX(topic_index), 0) FROM topics WHERE id = ?"#)
+                .bind(topic_id)
                 .fetch_one(&self.db)
                 .await?;
 
@@ -164,32 +164,56 @@ impl TopicRepo {
         &self,
         tx: &mut Transaction<'_, sqlx::Sqlite>,
         topic_id: i64,
-        server_ids: &[String],
+        server_ids: &[i64],
     ) -> Result<()> {
-        sqlx::query("DELETE FROM topic_mcp_servers WHERE topic_id = ?")
-            .bind(topic_id)
-            .execute(&mut **tx)
-            .await?;
+        let existing: Vec<i64> = sqlx::query(
+            "SELECT server_id FROM topic_mcp_servers WHERE topic_id = ?",
+        )
+        .bind(topic_id)
+        .map(|row: sqlx::sqlite::SqliteRow| row.get(0))
+        .fetch_all(&mut **tx)
+        .await?;
 
-        if server_ids.is_empty() {
-            return Ok(());
-        }
-        let placeholders: Vec<String> = server_ids
+        let to_remove: Vec<i64> = existing
             .iter()
-            .map(|_| format!("({}, ?)", topic_id))
+            .filter(|id| !server_ids.contains(id))
+            .copied()
+            .collect();
+        let to_add: Vec<i64> = server_ids
+            .iter()
+            .filter(|id| !existing.contains(id))
+            .copied()
             .collect();
 
-        let sql = format!(
-            "INSERT INTO topic_mcp_servers (topic_id, server_id) VALUES {}",
-            placeholders.join(", ")
-        );
-
-        let mut query = sqlx::query(&sql);
-        for id in server_ids {
-            query = query.bind(id);
+        if !to_remove.is_empty() {
+            let placeholders = to_remove.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            let sql = format!(
+                "DELETE FROM topic_mcp_servers WHERE topic_id = ? AND server_id IN ({})",
+                placeholders
+            );
+            let mut query = sqlx::query(&sql).bind(topic_id);
+            for id in &to_remove {
+                query = query.bind(id);
+            }
+            query.execute(&mut **tx).await?;
         }
 
-        query.execute(&mut **tx).await?;
+        if !to_add.is_empty() {
+            let placeholders: Vec<String> = to_add
+                .iter()
+                .map(|_| format!("({}, ?)", topic_id))
+                .collect();
+            let sql = format!(
+                "INSERT INTO topic_mcp_servers (topic_id, server_id) VALUES {}",
+                placeholders.join(", ")
+            );
+            let mut query = sqlx::query(&sql);
+            for id in &to_add {
+                query = query.bind(id);
+            }
+            query.execute(&mut **tx).await?;
+        }
+
         Ok(())
     }
 
@@ -211,27 +235,31 @@ impl TopicRepo {
         topic_id: i64,
         chat_config: &ReqConfig,
     ) -> Result<()> {
-        sqlx::query("DELETE FROM chat_configs WHERE topic_id = ?")
-            .bind(topic_id)
-            .execute(&mut **tx)
-            .await?;
-
         sqlx::query(
-            r#"INSERT INTO chat_configs 
+            r#"INSERT INTO chat_configs
             (topic_id, temperature, top_p, max_tokens, stream, presence_penalty, frequency_penalty, parallel_tool_calls, reasoning)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"#
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(topic_id) DO UPDATE SET
+            temperature = excluded.temperature,
+            top_p = excluded.top_p,
+            max_tokens = excluded.max_tokens,
+            stream = excluded.stream,
+            presence_penalty = excluded.presence_penalty,
+            frequency_penalty = excluded.frequency_penalty,
+            parallel_tool_calls = excluded.parallel_tool_calls,
+            reasoning = excluded.reasoning"#,
         )
-            .bind(topic_id)
-            .bind(chat_config.temperature)
-            .bind(chat_config.top_p)
-            .bind(chat_config.max_tokens)
-            .bind(chat_config.stream)
-            .bind(chat_config.presence_penalty)
-            .bind(chat_config.frequency_penalty)
-            .bind(chat_config.parallel_tool_calls)
-            .bind(chat_config.reasoning) // bool
-            .execute(&mut **tx)
-            .await?;
+        .bind(topic_id)
+        .bind(chat_config.temperature)
+        .bind(chat_config.top_p)
+        .bind(chat_config.max_tokens)
+        .bind(chat_config.stream)
+        .bind(chat_config.presence_penalty)
+        .bind(chat_config.frequency_penalty)
+        .bind(chat_config.parallel_tool_calls)
+        .bind(chat_config.reasoning)
+        .execute(&mut **tx)
+        .await?;
 
         Ok(())
     }
@@ -241,7 +269,7 @@ impl TopicRepo {
             r#"SELECT
             id, topic_id, temperature, top_p, max_tokens, stream, presence_penalty, frequency_penalty, parallel_tool_calls, reasoning,
             created_at
-            FROM topic_chat_config WHERE topic_id = ?"#,
+            FROM chat_configs WHERE topic_id = ?"#,
         )
         .bind(topic_id)
         .map(|row:sqlx::sqlite::SqliteRow| {

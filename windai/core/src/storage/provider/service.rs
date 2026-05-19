@@ -158,7 +158,7 @@ impl ProviderService {
             .update_js_hook_code(
                 &mut tx,
                 id,
-                current.provider_id,
+                data.provider_id.unwrap_or(current.provider_id),
                 &data
                     .adaptor
                     .map(|a| a.to_string())

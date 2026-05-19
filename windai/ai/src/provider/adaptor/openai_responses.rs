@@ -4,7 +4,7 @@ use super::schema::openai_responses::{
     ResponseReasoning, ResponseRequest, ResponseStream, Tools,
 };
 use super::{Adaptor, AdaptorError, ChatAdaptor};
-use crate::message::{self, Content, Message, MessageBuilder, ReqConfig, Role};
+use crate::message::{self, Content, Message, MessageBuilder, ReqConfig};
 use crate::model::AdaptorType;
 use crate::provider::sse::SseBlock;
 use crate::tool;

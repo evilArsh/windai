@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS models (
 );
 CREATE TABLE IF NOT EXISTS credentials (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    provider_id     INTEGER,
+    provider_id     INTEGER NOT NULL,
     api_key         TEXT    NOT NULL,
     active          BOOLEAN NOT NULL,
     created_at      INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS topics (
 CREATE TABLE IF NOT EXISTS messages (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     from_id         INTEGER,
-    stream          BOOLEAN DEFAULT 0,
+    stream          BOOLEAN NOT NULL DEFAULT 0,
     content         TEXT    NOT NULL DEFAULT '[]',
     model_id        INTEGER NOT NULL,
     topic_id        INTEGER NOT NULL,
@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE TABLE IF NOT EXISTS chat_configs (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    topic_id        INTEGER NOT NULL,
+    topic_id        INTEGER NOT NULL UNIQUE,
     temperature     REAL,
     top_p           REAL,
     max_tokens      INTEGER,
@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS topic_mcp_servers (
     topic_id    INTEGER NOT NULL,
     server_id   INTEGER NOT NULL,
     created_at  INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+    UNIQUE(topic_id, server_id)
 );
 CREATE TABLE IF NOT EXISTS js_hook_code (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

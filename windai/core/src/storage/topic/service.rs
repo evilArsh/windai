@@ -81,7 +81,7 @@ impl TopicService {
         Ok(())
     }
 
-    pub async fn set_mcp_servers(&self, topic_id: i64, server_ids: Vec<String>) -> Result<()> {
+    pub async fn set_mcp_servers(&self, topic_id: i64, server_ids: Vec<i64>) -> Result<()> {
         let mut tx = db::begin_tx(&self.repo.db).await?;
         self.repo
             .set_mcp_servers(&mut tx, topic_id, &server_ids)

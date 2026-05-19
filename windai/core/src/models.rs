@@ -19,6 +19,7 @@ pub struct Credentials {
     pub provider_id: i64,
     pub key: String,
     pub created_at: i64,
+    pub active: bool
 }
 
 /// 提供商

@@ -20,7 +20,7 @@ impl MessageRepo {
         let row = sqlx::query(
             r#"INSERT INTO messages 
             (from_id, stream, content, model_id, topic_id, message_index, is_boundary, is_excluded, input_tokens, output_tokens)
-            VALUES (?, ?, ?, ?, ?, ?)"#,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
         )
         .bind(data.from_id)
         .bind(data.stream)

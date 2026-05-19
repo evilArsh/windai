@@ -167,7 +167,7 @@ impl ProviderRepo {
     pub async fn get_credentials_by_provider(&self, provider_id: i64) -> Result<Vec<Credentials>> {
         let rows = sqlx::query(
             r#"SELECT
-            id, provider_id, api_key,
+            id, provider_id, api_key, active,
             created_at
             FROM credentials
             WHERE provider_id = ? ORDER BY active DESC"#,
@@ -178,6 +178,7 @@ impl ProviderRepo {
             provider_id: row.get(1),
             key: row.get(2),
             created_at: row.get(3),
+            active: row.get(4)
         })
         .fetch_all(&self.db)
         .await?;
@@ -188,7 +189,7 @@ impl ProviderRepo {
     pub async fn get_credentials(&self, id: i64) -> Result<Option<Credentials>> {
         let row = sqlx::query(
             r#"SELECT
-            id, provider_id, api_key,
+            id, provider_id, api_key, active
             created_at
             FROM credentials
             WHERE id = ?"#,
@@ -199,6 +200,7 @@ impl ProviderRepo {
             provider_id: row.get(1),
             key: row.get(2),
             created_at: row.get(3),
+            active: row.get(4)
         })
         .fetch_optional(&self.db)
         .await?;
@@ -224,7 +226,7 @@ impl ProviderRepo {
         data: CreateJsHookCode,
     ) -> Result<i64> {
         let row = sqlx::query(
-            "INSERT INTO js_hook_codes
+            "INSERT INTO js_hook_code
             (provider_id, adaptor, js_code, active)
             VALUES (?, ?, ?, ?)",
         )
