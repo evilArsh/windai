@@ -2,8 +2,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Sqlite, Transaction};
 use std::str::FromStr;
 
-/// Create and configure the database connection pool.
-/// Future migration to PgPool only requires changing this file.
+/// 初始化SQLite连接池
 pub async fn connect(db_url: &str) -> Result<sqlx::SqlitePool, sqlx::Error> {
     let options = SqliteConnectOptions::from_str(db_url)?
         .create_if_missing(true)

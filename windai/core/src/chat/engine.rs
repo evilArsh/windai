@@ -96,30 +96,17 @@ impl ChatEngine {
         topic_svc: &TopicService,
         topic_id: i64,
     ) -> Result<Option<Vec<Tools>>> {
-        let server_names = topic_svc.list_mcp_servers(topic_id).await?;
-
-        if server_names.is_empty() {
+        let params = topic_svc.list_mcp_servers(topic_id).await?;
+        if params.is_empty() {
             return Ok(None);
         }
-
-        let mcp_tools = self.mcp_registry.list_all_tools().await?;
+        let names = params.into_iter().map(|p| p.name).collect::<Vec<String>>();
+        let mcp_tools = self.mcp_registry.list_tools_by_names(&names).await?;
         if mcp_tools.is_empty() {
             return Ok(None);
         }
 
-        let filtered: Vec<_> = mcp_tools
-            .into_iter()
-            .filter(|t| match wind_mcp::client::Tool::parse_name(&t.name) {
-                Ok((server_name, _)) => server_names.contains(&server_name),
-                Err(_) => false,
-            })
-            .collect();
-
-        if filtered.is_empty() {
-            return Ok(None);
-        }
-
-        Ok(Some(build_tools_from_mcp(&filtered)))
+        Ok(Some(build_tools_from_mcp(&mcp_tools)))
     }
 
     /// 发起对话请求

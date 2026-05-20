@@ -14,15 +14,18 @@ pub type JsonObject<F = Value> = serde_json::Map<String, F>;
 
 const MCP_TOOL_IDENTIFIER: &str = "0m0";
 
-#[derive(Debug, Serialize, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, Serialize, PartialEq, Eq, Clone, Copy, strum::EnumString, strum::Display)]
 #[serde(rename_all = "lowercase")]
 pub enum ClientStatus {
+    #[strum(serialize = "connecting")]
     Connecting,
+    #[strum(serialize = "connected")]
     Connected,
+    #[strum(serialize = "disconnected")]
     Disconnected,
 }
 
-#[derive(Debug, Serialize, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Copy, strum::EnumString, strum::Display)]
 #[serde(rename_all = "lowercase")]
 pub enum TransportType {
     Stdio,

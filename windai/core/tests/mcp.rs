@@ -175,7 +175,7 @@ async fn handle_chat_mcp_real(
             let pending = params.into_iter().map(|param| {
                 let mcp_clone = mcp.clone();
                 async move {
-                    let res = mcp_clone.call_tool(&param).await;
+                    let res = mcp_clone.call_tool(param).await;
                     res
                 }
             });
@@ -297,6 +297,7 @@ async fn handle_chat_mcp(
         while let Some(event) = res.next().await {
             if event.status == ResEventStatus::Error {
                 log::error!("[error]\n{:?}", &event.error);
+                assert!(false);
                 return;
             }
             if event.status == ResEventStatus::Finish

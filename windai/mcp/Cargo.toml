@@ -17,6 +17,7 @@ log.workspace = true
 rmcp.workspace = true
 tokio.workspace = true
 futures.workspace = true
+strum.workspace = true
 
 [dev-dependencies]
 env_logger.workspace = true

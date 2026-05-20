@@ -1,7 +1,8 @@
-use crate::models::Topic;
+use crate::models::{McpServerParam, Topic};
 use crate::{error::Result, models::ChatConfig};
 use sqlx::{Row, SqlitePool, Transaction};
 use wind_ai::message::ReqConfig;
+use wind_mcp::client::TransportType;
 
 pub struct TopicRepo {
     pub(crate) db: SqlitePool,
@@ -13,11 +14,10 @@ impl TopicRepo {
     }
 
     pub async fn get_next_topic_index(&self, topic_id: Option<i64>) -> Result<i64> {
-        let row =
-            sqlx::query(r#"SELECT COALESCE(MAX(topic_index), 0) FROM topics WHERE id = ?"#)
-                .bind(topic_id)
-                .fetch_one(&self.db)
-                .await?;
+        let row = sqlx::query(r#"SELECT COALESCE(MAX(topic_index), 0) FROM topics WHERE id = ?"#)
+            .bind(topic_id)
+            .fetch_one(&self.db)
+            .await?;
 
         Ok(row.try_get(0).unwrap_or(0) + 10)
     }
@@ -166,13 +166,12 @@ impl TopicRepo {
         topic_id: i64,
         server_ids: &[i64],
     ) -> Result<()> {
-        let existing: Vec<i64> = sqlx::query(
-            "SELECT server_id FROM topic_mcp_servers WHERE topic_id = ?",
-        )
-        .bind(topic_id)
-        .map(|row: sqlx::sqlite::SqliteRow| row.get(0))
-        .fetch_all(&mut **tx)
-        .await?;
+        let existing: Vec<i64> =
+            sqlx::query("SELECT server_id FROM topic_mcp_servers WHERE topic_id = ?")
+                .bind(topic_id)
+                .map(|row: sqlx::sqlite::SqliteRow| row.get(0))
+                .fetch_all(&mut **tx)
+                .await?;
 
         let to_remove: Vec<i64> = existing
             .iter()
@@ -217,12 +216,35 @@ impl TopicRepo {
         Ok(())
     }
 
-    pub async fn list_mcp_servers(&self, topic_id: i64) -> Result<Vec<String>> {
-        let rows = sqlx::query("SELECT server_id FROM topic_mcp_servers WHERE topic_id = ?")
-            .bind(topic_id)
-            .map(|row: sqlx::sqlite::SqliteRow| row.get(0))
-            .fetch_all(&self.db)
-            .await?;
+    pub async fn list_mcp_servers(&self, topic_id: i64) -> Result<Vec<McpServerParam>> {
+        let rows = sqlx::query(
+            r#"SELECT ms.id, ms.type, ms.name, ms.url, ms.description, ms.command, ms.args, ms.env, ms.created_at
+            FROM topic_mcp_servers tms
+            JOIN mcp_servers ms ON tms.server_id = ms.id
+            WHERE tms.topic_id = ?"#,
+        )
+        .bind(topic_id)
+        .fetch_all(&self.db)
+        .await?
+        .into_iter()
+        .map(|row| {
+            let type_str: String = row.get("type");
+            let r#type: TransportType = type_str.parse()?;
+            let args_str: String = row.get("args");
+            let env_str: String = row.get("env");
+            Ok(McpServerParam {
+                id: row.get("id"),
+                r#type,
+                name: row.get("name"),
+                url: row.get("url"),
+                description: row.get("description"),
+                command: row.get("command"),
+                args: serde_json::from_str(&args_str)?,
+                env: serde_json::from_str(&env_str)?,
+                created_at: row.get("created_at"),
+            })
+        })
+        .collect::<Result<Vec<McpServerParam>>>()?;
 
         Ok(rows)
     }

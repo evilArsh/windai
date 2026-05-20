@@ -1,7 +1,7 @@
 use super::repo::TopicRepo;
 use crate::db;
 use crate::error::{CoreError, Result};
-use crate::models::{ChatConfig, CreateTopic, Topic, UpdateTopic};
+use crate::models::{ChatConfig, CreateTopic, McpServerParam, Topic, UpdateTopic};
 use sqlx::SqlitePool;
 use wind_ai::message::ReqConfig;
 
@@ -90,7 +90,9 @@ impl TopicService {
         Ok(())
     }
 
-    pub async fn list_mcp_servers(&self, topic_id: i64) -> Result<Vec<String>> {
+    /// 查询指定 topic 下关联的 MCP 服务信息
+    /// - 每个 topic 有独立的 MCP 服务列表引用，这些服务列表可动态变更，并且共享全局 MCP 服务
+    pub async fn list_mcp_servers(&self, topic_id: i64) -> Result<Vec<McpServerParam>> {
         self.repo.list_mcp_servers(topic_id).await
     }
 

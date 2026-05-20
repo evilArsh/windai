@@ -41,7 +41,7 @@ pub async fn execute_function_calls(
 
     let pending = params
         .into_iter()
-        .map(|param| async move { mcp_registry.call_tool(&param).await });
+        .map(|param| async move { mcp_registry.call_tool(param).await });
     // TODO: 超时控制
     let results = futures::future::try_join_all(pending).await?;
     if tools_len != results.len() {

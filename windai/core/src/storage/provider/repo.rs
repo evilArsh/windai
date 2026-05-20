@@ -189,7 +189,7 @@ impl ProviderRepo {
     pub async fn get_credentials(&self, id: i64) -> Result<Option<Credentials>> {
         let row = sqlx::query(
             r#"SELECT
-            id, provider_id, api_key, active
+            id, provider_id, api_key, active,
             created_at
             FROM credentials
             WHERE id = ?"#,

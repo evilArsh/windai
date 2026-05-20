@@ -73,6 +73,10 @@ enum RegistryRequest {
         name: String,
         reply: oneshot::Sender<Result<Vec<Tool>, McpError>>,
     },
+    ListToolsByNames {
+        name: Vec<String>,
+        reply: oneshot::Sender<Result<Vec<Tool>, McpError>>,
+    },
     ListAllTools {
         reply: oneshot::Sender<Result<Vec<Tool>, McpError>>,
     },
@@ -174,6 +178,19 @@ impl RegistryHandle {
         rx.await.map_err(|_| McpError::ManagerShutdown)?
     }
 
+    /// 批量列出指定 server name 的工具
+    pub async fn list_tools_by_names(&self, name: &[String]) -> Result<Vec<Tool>, McpError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(RegistryRequest::ListToolsByNames {
+                name: Vec::from(name),
+                reply,
+            })
+            .await
+            .map_err(|_| McpError::ManagerShutdown)?;
+        rx.await.map_err(|_| McpError::ManagerShutdown)?
+    }
+
     /// 列出所有工具
     pub async fn list_all_tools(&self) -> Result<Vec<Tool>, McpError> {
         let (reply, rx) = oneshot::channel();
@@ -211,13 +228,10 @@ impl RegistryHandle {
     }
 
     /// 调用工具
-    pub async fn call_tool(&self, param: &CallToolParam) -> Result<CallToolResult, McpError> {
+    pub async fn call_tool(&self, param: CallToolParam) -> Result<CallToolResult, McpError> {
         let (reply, rx) = oneshot::channel();
         self.tx
-            .send(RegistryRequest::CallTool {
-                param: param.clone(),
-                reply,
-            })
+            .send(RegistryRequest::CallTool { param, reply })
             .await
             .map_err(|_| McpError::ManagerShutdown)?;
         rx.await.map_err(|_| McpError::ManagerShutdown)?
@@ -267,7 +281,7 @@ impl Registry {
         let handle = entry
             .handle
             .as_ref()
-            .ok_or(McpError::ServerNotFound(server_name.to_string()))?;
+            .ok_or_else(|| McpError::ServerNotFound(server_name.to_string()))?;
 
         Ok(handle)
     }
@@ -277,7 +291,7 @@ impl Registry {
         let entry = self
             .servers
             .get(server_name)
-            .ok_or(McpError::ServerNotFound(server_name.to_string()))?;
+            .ok_or_else(|| McpError::ServerNotFound(server_name.to_string()))?;
 
         Ok(entry)
     }
@@ -287,7 +301,7 @@ impl Registry {
         let entry = self
             .servers
             .get_mut(server_name)
-            .ok_or(McpError::ServerNotFound(server_name.to_string()))?;
+            .ok_or_else(|| McpError::ServerNotFound(server_name.to_string()))?;
 
         Ok(entry)
     }
@@ -323,6 +337,9 @@ impl Registry {
                 }
                 RegistryRequest::ListTools { name, reply } => {
                     let _ = reply.send(self.list_tools(&name).await);
+                }
+                RegistryRequest::ListToolsByNames { name, reply } => {
+                    let _ = reply.send(self.list_tools_by_names(name.as_slice()).await);
                 }
                 RegistryRequest::ListAllTools { reply } => {
                     let _ = reply.send(self.list_all_tools().await);
@@ -496,15 +513,35 @@ impl Registry {
             .collect())
     }
 
+    async fn list_tools_by_names(&self, names: &[String]) -> Result<Vec<Tool>, McpError> {
+        let handles: Vec<(String, &ServerHandle)> = self
+            .servers
+            .iter()
+            .filter(|(server_name, _)| names.contains(server_name))
+            .filter_map(|(server_name, entry)| {
+                entry.handle.as_ref().map(|h| (server_name.clone(), h))
+            })
+            .collect();
+
+        let futures = handles.into_iter().map(|(name, handle)| async move {
+            let tools = handle
+                .list_tools()
+                .await?
+                .into_iter()
+                .map(|t| Tool::new(&name, &t))
+                .collect::<Vec<Tool>>();
+            Ok::<Vec<Tool>, McpError>(tools)
+        });
+
+        let results = futures::future::try_join_all(futures).await?;
+        Ok(results.into_iter().flat_map(|v| v).collect())
+    }
     async fn list_all_tools(&self) -> Result<Vec<Tool>, McpError> {
         let handles: Vec<(String, &ServerHandle)> = self
             .servers
-            .values()
-            .filter_map(|entry| {
-                entry
-                    .handle
-                    .as_ref()
-                    .map(|h| (entry.params.get_name().into_owned(), h))
+            .iter()
+            .filter_map(|(server_name, entry)| {
+                entry.handle.as_ref().map(|h| (server_name.clone(), h))
             })
             .collect();
 
@@ -798,7 +835,7 @@ mod test {
 
         // 3. Call a tool
         let result = handle
-            .call_tool(&CallToolParam {
+            .call_tool(CallToolParam {
                 server_name: name.into_owned(),
                 tool_name: "echo".to_string(),
                 arguments: Some(

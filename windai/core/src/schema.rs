@@ -1,10 +1,7 @@
 use crate::error::Result;
 use sqlx::SqlitePool;
 
-/// 初始化数据库表结构
-pub async fn init_schema(pool: &SqlitePool) -> Result<()> {
-    sqlx::query(
-        r#"
+const SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS providers (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     name            TEXT    NOT NULL UNIQUE,
@@ -77,7 +74,19 @@ CREATE TABLE IF NOT EXISTS chat_configs (
     reasoning       BOOLEAN DEFAULT 0,
     created_at      INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
     updated_at      INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
-)
+);
+CREATE TABLE IF NOT EXISTS mcp_servers ( 
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    type            TEXT NOT NULL,
+    name            TEXT NOT NULL,
+    url             TEXT,
+    description     TEXT,
+    command         TEXT,
+    args            TEXT DEFAULT '[]',
+    env             TEXT DEFAULT '{}',
+    created_at      INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+    updated_at      INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+);
 CREATE TABLE IF NOT EXISTS topic_mcp_servers (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     topic_id    INTEGER NOT NULL,
@@ -97,10 +106,16 @@ CREATE TABLE IF NOT EXISTS js_hook_code (
 CREATE INDEX IF NOT EXISTS idx_models_provider ON models(provider_id);
 CREATE INDEX IF NOT EXISTS idx_credentials_provider ON credentials(provider_id);
 CREATE INDEX IF NOT EXISTS idx_messages_topic ON messages(topic_id, message_index);
-"#,
-    )
-    .execute(pool)
-    .await?;
+"#;
 
+/// 初始化数据库表结构
+pub async fn init_schema(pool: &SqlitePool) -> Result<()> {
+    for statement in SCHEMA_SQL
+        .split(';')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        sqlx::query(statement).execute(pool).await?;
+    }
     Ok(())
 }

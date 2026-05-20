@@ -26,6 +26,9 @@ pub struct WindCore {
 }
 
 impl WindCore {
+
+    /// 初始化 Wind Core 模块。
+    /// - 目前只支持SQLite数据库
     pub async fn init(db_url: &str) -> Result<Self> {
         let db = db::connect(db_url)
             .await

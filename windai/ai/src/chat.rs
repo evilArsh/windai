@@ -141,8 +141,8 @@ fn parse_url(
 pub fn handle_chat(
     chat_adaptor: &dyn ChatAdaptor,
     req_body: &Value,
-    api_key: &str,
     api_base_url: &str,
+    api_key: &str,
     api_endpoint: Option<&str>,
 ) -> impl Stream<Item = ResEvent> {
     stream! {

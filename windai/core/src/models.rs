@@ -1,6 +1,9 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use wind_ai::message::{self};
 use wind_ai::model::AdaptorType;
+use wind_mcp::client::TransportType;
 
 /// 模态类型, 用于UI展示
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, strum::EnumString, strum::Display)]
@@ -19,7 +22,7 @@ pub struct Credentials {
     pub provider_id: i64,
     pub key: String,
     pub created_at: i64,
-    pub active: bool
+    pub active: bool,
 }
 
 /// 提供商
@@ -154,6 +157,26 @@ pub struct JsHookCode {
     pub adaptor: AdaptorType,
     pub js_code: String,
     pub active: bool,
+    pub created_at: i64,
+}
+
+/// MCP 服务配置，(Stdio, Streamable-HTTP)
+#[derive(Debug, Serialize, Clone)]
+pub struct McpServerParam {
+    pub id: i64,
+    pub r#type: TransportType,
+    /// 服务名称
+    pub name: String,
+    /// 服务地址
+    pub url: Option<String>,
+    /// 描述
+    pub description: Option<String>,
+    /// 启动命令
+    pub command: Option<String>,
+    /// 启动参数
+    pub args: Option<Vec<String>>,
+    /// 环境变量
+    pub env: Option<HashMap<String, String>>,
     pub created_at: i64,
 }
 
@@ -320,4 +343,26 @@ pub struct UpdateJsHookCode {
     pub adaptor: Option<AdaptorType>,
     pub js_code: Option<String>,
     pub active: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct CreateMcpServer {
+    pub r#type: TransportType,
+    pub name: String,
+    pub url: Option<String>,
+    pub description: Option<String>,
+    pub command: Option<String>,
+    pub args: Option<Vec<String>>,
+    pub env: Option<HashMap<String, String>>,
+}
+
+#[derive(Debug, Serialize, Clone, Default)]
+pub struct UpdateMcpServer {
+    pub r#type: Option<TransportType>,
+    pub name: Option<String>,
+    pub url: Option<String>,
+    pub description: Option<String>,
+    pub command: Option<String>,
+    pub args: Option<Vec<String>>,
+    pub env: Option<HashMap<String, String>>,
 }
