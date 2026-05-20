@@ -25,7 +25,9 @@ pub enum ClientStatus {
     Disconnected,
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Copy, strum::EnumString, strum::Display)]
+#[derive(
+    Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Copy, strum::EnumString, strum::Display,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum TransportType {
     Stdio,

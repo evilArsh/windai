@@ -31,6 +31,6 @@ sqlx.workspace = true
 rquickjs.workspace = true
 
 [dev-dependencies]
+dotenvy.workspace = true
 env_logger.workspace = true
-tokio.workspace = true
 test-case.workspace = true

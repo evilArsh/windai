@@ -1,41 +1,32 @@
 use futures::StreamExt;
-use std::{env, str::FromStr};
 use wind_ai::{
     chat,
     message::{Content, Message, ReqConfig, Role},
     model::{AdaptorType, Model},
     provider::adaptor::{self, get_chat_adaptor},
 };
+#[path = "./common/lib.rs"]
+mod common;
 
 #[tokio::test]
 async fn test_handle_chat() {
-    // https://api.openai.com/v1"
     let _ = env_logger::builder().is_test(true).try_init();
-
-    let stream = env::var("STREAM")
-        .map(|s| s.parse::<bool>().unwrap())
-        .unwrap_or(true);
-    let api_url = env::var("API_BASE_URL").unwrap_or(String::from("https://api.deepseek.com"));
-    let api_key = env::var("API_KEY").unwrap_or(String::new());
-    let model = env::var("MODEL").unwrap_or(String::from("deepseek-v4-flash"));
-    let adaptor = env::var("ADAPTOR")
-        .map(|a| AdaptorType::from_str(&a).unwrap())
-        .unwrap_or(AdaptorType::OpenAICompletion);
+    let env = common::load_env();
 
     let chat_config = ReqConfig {
         temperature: None,
         top_p: None,
         max_tokens: None,
-        stream: Some(stream),
+        stream: Some(env.test_stream),
         presence_penalty: None,
         frequency_penalty: None,
         parallel_tool_calls: None,
         reasoning: Some(true),
     };
     let model = Model {
-        name: model,
-        adaptor,
-        endpoint: None,
+        name: env.test_model,
+        adaptor: env.test_adaptor,
+        endpoint: env.test_endpoint,
     };
     let contexts = vec![
         Message::new_simple(
@@ -55,9 +46,18 @@ async fn test_handle_chat() {
     let req_body =
         chat::build_request(chat_adaptor.as_ref(), &model, &chat_config, &contexts, None).unwrap();
 
-    let res = chat::handle_chat(chat_adaptor.as_ref(), &req_body, &api_url, &api_key, None);
+    let res = chat::handle_chat(
+        chat_adaptor.as_ref(),
+        &req_body,
+        &env.test_base_url,
+        &env.test_key,
+        None,
+    );
     let mut res = Box::pin(res);
     while let Some(value) = res.next().await {
+        if value.error.is_some() {
+            panic!("{}", value.error.unwrap());
+        }
         println!("[data]\n{}", value);
     }
 }

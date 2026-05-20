@@ -178,7 +178,7 @@ impl ProviderRepo {
             provider_id: row.get(1),
             key: row.get(2),
             created_at: row.get(3),
-            active: row.get(4)
+            active: row.get(4),
         })
         .fetch_all(&self.db)
         .await?;
@@ -200,7 +200,7 @@ impl ProviderRepo {
             provider_id: row.get(1),
             key: row.get(2),
             created_at: row.get(3),
-            active: row.get(4)
+            active: row.get(4),
         })
         .fetch_optional(&self.db)
         .await?;

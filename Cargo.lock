@@ -3204,6 +3204,7 @@ dependencies = [
  "bytes",
  "chrono",
  "derive_builder",
+ "dotenvy",
  "env_logger",
  "futures",
  "log",

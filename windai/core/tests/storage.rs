@@ -455,8 +455,14 @@ async fn topic_link_mcp_servers() {
     let mcp_svc = McpService::new(pool.clone());
     let topic_svc = TopicService::new(pool);
 
-    let s1 = mcp_svc.create(create_mcp_server("server1", TransportType::Stdio)).await.unwrap();
-    let s2 = mcp_svc.create(create_mcp_server("server2", TransportType::Streamable)).await.unwrap();
+    let s1 = mcp_svc
+        .create(create_mcp_server("server1", TransportType::Stdio))
+        .await
+        .unwrap();
+    let s2 = mcp_svc
+        .create(create_mcp_server("server2", TransportType::Streamable))
+        .await
+        .unwrap();
     let t = topic_svc.create_topic(create_topic(0)).await.unwrap();
 
     // Link servers to topic
@@ -467,7 +473,10 @@ async fn topic_link_mcp_servers() {
     assert!(servers.iter().any(|s| s.id == s2));
 
     // Replace
-    let s3 = mcp_svc.create(create_mcp_server("server3", TransportType::Stdio)).await.unwrap();
+    let s3 = mcp_svc
+        .create(create_mcp_server("server3", TransportType::Stdio))
+        .await
+        .unwrap();
     topic_svc.set_mcp_servers(t.id, vec![s3]).await.unwrap();
     let servers = topic_svc.list_mcp_servers(t.id).await.unwrap();
     assert_eq!(servers.len(), 1);
@@ -486,7 +495,10 @@ async fn mcp_server_crud() {
     let svc = McpService::new(pool);
 
     // Create
-    let id = svc.create(create_mcp_server("test-mcp", TransportType::Stdio)).await.unwrap();
+    let id = svc
+        .create(create_mcp_server("test-mcp", TransportType::Stdio))
+        .await
+        .unwrap();
     assert!(id > 0);
 
     // Get
@@ -503,12 +515,17 @@ async fn mcp_server_crud() {
     // Update — change url and clear args
     let mut new_env = std::collections::HashMap::new();
     new_env.insert("PORT".into(), "3000".into());
-    svc.update(id, UpdateMcpServer {
-        url: Some("https://updated.test.com".into()),
-        args: Some(vec![]),
-        env: Some(new_env.clone()),
-        ..Default::default()
-    }).await.unwrap();
+    svc.update(
+        id,
+        UpdateMcpServer {
+            url: Some("https://updated.test.com".into()),
+            args: Some(vec![]),
+            env: Some(new_env.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
     let updated = svc.get(id).await.unwrap();
     assert_eq!(updated.url, Some("https://updated.test.com".into()));
     assert_eq!(updated.args, Some(vec![]));
@@ -523,13 +540,21 @@ async fn mcp_server_crud() {
 async fn mcp_server_update_keeps_originals() {
     let pool = setup().await;
     let svc = McpService::new(pool);
-    let id = svc.create(create_mcp_server("keep-test", TransportType::Streamable)).await.unwrap();
+    let id = svc
+        .create(create_mcp_server("keep-test", TransportType::Streamable))
+        .await
+        .unwrap();
 
     // Partial update — only change name
-    svc.update(id, UpdateMcpServer {
-        name: Some("renamed".into()),
-        ..Default::default()
-    }).await.unwrap();
+    svc.update(
+        id,
+        UpdateMcpServer {
+            name: Some("renamed".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
 
     let updated = svc.get(id).await.unwrap();
     assert_eq!(updated.name, "renamed");
@@ -540,15 +565,18 @@ async fn mcp_server_update_keeps_originals() {
 #[tokio::test]
 async fn mcp_server_create_empty_name() {
     let svc = McpService::new(setup().await);
-    let err = svc.create(CreateMcpServer {
-        name: "".into(),
-        r#type: TransportType::Stdio,
-        url: None,
-        description: None,
-        command: None,
-        args: None,
-        env: None,
-    }).await.unwrap_err();
+    let err = svc
+        .create(CreateMcpServer {
+            name: "".into(),
+            r#type: TransportType::Stdio,
+            url: None,
+            description: None,
+            command: None,
+            args: None,
+            env: None,
+        })
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("cannot be empty"));
 }
 

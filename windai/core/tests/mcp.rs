@@ -1,6 +1,5 @@
 use futures::StreamExt;
 use serde_json::{Value, json};
-use std::{env, str::FromStr};
 use tokio::pin;
 use wind_ai::{
     chat::{self, ResEventStatus},
@@ -10,6 +9,8 @@ use wind_ai::{
     tool::{FunctionCallOutput, FunctionTool, Tools},
 };
 use wind_mcp::client::{self, CallToolParam, Tool};
+#[path = "./common/lib.rs"]
+mod common;
 
 fn everything_params() -> client::ServerParams {
     client::ServerParams::Stdio(client::StdioParams {
@@ -51,10 +52,8 @@ async fn handle_chat_mcp_real(
     api_key: String,
     model: String,
     adaptor: AdaptorType,
+    endpoint: Option<String>,
 ) {
-    unsafe {
-        env::set_var("RUST_LOG", "debug");
-    }
     let _ = env_logger::builder().is_test(true).try_init();
     let mcp = client::registry::Registry::new();
     let session_id = "test-session-id";
@@ -70,7 +69,7 @@ async fn handle_chat_mcp_real(
     let model = Model {
         name: model,
         adaptor,
-        endpoint: None,
+        endpoint,
     };
 
     let chat_config = ReqConfig {
@@ -207,16 +206,14 @@ async fn handle_chat_mcp(
     api_key: String,
     model: String,
     adaptor: AdaptorType,
+    endpoint: Option<String>,
 ) {
-    unsafe {
-        env::set_var("RUST_LOG", "debug");
-    }
     let _ = env_logger::builder().is_test(true).try_init();
 
     let model = Model {
         name: model,
         adaptor,
-        endpoint: None,
+        endpoint,
     };
 
     let tools = vec![
@@ -358,123 +355,125 @@ async fn handle_chat_mcp(
 
 #[tokio::test]
 async fn test_chat_mcp_completion() {
-    let api_key = env::var("API_KEY").unwrap_or(String::new());
-    if api_key.is_empty() {
-        log::warn!("[warning] api key is empty");
-        return;
-    }
+    let env = common::load_env();
+
     handle_chat_mcp(
         false,
-        String::from("https://api.deepseek.com"),
-        api_key,
-        String::from("deepseek-v4-flash"),
+        env.test_mcp_completion_base_url,
+        env.test_mcp_completion_key,
+        env.test_mcp_completion_model,
         AdaptorType::OpenAICompletion,
+        env.test_mcp_completion_endpoint,
     )
     .await;
 }
 
 #[tokio::test]
 async fn test_chat_mcp_completion_stream() {
-    let api_key = env::var("API_KEY").unwrap_or(String::new());
-    if api_key.is_empty() {
-        log::warn!("[warning] api key is empty");
-        return;
-    }
+    let env = common::load_env();
+
     handle_chat_mcp(
         true,
-        String::from("https://api.deepseek.com"),
-        api_key,
-        String::from("deepseek-v4-flash"),
+        env.test_mcp_completion_base_url,
+        env.test_mcp_completion_key,
+        env.test_mcp_completion_model,
         AdaptorType::OpenAICompletion,
+        env.test_mcp_completion_endpoint,
     )
     .await;
 }
 
 #[tokio::test]
 async fn test_chat_mcp_responses() {
-    let api_key = env::var("API_KEY").unwrap_or(String::new());
-    if api_key.is_empty() {
-        log::warn!("[warning] api key is empty");
-        return;
-    }
+    let env = common::load_env();
+
     handle_chat_mcp(
         false,
-        String::from("https://www.nekoapi.com/v1"),
-        api_key,
-        String::from("gpt-5.4"),
+        env.test_mcp_responses_base_url,
+        env.test_mcp_responses_key,
+        env.test_mcp_responses_model,
         AdaptorType::OpenAIResponse,
+        env.test_mcp_responses_endpoint,
     )
     .await;
 }
 
 #[tokio::test]
 async fn test_chat_mcp_responses_stream() {
-    let api_key = env::var("API_KEY").unwrap_or(String::new());
-    if api_key.is_empty() {
-        log::warn!("[warning] api key is empty");
-        return;
-    }
+    let env = common::load_env();
+
     handle_chat_mcp(
-        true,
-        String::from("https://www.nekoapi.com/v1"),
-        api_key,
-        String::from("gpt-5.4"),
+        false,
+        env.test_mcp_responses_base_url,
+        env.test_mcp_responses_key,
+        env.test_mcp_responses_model,
         AdaptorType::OpenAIResponse,
+        env.test_mcp_responses_endpoint,
     )
     .await;
 }
-
-#[tokio::test]
-async fn test_chat_mcp_env() {
-    let stream = env::var("STREAM")
-        .map(|s| s.parse::<bool>().unwrap())
-        .unwrap_or(true);
-    let api_url = env::var("API_BASE_URL").unwrap_or(String::from("https://api.deepseek.com"));
-    let api_key = env::var("API_KEY").unwrap_or(String::new());
-    let adaptor = env::var("ADAPTOR")
-        .map(|a| AdaptorType::from_str(&a).unwrap())
-        .unwrap_or(AdaptorType::OpenAICompletion);
-    let model = env::var("MODEL").unwrap_or(String::from("deepseek-v4-flash"));
-
-    if api_key.is_empty() {
-        log::warn!("[warning] api key is empty");
-        return;
-    }
-    handle_chat_mcp(stream, api_url, api_key, model, adaptor).await;
-}
-
 // -------------
 
+#[ignore = "need install uv and bun"]
 #[tokio::test]
 async fn test_chat_mcp_completion_real() {
-    let api_key = env::var("API_KEY").unwrap_or(String::new());
-    if api_key.is_empty() {
-        log::warn!("[warning] api key is empty");
-        return;
-    }
+    let env = common::load_env();
+
     handle_chat_mcp_real(
         false,
-        String::from("https://api.deepseek.com"),
-        api_key,
-        String::from("deepseek-v4-flash"),
+        env.test_mcp_completion_base_url,
+        env.test_mcp_completion_key,
+        env.test_mcp_completion_model,
         AdaptorType::OpenAICompletion,
+        env.test_mcp_completion_endpoint,
     )
     .await;
 }
 
 #[tokio::test]
+#[ignore = "need install uv and bun"]
 async fn test_chat_mcp_completion_stream_real() {
-    let api_key = env::var("API_KEY").unwrap_or(String::new());
-    if api_key.is_empty() {
-        log::warn!("[warning] api key is empty");
-        return;
-    }
+    let env = common::load_env();
+
     handle_chat_mcp_real(
         true,
-        String::from("https://api.deepseek.com"),
-        api_key,
-        String::from("deepseek-v4-flash"),
+        env.test_mcp_completion_base_url,
+        env.test_mcp_completion_key,
+        env.test_mcp_completion_model,
         AdaptorType::OpenAICompletion,
+        env.test_mcp_completion_endpoint,
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "need install uv and bun"]
+async fn test_chat_mcp_responses_real() {
+    let env = common::load_env();
+
+    handle_chat_mcp_real(
+        false,
+        env.test_mcp_responses_base_url,
+        env.test_mcp_responses_key,
+        env.test_mcp_responses_model,
+        AdaptorType::OpenAIResponse,
+        env.test_mcp_responses_endpoint,
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "need install uv and bun"]
+async fn test_chat_mcp_responses_stream_real() {
+    let env = common::load_env();
+
+    handle_chat_mcp_real(
+        true,
+        env.test_mcp_responses_base_url,
+        env.test_mcp_responses_key,
+        env.test_mcp_responses_model,
+        AdaptorType::OpenAIResponse,
+        env.test_mcp_responses_endpoint,
     )
     .await;
 }
