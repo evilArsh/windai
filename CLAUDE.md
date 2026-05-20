@@ -22,15 +22,21 @@ cargo test -p wind-js
 # Run a single test
 cargo test -p wind-ai -- test_build_request
 
-# Integration tests that require API keys (set env vars)
-API_KEY=sk-xxx STREAM=true cargo test -p wind-core -- test_chat_mcp_env
-API_KEY=sk-xxx cargo test -p wind-core -- test_chat_mcp_completion_stream
+# Integration tests that require API keys
+# Copy .env.example to .env and fill in your keys, then run:
+cargo test -p wind-core -- test_chat
 
-# The MCP registry tests require npx/uvx; they are #[ignore] by default
+# MCP integration tests (use .env values)
+cargo test -p wind-core -- test_chat_mcp
+
+# Real MCP server tests (require npx/uvx installed; #[ignore] by default)
+cargo test -p wind-core -- --ignored
+
+# The MCP registry tests also require npx/uvx
 cargo test -p wind-mcp -- --ignored
 ```
 
-No `.env` file exists by default. Integration tests read `API_KEY`, `API_BASE_URL`, `MODEL`, `ADAPTOR`, and `STREAM` from environment variables.
+Copy `.env.example` to `.env` and fill in the `TEST_*` values. Integration tests auto-discover this file via `dotenvy` by walking up from `CARGO_MANIFEST_DIR`. See `.env.example` for all supported variables.
 
 ## Architecture
 

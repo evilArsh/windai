@@ -20,8 +20,11 @@ cargo build
 # Test
 cargo test
 
-# Integration test (requires API key)
-API_KEY=sk-xxx cargo test -p wind-core -- test_chat_mcp_env
+# Integration tests (requires API keys)
+# 1. Copy .env.example to .env and fill in your keys
+# 2. Run the integration tests
+cargo test -p wind-core -- test_chat
+cargo test -p wind-core -- test_chat_mcp
 ```
 
 ## Embedding
