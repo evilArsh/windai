@@ -45,7 +45,7 @@ impl ChatEngine {
         topic_id: i64,
         model_id: i64,
     ) -> Result<(Topic, Model, Provider, ReqConfig, String)> {
-        let (topic, model) = try_join!(
+        let (topic, mut model) = try_join!(
             async {
                 topic_svc.get_topic(topic_id).await?.ok_or_else(|| {
                     CoreError::NotFound(format!("Cannot find a topic. topic_id: {}", topic_id))
@@ -57,6 +57,7 @@ impl ChatEngine {
                 })
             }
         )?;
+        model.endpoint = model.endpoint.filter(|e| !e.is_empty());
         let provider = provider_svc.get(model.provider_id).await?.ok_or_else(|| {
             CoreError::NotFound(format!(
                 "Cannot find a provider. provider_id: {}",
@@ -132,7 +133,7 @@ impl ChatEngine {
                     }
                 }
                 Err(e) => {
-                    yield ChatEvent::error(message_id, e);
+                    yield ChatEvent::finish(message_id, None, Some(e.into()));
                 }
             }
         }
@@ -161,7 +162,7 @@ impl ChatEngine {
             .into_iter()
             .filter(|m| !m.is_excluded)
             .collect::<Vec<CoreMessage>>();
-        let (mut current, mut contexts) = context::build_chat_context(
+        let (mut core_msg, mut contexts) = context::build_chat_context(
             messages,
             topic_id,
             message_id,
@@ -191,6 +192,7 @@ impl ChatEngine {
             let mut iter_index = 0;
             let chat_adaptor = get_chat_adaptor(adaptor_type);
             let mut has_error = false;
+            let mut error_obj: Option<CoreError> = None;
             loop {
                 let mut req_body = match wind_ai_chat::build_request(
                     chat_adaptor.as_ref(),
@@ -201,7 +203,7 @@ impl ChatEngine {
                 ) {
                     Ok(req_body) => req_body,
                     Err(e) => {
-                        yield ChatEvent::error(message_id, e.into());
+                        error_obj = Some(e.into());
                         break;
                     }
                 };
@@ -218,7 +220,7 @@ impl ChatEngine {
                 {
                     Ok(req_body) => req_body,
                     Err(e) => {
-                        yield ChatEvent::error(message_id, e.into());
+                        error_obj = Some(e.into());
                         break;
                     }
                 };
@@ -226,8 +228,8 @@ impl ChatEngine {
                 let stream = handle_chat(
                     chat_adaptor.as_ref(),
                     &req_body,
-                    &api_key,
                     &base_url,
+                    &api_key,
                     endpoint.as_deref(),
                 );
                 let mut stream = std::pin::pin!(stream);
@@ -235,37 +237,36 @@ impl ChatEngine {
                     match res_event.status {
                         ResEventStatus::Partial => {
                             if let Some(msg) = res_event.data {
-                                yield ChatEvent::partial(iter_index, message_id, msg.clone());
+                                yield ChatEvent::partial(iter_index, core_msg.id, msg);
                             }
                         }
                         ResEventStatus::Finish => {
                             if let Some(msg_finish) = res_event.data {
-                                msg = msg_finish.clone();
+                                msg = msg_finish;
                             }
                         }
                         ResEventStatus::Error => {
                             has_error = true;
-                            if let Some(error) = res_event.error {
-                                yield ChatEvent::error(message_id, error.into());
-                                break;
-                            }
+                            error_obj = res_event.error.map(|e| Some(e.into())).unwrap_or_else(|| {
+                                Some(CoreError::Internal(String::from("Unknown chat error")))
+                            });
+                            break;
                         }
                     }
                 }
-
-                if has_error || msg.tool_calls.as_ref().map_or(true, |c| c.is_empty()) {
-                    current.append_content(&msg);
-                    if let Err(e) = msg_svc.update(message_id, current.into()).await {
-                        yield ChatEvent::error(message_id, e);
-                    };
-                    yield ChatEvent::finished(message_id);
+                if has_error {
                     break;
                 }
-
-                let tool_calls = msg.tool_calls.unwrap();
+                let tool_calls = match msg.tool_calls {
+                    Some(tools) if !tools.is_empty() => tools,
+                    _ => {
+                        core_msg.append_content(&msg);
+                        break;
+                    }
+                };
                 let tool_request =
                     AiMessage::new_tool_request(tool_calls.clone(), msg.reasoning_content);
-                current.append_content(&tool_request);
+                core_msg.append_content(&tool_request);
                 contexts.push(tool_request.clone());
                 iter_index += 1;
                 yield ChatEvent::partial(iter_index, message_id, tool_request);
@@ -273,18 +274,27 @@ impl ChatEngine {
                 let tool_call_result = match execute_function_calls(&mcp_client, &tool_calls).await {
                     Ok(results) => results,
                     Err(e) => {
-                        yield ChatEvent::error(message_id, e);
+                        error_obj = Some(e.into());
                         break;
                     }
                 };
                 iter_index += 1;
                 yield ChatEvent::partial(iter_index, message_id, tool_call_result.clone());
-                current.append_content(&tool_call_result);
+                core_msg.append_content(&tool_call_result);
                 contexts.push(tool_call_result);
 
                 iter_index += 1;
                 msg = AiMessage::default();
             }
+            if let Some(error) = &error_obj {
+                log::error!("Error when handling chat. {}", error);
+            };
+            if !core_msg.content.is_empty() {
+                if let Err(e) = msg_svc.update(core_msg.id, core_msg.clone().into()).await {
+                    error_obj = Some(e.into());
+                };
+            }
+            yield ChatEvent::finish(core_msg.id, Some(core_msg.content), error_obj);
         };
 
         Ok(stream)

@@ -157,6 +157,10 @@ pub fn handle_chat(
             .get("stream")
             .and_then(|v| v.as_bool())
             .unwrap_or_else(|| false);
+        log::debug!(
+            "[request body]\n{}",
+            serde_json::to_string_pretty(&req_body).unwrap_or_default()
+        );
         match is_stream {
             true => {
                 let api_url = match parse_url(chat_adaptor, api_base_url, api_endpoint) {

@@ -54,7 +54,6 @@ async fn handle_chat_mcp_real(
     adaptor: AdaptorType,
     endpoint: Option<String>,
 ) {
-    let _ = env_logger::builder().is_test(true).try_init();
     let mcp = client::registry::Registry::new();
     let session_id = "test-session-id";
 
@@ -208,8 +207,6 @@ async fn handle_chat_mcp(
     adaptor: AdaptorType,
     endpoint: Option<String>,
 ) {
-    let _ = env_logger::builder().is_test(true).try_init();
-
     let model = Model {
         name: model,
         adaptor,

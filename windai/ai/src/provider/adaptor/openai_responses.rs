@@ -78,10 +78,10 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
                         .filter_map(|content| {
                             match content {
                                 // 用户函数调用结果
-                                message::Content::FunctionCall(c) => {
+                                message::Content::FunctionCall { data } => {
                                     Some(InputItem::FunctionCallOutput(FunctionCallOutput {
-                                        call_id: c.id.clone(),
-                                        output: c.content.clone(),
+                                        call_id: data.id.clone(),
+                                        output: data.content.clone(),
                                         r#type: String::from("function_call_output"),
                                         id: None,
                                         status: None,
@@ -102,33 +102,33 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
                         .content
                         .iter()
                         .filter_map(|content| match content {
-                            Content::Text(c) => {
+                            Content::Text { data } => {
                                 Some(InputContent::ResponseInputText(ResponseInputText {
-                                    text: c.clone(),
+                                    text: data.clone(),
                                     r#type: "input_text".to_string(),
                                 }))
                             }
-                            Content::Image(c) => {
+                            Content::Image { data } => {
                                 Some(InputContent::ResponseInputImage(ResponseInputImage {
                                     detail: None,
                                     r#type: "input_image".to_string(),
                                     file_id: None,
-                                    image_url: Some(c.clone()),
+                                    image_url: Some(data.clone()),
                                 }))
                             }
-                            Content::File(c) => {
+                            Content::File { data } => {
                                 Some(InputContent::ResponseInputFile(ResponseInputFile {
                                     r#type: "input_file".to_string(),
-                                    file_data: Some(c.clone()),
+                                    file_data: Some(data.clone()),
                                     file_id: None,
                                     file_url: None,
                                     filename: None,
                                 }))
                             }
-                            Content::Audio(c) => {
+                            Content::Audio { data } => {
                                 Some(InputContent::ResponseInputFile(ResponseInputFile {
                                     r#type: "input_file".to_string(),
-                                    file_data: Some(c.content.clone()),
+                                    file_data: Some(data.content.clone()),
                                     file_id: None,
                                     file_url: None,
                                     filename: None,

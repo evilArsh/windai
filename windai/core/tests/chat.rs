@@ -10,7 +10,6 @@ mod common;
 
 #[tokio::test]
 async fn test_handle_chat() {
-    let _ = env_logger::builder().is_test(true).try_init();
     let env = common::load_env();
 
     let chat_config = ReqConfig {

@@ -97,7 +97,8 @@ pub struct Message {
     pub from_id: Option<i64>,
     pub stream: bool,
     /// 消息内容。
-    /// - 在单次对话中，如果存在多轮 MCP 调用，该字段按顺序记录所有的调用结果
+    /// - 在单次对话中，如果存在多轮工具调用，该字段按顺序记录所有的调用结果；
+    /// 包含模型选择的工具列表，用户工具调用结果，以及模型自然语言回复
     /// - 用户消息不存在多轮MCP对话，只有一个结果
     pub content: Vec<message::Message>,
     pub model_id: i64,

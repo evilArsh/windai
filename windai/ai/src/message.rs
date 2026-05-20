@@ -30,35 +30,39 @@ pub struct AudioContent {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Content {
-    Text(String),
-    Image(String),
-    File(String),
-    Audio(AudioContent),
-    FunctionCall(FunctionCallOutput),
+    Text { data: String },
+    Image { data: String },
+    File { data: String },
+    Audio { data: AudioContent },
+    FunctionCall { data: FunctionCallOutput },
 }
 impl Content {
     #[inline]
     pub fn new_text(text: String) -> Self {
-        Self::Text(text)
+        Self::Text { data: text }
     }
     #[inline]
     pub fn new_image(image: String) -> Self {
-        Self::Image(image)
+        Self::Image { data: image }
     }
     #[inline]
     pub fn new_file(file: String) -> Self {
-        Self::File(file)
+        Self::File { data: file }
     }
     #[inline]
     pub fn new_audio(content: String, format: String) -> Self {
-        Self::Audio(AudioContent { content, format })
+        Self::Audio {
+            data: AudioContent { content, format },
+        }
     }
     #[inline]
     pub fn new_function_call(call_id: String, value: Value) -> Self {
-        Self::FunctionCall(FunctionCallOutput {
-            id: call_id,
-            content: value,
-        })
+        Self::FunctionCall {
+            data: FunctionCallOutput {
+                id: call_id,
+                content: value,
+            },
+        }
     }
 }
 
@@ -103,12 +107,17 @@ pub struct Message {
 impl fmt::Display for Content {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Content::Text(s) => write!(f, "Text({})", s),
-            Content::Image(s) => write!(f, "Image({})", s),
-            Content::File(s) => write!(f, "File({})", s),
-            Content::Audio(a) => write!(f, "Audio(format={}, len={})", a.format, a.content.len()),
-            Content::FunctionCall(fc) => {
-                write!(f, "FunctionCall(id={}, content={})", fc.id, fc.content)
+            Content::Text { data } => write!(f, "Text({})", data),
+            Content::Image { data } => write!(f, "Image({})", data),
+            Content::File { data } => write!(f, "File({})", data),
+            Content::Audio { data } => write!(
+                f,
+                "Audio(format={}, len={})",
+                data.format,
+                data.content.len()
+            ),
+            Content::FunctionCall { data } => {
+                write!(f, "FunctionCall(id={}, content={})", data.id, data.content)
             }
         }
     }
@@ -120,10 +129,18 @@ impl Message {
         if let Some(content) = partial.content.into_iter().next() {
             if let Some(self_content) = self.content.last_mut() {
                 match (self_content, content) {
-                    (Content::Text(t), Content::Text(s)) => t.push_str(&s),
-                    (Content::Image(t), Content::Image(s)) => t.push_str(&s),
-                    (Content::File(t), Content::File(s)) => t.push_str(&s),
-                    (Content::Audio(t), Content::Audio(s)) => t.content.push_str(&s.content),
+                    (Content::Text { data }, Content::Text { data: data_new }) => {
+                        data.push_str(&data_new)
+                    }
+                    (Content::Image { data }, Content::Image { data: data_new }) => {
+                        data.push_str(&data_new)
+                    }
+                    (Content::File { data }, Content::File { data: data_new }) => {
+                        data.push_str(&data_new)
+                    }
+                    (Content::Audio { data }, Content::Audio { data: data_new }) => {
+                        data.content.push_str(&data_new.content)
+                    }
                     _ => {}
                 }
             } else {

@@ -18,6 +18,7 @@ pub fn setup_env() {
 }
 
 #[allow(dead_code)]
+#[derive(Debug)]
 pub struct Env {
     // chat
     pub test_stream: bool,
@@ -46,7 +47,8 @@ pub fn load_env() -> Env {
             var("RUST_LOG").unwrap_or_else(|_| "debug".to_string()),
         );
     }
-    Env {
+    let _ = env_logger::builder().is_test(true).try_init();
+    let env = Env {
         test_stream: var("TEST_STREAM")
             .map(|s| s.parse().unwrap_or(true))
             .unwrap_or(true),
@@ -66,7 +68,9 @@ pub fn load_env() -> Env {
         test_mcp_responses_model: var("TEST_MCP_RESPONSES_MODEL").unwrap_or_default(),
         test_mcp_responses_base_url: var("TEST_MCP_RESPONSES_BASE_URL").unwrap_or_default(),
         test_mcp_responses_endpoint: var("TEST_MCP_RESPONSES_ENDPOINT").ok(),
-    }
+    };
+    // log::info!("env: {:#?}", &env);
+    env
 }
 
 fn var(name: &str) -> Result<String, std::env::VarError> {

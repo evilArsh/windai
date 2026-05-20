@@ -113,15 +113,15 @@ impl ChatAdaptor for OpenAICompletionAdaptor {
                         .filter_map(|content| {
                             match content {
                                 // 用户函数调用结果
-                                message::Content::FunctionCall(c) => {
+                                message::Content::FunctionCall { data } => {
                                     Some(ChatCompletionMessageParam {
-                                        content: Some(Content::Text(c.content.to_string())),
+                                        content: Some(Content::Text(data.content.to_string())),
                                         role: Role::Tool,
                                         reasoning_content: None,
                                         name: None,
                                         audio: None,
                                         tool_calls: None,
-                                        tool_call_id: Some(c.id.clone()),
+                                        tool_call_id: Some(data.id.clone()),
                                     })
                                 }
                                 _ => {
@@ -139,41 +139,41 @@ impl ChatAdaptor for OpenAICompletionAdaptor {
                         .content
                         .iter()
                         .filter_map(|content| match content {
-                            message::Content::Text(c) => Some(ContentObject {
+                            message::Content::Text { data } => Some(ContentObject {
                                 r#type: String::from("text"),
-                                text: Some(c.clone()),
+                                text: Some(data.clone()),
                                 image_url: None,
                                 input_audio: None,
                                 file: None,
                                 refusal: None,
                             }),
-                            message::Content::Image(c) => Some(ContentObject {
+                            message::Content::Image { data } => Some(ContentObject {
                                 r#type: String::from("image_url"),
                                 text: None,
                                 image_url: Some(ChatCompletionContentPartImage {
-                                    url: c.clone(),
+                                    url: data.clone(),
                                     detail: Some("auto".to_string()),
                                 }),
                                 input_audio: None,
                                 file: None,
                                 refusal: None,
                             }),
-                            message::Content::Audio(c) => Some(ContentObject {
+                            message::Content::Audio { data } => Some(ContentObject {
                                 r#type: String::from("input_audio"),
                                 text: None,
                                 image_url: None,
                                 input_audio: Some(ChatCompletionContentPartInputAudio {
-                                    data: c.content.clone(),
-                                    format: c.format.clone(),
+                                    data: data.content.clone(),
+                                    format: data.format.clone(),
                                 }),
                                 file: None,
                                 refusal: None,
                             }),
-                            message::Content::File(c) => Some(ContentObject {
+                            message::Content::File { data } => Some(ContentObject {
                                 r#type: String::from("file"),
                                 text: None,
                                 file: Some(FileContentPart {
-                                    file_data: Some(c.clone()),
+                                    file_data: Some(data.clone()),
                                     file_id: None,
                                     filename: None,
                                 }),

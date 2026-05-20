@@ -9,23 +9,23 @@ use wind_ai::message::Message as AiMessage;
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ChatEvent {
-    /// Streaming start: empty-content CoreMessage with metadata.
+    /// 此次对话已创建并开始
     Created { message_id: i64 },
-    /// Streaming delta: raw AI Message fragment.
+    /// 流式消息分块内容
+    /// - 在非流式请求中，也会返回多轮工具调用结果
     Partial {
         index: i32,
         message_id: i64,
         delta: AiMessage,
     },
-    /// Streaming complete: final AI Message.
-    Finished { message_id: i64 },
-    /// Non-streaming: fully persisted CoreMessage returned in one shot.
-    Response {
+    /// 对话结束，可能包含错误
+    Finish {
         message_id: i64,
-        message: Vec<AiMessage>,
+        // 该轮对话完整信息，非流式对话中，包含所有响应结果
+        message: Option<Vec<AiMessage>>,
+        /// 出错信息
+        error: Option<String>,
     },
-    /// Error
-    Error { message_id: i64, error: String },
 }
 
 impl ChatEvent {
@@ -41,21 +41,15 @@ impl ChatEvent {
         }
     }
 
-    pub fn finished(message_id: i64) -> Self {
-        Self::Finished { message_id }
-    }
-
-    pub fn response(message_id: i64, message: Vec<AiMessage>) -> Self {
-        Self::Response {
+    pub fn finish(
+        message_id: i64,
+        message: Option<Vec<AiMessage>>,
+        error: Option<CoreError>,
+    ) -> Self {
+        Self::Finish {
             message_id,
             message,
-        }
-    }
-
-    pub fn error(message_id: i64, error: CoreError) -> Self {
-        Self::Error {
-            message_id,
-            error: error.to_string(),
+            error: error.map(|e| e.to_string()),
         }
     }
 }
