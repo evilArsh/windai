@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use futures::{StreamExt, try_join};
-use sqlx::SqlitePool;
 use wind_ai::chat::{self as wind_ai_chat, ResEventStatus, handle_chat};
 use wind_ai::message::{Message as AiMessage, ReqConfig};
 use wind_ai::model::Model as AiModel;
@@ -21,16 +20,30 @@ use crate::storage::model::service::ModelService;
 use crate::storage::provider::service::ProviderService;
 use crate::storage::topic::service::TopicService;
 
-pub struct ChatEngine {
-    db: SqlitePool,
+pub struct ChatEngine<'c> {
     js_engine: Arc<JsEngine>,
     mcp_registry: RegistryHandle,
+
+    topic_svc: &'c TopicService,
+    model_svc: &'c ModelService,
+    provider_svc: &'c ProviderService,
+    msg_svc: &'c MessageService,
 }
 
-impl ChatEngine {
-    pub fn new(db: SqlitePool, js_engine: Arc<JsEngine>, mcp_registry: RegistryHandle) -> Self {
+impl<'c> ChatEngine<'c> {
+    pub fn new(
+        topic_svc: &'c TopicService,
+        provider_svc: &'c ProviderService,
+        model_svc: &'c ModelService,
+        msg_svc: &'c MessageService,
+        js_engine: Arc<JsEngine>,
+        mcp_registry: RegistryHandle,
+    ) -> Self {
         Self {
-            db,
+            topic_svc,
+            model_svc,
+            provider_svc,
+            msg_svc,
             js_engine,
             mcp_registry,
         }
@@ -118,12 +131,12 @@ impl ChatEngine {
         &self,
         topic_id: i64,
         model_id: i64,
-        from_message_id: i64,
+        user_message_id: i64,
         message_id: i64,
     ) -> impl futures::Stream<Item = ChatEvent> {
         async_stream::stream! {
             let result = self
-                .send_stream_impl(topic_id, model_id, from_message_id, message_id)
+                .send_stream_impl(topic_id, model_id, user_message_id, message_id)
                 .await;
             match result {
                 Ok(stream) => {
@@ -143,20 +156,22 @@ impl ChatEngine {
         &self,
         topic_id: i64,
         model_id: i64,
-        from_message_id: i64,
+        user_message_id: i64,
         message_id: i64,
     ) -> Result<impl futures::Stream<Item = ChatEvent>> {
-        let topic_svc = TopicService::new(self.db.clone());
-        let model_svc = ModelService::new(self.db.clone());
-        let provider_svc = ProviderService::new(self.db.clone());
-        let msg_svc = MessageService::new(self.db.clone());
-
         let (topic, model, provider, req_config, api_key) = self
-            .load_chat_context(&topic_svc, &model_svc, &provider_svc, topic_id, model_id)
+            .load_chat_context(
+                self.topic_svc,
+                self.model_svc,
+                self.provider_svc,
+                topic_id,
+                model_id,
+            )
             .await?;
 
         // 聊天上下文，包含用户输入的消息, 和此次对话的消息
-        let messages = msg_svc
+        let messages = self
+            .msg_svc
             .list_by_topic(topic_id)
             .await?
             .into_iter()
@@ -165,12 +180,12 @@ impl ChatEngine {
         let (mut core_msg, mut contexts) = context::build_chat_context(
             messages,
             topic_id,
+            user_message_id,
             message_id,
-            from_message_id,
             topic.max_context,
         )?;
 
-        let tools = self.get_topic_tools(&topic_svc, topic_id).await?;
+        let tools = self.get_topic_tools(self.topic_svc, topic_id).await?;
         let mcp_client = self.mcp_registry.clone();
         let base_url = provider.base_url.clone();
         let endpoint = model.endpoint.clone();
@@ -183,7 +198,7 @@ impl ChatEngine {
         let provider_id = model.provider_id;
         let model_name = model.name.clone();
         let adaptor_type = model.adaptor;
-        let js_hook = lookup_js_hook(&provider_svc, provider_id, adaptor_type).await?;
+        let js_hook = lookup_js_hook(self.provider_svc, provider_id, adaptor_type).await?;
         let js_engine = self.js_engine.clone();
 
         let stream = async_stream::stream! {
@@ -207,7 +222,6 @@ impl ChatEngine {
                         break;
                     }
                 };
-
                 req_body = match apply_js_hook(
                     &*js_engine,
                     js_hook.as_ref(),
@@ -290,7 +304,7 @@ impl ChatEngine {
                 log::error!("Error when handling chat. {}", error);
             };
             if !core_msg.content.is_empty() {
-                if let Err(e) = msg_svc.update(core_msg.id, core_msg.clone().into()).await {
+                if let Err(e) = self.msg_svc.update(core_msg.id, core_msg.clone().into()).await {
                     error_obj = Some(e.into());
                 };
             }

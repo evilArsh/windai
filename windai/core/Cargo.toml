@@ -29,6 +29,7 @@ schemars.workspace = true
 tokio.workspace = true
 sqlx.workspace = true
 rquickjs.workspace = true
+dirs.workspace = true
 
 [dev-dependencies]
 dotenvy.workspace = true

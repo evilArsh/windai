@@ -22,6 +22,7 @@ static DIRS: OnceLock<AppDirs> = OnceLock::new();
 
 /// 应用数据目录
 pub struct AppDirs {
+    #[allow(dead_code)]
     pub root: PathBuf,
     pub db: PathBuf,
 }
@@ -51,6 +52,7 @@ pub fn dirs() -> &'static AppDirs {
 }
 
 /// 获取根目录
+#[allow(dead_code)]
 pub fn root_dir() -> PathBuf {
     dirs().root.clone()
 }

@@ -62,6 +62,11 @@ impl ProviderService {
         self.repo.get(id).await
     }
 
+    /// 通过 提供商名字 获取提供商
+    pub async fn get_by_name(&self, name: &str) -> Result<Option<Provider>> {
+        self.repo.get_by_name(name).await
+    }
+
     /// 更新提供商
     pub async fn update(&self, id: i64, data: UpdateProvider) -> Result<()> {
         let current = self

@@ -120,10 +120,22 @@ async fn setup_db(pool: &SqlitePool, env: &common::Env) -> TestContext {
     }
 }
 
-fn make_engine(pool: SqlitePool) -> (ChatEngine, wind_mcp::client::registry::RegistryHandle) {
+fn make_engine<'a>(
+    topic_svc: &'a TopicService,
+    provider_svc: &'a ProviderService,
+    model_svc: &'a ModelService,
+    msg_svc: &'a MessageService,
+) -> (ChatEngine<'a>, wind_mcp::client::registry::RegistryHandle) {
     let js_engine = Arc::new(JsEngine::new().unwrap());
     let registry_handle = Registry::new();
-    let engine = ChatEngine::new(pool, js_engine, registry_handle.clone());
+    let engine = ChatEngine::new(
+        topic_svc,
+        provider_svc,
+        model_svc,
+        msg_svc,
+        js_engine,
+        registry_handle.clone(),
+    );
     (engine, registry_handle)
 }
 
@@ -151,6 +163,10 @@ async fn test_chat_engine_send_non_stream() {
     let ctx = setup_db(&pool, &env).await;
 
     let topic_svc = TopicService::new(pool.clone());
+    let provider_svc = ProviderService::new(pool.clone());
+    let model_svc = ModelService::new(pool.clone());
+    let msg_svc = MessageService::new(pool.clone());
+
     topic_svc
         .create_chat_config(
             ctx.topic_id,
@@ -162,7 +178,7 @@ async fn test_chat_engine_send_non_stream() {
         .await
         .unwrap();
 
-    let (engine, _handle) = make_engine(pool.clone());
+    let (engine, _handle) = make_engine(&topic_svc, &provider_svc, &model_svc, &msg_svc);
 
     let stream = engine.send(
         ctx.topic_id,
@@ -198,7 +214,6 @@ async fn test_chat_engine_send_non_stream() {
     assert!(seen_created, "Should emit Created event");
     assert!(seen_finish, "Should emit Finish event");
 
-    let msg_svc = MessageService::new(pool);
     let msg = msg_svc.get(ctx.assistant_msg_id).await.unwrap().unwrap();
     assert!(
         !msg.content.is_empty(),
@@ -218,6 +233,10 @@ async fn test_chat_engine_send_stream() {
     let ctx = setup_db(&pool, &env).await;
 
     let topic_svc = TopicService::new(pool.clone());
+    let provider_svc = ProviderService::new(pool.clone());
+    let model_svc = ModelService::new(pool.clone());
+    let msg_svc = MessageService::new(pool.clone());
+
     topic_svc
         .create_chat_config(
             ctx.topic_id,
@@ -229,7 +248,7 @@ async fn test_chat_engine_send_stream() {
         .await
         .unwrap();
 
-    let (engine, _handle) = make_engine(pool.clone());
+    let (engine, _handle) = make_engine(&topic_svc, &provider_svc, &model_svc, &msg_svc);
 
     let stream = engine.send(
         ctx.topic_id,
@@ -267,7 +286,6 @@ async fn test_chat_engine_send_stream() {
     assert!(partial_count > 0, "Streaming should produce partial chunks");
     println!("[stream] received {partial_count} partial chunks");
 
-    let msg_svc = MessageService::new(pool);
     let msg = msg_svc.get(ctx.assistant_msg_id).await.unwrap().unwrap();
     assert!(
         !msg.content.is_empty(),
@@ -284,6 +302,11 @@ async fn test_chat_engine_send_mcp_non_stream() {
 
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
     init_schema(&pool).await.unwrap();
+
+    let topic_svc = TopicService::new(pool.clone());
+    let provider_svc = ProviderService::new(pool.clone());
+    let model_svc = ModelService::new(pool.clone());
+    let msg_svc = MessageService::new(pool.clone());
 
     let mcp_svc = McpService::new(pool.clone());
     let server_id = mcp_svc
@@ -304,13 +327,11 @@ async fn test_chat_engine_send_mcp_non_stream() {
 
     let ctx = setup_db(&pool, &env).await;
 
-    let topic_svc = TopicService::new(pool.clone());
     topic_svc
         .set_mcp_servers(ctx.topic_id, vec![server_id])
         .await
         .unwrap();
 
-    let msg_svc = MessageService::new(pool.clone());
     msg_svc
         .update(
             ctx.user_msg_id,
@@ -350,7 +371,7 @@ async fn test_chat_engine_send_mcp_non_stream() {
         .await
         .unwrap();
 
-    let (engine, handle) = make_engine(pool.clone());
+    let (engine, handle) = make_engine(&topic_svc, &provider_svc, &model_svc, &msg_svc);
 
     let _snapshot = handle
         .acquire("test-session-mcp-ns", everything_params())
@@ -418,6 +439,11 @@ async fn test_chat_engine_send_mcp_stream() {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
     init_schema(&pool).await.unwrap();
 
+    let topic_svc = TopicService::new(pool.clone());
+    let provider_svc = ProviderService::new(pool.clone());
+    let model_svc = ModelService::new(pool.clone());
+    let msg_svc = MessageService::new(pool.clone());
+
     let mcp_svc = McpService::new(pool.clone());
     let server_id = mcp_svc
         .create(CreateMcpServer {
@@ -437,13 +463,11 @@ async fn test_chat_engine_send_mcp_stream() {
 
     let ctx = setup_db(&pool, &env).await;
 
-    let topic_svc = TopicService::new(pool.clone());
     topic_svc
         .set_mcp_servers(ctx.topic_id, vec![server_id])
         .await
         .unwrap();
 
-    let msg_svc = MessageService::new(pool.clone());
     msg_svc
         .update(
             ctx.user_msg_id,
@@ -483,7 +507,7 @@ async fn test_chat_engine_send_mcp_stream() {
         .await
         .unwrap();
 
-    let (engine, handle) = make_engine(pool.clone());
+    let (engine, handle) = make_engine(&topic_svc, &provider_svc, &model_svc, &msg_svc);
 
     let _snapshot = handle
         .acquire("test-session-mcp-s", everything_params())

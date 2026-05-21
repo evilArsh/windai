@@ -33,7 +33,7 @@ impl OpenAICompletionAdaptor {
         Ok(Message {
             role: msg.role.unwrap_or_else(|| Role::Assistant),
             content: vec![content],
-            reasoning_content: Some(msg.reasoning_content.unwrap_or_else(|| String::new())),
+            reasoning_content: msg.reasoning_content.or(None),
             created_at,
             input_tokens: 0,
             output_tokens: 0,

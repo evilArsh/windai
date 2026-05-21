@@ -14,8 +14,8 @@ use wind_ai::message::{Message as AiMessage, Role};
 pub fn build_chat_context(
     raw_messages: Vec<CoreMessage>,
     topic_id: i64,
+    user_message_id: i64,
     message_id: i64,
-    from_user_id: i64,
     max_context: Option<i32>,
 ) -> Result<(CoreMessage, Vec<AiMessage>)> {
     let mut raw_messages = raw_messages;
@@ -43,17 +43,17 @@ pub fn build_chat_context(
             topic_id,
             raw_messages.len(),
             message_id,
-            from_user_id
+            user_message_id
         )));
     }
 
     let user_msg = raw_messages
         .last()
         .ok_or_else(|| CoreError::Chat("raw_messages is empty after pop".to_string()))?;
-    if user_msg.id != from_user_id {
+    if user_msg.id != user_message_id {
         return Err(CoreError::Chat(format!(
             "The last message id {} does not match from_user_id: {}",
-            user_msg.id, from_user_id
+            user_msg.id, user_message_id
         )));
     }
 

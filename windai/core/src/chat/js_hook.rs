@@ -30,9 +30,15 @@ fn transform_with_engine(
     body: Value,
     context: Value,
 ) -> Result<Value, CoreError> {
-    js_engine
+    log::debug!(
+        "[transform_by_js]\nbody:\n{}\ncode:\n{}",
+        serde_json::to_string_pretty(&body).unwrap_or_default(),
+        js_code
+    );
+    let res = js_engine
         .transform(js_code, body, context)
-        .map_err(|e| CoreError::Js(e.to_string()))
+        .map_err(|e| CoreError::Js(e.to_string()));
+    res
 }
 
 /// 执行 JavaScript 转换
@@ -49,7 +55,6 @@ pub async fn apply_js_hook(
         Some(hook) if !hook.js_code.is_empty() => (hook.js_code.as_ref(), hook.adaptor),
         _ => return Ok(body),
     };
-
     let context = build_context(
         provider_name,
         model_name,
