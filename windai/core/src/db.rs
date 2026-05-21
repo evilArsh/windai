@@ -1,12 +1,15 @@
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Sqlite, Transaction};
 use std::str::FromStr;
+use std::time::Duration;
 
 /// 初始化SQLite连接池
 pub async fn connect(db_url: &str) -> Result<sqlx::SqlitePool, sqlx::Error> {
     let options = SqliteConnectOptions::from_str(db_url)?
         .create_if_missing(true)
-        .foreign_keys(true);
+        .foreign_keys(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(10));
 
     SqlitePoolOptions::new()
         .max_connections(5)

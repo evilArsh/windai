@@ -46,7 +46,7 @@ impl fmt::Display for SseBlock {
     }
 }
 fn debug_sse(_s: &SseBlock) {
-    // log::debug!("[SseBlock]\n{}", &s);
+    // log::debug!("[SseBlock]\n{:?}", &s.data);
 }
 impl SseBlock {
     /// 解析原始 SSE bytes，返回所有解析的结果

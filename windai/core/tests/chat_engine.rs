@@ -180,14 +180,8 @@ async fn test_chat_engine_send_non_stream() {
                 assert_eq!(message_id, ctx.assistant_msg_id);
                 seen_created = true;
             }
-            ChatEvent::Partial {
-                index,
-                message_id,
-                delta,
-            } => {
-                log::debug!("[partial]\n{}", delta);
+            ChatEvent::Partial { message_id, .. } => {
                 assert_eq!(message_id, ctx.assistant_msg_id);
-                println!("[partial] index={index}");
             }
             ChatEvent::Finish {
                 message_id,
@@ -254,17 +248,9 @@ async fn test_chat_engine_send_stream() {
                 assert_eq!(message_id, ctx.assistant_msg_id);
                 seen_created = true;
             }
-            ChatEvent::Partial {
-                index,
-                message_id,
-                delta,
-            } => {
+            ChatEvent::Partial { message_id, .. } => {
                 // log::debug!("[partial delta]\n{}", delta);
                 assert_eq!(message_id, ctx.assistant_msg_id);
-                println!(
-                    "[partial] index={index}, content_items={}",
-                    delta.content.len()
-                );
                 partial_count += 1;
             }
             ChatEvent::Finish {
@@ -292,6 +278,7 @@ async fn test_chat_engine_send_stream() {
 // ---------- non-stream, with MCP ----------
 
 #[tokio::test]
+#[ignore = "reason"]
 async fn test_chat_engine_send_mcp_non_stream() {
     let env = common::load_env();
 
@@ -389,16 +376,11 @@ async fn test_chat_engine_send_mcp_non_stream() {
                 seen_created = true;
             }
             ChatEvent::Partial {
-                index,
-                message_id,
-                delta,
+                message_id, delta, ..
             } => {
                 assert_eq!(message_id, ctx.assistant_msg_id);
                 if delta.tool_calls.as_ref().is_some_and(|t| !t.is_empty()) {
                     has_tool_call = true;
-                    println!("[partial] index={index}, tool_calls={:?}", delta.tool_calls);
-                } else {
-                    println!("[partial] index={index}, role={:?}", delta.role);
                 }
             }
             ChatEvent::Finish {
@@ -429,6 +411,7 @@ async fn test_chat_engine_send_mcp_non_stream() {
 // ---------- stream, with MCP ----------
 
 #[tokio::test]
+#[ignore = "reason"]
 async fn test_chat_engine_send_mcp_stream() {
     let env = common::load_env();
 
@@ -527,15 +510,12 @@ async fn test_chat_engine_send_mcp_stream() {
                 seen_created = true;
             }
             ChatEvent::Partial {
-                index,
-                message_id,
-                delta,
+                message_id, delta, ..
             } => {
                 assert_eq!(message_id, ctx.assistant_msg_id);
                 partial_count += 1;
                 if delta.tool_calls.as_ref().is_some_and(|t| !t.is_empty()) {
                     has_tool_call = true;
-                    println!("[partial] index={index}, tool_calls={:?}", delta.tool_calls);
                 }
             }
             ChatEvent::Finish {

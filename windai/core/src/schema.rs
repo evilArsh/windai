@@ -110,12 +110,6 @@ CREATE INDEX IF NOT EXISTS idx_messages_topic ON messages(topic_id, message_inde
 
 /// 初始化数据库表结构
 pub async fn init_schema(pool: &SqlitePool) -> Result<()> {
-    for statement in SCHEMA_SQL
-        .split(';')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-    {
-        sqlx::query(statement).execute(pool).await?;
-    }
+    sqlx::raw_sql(SCHEMA_SQL).execute(pool).await?;
     Ok(())
 }
