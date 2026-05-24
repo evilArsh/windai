@@ -5,9 +5,7 @@ mod path;
 
 pub use compile::RuleSet;
 pub use error::{Error, Result};
-
-use serde_json::Value;
-use std::collections::HashMap;
+use serde_json::{Map, Value};
 
 /// 规则求值的上下文，由调用方注入。
 ///
@@ -15,14 +13,12 @@ use std::collections::HashMap;
 /// 在条件求值时可通过 `$ctx.<key>` 引用。
 #[derive(Debug, Clone, Default)]
 pub struct EvalContext {
-    vars: HashMap<String, Value>,
+    vars: Map<String, Value>,
 }
 
 impl EvalContext {
     pub fn new() -> Self {
-        Self {
-            vars: HashMap::new(),
-        }
+        Self { vars: Map::new() }
     }
 
     pub fn with(mut self, key: &str, value: impl Into<Value>) -> Self {
@@ -30,8 +26,10 @@ impl EvalContext {
         self
     }
 
+    /// 获取变量值。TODO: 获取嵌套路径值
     pub fn get(&self, key: &str) -> Option<&Value> {
-        self.vars.get(key)
+        let segs = path::segments(key);
+        path::get(&self.vars, &segs)
     }
 
     pub(crate) fn entries(&self) -> impl Iterator<Item = (&String, &Value)> {
@@ -39,8 +37,8 @@ impl EvalContext {
     }
 }
 
-impl From<HashMap<String, Value>> for EvalContext {
-    fn from(vars: HashMap<String, Value>) -> Self {
+impl From<Map<String, Value>> for EvalContext {
+    fn from(vars: Map<String, Value>) -> Self {
         Self { vars }
     }
 }
@@ -267,7 +265,7 @@ mod tests {
     fn test_compute() {
         let rules = r#"{
             "rules": [
-                {"type": "compute", "path": "max_tokens", "expr": "min(value, 4096)"}
+                {"type": "compute", "path": "max_tokens", "expr": "min($value, 4096)"}
             ]
         }"#;
         let rs = RuleSet::from_json(rules).unwrap();
@@ -287,7 +285,7 @@ mod tests {
     fn test_compute_with_context() {
         let rules = r#"{
             "rules": [
-                {"type": "compute", "path": "max_tokens", "expr": "min(value, 8192 - ctx_input_tokens)"}
+                {"type": "compute", "path": "max_tokens", "expr": "min($value, 8192 - $ctx.input_tokens)"}
             ]
         }"#;
         let rs = RuleSet::from_json(rules).unwrap();

@@ -4,7 +4,7 @@ use super::{
     error::{Error, Result},
     path,
 };
-use evalexpr::{self, ContextWithMutableVariables, HashMapContext};
+use evalexpr::{self, ContextWithMutableVariables, HashMapContext, Node};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -129,7 +129,6 @@ enum CompiledOp {
     },
     Compute {
         segs: Vec<String>,
-        expr: String,
         op_tree: evalexpr::Node,
     },
     When {
@@ -189,7 +188,7 @@ impl CompiledOp {
                     }
                     if let Some(target) = target {
                         if let Value::Object(map) = target
-                            && let Some(body) = body.as_object_mut()
+                            && let Value::Object(body) = body
                         {
                             merge_root(body, map);
                         } else {
@@ -202,13 +201,9 @@ impl CompiledOp {
                     log::warn!("[MapValue] Path {:?} skipped due to path not found", segs);
                 }
             }
-            CompiledOp::Compute {
-                segs,
-                expr,
-                op_tree,
-            } => {
-                let current = path::get(body, segs).cloned().unwrap_or(Value::Null);
-                let result = eval_compute(expr, &current, ctx)?;
+            CompiledOp::Compute { segs, op_tree } => {
+                let current = path::get(body, segs);
+                let result = eval_compute(op_tree, &current, ctx)?;
                 if let Some(dst) = path::walk(body, segs) {
                     *dst = result;
                 }
@@ -228,10 +223,6 @@ impl CompiledOp {
         Ok(())
     }
 }
-
-// fn to_refs(segs: &[String]) -> Vec<&str> {
-//     segs.iter().map(|s| s.as_str()).collect()
-// }
 
 // OK
 fn compile_op(raw: RawOp, out: &mut Vec<CompiledOp>) -> Result<()> {
@@ -267,11 +258,7 @@ fn compile_op(raw: RawOp, out: &mut Vec<CompiledOp>) -> Result<()> {
             let segs = path::segments(&path);
             // 构建运算树
             let op_tree = evalexpr::build_operator_tree(&expr)?;
-            out.push(CompiledOp::Compute {
-                segs,
-                expr,
-                op_tree,
-            });
+            out.push(CompiledOp::Compute { segs, op_tree });
         }
         // OK
         RawOp::When { cond, then, else_ } => {
@@ -318,7 +305,7 @@ fn compile_mappings(raw: &Value) -> Result<Vec<(Value, Value)>> {
 
 fn find_mapping<'a>(
     mappings: &'a [(Value, Value)],
-    source: &'a Value,
+    source: &Value,
     default: Option<&'a Value>,
 ) -> Option<&'a Value> {
     for (key, target) in mappings {
@@ -329,37 +316,47 @@ fn find_mapping<'a>(
     default
 }
 
-fn eval_compute(expr: &str, current_value: &Value, ctx: &super::EvalContext) -> Result<Value> {
+// OK
+fn eval_compute(
+    op_tree: &Node,
+    current_value: &Option<&Value>,
+    ctx: &EvalContext,
+) -> Result<Value> {
     let mut eval_ctx = HashMapContext::new();
     // 注入当前字段值
-    let _ = eval_ctx.set_value("value".to_string(), json_to_evalexpr(current_value));
-    // 注入上下文变量
+    let _ = eval_ctx.set_value("$value".to_string(), json_to_evalexpr(current_value));
+    // 注入上下文变量。TODO: 支持嵌套上下文路径
     for (k, v) in ctx.entries() {
-        let _ = eval_ctx.set_value(format!("ctx_{k}"), json_to_evalexpr(v));
+        let _ = eval_ctx.set_value(format!("$ctx.{k}"), json_to_evalexpr(&Some(v)));
     }
-    let result = evalexpr::eval_with_context_mut(expr, &mut eval_ctx)?;
+    let result = op_tree.eval_with_context_mut(&mut eval_ctx)?;
     Ok(evalexpr_to_json(result))
 }
 
-fn json_to_evalexpr(v: &Value) -> evalexpr::Value {
-    match v {
-        Value::Null => evalexpr::Value::Empty,
-        Value::Bool(b) => evalexpr::Value::Boolean(*b),
-        Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                evalexpr::Value::Int(i)
-            } else if let Some(f) = n.as_f64() {
-                evalexpr::Value::Float(f)
-            } else {
-                evalexpr::Value::Empty
+// OK
+fn json_to_evalexpr(v: &Option<&Value>) -> evalexpr::Value {
+    if let Some(v) = v {
+        match v {
+            Value::Bool(b) => evalexpr::Value::Boolean(*b),
+            Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    evalexpr::Value::Int(i)
+                } else if let Some(f) = n.as_f64() {
+                    evalexpr::Value::Float(f)
+                } else {
+                    evalexpr::Value::Empty
+                }
             }
+            Value::String(s) => evalexpr::Value::String(s.clone()),
+            Value::Array(arr) => {
+                let items: Vec<evalexpr::Value> =
+                    arr.iter().map(|v| json_to_evalexpr(&Some(v))).collect();
+                evalexpr::Value::Tuple(items)
+            }
+            Value::Object(_) | Value::Null => evalexpr::Value::Empty,
         }
-        Value::String(s) => evalexpr::Value::String(s.clone()),
-        Value::Array(arr) => {
-            let items: Vec<evalexpr::Value> = arr.iter().map(json_to_evalexpr).collect();
-            evalexpr::Value::Tuple(items)
-        }
-        Value::Object(_) => evalexpr::Value::Empty,
+    } else {
+        evalexpr::Value::Empty
     }
 }
 

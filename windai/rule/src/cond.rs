@@ -1,5 +1,6 @@
-use crate::error::{Error, Result};
-use crate::path;
+use super::EvalContext;
+use super::error::{Error, Result};
+use super::path;
 use serde_json::Value;
 
 /// 条件参数：字面量或变量引用
@@ -171,6 +172,7 @@ impl CompiledCond {
     }
 }
 
+// OK
 fn parse_two_args(args: &Value) -> Result<(Arg, Arg)> {
     let arr = args
         .as_array()
@@ -184,6 +186,8 @@ fn parse_two_args(args: &Value) -> Result<(Arg, Arg)> {
     Ok((parse_arg(&arr[0]), parse_arg(&arr[1])))
 }
 
+// OK
+/// 根据 `$` 前缀判断参数类型
 fn parse_arg(val: &Value) -> Arg {
     if let Some(s) = val.as_str() {
         if let Some(rest) = s.strip_prefix('$') {
@@ -193,16 +197,14 @@ fn parse_arg(val: &Value) -> Arg {
     Arg::Literal(val.clone())
 }
 
-fn resolve_arg(arg: &Arg, body: &Value, ctx: &super::EvalContext) -> Value {
+fn resolve_arg(arg: &Arg, body: &Value, ctx: &EvalContext) -> Value {
     match arg {
         Arg::Literal(v) => v.clone(),
         Arg::Variable(name) => {
-            // 优先从 body 取值（用于 map_value 的 $value）
-            if name == "value" {
+            if name == "$value" {
                 return body.clone();
             }
-            // 其次从上下文取值
-            if let Some(rest) = name.strip_prefix("ctx.") {
+            if let Some(rest) = name.strip_prefix("$ctx.") {
                 if let Some(v) = ctx.get(rest) {
                     return v.clone();
                 }
