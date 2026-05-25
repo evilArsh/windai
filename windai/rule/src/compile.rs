@@ -16,7 +16,6 @@ pub struct RuleSet {
 }
 
 impl RuleSet {
-    // OK
     pub fn from_json(json: &str) -> Result<Self> {
         let raw: RawRuleSet = serde_json::from_str(json)
             .map_err(|e| Error::InvalidRule(format!("failed to parse rule JSON: {e}")))?;
@@ -144,8 +143,8 @@ impl CompiledOp {
     /// 1. [CompiledOp::Set]
     ///
     /// 如果路径不存在，将会在 body 上创建对象并设置值,
-    /// 如果子路径存在非 Object 值，则此次操作将被忽略。
-    /// 比如在以下 body 中设置路径 `foo.bar.zoo` 的值会被忽略：
+    /// 如果子路径存在非 Object 值，则此次操作将失败。
+    /// 比如在以下 body 中设置路径 `foo.bar.zoo` 的值会失败：
     /// ```json
     /// {
     ///   "foo":: {
@@ -157,87 +156,92 @@ impl CompiledOp {
     ///
     /// 2. [CompiledOp::Remove]
     ///
-    /// 如果路径不存在，则跳过
+    /// 如果路径不存在或子路径存在非 Object 值，则失败
     ///
+    /// 3. [CompiledOp::MapValue]
+    ///
+    /// 根据指定字段值的条件，映射出新的字段值。
+    ///
+    /// 如果指定的字段值不存在，则跳过
+    ///
+    /// 4. [CompiledOp::Compute]
+    ///
+    /// 对一个指定的路径求值。
+    ///
+    /// 内建函数参考： [https://crates.io/crates/evalexpr]
+    /// 5. [CompiledOp::When]
+    ///
+    /// 根据设定的条件设置字段值
     fn exec(&self, body: &mut Value, ctx: &super::EvalContext) -> Result<()> {
         match self {
             CompiledOp::Set { segs, value } => {
-                if let Some(dst) = path::walk(body, segs) {
-                    *dst = value.clone();
-                } else {
-                    log::warn!(
-                        "[Set] Path {:?} skipped due to non-object value in the middle",
-                        segs
-                    );
-                }
+                let dst = path::walk(body, segs)?;
+                *dst = value.clone();
+                Ok(())
             }
-            CompiledOp::Remove { segs } => {
-                path::remove(body, segs);
-            }
+            CompiledOp::Remove { segs } => path::remove(body, segs),
             CompiledOp::MapValue {
                 segs,
                 mappings,
                 default,
                 remove_source,
             } => {
-                if let Some(source_val) = path::get(body, segs) {
-                    let target = find_mapping(mappings, source_val, default.as_ref());
-                    if *remove_source {
-                        log::debug!("[MapValue] remove source");
-                        path::remove(body, segs);
-                    }
-                    if let Some(target) = target {
-                        if let Value::Object(map) = target
-                            && let Value::Object(body) = body
-                        {
-                            merge_root(body, map);
-                        } else {
-                            log::warn!(
-                                "[MapValue] target value or body is not an object, skip merge"
-                            );
-                        }
+                let source_val = path::get(body, segs)?;
+                let target = find_mapping(mappings, source_val, default.as_ref());
+                if *remove_source {
+                    log::debug!("[MapValue] remove source");
+                    path::remove(body, segs)?;
+                }
+                if let Some(target) = target {
+                    if let Value::Object(map) = target
+                        && let Value::Object(body) = body
+                    {
+                        merge_root(body, map);
+                        Ok(())
+                    } else {
+                        Err(Error::Path(format!(
+                            "target value or body is not an object"
+                        )))
                     }
                 } else {
-                    log::warn!("[MapValue] Path {:?} skipped due to path not found", segs);
+                    log::warn!("[MapValue] no target value found");
+                    Ok(())
                 }
             }
             CompiledOp::Compute { segs, op_tree } => {
-                let current = path::get(body, segs);
+                let current = Some(path::get(body, segs)?);
                 let result = eval_compute(op_tree, &current, ctx)?;
-                if let Some(dst) = path::walk(body, segs) {
-                    *dst = result;
-                }
+                let dst = path::walk(body, segs)?;
+                *dst = result;
+                Ok(())
             }
             CompiledOp::When { cond, then, else_ } => {
                 if cond.eval(body, ctx)? {
                     for op in then {
                         op.exec(body, ctx)?;
                     }
+                    Ok(())
                 } else {
                     for op in else_ {
                         op.exec(body, ctx)?;
                     }
+                    Ok(())
                 }
             }
         }
-        Ok(())
     }
 }
 
-// OK
 fn compile_op(raw: RawOp, out: &mut Vec<CompiledOp>) -> Result<()> {
     match raw {
-        // OK
         RawOp::Set { path, value } => {
             let segs = path::segments(&path);
             out.push(CompiledOp::Set { segs, value });
         }
-        // OK
         RawOp::Remove { path } => {
             let segs = path::segments(&path);
             out.push(CompiledOp::Remove { segs });
         }
-        // OK
         RawOp::MapValue {
             path,
             mappings,
@@ -253,14 +257,12 @@ fn compile_op(raw: RawOp, out: &mut Vec<CompiledOp>) -> Result<()> {
                 remove_source,
             });
         }
-        // OK
         RawOp::Compute { path, expr } => {
             let segs = path::segments(&path);
             // 构建运算树
             let op_tree = evalexpr::build_operator_tree(&expr)?;
             out.push(CompiledOp::Compute { segs, op_tree });
         }
-        // OK
         RawOp::When { cond, then, else_ } => {
             let cond = CompiledCond::compile(&cond)?;
             let mut then_ops = Vec::new();
@@ -316,7 +318,6 @@ fn find_mapping<'a>(
     default
 }
 
-// OK
 fn eval_compute(
     op_tree: &Node,
     current_value: &Option<&Value>,
@@ -333,7 +334,6 @@ fn eval_compute(
     Ok(evalexpr_to_json(result))
 }
 
-// OK
 fn json_to_evalexpr(v: &Option<&Value>) -> evalexpr::Value {
     if let Some(v) = v {
         match v {

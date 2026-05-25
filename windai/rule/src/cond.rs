@@ -10,7 +10,6 @@ pub enum Arg {
     Variable(String), // $xxx 去掉 $ 前缀
 }
 
-// OK
 /// 编译后的条件
 ///
 /// # examples
@@ -74,17 +73,16 @@ pub enum CompiledCond {
 }
 
 impl CompiledCond {
-    // OK
-    /// 从原始 JSON value 编译条件。
+    /// 从原始 JSON value 中编译出条件语句。
     ///
     /// JSON 格式: `{"op": args}`，如 `{"eq": ["$value", "deepseek"]}`
     /// 每个条件对象恰好有一个 key。
     pub fn compile(raw: &Value) -> Result<Self> {
         let obj = raw
             .as_object()
-            .ok_or_else(|| Error::InvalidRule("condition must be an object".into()))?;
+            .ok_or_else(|| Error::Condition("condition must be an object".into()))?;
         if obj.len() != 1 {
-            return Err(Error::InvalidRule(format!(
+            return Err(Error::Condition(format!(
                 "condition object must have exactly one key, got {}: {:?}",
                 obj.len(),
                 obj.keys().collect::<Vec<_>>()
@@ -103,13 +101,13 @@ impl CompiledCond {
             "exists" => {
                 let path_str = args
                     .as_str()
-                    .ok_or_else(|| Error::InvalidRule("exists requires a string path".into()))?;
+                    .ok_or_else(|| Error::Condition("exists requires a string path".into()))?;
                 let segs = path::segments(path_str);
                 Ok(CompiledCond::Exists(segs))
             }
             "and" => {
                 let arr = args.as_array().ok_or_else(|| {
-                    Error::InvalidRule("and requires an array of conditions".into())
+                    Error::Condition("and requires an array of conditions".into())
                 })?;
                 let subs = arr
                     .iter()
@@ -118,9 +116,9 @@ impl CompiledCond {
                 Ok(CompiledCond::And(subs))
             }
             "or" => {
-                let arr = args.as_array().ok_or_else(|| {
-                    Error::InvalidRule("or requires an array of conditions".into())
-                })?;
+                let arr = args
+                    .as_array()
+                    .ok_or_else(|| Error::Condition("or requires an array of conditions".into()))?;
                 let subs = arr
                     .iter()
                     .map(CompiledCond::compile)
@@ -131,7 +129,7 @@ impl CompiledCond {
                 let sub = CompiledCond::compile(args)?;
                 Ok(CompiledCond::Not(Box::new(sub)))
             }
-            _ => Err(Error::InvalidRule(format!(
+            _ => Err(Error::Condition(format!(
                 "unknown condition operator: {op}"
             ))),
         }
@@ -150,7 +148,7 @@ impl CompiledCond {
                 let vb = resolve_arg(b, body, ctx);
                 Ok(va != vb)
             }
-            CompiledCond::Exists(segs) => Ok(path::get(body, segs).is_some()),
+            CompiledCond::Exists(segs) => Ok(path::get(body, segs).is_ok()),
             CompiledCond::And(conds) => {
                 for c in conds {
                     if !c.eval(body, ctx)? {
@@ -172,13 +170,12 @@ impl CompiledCond {
     }
 }
 
-// OK
 fn parse_two_args(args: &Value) -> Result<(Arg, Arg)> {
     let arr = args
         .as_array()
         .ok_or_else(|| Error::InvalidRule("eq/neq requires an array of two arguments".into()))?;
     if arr.len() != 2 {
-        return Err(Error::InvalidRule(format!(
+        return Err(Error::Condition(format!(
             "eq/neq requires exactly 2 arguments, got {}",
             arr.len()
         )));
@@ -186,12 +183,11 @@ fn parse_two_args(args: &Value) -> Result<(Arg, Arg)> {
     Ok((parse_arg(&arr[0]), parse_arg(&arr[1])))
 }
 
-// OK
 /// 根据 `$` 前缀判断参数类型
 fn parse_arg(val: &Value) -> Arg {
     if let Some(s) = val.as_str() {
-        if let Some(rest) = s.strip_prefix('$') {
-            return Arg::Variable(rest.to_string());
+        if s.starts_with('$') {
+            return Arg::Variable(s.to_string());
         }
     }
     Arg::Literal(val.clone())

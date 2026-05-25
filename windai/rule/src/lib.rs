@@ -26,10 +26,13 @@ impl EvalContext {
         self
     }
 
-    /// 获取变量值。TODO: 获取嵌套路径值
+    /// 获取变量值。
+    ///
+    /// TODO: 获取嵌套路径值
     pub fn get(&self, key: &str) -> Option<&Value> {
-        let segs = path::segments(key);
-        path::get(&self.vars, &segs)
+        self.vars.get(key)
+        // let segs = path::segments(key);
+        // path::get(&self.vars, &segs)
     }
 
     pub(crate) fn entries(&self) -> impl Iterator<Item = (&String, &Value)> {

@@ -8,7 +8,7 @@ pub enum Error {
     #[error("path: {0}")]
     Path(String),
 
-    #[error("expression: {0}")]
+    #[error(transparent)]
     Expr(#[from] EvalexprError),
 
     #[error("condition: {0}")]
