@@ -17,7 +17,8 @@ cargo test
 # Run tests for a specific crate
 cargo test -p wind-core
 cargo test -p wind-ai
-cargo test -p wind-js
+cargo test -p wind-mcp
+cargo test -p wind-rule
 
 # Run a single test
 cargo test -p wind-ai -- test_build_request
@@ -113,6 +114,23 @@ Tool names are namespaced: `{server_name}0m0{tool_name}` where `0m0` is the sepa
 ### `wind-rule` - JSON rule engine
 
 `RuleSet` (`windai/rule/src/compile.rs`) is a JSON-based rule engine that transforms request bodies. Users store rule JSON in the `json_rule` table keyed by `(provider_id, adaptor)`. Before each API request, the chat engine calls `apply_json_rule()` which applies the `RuleSet` to the request body using an `EvalContext` that includes `{provider, model, endpoint, adaptor}`. This allows per-provider request rewriting without code changes.
+
+**Operations** (defined in `RawOp` / compiled to `CompiledOp`):
+
+| Op | Purpose |
+|----|---------|
+| `set` | Set a value at a JSON path; creates intermediate objects as needed |
+| `remove` | Delete a field at a JSON path |
+| `map_value` | Map a field's value to a target object via a lookup table; optionally removes the source field. Merges the target object into the body root |
+| `compute` | Evaluate an `evalexpr` expression over `$value` (current field value) and `$ctx.*` (context variables). Result replaces the field |
+| `when` | Conditional: `cond` is compiled via `CompiledCond` (supports `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `contains`, `and`, `or`, `not`, `in`). Executes `then` or `else` sub-rules |
+
+Key implementation details:
+- Path segments are pre-split at compile time (dot-separated, e.g. `foo.bar.zoo` → `["foo", "bar", "zoo"]`)
+- `compute` expressions are pre-compiled into `evalexpr::Node` trees at rule parse time
+- `map_value` mappings are compiled from JSON into `Vec<(Value, Value)>` lookup tables with special handling for `"null"` keys and numeric-string keys
+- `merge_root()` does a shallow merge at the body root level; nested objects are merged recursively one level deep
+- `EvalContext` is constructed from a `Value::Object`; nested path access is not yet implemented (flat `$ctx.key` only)
 
 ### Database schema (SQLite)
 
