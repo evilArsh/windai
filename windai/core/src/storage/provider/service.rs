@@ -2,8 +2,8 @@ use super::repo::ProviderRepo;
 use crate::db;
 use crate::error::{CoreError, Result};
 use crate::models::{
-    CreateCredentials, CreateJsHookCode, CreateProvider, Credentials, JsHookCode, Provider,
-    UpdateJsHookCode, UpdateProvider,
+    CreateCredentials, CreateJsonRule, CreateProvider, Credentials, JsonRule, Provider,
+    UpdateJsonRule, UpdateProvider,
 };
 use sqlx::SqlitePool;
 use wind_ai::model::AdaptorType;
@@ -139,28 +139,28 @@ impl ProviderService {
         Ok(())
     }
 
-    // --- JsHookCode ---
+    // --- JsonRule ---
 
-    pub async fn create_js_hook_code(&self, data: CreateJsHookCode) -> Result<JsHookCode> {
+    pub async fn create_json_rule(&self, data: CreateJsonRule) -> Result<JsonRule> {
         let mut tx = db::begin_tx(&self.repo.db).await?;
-        let id = self.repo.create_js_hook_code(&mut tx, data).await?;
+        let id = self.repo.create_json_rule(&mut tx, data).await?;
         tx.commit().await?;
 
         self.repo
-            .get_js_hook_code_by_id(id)
+            .get_json_rule_by_id(id)
             .await?
-            .ok_or(CoreError::NotFound("created js_hook_code".into()))
+            .ok_or(CoreError::NotFound("created json_rule".into()))
     }
 
-    pub async fn update_js_hook_code(&self, id: i64, data: UpdateJsHookCode) -> Result<()> {
+    pub async fn update_json_rule(&self, id: i64, data: UpdateJsonRule) -> Result<()> {
         let current = self
-            .get_js_hook_code_by_id(id)
+            .get_json_rule_by_id(id)
             .await?
-            .ok_or(CoreError::NotFound(format!("js_hook_code {id}")))?;
+            .ok_or(CoreError::NotFound(format!("json_rule {id}")))?;
 
         let mut tx = db::begin_tx(&self.repo.db).await?;
         self.repo
-            .update_js_hook_code(
+            .update_json_rule(
                 &mut tx,
                 id,
                 data.provider_id.unwrap_or(current.provider_id),
@@ -168,7 +168,7 @@ impl ProviderService {
                     .adaptor
                     .map(|a| a.to_string())
                     .unwrap_or_else(|| current.adaptor.to_string()),
-                data.js_code.as_deref().unwrap_or(&current.js_code),
+                data.json_rule.as_deref().unwrap_or(&current.json_rule),
                 data.active.unwrap_or(current.active),
             )
             .await?;
@@ -177,26 +177,26 @@ impl ProviderService {
         Ok(())
     }
 
-    pub async fn list_js_hook_codes(&self, provider_id: i64) -> Result<Vec<JsHookCode>> {
-        self.repo.list_js_hook_codes(provider_id).await
+    pub async fn list_json_rules(&self, provider_id: i64) -> Result<Vec<JsonRule>> {
+        self.repo.list_json_rules(provider_id).await
     }
 
-    /// 通过 provider id 和 adaptor 类型获取 js_hook_code
-    pub async fn get_js_hook_code(
+    /// 通过 provider id 和 adaptor 类型获取 json_rule
+    pub async fn get_json_rule(
         &self,
         provider_id: i64,
         adaptor: AdaptorType,
-    ) -> Result<Option<JsHookCode>> {
-        self.repo.get_js_hook_code(provider_id, adaptor).await
+    ) -> Result<Option<JsonRule>> {
+        self.repo.get_json_rule(provider_id, adaptor).await
     }
 
-    pub async fn get_js_hook_code_by_id(&self, id: i64) -> Result<Option<JsHookCode>> {
-        self.repo.get_js_hook_code_by_id(id).await
+    pub async fn get_json_rule_by_id(&self, id: i64) -> Result<Option<JsonRule>> {
+        self.repo.get_json_rule_by_id(id).await
     }
 
-    pub async fn delete_js_hook_code(&self, id: i64) -> Result<()> {
+    pub async fn delete_json_rule(&self, id: i64) -> Result<()> {
         let mut tx = db::begin_tx(&self.repo.db).await?;
-        self.repo.delete_js_hook_code(&mut tx, id).await?;
+        self.repo.delete_json_rule(&mut tx, id).await?;
         tx.commit().await?;
         Ok(())
     }

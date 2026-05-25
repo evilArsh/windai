@@ -45,10 +45,10 @@ This is a Rust workspace with four crates under `windai/`:
 ### Crate dependency graph
 
 ```
-wind-core  ──depends-on──>  wind-ai, wind-mcp, wind-js
+wind-core  ──depends-on──>  wind-ai, wind-mcp, wind-rule
 wind-mcp   ──depends-on──>  (rmcp for MCP transport)
 wind-ai    ──depends-on──>  (reqwest for HTTP, no other wind-* crates)
-wind-js    ──depends-on──>  (rquickjs, standalone)
+wind-rule  ──depends-on──>  (evalexpr, standalone)
 ```
 
 Each crate is self-contained: `wind-ai` knows nothing about `wind-mcp` or the database. The `wind-core` crate is the only one that ties everything together.
@@ -57,7 +57,6 @@ Each crate is self-contained: `wind-ai` knows nothing about `wind-mcp` or the da
 
 `WindCore` (`windai/core/src/lib.rs:22`) is the application entry point. It owns:
 - A `SqlitePool` for persistence
-- An `Arc<JsEngine>` shared across chat sessions
 - An MCP `RegistryHandle` for managing MCP server connections
 
 It exposes service facades (`provider()`, `model()`, `topic()`, `message()`, `chat()`) that each create a service instance backed by the shared pool.
@@ -67,7 +66,7 @@ The **`ChatEngine`** (`windai/core/src/chat/engine.rs`) is the core chat loop:
 2. Builds message context from history (respecting `is_boundary` markers and `max_context` limits)
 3. Fetches MCP tools registered to the topic
 4. Constructs the request via the adaptor's `build_request()`
-5. Applies JS hooks (user-defined `transform(body, context)` functions stored in `js_hook_code` table)
+5. Applies JSON rules (user-defined `RuleSet` transforms stored in `json_rule` table)
 6. Sends the request; on tool calls, executes them via MCP and loops back to step 4
 
 The chat loop emits a `ChatEvent` stream (`Created → Partial x N → Finished` for streaming; `Response` for non-streaming).
@@ -111,9 +110,9 @@ The **Registry** (`windai/mcp/src/client/registry.rs`) uses an actor pattern: `R
 
 Tool names are namespaced: `{server_name}0m0{tool_name}` where `0m0` is the separator constant (`MCP_TOOL_IDENTIFIER`).
 
-### `wind-js` - JavaScript hooks
+### `wind-rule` - JSON rule engine
 
-`JsEngine` (`windai/js/src/lib.rs`) wraps a `rquickjs::Runtime`. Users store JS code in the `js_hook_code` table keyed by `(provider_id, adaptor)`. Before each API request, the chat engine calls `apply_js_hook()` which runs the user's `transform(body, context)` function — the function receives the request body and a context object `{provider, model, endpoint, adaptor}` and returns a modified body. This allows per-provider request rewriting without code changes.
+`RuleSet` (`windai/rule/src/compile.rs`) is a JSON-based rule engine that transforms request bodies. Users store rule JSON in the `json_rule` table keyed by `(provider_id, adaptor)`. Before each API request, the chat engine calls `apply_json_rule()` which applies the `RuleSet` to the request body using an `EvalContext` that includes `{provider, model, endpoint, adaptor}`. This allows per-provider request rewriting without code changes.
 
 ### Database schema (SQLite)
 
@@ -125,7 +124,7 @@ Tool names are namespaced: `{server_name}0m0{tool_name}` where `0m0` is the sepa
 - `messages` - chat messages with content as JSON, boundary/excluded flags, token counts
 - `chat_configs` - per-topic request parameters
 - `topic_mcp_servers` - MCP servers linked to topics
-- `js_hook_code` - per-provider+adaptor JS transform scripts
+- `json_rule` - per-provider+adaptor JSON rule transforms
 
 ### Key flows
 

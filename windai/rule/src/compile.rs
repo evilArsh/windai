@@ -16,24 +16,43 @@ pub struct RuleSet {
 }
 
 impl RuleSet {
-    pub fn from_json(json: &str) -> Result<Self> {
-        let raw: RawRuleSet = serde_json::from_str(json)
+    fn parse(json_str: &str) -> Result<Vec<CompiledOp>> {
+        let raw: RawRuleSet = serde_json::from_str(json_str)
             .map_err(|e| Error::InvalidRule(format!("failed to parse rule JSON: {e}")))?;
         let mut ops = Vec::new();
         for raw_op in raw.rules {
             compile_op(raw_op, &mut ops)?;
         }
-        Ok(Self { ops })
+        Ok(ops)
+    }
+    pub fn new() -> Self {
+        Self { ops: vec![] }
+    }
+    pub fn from_json(json: &str) -> Result<Self> {
+        Ok(Self {
+            ops: Self::parse(json)?,
+        })
+    }
+    pub fn append_rule_str(&mut self, json: &str) -> Result<()> {
+        self.ops.append(&mut Self::parse(json)?);
+        Ok(())
     }
 
     /// 基于当前规则指令集修改 `body` 中的字段和值
     ///
     /// `ctx` 为规则执行时注入的上下文
     pub fn apply(&self, body: &mut Value, ctx: &EvalContext) -> Result<()> {
+        if self.ops.is_empty() {
+            return Ok(());
+        }
         for op in &self.ops {
             op.exec(body, ctx)?;
         }
         Ok(())
+    }
+
+    pub fn clear(&mut self) {
+        self.ops.clear();
     }
 }
 

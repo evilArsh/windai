@@ -9,12 +9,11 @@ pub mod storage;
 use chat::ChatEngine;
 use error::Result;
 use sqlx::{Pool, Sqlite};
-use std::{path::Path, sync::Arc};
+use std::path::Path;
 use storage::message::service::MessageService;
 use storage::model::service::ModelService;
 use storage::provider::service::ProviderService;
 use storage::topic::service::TopicService;
-use wind_js::JsEngine;
 use wind_mcp::client::registry::{Registry, RegistryHandle};
 
 /// Wind Core 模块的主入口点。
@@ -22,7 +21,6 @@ use wind_mcp::client::registry::{Registry, RegistryHandle};
 /// 持有私有数据库连接池、共享的 JS 引擎以及全局 MCP 客户端。
 pub struct WindCore {
     db: Pool<Sqlite>,
-    js_engine: Arc<JsEngine>,
     mcp: RegistryHandle,
     provider_svc: ProviderService,
     topic_svc: TopicService,
@@ -71,13 +69,10 @@ impl WindCore {
 
         schema::init_schema(&db).await?;
 
-        let js_engine = Arc::new(JsEngine::new().map_err(|e| error::CoreError::Js(e.to_string()))?);
-
         let mcp = Registry::new();
 
         Ok(Self {
             db: db.clone(),
-            js_engine,
             mcp,
             provider_svc: ProviderService::new(db.clone()),
             topic_svc: TopicService::new(db.clone()),
@@ -103,7 +98,6 @@ impl WindCore {
             self.provider(),
             self.model(),
             self.message(),
-            self.js_engine.clone(),
             self.mcp.clone(),
         )
     }

@@ -261,47 +261,51 @@ async fn test_core_chat_stream() {
 }
 
 // ---------------------------------------------------------------------------
-// JS Hook: DeepSeek reasoning → thinking type conversion
+// JsonRule: DeepSeek reasoning_effort → thinking.type 转换
 //
 // DeepSeek 要求 reasoning 字段转换为 {"thinking": {"type": "enabled"}}
 // 或 {"thinking": {"type": "disabled"}}。
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_js_hook_deepseek_reasoning_to_thinking() {
+async fn test_json_rule_deepseek_reasoning_to_thinking() {
     let env = common::load_env();
 
     let wc = WindCore::init_memory().await.unwrap();
     let ctx = seed_data(&wc, &env).await;
 
-    // 插入 JS hook：将 reasoning 转为 DeepSeek thinking 参数
-    let hook_code = r#"
-function transform(body, context) {
-    let type = (!body.reasoning_effort || body.reasoning_effort === "none") ? "disabled" : "enabled";
-    body.thinking = { type };
-    delete body.reasoning_effort;
-    return body;
-}
-"#;
+    // 插入 JSON 规则：将 reasoning_effort 转为 DeepSeek thinking 参数
+    let rule_code = r#"{
+        "rules": [{
+            "type": "map_value",
+            "path": "reasoning_effort",
+            "mappings": {
+                "medium": {"thinking": {"type": "enabled"}},
+                "high": {"thinking": {"type": "enabled"}}
+            },
+            "default": {"thinking": {"type": "disabled"}},
+            "remove_source": true
+        }]
+    }"#;
     wc.provider()
-        .create_js_hook_code(CreateJsHookCode {
+        .create_json_rule(CreateJsonRule {
             provider_id: ctx.provider_id,
             adaptor: env.test_adaptor,
-            js_code: hook_code.into(),
+            json_rule: rule_code.into(),
             active: true,
         })
         .await
         .unwrap();
 
-    // 验证 hook 已存储
-    let hooks = wc
+    // 验证规则已存储
+    let rules = wc
         .provider()
-        .list_js_hook_codes(ctx.provider_id)
+        .list_json_rules(ctx.provider_id)
         .await
         .unwrap();
-    assert_eq!(hooks.len(), 1);
-    assert!(hooks[0].active);
-    assert_eq!(hooks[0].adaptor, env.test_adaptor);
+    assert_eq!(rules.len(), 1);
+    assert!(rules[0].active);
+    assert_eq!(rules[0].adaptor, env.test_adaptor);
 
     // 启用 reasoning
     wc.topic()
@@ -327,8 +331,8 @@ function transform(body, context) {
     let mut seen_finish = false;
     while let Some(event) = stream.next().await {
         if let ChatEvent::Finish { error, message, .. } = event {
-            assert!(error.is_none(), "Chat error with JS hook: {:?}", error);
-            assert!(message.is_some(), "Should have response with hook applied");
+            assert!(error.is_none(), "Chat error with json_rule: {:?}", error);
+            assert!(message.is_some(), "Should have response with rule applied");
             // 存在推理消息
             assert!(
                 message
@@ -352,35 +356,39 @@ function transform(body, context) {
 }
 
 // ---------------------------------------------------------------------------
-// JS Hook: reasoning=false → thinking.type = "disabled"
+// JsonRule: reasoning=false → thinking.type = "disabled"
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_js_hook_disabled_reasoning() {
+async fn test_json_rule_disabled_reasoning() {
     let env = common::load_env();
 
     let wc = WindCore::init_memory().await.unwrap();
     let ctx = seed_data(&wc, &env).await;
 
-    let hook_code = r#"
-function transform(body, context) {
-    let type = (!body.reasoning_effort || body.reasoning_effort === "none") ? "disabled" : "enabled";
-    body.thinking = { type };
-    delete body.reasoning_effort;
-    return body;
-}
-"#;
+    let rule_code = r#"{
+        "rules": [{
+            "type": "map_value",
+            "path": "reasoning_effort",
+            "mappings": {
+                "medium": {"thinking": {"type": "enabled"}},
+                "high": {"thinking": {"type": "enabled"}}
+            },
+            "default": {"thinking": {"type": "disabled"}},
+            "remove_source": true
+        }]
+    }"#;
     wc.provider()
-        .create_js_hook_code(CreateJsHookCode {
+        .create_json_rule(CreateJsonRule {
             provider_id: ctx.provider_id,
             adaptor: env.test_adaptor,
-            js_code: hook_code.into(),
+            json_rule: rule_code.into(),
             active: true,
         })
         .await
         .unwrap();
 
-    // reasoning = false → 不发送 reasoning 字段 → hook 应不触发 thinking
+    // reasoning = false → 不发送 reasoning_effort 字段 → map_value 跳过不存在的路径
     wc.topic()
         .create_chat_config(
             ctx.topic_id,

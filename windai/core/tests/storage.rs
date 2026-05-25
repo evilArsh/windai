@@ -113,47 +113,47 @@ async fn credentials_crud() {
     assert_eq!(svc.list_credentials(p.id).await.unwrap().len(), 0);
 }
 
-// ==================== JsHookCode CRUD ====================
+// ==================== JsonRule CRUD ====================
 
 #[tokio::test]
-async fn js_hook_code_crud() {
+async fn json_rule_crud() {
     let pool = setup().await;
     let svc = ProviderService::new(pool);
     let p = svc.create(create_provider()).await.unwrap();
 
     // Create
-    let hook = svc
-        .create_js_hook_code(CreateJsHookCode {
+    let rule = svc
+        .create_json_rule(CreateJsonRule {
             provider_id: p.id,
             adaptor: AdaptorType::OpenAICompletion,
-            js_code: "function transform(body, ctx) { return body; }".into(),
+            json_rule: r#"{"rules": [{"type": "set", "path": "stream", "value": true}]}"#.into(),
             active: true,
         })
         .await
         .unwrap();
-    assert_eq!(hook.provider_id, p.id);
+    assert_eq!(rule.provider_id, p.id);
 
     // Get by provider + adaptor
     let found = svc
-        .get_js_hook_code(p.id, AdaptorType::OpenAICompletion)
+        .get_json_rule(p.id, AdaptorType::OpenAICompletion)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(found.id, hook.id);
+    assert_eq!(found.id, rule.id);
 
     // Get by id
-    let by_id = svc.get_js_hook_code_by_id(hook.id).await.unwrap().unwrap();
-    assert_eq!(by_id.id, hook.id);
+    let by_id = svc.get_json_rule_by_id(rule.id).await.unwrap().unwrap();
+    assert_eq!(by_id.id, rule.id);
 
     // List
-    let list = svc.list_js_hook_codes(p.id).await.unwrap();
+    let list = svc.list_json_rules(p.id).await.unwrap();
     assert_eq!(list.len(), 1);
 
     // Update
-    svc.update_js_hook_code(
-        hook.id,
-        UpdateJsHookCode {
-            js_code: Some("function transform() {}".into()),
+    svc.update_json_rule(
+        rule.id,
+        UpdateJsonRule {
+            json_rule: Some(r#"{"rules": []}"#.into()),
             active: Some(false),
             provider_id: None,
             adaptor: None,
@@ -161,35 +161,35 @@ async fn js_hook_code_crud() {
     )
     .await
     .unwrap();
-    let updated = svc.get_js_hook_code_by_id(hook.id).await.unwrap().unwrap();
-    assert_eq!(updated.js_code, "function transform() {}");
+    let updated = svc.get_json_rule_by_id(rule.id).await.unwrap().unwrap();
+    assert_eq!(updated.json_rule, r#"{"rules": []}"#);
     assert!(!updated.active);
 
     // Delete
-    svc.delete_js_hook_code(hook.id).await.unwrap();
-    assert!(svc.get_js_hook_code_by_id(hook.id).await.unwrap().is_none());
+    svc.delete_json_rule(rule.id).await.unwrap();
+    assert!(svc.get_json_rule_by_id(rule.id).await.unwrap().is_none());
 }
 
 #[tokio::test]
-async fn js_hook_code_update_uses_current_when_omitted() {
+async fn json_rule_update_uses_current_when_omitted() {
     let pool = setup().await;
     let svc = ProviderService::new(pool);
     let p = svc.create(create_provider()).await.unwrap();
-    let hook = svc
-        .create_js_hook_code(CreateJsHookCode {
+    let rule = svc
+        .create_json_rule(CreateJsonRule {
             provider_id: p.id,
             adaptor: AdaptorType::OpenAICompletion,
-            js_code: "original".into(),
+            json_rule: r#"{"rules": [{"type": "set", "path": "x", "value": 1}]}"#.into(),
             active: true,
         })
         .await
         .unwrap();
 
     // Update without providing adaptor/provider_id — should keep originals
-    svc.update_js_hook_code(
-        hook.id,
-        UpdateJsHookCode {
-            js_code: Some("updated".into()),
+    svc.update_json_rule(
+        rule.id,
+        UpdateJsonRule {
+            json_rule: Some(r#"{"rules": [{"type": "set", "path": "y", "value": 2}]}"#.into()),
             active: None,
             adaptor: None,
             provider_id: None,
@@ -198,8 +198,11 @@ async fn js_hook_code_update_uses_current_when_omitted() {
     .await
     .unwrap();
 
-    let updated = svc.get_js_hook_code_by_id(hook.id).await.unwrap().unwrap();
-    assert_eq!(updated.js_code, "updated");
+    let updated = svc.get_json_rule_by_id(rule.id).await.unwrap().unwrap();
+    assert_eq!(
+        updated.json_rule,
+        r#"{"rules": [{"type": "set", "path": "y", "value": 2}]}"#
+    );
     assert_eq!(updated.adaptor, AdaptorType::OpenAICompletion);
     assert_eq!(updated.provider_id, p.id);
     assert!(updated.active); // kept original
@@ -596,11 +599,11 @@ async fn delete_provider_cascades() {
         })
         .await
         .unwrap();
-    let _hook = svc
-        .create_js_hook_code(CreateJsHookCode {
+    let _rule = svc
+        .create_json_rule(CreateJsonRule {
             provider_id: p.id,
             adaptor: AdaptorType::OpenAICompletion,
-            js_code: "code".into(),
+            json_rule: r#"{"rules": []}"#.into(),
             active: true,
         })
         .await
@@ -609,9 +612,9 @@ async fn delete_provider_cascades() {
     // Delete provider
     svc.delete(p.id).await.unwrap();
 
-    // Credentials and hooks should be gone
+    // Credentials and json_rules should be gone
     assert_eq!(svc.list_credentials(p.id).await.unwrap().len(), 0);
-    assert_eq!(svc.list_js_hook_codes(p.id).await.unwrap().len(), 0);
+    assert_eq!(svc.list_json_rules(p.id).await.unwrap().len(), 0);
 }
 
 #[tokio::test]

@@ -1,27 +1,24 @@
-use std::sync::Arc;
-
 use futures::{StreamExt, try_join};
 use wind_ai::chat::{self as wind_ai_chat, ResEventStatus, handle_chat};
 use wind_ai::message::{Message as AiMessage, ReqConfig};
 use wind_ai::model::Model as AiModel;
 use wind_ai::provider::adaptor::get_chat_adaptor;
 use wind_ai::tool::Tools;
-use wind_js::JsEngine;
 use wind_mcp::client::registry::RegistryHandle;
+use wind_rule::RuleSet;
 
 use super::context;
 use super::events::ChatEvent;
 use super::function_call::{build_tools_from_mcp, execute_function_calls};
-use super::js_hook::{apply_js_hook, lookup_js_hook};
+use super::rule::apply_json_rule;
 use crate::error::{CoreError, Result};
-use crate::models::{Message as CoreMessage, Model, Provider, Topic};
+use crate::models::{JsonRule, Message as CoreMessage, Model, Provider, Topic};
 use crate::storage::message::service::MessageService;
 use crate::storage::model::service::ModelService;
 use crate::storage::provider::service::ProviderService;
 use crate::storage::topic::service::TopicService;
 
 pub struct ChatEngine<'c> {
-    js_engine: Arc<JsEngine>,
     mcp_registry: RegistryHandle,
 
     topic_svc: &'c TopicService,
@@ -36,7 +33,6 @@ impl<'c> ChatEngine<'c> {
         provider_svc: &'c ProviderService,
         model_svc: &'c ModelService,
         msg_svc: &'c MessageService,
-        js_engine: Arc<JsEngine>,
         mcp_registry: RegistryHandle,
     ) -> Self {
         Self {
@@ -44,7 +40,6 @@ impl<'c> ChatEngine<'c> {
             model_svc,
             provider_svc,
             msg_svc,
-            js_engine,
             mcp_registry,
         }
     }
@@ -57,7 +52,7 @@ impl<'c> ChatEngine<'c> {
         provider_svc: &ProviderService,
         topic_id: i64,
         model_id: i64,
-    ) -> Result<(Topic, Model, Provider, ReqConfig, String)> {
+    ) -> Result<(Topic, Model, Provider, ReqConfig, Option<JsonRule>, String)> {
         let (topic, mut model) = try_join!(
             async {
                 topic_svc.get_topic(topic_id).await?.ok_or_else(|| {
@@ -70,6 +65,10 @@ impl<'c> ChatEngine<'c> {
                 })
             }
         )?;
+        let rule_set = provider_svc
+            .get_json_rule(model.provider_id, model.adaptor)
+            .await?;
+
         model.endpoint = model.endpoint.filter(|e| !e.is_empty());
         let provider = provider_svc.get(model.provider_id).await?.ok_or_else(|| {
             CoreError::NotFound(format!(
@@ -101,7 +100,7 @@ impl<'c> ChatEngine<'c> {
         // TODO: 支持用户自选账户
         let api_key = credentials[0].key.clone();
 
-        Ok((topic, model, provider, req_config, api_key))
+        Ok((topic, model, provider, req_config, rule_set, api_key))
     }
 
     /// 获取某个 topic 下可用的 MCP 工具
@@ -159,7 +158,7 @@ impl<'c> ChatEngine<'c> {
         user_message_id: i64,
         message_id: i64,
     ) -> Result<impl futures::Stream<Item = ChatEvent>> {
-        let (topic, model, provider, req_config, api_key) = self
+        let (topic, model, provider, req_config, rule_set, api_key) = self
             .load_chat_context(
                 self.topic_svc,
                 self.model_svc,
@@ -195,11 +194,9 @@ impl<'c> ChatEngine<'c> {
             endpoint: endpoint.clone(),
         };
         let provider_name = provider.name;
-        let provider_id = model.provider_id;
         let model_name = model.name.clone();
         let adaptor_type = model.adaptor;
-        let js_hook = lookup_js_hook(self.provider_svc, provider_id, adaptor_type).await?;
-        let js_engine = self.js_engine.clone();
+        let rule = RuleSet::new();
 
         let stream = async_stream::stream! {
             yield ChatEvent::created(message_id);
@@ -222,22 +219,14 @@ impl<'c> ChatEngine<'c> {
                         break;
                     }
                 };
-                req_body = match apply_js_hook(
-                    &*js_engine,
-                    js_hook.as_ref(),
-                    req_body,
+                apply_json_rule(
+                    &rule,
+                    &rule_set,
+                    &mut req_body,
                     &provider_name,
                     &model_name,
                     endpoint.as_deref(),
-                )
-                .await
-                {
-                    Ok(req_body) => req_body,
-                    Err(e) => {
-                        error_obj = Some(e.into());
-                        break;
-                    }
-                };
+                );
 
                 let stream = handle_chat(
                     chat_adaptor.as_ref(),
@@ -304,7 +293,11 @@ impl<'c> ChatEngine<'c> {
                 log::error!("Error when handling chat. {}", error);
             };
             if !core_msg.content.is_empty() {
-                if let Err(e) = self.msg_svc.update(core_msg.id, core_msg.clone().into()).await {
+                if let Err(e) = self
+                    .msg_svc
+                    .update(core_msg.id, core_msg.clone().into())
+                    .await
+                {
                     error_obj = Some(e.into());
                 };
             }

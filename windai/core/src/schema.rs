@@ -94,11 +94,11 @@ CREATE TABLE IF NOT EXISTS topic_mcp_servers (
     created_at  INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
     UNIQUE(topic_id, server_id)
 );
-CREATE TABLE IF NOT EXISTS js_hook_code (
+CREATE TABLE IF NOT EXISTS json_rule (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     provider_id INTEGER NOT NULL,
     adaptor     TEXT    NOT NULL,
-    js_code     TEXT    NOT NULL,
+    json_rule   TEXT    NOT NULL,
     active      BOOLEAN NOT NULL,
     created_at  INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
     updated_at  INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))

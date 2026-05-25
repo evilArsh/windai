@@ -1,6 +1,5 @@
 use futures::StreamExt;
 use sqlx::SqlitePool;
-use std::sync::Arc;
 use wind_ai::message::{Content, Message as AiMessage, ReqConfig, Role};
 use wind_ai::model::AdaptorType;
 use wind_core::chat::{ChatEngine, ChatEvent};
@@ -11,7 +10,6 @@ use wind_core::storage::message::service::MessageService;
 use wind_core::storage::model::service::ModelService;
 use wind_core::storage::provider::service::ProviderService;
 use wind_core::storage::topic::service::TopicService;
-use wind_js::JsEngine;
 use wind_mcp::client::registry::Registry;
 use wind_mcp::client::{ServerParams, StdioParams, TransportType};
 
@@ -126,14 +124,12 @@ fn make_engine<'a>(
     model_svc: &'a ModelService,
     msg_svc: &'a MessageService,
 ) -> (ChatEngine<'a>, wind_mcp::client::registry::RegistryHandle) {
-    let js_engine = Arc::new(JsEngine::new().unwrap());
     let registry_handle = Registry::new();
     let engine = ChatEngine::new(
         topic_svc,
         provider_svc,
         model_svc,
         msg_svc,
-        js_engine,
         registry_handle.clone(),
     );
     (engine, registry_handle)

@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::models::{CreateCredentials, CreateJsHookCode, Credentials, JsHookCode, Provider};
+use crate::models::{CreateCredentials, CreateJsonRule, Credentials, JsonRule, Provider};
 use sqlx::{Row, SqlitePool, Transaction};
 use wind_ai::model::AdaptorType;
 
@@ -137,7 +137,7 @@ impl ProviderRepo {
             .execute(&mut **tx)
             .await?;
 
-        sqlx::query("DELETE FROM js_hook_code WHERE provider_id = ?")
+        sqlx::query("DELETE FROM json_rule WHERE provider_id = ?")
             .bind(id)
             .execute(&mut **tx)
             .await?;
@@ -220,43 +220,43 @@ impl ProviderRepo {
         Ok(())
     }
 
-    pub async fn create_js_hook_code(
+    pub async fn create_json_rule(
         &self,
         tx: &mut Transaction<'_, sqlx::Sqlite>,
-        data: CreateJsHookCode,
+        data: CreateJsonRule,
     ) -> Result<i64> {
         let row = sqlx::query(
-            "INSERT INTO js_hook_code
-            (provider_id, adaptor, js_code, active)
+            "INSERT INTO json_rule
+            (provider_id, adaptor, json_rule, active)
             VALUES (?, ?, ?, ?)",
         )
         .bind(data.provider_id)
         .bind(data.adaptor.to_string())
-        .bind(data.js_code)
+        .bind(data.json_rule)
         .bind(data.active)
         .execute(&mut **tx)
         .await?;
 
         Ok(row.last_insert_rowid())
     }
-    pub async fn update_js_hook_code(
+    pub async fn update_json_rule(
         &self,
         tx: &mut Transaction<'_, sqlx::Sqlite>,
         id: i64,
         provider_id: i64,
         adaptor: &str,
-        js_code: &str,
+        json_rule: &str,
         active: bool,
     ) -> Result<()> {
         sqlx::query(
-            r#"UPDATE js_hook_code SET
-            provider_id = ?, adaptor = ?, js_code = ?, active = ?, 
+            r#"UPDATE json_rule SET
+            provider_id = ?, adaptor = ?, json_rule = ?, active = ?, 
             updated_at = strftime('%s', 'now')
             WHERE id = ?"#,
         )
         .bind(provider_id)
         .bind(adaptor)
-        .bind(js_code)
+        .bind(json_rule)
         .bind(active)
         .bind(id)
         .execute(&mut **tx)
@@ -265,63 +265,63 @@ impl ProviderRepo {
         Ok(())
     }
 
-    fn row_to_js_hook_code(row: sqlx::sqlite::SqliteRow) -> Result<JsHookCode> {
+    fn row_to_json_rule(row: sqlx::sqlite::SqliteRow) -> Result<JsonRule> {
         let adaptor_str: String = row.get(2);
         let adaptor: AdaptorType = adaptor_str.parse()?;
-        Ok(JsHookCode {
+        Ok(JsonRule {
             id: row.get(0),
             provider_id: row.get(1),
             adaptor,
-            js_code: row.get(3),
+            json_rule: row.get(3),
             active: row.get(4),
             created_at: row.get(5),
         })
     }
 
-    pub async fn get_js_hook_code(
+    pub async fn get_json_rule(
         &self,
         provider_id: i64,
         adaptor: AdaptorType,
-    ) -> Result<Option<JsHookCode>> {
+    ) -> Result<Option<JsonRule>> {
         let row = sqlx::query(
             "SELECT
-            id, provider_id, adaptor, js_code, active,
+            id, provider_id, adaptor, json_rule, active,
             created_at 
-            FROM js_hook_code WHERE provider_id = ? AND adaptor = ?",
+            FROM json_rule WHERE provider_id = ? AND adaptor = ?",
         )
         .bind(provider_id)
         .bind(adaptor.to_string())
-        .map(Self::row_to_js_hook_code)
+        .map(Self::row_to_json_rule)
         .fetch_optional(&self.db)
         .await?;
 
         row.map(|r| r.map_err(Into::into)).transpose()
     }
 
-    pub async fn get_js_hook_code_by_id(&self, id: i64) -> Result<Option<JsHookCode>> {
+    pub async fn get_json_rule_by_id(&self, id: i64) -> Result<Option<JsonRule>> {
         let row = sqlx::query(
             "SELECT
-            id, provider_id, adaptor, js_code, active,
+            id, provider_id, adaptor, json_rule, active,
             created_at
-            FROM js_hook_code WHERE id = ?",
+            FROM json_rule WHERE id = ?",
         )
         .bind(id)
-        .map(Self::row_to_js_hook_code)
+        .map(Self::row_to_json_rule)
         .fetch_optional(&self.db)
         .await?;
 
         row.map(|r| r.map_err(Into::into)).transpose()
     }
 
-    pub async fn list_js_hook_codes(&self, provider_id: i64) -> Result<Vec<JsHookCode>> {
+    pub async fn list_json_rules(&self, provider_id: i64) -> Result<Vec<JsonRule>> {
         let rows = sqlx::query(
             "SELECT
-            id, provider_id, adaptor, js_code, active,
+            id, provider_id, adaptor, json_rule, active,
             created_at
-            FROM js_hook_code WHERE provider_id = ? ORDER BY id DESC",
+            FROM json_rule WHERE provider_id = ? ORDER BY id DESC",
         )
         .bind(provider_id)
-        .map(Self::row_to_js_hook_code)
+        .map(Self::row_to_json_rule)
         .fetch_all(&self.db)
         .await?
         .into_iter()
@@ -330,12 +330,12 @@ impl ProviderRepo {
         Ok(rows.collect())
     }
 
-    pub async fn delete_js_hook_code(
+    pub async fn delete_json_rule(
         &self,
         tx: &mut Transaction<'_, sqlx::Sqlite>,
         id: i64,
     ) -> Result<()> {
-        sqlx::query("DELETE FROM js_hook_code WHERE id = ?")
+        sqlx::query("DELETE FROM json_rule WHERE id = ?")
             .bind(id)
             .execute(&mut **tx)
             .await?;

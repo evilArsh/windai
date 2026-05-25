@@ -150,13 +150,13 @@ pub enum ContentType {
     File,
 }
 
-/// js 钩子代码，用于用户手动处理模型请求配置
+/// JSON 规则，用于用户手动处理模型请求配置
 #[derive(Debug, Serialize, Clone)]
-pub struct JsHookCode {
+pub struct JsonRule {
     pub id: i64,
     pub provider_id: i64,
     pub adaptor: AdaptorType,
-    pub js_code: String,
+    pub json_rule: String,
     pub active: bool,
     pub created_at: i64,
 }
@@ -331,18 +331,18 @@ impl Default for UpdateTopic {
 }
 
 #[derive(Debug, Serialize, Clone)]
-pub struct CreateJsHookCode {
+pub struct CreateJsonRule {
     pub provider_id: i64,
     pub adaptor: AdaptorType,
-    pub js_code: String,
+    pub json_rule: String,
     pub active: bool,
 }
 
 #[derive(Debug, Serialize, Clone)]
-pub struct UpdateJsHookCode {
+pub struct UpdateJsonRule {
     pub provider_id: Option<i64>,
     pub adaptor: Option<AdaptorType>,
-    pub js_code: Option<String>,
+    pub json_rule: Option<String>,
     pub active: Option<bool>,
 }
 
