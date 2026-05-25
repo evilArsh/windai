@@ -4,7 +4,7 @@ use wind_ai::message::Message as AiMessage;
 
 /// 统一聊天事件，适用于流式和非流式模式。
 ///
-/// 非流式模式：返回单个 Response 事件。
+/// 非流式模式：返回单个 Finish 事件；或在多轮 tool_call 中返回 多个Partial 事件。
 /// 流式模式：返回 Created -> Partial x N -> Finished。
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]

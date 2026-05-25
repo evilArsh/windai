@@ -209,7 +209,7 @@ impl CompiledOp {
                 let target = find_mapping(mappings, source_val, default.as_ref());
                 if *remove_source {
                     log::debug!("[MapValue] remove source");
-                    path::remove(body, segs)?;
+                    let _ = path::remove(body, segs);
                 }
                 if let Some(target) = target {
                     if let Value::Object(map) = target
@@ -228,7 +228,7 @@ impl CompiledOp {
                 }
             }
             CompiledOp::Compute { segs, op_tree } => {
-                let current = Some(path::get(body, segs)?);
+                let current = path::get(body, segs)?;
                 let result = eval_compute(op_tree, &current, ctx)?;
                 let dst = path::walk(body, segs)?;
                 *dst = result;
@@ -326,15 +326,17 @@ fn compile_mappings(raw: &Value) -> Result<Vec<(Value, Value)>> {
 
 fn find_mapping<'a>(
     mappings: &'a [(Value, Value)],
-    source: &Value,
+    source: Option<&Value>,
     default: Option<&'a Value>,
 ) -> Option<&'a Value> {
-    for (key, target) in mappings {
-        if key == source {
-            return Some(target);
-        }
+    match source {
+        Some(source) => mappings
+            .iter()
+            .find(|(key, _)| key == source)
+            .map(|(_, target)| target)
+            .or_else(|| default),
+        None => default,
     }
-    default
 }
 
 fn eval_compute(

@@ -1,6 +1,7 @@
+use crate::error::Result;
 use crate::models::JsonRule;
 use serde_json::Value;
-use wind_ai::provider::adaptor::get_default_endpoint;
+use wind_ai::{model::AdaptorType, provider::adaptor::get_default_endpoint};
 use wind_rule::{EvalContext, RuleSet};
 
 /// 构建传递给JsonRule转换函数的上下文对象。
@@ -18,31 +19,36 @@ fn build_context(
     }))
 }
 
+pub fn build_rule(rule: &Option<JsonRule>) -> Result<Option<RuleSet>> {
+    let rule = match rule {
+        Some(v) if !v.json_rule.is_empty() => Some(RuleSet::from_json(&v.json_rule)?),
+        _ => None,
+    };
+    Ok(rule)
+}
+
 /// 执行 Json规则 转换
-/// - json_rule 为空或者不存在时，返回原始数据
+/// - rule 为空时，不做处理
 pub fn apply_json_rule(
-    rule: &RuleSet,
-    json_rule: &Option<JsonRule>,
+    rule: &Option<RuleSet>,
     body: &mut Value,
+    adaptor: AdaptorType,
     provider_name: &str,
     model_name: &str,
-    endpoint: Option<&str>,
+    endpoint: &Option<String>,
 ) {
-    let (json_rule, adaptor) = match json_rule.as_ref() {
-        Some(hook) if !hook.json_rule.is_empty() => (hook.json_rule.as_str(), hook.adaptor),
-        _ => return,
+    let rule = match rule {
+        Some(rule) => rule,
+        None => return,
     };
     let context = build_context(
         provider_name,
         model_name,
-        endpoint.unwrap_or(get_default_endpoint(adaptor).as_str()),
+        endpoint
+            .as_deref()
+            .unwrap_or(get_default_endpoint(adaptor).as_str()),
         &adaptor.to_string(),
     );
 
-    log::debug!(
-        "[transform_json_rule]\nbody:\n{}\nrule:\n{}",
-        serde_json::to_string_pretty(&body).unwrap_or_default(),
-        json_rule
-    );
     let _ = rule.apply(body, &context);
 }

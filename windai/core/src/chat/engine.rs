@@ -5,12 +5,11 @@ use wind_ai::model::Model as AiModel;
 use wind_ai::provider::adaptor::get_chat_adaptor;
 use wind_ai::tool::Tools;
 use wind_mcp::client::registry::RegistryHandle;
-use wind_rule::RuleSet;
 
 use super::context;
 use super::events::ChatEvent;
 use super::function_call::{build_tools_from_mcp, execute_function_calls};
-use super::rule::apply_json_rule;
+use super::rule::{apply_json_rule, build_rule};
 use crate::error::{CoreError, Result};
 use crate::models::{JsonRule, Message as CoreMessage, Model, Provider, Topic};
 use crate::storage::message::service::MessageService;
@@ -196,7 +195,7 @@ impl<'c> ChatEngine<'c> {
         let provider_name = provider.name;
         let model_name = model.name.clone();
         let adaptor_type = model.adaptor;
-        let rule = RuleSet::new();
+        let rule = build_rule(&rule_set)?;
 
         let stream = async_stream::stream! {
             yield ChatEvent::created(message_id);
@@ -221,11 +220,11 @@ impl<'c> ChatEngine<'c> {
                 };
                 apply_json_rule(
                     &rule,
-                    &rule_set,
                     &mut req_body,
+                    adaptor_type,
                     &provider_name,
                     &model_name,
-                    endpoint.as_deref(),
+                    &endpoint,
                 );
 
                 let stream = handle_chat(

@@ -388,7 +388,6 @@ async fn test_json_rule_disabled_reasoning() {
         .await
         .unwrap();
 
-    // reasoning = false → 不发送 reasoning_effort 字段 → map_value 跳过不存在的路径
     wc.topic()
         .create_chat_config(
             ctx.topic_id,

@@ -148,7 +148,10 @@ impl CompiledCond {
                 let vb = resolve_arg(b, body, ctx);
                 Ok(va != vb)
             }
-            CompiledCond::Exists(segs) => Ok(path::get(body, segs).is_ok()),
+            CompiledCond::Exists(segs) => Ok(match path::get(body, segs) {
+                Ok(v) => v.is_some(),
+                Err(_) => false,
+            }),
             CompiledCond::And(conds) => {
                 for c in conds {
                     if !c.eval(body, ctx)? {

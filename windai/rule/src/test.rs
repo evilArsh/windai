@@ -55,13 +55,16 @@ fn path_segments_single_and_multi() {
 #[test]
 fn path_get_nested() {
     let v = json!({"a": {"b": {"c": 42}}});
-    assert_eq!(path::get(&v, &path::segments("a.b.c")).unwrap(), &json!(42));
+    assert_eq!(
+        path::get(&v, &path::segments("a.b.c")).unwrap(),
+        Some(&json!(42))
+    );
 }
 
 #[test]
 fn path_get_missing_key() {
     let v = json!({"a": 1});
-    assert!(path::get(&v, &path::segments("b")).is_err());
+    assert!(!path::get(&v, &path::segments("b")).unwrap().is_some());
 }
 
 #[test]
@@ -384,7 +387,20 @@ fn map_value_source_missing_error() {
         r#"{"rules": [{"type": "map_value", "path": "missing", "mappings": {"a": {"x": 1}}}]}"#,
     )
     .unwrap();
-    assert!(rs.apply(&mut json!({}), &EvalContext::new()).is_err());
+    // 没有匹配到值，不会报错
+    assert!(rs.apply(&mut json!({}), &EvalContext::new()).is_ok());
+}
+
+#[test]
+fn map_value_source_missing_with_default() {
+    let rs = RuleSet::from_json(
+        r#"{"rules": [{"type": "map_value", "path": "foo", "mappings": {"a": {"x": 1}}, "default": {"y": 2}}]}"#,
+    )
+    .unwrap();
+    let mut body = json!({});
+    rs.apply(&mut body, &EvalContext::new()).unwrap();
+    assert_eq!(body["y"], 2);
+    assert!(body.get("x").is_none());
 }
 
 #[test]

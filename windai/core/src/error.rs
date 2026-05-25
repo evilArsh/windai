@@ -30,6 +30,9 @@ pub enum CoreError {
     #[error("JSON error. {0}")]
     Json(#[from] serde_json::Error),
 
+    #[error(transparent)]
+    JsonRule(#[from] wind_rule::Error),
+
     #[error("Internal error. {0}")]
     Internal(String),
 }
