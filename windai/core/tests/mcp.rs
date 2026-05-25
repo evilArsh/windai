@@ -351,6 +351,7 @@ async fn handle_chat_mcp(
 }
 
 #[tokio::test]
+#[ignore = "need to complete .env config file"]
 async fn test_chat_mcp_completion() {
     let env = common::load_env();
 
@@ -366,6 +367,7 @@ async fn test_chat_mcp_completion() {
 }
 
 #[tokio::test]
+#[ignore = "need to complete .env config file"]
 async fn test_chat_mcp_completion_stream() {
     let env = common::load_env();
 
@@ -381,6 +383,7 @@ async fn test_chat_mcp_completion_stream() {
 }
 
 #[tokio::test]
+#[ignore = "need to complete .env config file"]
 async fn test_chat_mcp_responses() {
     let env = common::load_env();
 
@@ -396,6 +399,7 @@ async fn test_chat_mcp_responses() {
 }
 
 #[tokio::test]
+#[ignore = "need to complete .env config file"]
 async fn test_chat_mcp_responses_stream() {
     let env = common::load_env();
 

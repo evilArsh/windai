@@ -128,6 +128,7 @@ fn temp_db_dir() -> std::path::PathBuf {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "need to complete .env config file"]
 async fn test_core_chat_non_stream() {
     let env = common::load_env();
 
@@ -197,6 +198,7 @@ async fn test_core_chat_non_stream() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "need to complete .env config file"]
 async fn test_core_chat_stream() {
     let env = common::load_env();
 
@@ -268,6 +270,7 @@ async fn test_core_chat_stream() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "need to complete .env config file"]
 async fn test_json_rule_deepseek_reasoning_to_thinking() {
     let env = common::load_env();
 
@@ -360,6 +363,7 @@ async fn test_json_rule_deepseek_reasoning_to_thinking() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "need to complete .env config file"]
 async fn test_json_rule_disabled_reasoning() {
     let env = common::load_env();
 
@@ -431,6 +435,7 @@ async fn test_json_rule_disabled_reasoning() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "need to complete .env config file"]
 async fn test_data_persistence_file_db() {
     let env = common::load_env();
 
@@ -572,6 +577,7 @@ async fn test_data_persistence_file_db() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "need to complete .env config file"]
 async fn test_chat_missing_provider() {
     let _env = common::load_env();
 
@@ -596,6 +602,7 @@ async fn test_chat_missing_provider() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "need to complete .env config file"]
 async fn test_chat_missing_credentials() {
     let env = common::load_env();
 
@@ -696,6 +703,7 @@ async fn test_chat_missing_credentials() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "need to complete .env config file"]
 async fn test_message_history_chain() {
     let env = common::load_env();
 

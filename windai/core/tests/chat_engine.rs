@@ -151,6 +151,7 @@ fn everything_params() -> ServerParams {
 // ---------- non-stream, no MCP ----------
 
 #[tokio::test]
+#[ignore = "need to complete .env config file"]
 async fn test_chat_engine_send_non_stream() {
     let env = common::load_env();
 
@@ -221,6 +222,7 @@ async fn test_chat_engine_send_non_stream() {
 // ---------- stream, no MCP ----------
 
 #[tokio::test]
+#[ignore = "need to complete .env config file"]
 async fn test_chat_engine_send_stream() {
     let env = common::load_env();
 
@@ -292,7 +294,7 @@ async fn test_chat_engine_send_stream() {
 // ---------- non-stream, with MCP ----------
 
 #[tokio::test]
-#[ignore = "reason"]
+#[ignore = "need to complete .env config file"]
 async fn test_chat_engine_send_mcp_non_stream() {
     let env = common::load_env();
 
@@ -428,7 +430,8 @@ async fn test_chat_engine_send_mcp_non_stream() {
 // ---------- stream, with MCP ----------
 
 #[tokio::test]
-#[ignore = "reason"]
+#[ignore = "need to complete .env config file"]
+
 async fn test_chat_engine_send_mcp_stream() {
     let env = common::load_env();
 

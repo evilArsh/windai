@@ -33,6 +33,8 @@ impl AppDirs {
         let db = root.join(DB_FILENAME);
         std::fs::create_dir_all(&root)
             .unwrap_or_else(|e| panic!("failed to create directory '{}': {e}", root.display()));
+        std::fs::create_dir_all(&db)
+            .unwrap_or_else(|e| panic!("failed to create directory '{}': {e}", db.display()));
         Self { root, db }
     }
 }

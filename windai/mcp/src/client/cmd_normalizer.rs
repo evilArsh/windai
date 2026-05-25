@@ -276,6 +276,13 @@ mod tests {
     #[test]
     fn test_normalize_uv_run() {
         let p = params("uv", &["run", "fastmcp"]);
+        let n = normalize(&p);
+        assert!(n.is_none());
+    }
+
+    #[test]
+    fn test_normalize_uv_tool_run() {
+        let p = params("uv", &["tool", "run", "fastmcp"]);
         let n = normalize(&p).unwrap();
         assert_eq!(n.command, "uv");
         assert_eq!(n.dedup_key, "fastmcp");

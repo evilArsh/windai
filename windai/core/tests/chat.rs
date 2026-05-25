@@ -9,6 +9,7 @@ use wind_ai::{
 mod common;
 
 #[tokio::test]
+#[ignore = "need to complete .env config file"]
 async fn test_handle_chat() {
     let env = common::load_env();
 
@@ -62,6 +63,7 @@ async fn test_handle_chat() {
 }
 
 #[test]
+#[ignore = "need to complete .env config file"]
 fn test_build_request() {
     let _ = env_logger::builder().is_test(true).try_init();
 
