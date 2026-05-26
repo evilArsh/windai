@@ -1,4 +1,4 @@
-use futures::{StreamExt, try_join};
+use futures::StreamExt;
 use wind_ai::chat::{self as wind_ai_chat, ResEventStatus, handle_chat};
 use wind_ai::message::{Message as AiMessage, ReqConfig};
 use wind_ai::model::Model as AiModel;
@@ -44,7 +44,7 @@ impl<'c> ChatEngine<'c> {
     }
 
     /// 获取必要的聊天请求信息.
-    async fn load_chat_context(
+    async fn load_info(
         &self,
         topic_svc: &TopicService,
         model_svc: &ModelService,
@@ -52,18 +52,12 @@ impl<'c> ChatEngine<'c> {
         topic_id: i64,
         model_id: i64,
     ) -> Result<(Topic, Model, Provider, ReqConfig, Option<JsonRule>, String)> {
-        let (topic, mut model) = try_join!(
-            async {
-                topic_svc.get_topic(topic_id).await?.ok_or_else(|| {
-                    CoreError::NotFound(format!("Cannot find a topic. topic_id: {}", topic_id))
-                })
-            },
-            async {
-                model_svc.get(model_id).await?.ok_or_else(|| {
-                    CoreError::NotFound(format!("Cannot find a model. model_id: {}", model_id))
-                })
-            }
-        )?;
+        let topic = topic_svc.get_topic(topic_id).await?.ok_or_else(|| {
+            CoreError::NotFound(format!("Cannot find a topic. topic_id: {}", topic_id))
+        })?;
+        let mut model = model_svc.get(model_id).await?.ok_or_else(|| {
+            CoreError::NotFound(format!("Cannot find a model. model_id: {}", model_id))
+        })?;
         let rule_set = provider_svc
             .get_json_rule(model.provider_id, model.adaptor)
             .await?;
@@ -158,7 +152,7 @@ impl<'c> ChatEngine<'c> {
         message_id: i64,
     ) -> Result<impl futures::Stream<Item = ChatEvent>> {
         let (topic, model, provider, req_config, rule_set, api_key) = self
-            .load_chat_context(
+            .load_info(
                 self.topic_svc,
                 self.model_svc,
                 self.provider_svc,
@@ -167,7 +161,6 @@ impl<'c> ChatEngine<'c> {
             )
             .await?;
 
-        // 聊天上下文，包含用户输入的消息, 和此次对话的消息
         let messages = self
             .msg_svc
             .list_by_topic(topic_id)
