@@ -343,7 +343,6 @@ fn create_msg_data(topic_id: i64, model_id: i64) -> CreateMessage {
         model_id,
         topic_id,
         is_boundary: false,
-        is_excluded: false,
         input_tokens: 5,
         output_tokens: 0,
     }
@@ -375,7 +374,6 @@ async fn message_crud() {
         .update(
             msg.id,
             UpdateMessage {
-                is_boundary: Some(true),
                 input_tokens: Some(10),
                 ..UpdateMessage::from(msg.clone())
             },
@@ -383,7 +381,6 @@ async fn message_crud() {
         .await
         .unwrap();
     let updated = msg_svc.get(msg.id).await.unwrap().unwrap();
-    assert!(updated.is_boundary);
     assert_eq!(updated.input_tokens, 10);
 }
 
@@ -416,13 +413,12 @@ fn create_user_msg(topic_id: i64, model_id: i64) -> CreateMessage {
         model_id,
         topic_id,
         is_boundary: false,
-        is_excluded: false,
         input_tokens: 5,
         output_tokens: 0,
     }
 }
 
-fn create_asst_msg(topic_id: i64, model_id: i64, from_id: i64, is_excluded: bool) -> CreateMessage {
+fn create_asst_msg(topic_id: i64, model_id: i64, from_id: i64) -> CreateMessage {
     CreateMessage {
         from_id: Some(from_id),
         stream: false,
@@ -430,7 +426,6 @@ fn create_asst_msg(topic_id: i64, model_id: i64, from_id: i64, is_excluded: bool
         model_id,
         topic_id,
         is_boundary: false,
-        is_excluded,
         input_tokens: 0,
         output_tokens: 10,
     }
@@ -445,7 +440,7 @@ async fn delete_assistant_sole_child_excludes_user() {
 
     let user = msg_svc.create(create_user_msg(t.id, 1)).await.unwrap();
     let asst = msg_svc
-        .create(create_asst_msg(t.id, 1, user.id, false))
+        .create(create_asst_msg(t.id, 1, user.id))
         .await
         .unwrap();
 
@@ -459,7 +454,7 @@ async fn delete_assistant_sole_child_excludes_user() {
 }
 
 #[tokio::test]
-async fn delete_assistant_with_siblings_unexcludes_next() {
+async fn delete_assistant_with_siblings_keeps_user_unexcluded() {
     let pool = setup().await;
     let topic_svc = TopicService::new(pool.clone());
     let msg_svc = MessageService::new(pool);
@@ -467,22 +462,24 @@ async fn delete_assistant_with_siblings_unexcludes_next() {
 
     let user = msg_svc.create(create_user_msg(t.id, 1)).await.unwrap();
     let asst1 = msg_svc
-        .create(create_asst_msg(t.id, 1, user.id, false))
+        .create(create_asst_msg(t.id, 1, user.id))
         .await
         .unwrap();
     let asst2 = msg_svc
-        .create(create_asst_msg(t.id, 1, user.id, true))
+        .create(create_asst_msg(t.id, 1, user.id))
         .await
         .unwrap();
 
     msg_svc.delete(asst1.id).await.unwrap();
 
-    // 用户消息不变化
+    // 用户消息仍有其他子消息，保持未排除
     let user_after = msg_svc.get(user.id).await.unwrap().unwrap();
     assert!(!user_after.is_excluded);
-    // 下一条助手消息恢复为非排除
+    // asst2 保持未排除
     let asst2_after = msg_svc.get(asst2.id).await.unwrap().unwrap();
     assert!(!asst2_after.is_excluded);
+    // asst1 已删除
+    assert!(msg_svc.get(asst1.id).await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -494,17 +491,21 @@ async fn delete_user_excludes_all_assistants() {
 
     let user = msg_svc.create(create_user_msg(t.id, 1)).await.unwrap();
     let a1 = msg_svc
-        .create(create_asst_msg(t.id, 1, user.id, false))
+        .create(create_asst_msg(t.id, 1, user.id))
         .await
         .unwrap();
     let a2 = msg_svc
-        .create(create_asst_msg(t.id, 1, user.id, true))
+        .create(create_asst_msg(t.id, 1, user.id))
         .await
         .unwrap();
     let a3 = msg_svc
-        .create(create_asst_msg(t.id, 1, user.id, false))
+        .create(create_asst_msg(t.id, 1, user.id))
         .await
         .unwrap();
+
+    // 创建后所有消息均未排除
+    assert!(!msg_svc.get(a1.id).await.unwrap().unwrap().is_excluded);
+    assert!(!msg_svc.get(user.id).await.unwrap().unwrap().is_excluded);
 
     msg_svc.delete(user.id).await.unwrap();
 
@@ -534,9 +535,9 @@ async fn batch_create_assistant_success() {
 
     let user = msg_svc.create(create_user_msg(t.id, 1)).await.unwrap();
     let data = vec![
-        create_asst_msg(t.id, 1, user.id, false),
-        create_asst_msg(t.id, 1, user.id, false),
-        create_asst_msg(t.id, 1, user.id, false),
+        create_asst_msg(t.id, 1, user.id),
+        create_asst_msg(t.id, 1, user.id),
+        create_asst_msg(t.id, 1, user.id),
     ];
 
     let messages = msg_svc.batch_create_assistant(data).await.unwrap();
@@ -576,8 +577,8 @@ async fn batch_create_assistant_mismatched_from_id() {
 
     let err = msg_svc
         .batch_create_assistant(vec![
-            create_asst_msg(t.id, 1, user1.id, false),
-            create_asst_msg(t.id, 1, user2.id, false), // 不同 from_id
+            create_asst_msg(t.id, 1, user1.id),
+            create_asst_msg(t.id, 1, user2.id), // 不同 from_id
         ])
         .await
         .unwrap_err();
@@ -607,13 +608,13 @@ async fn batch_create_assistant_from_id_is_not_user() {
 
     let user = msg_svc.create(create_user_msg(t.id, 1)).await.unwrap();
     let asst = msg_svc
-        .create(create_asst_msg(t.id, 1, user.id, false))
+        .create(create_asst_msg(t.id, 1, user.id))
         .await
         .unwrap();
 
     // from_id 指向助手消息而非用户消息
     let err = msg_svc
-        .batch_create_assistant(vec![create_asst_msg(t.id, 1, asst.id, false)])
+        .batch_create_assistant(vec![create_asst_msg(t.id, 1, asst.id)])
         .await
         .unwrap_err();
     assert!(err.to_string().contains("user message"));
@@ -627,7 +628,7 @@ async fn batch_create_assistant_from_id_not_found() {
     let t = topic_svc.create_topic(create_topic(0)).await.unwrap();
 
     let err = msg_svc
-        .batch_create_assistant(vec![create_asst_msg(t.id, 1, 999, false)])
+        .batch_create_assistant(vec![create_asst_msg(t.id, 1, 999)])
         .await
         .unwrap_err();
     assert!(err.to_string().contains("not found"));
@@ -674,6 +675,103 @@ async fn batch_get_empty_input() {
     let msg_svc = MessageService::new(pool);
     let results = msg_svc.batch_get(&[]).await.unwrap();
     assert!(results.is_empty());
+}
+
+// ==================== is_excluded 内部维护逻辑 ====================
+
+#[tokio::test]
+async fn create_user_msg_is_excluded_by_default() {
+    let pool = setup().await;
+    let topic_svc = TopicService::new(pool.clone());
+    let msg_svc = MessageService::new(pool);
+    let t = topic_svc.create_topic(create_topic(0)).await.unwrap();
+
+    // 用户消息（from_id = None）创建后 is_excluded = true
+    let msg = msg_svc.create(create_user_msg(t.id, 1)).await.unwrap();
+    assert!(msg.is_excluded);
+}
+
+#[tokio::test]
+async fn create_assistant_msg_unexcludes_user_and_self() {
+    let pool = setup().await;
+    let topic_svc = TopicService::new(pool.clone());
+    let msg_svc = MessageService::new(pool);
+    let t = topic_svc.create_topic(create_topic(0)).await.unwrap();
+
+    let user = msg_svc.create(create_user_msg(t.id, 1)).await.unwrap();
+    assert!(user.is_excluded);
+
+    // 创建助手消息后，用户消息和助手消息均 is_excluded = false
+    let asst = msg_svc
+        .create(create_asst_msg(t.id, 1, user.id))
+        .await
+        .unwrap();
+    assert!(!asst.is_excluded);
+
+    let user_after = msg_svc.get(user.id).await.unwrap().unwrap();
+    assert!(!user_after.is_excluded);
+}
+
+#[tokio::test]
+async fn create_assistant_msg_from_id_not_found() {
+    let pool = setup().await;
+    let topic_svc = TopicService::new(pool.clone());
+    let msg_svc = MessageService::new(pool);
+    let t = topic_svc.create_topic(create_topic(0)).await.unwrap();
+
+    let err = msg_svc
+        .create(create_asst_msg(t.id, 1, 999))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("not found"));
+}
+
+#[tokio::test]
+async fn create_assistant_msg_from_id_must_be_user_msg() {
+    let pool = setup().await;
+    let topic_svc = TopicService::new(pool.clone());
+    let msg_svc = MessageService::new(pool);
+    let t = topic_svc.create_topic(create_topic(0)).await.unwrap();
+
+    let user = msg_svc.create(create_user_msg(t.id, 1)).await.unwrap();
+    let asst1 = msg_svc
+        .create(create_asst_msg(t.id, 1, user.id))
+        .await
+        .unwrap();
+
+    // from_id 指向另一条助手消息（非用户消息）→ 失败
+    let err = msg_svc
+        .create(create_asst_msg(t.id, 1, asst1.id))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("user message"));
+}
+
+#[tokio::test]
+async fn batch_create_assistant_unexcludes_user() {
+    let pool = setup().await;
+    let topic_svc = TopicService::new(pool.clone());
+    let msg_svc = MessageService::new(pool);
+    let t = topic_svc.create_topic(create_topic(0)).await.unwrap();
+
+    let user = msg_svc.create(create_user_msg(t.id, 1)).await.unwrap();
+    assert!(user.is_excluded);
+
+    let msgs = msg_svc
+        .batch_create_assistant(vec![
+            create_asst_msg(t.id, 1, user.id),
+            create_asst_msg(t.id, 1, user.id),
+        ])
+        .await
+        .unwrap();
+
+    // 助手消息均未排除
+    for m in &msgs {
+        assert!(!m.is_excluded);
+    }
+    // 用户消息也被取消排除
+    let user_after = msg_svc.get(user.id).await.unwrap().unwrap();
+    assert!(!user_after.is_excluded);
 }
 
 // ==================== Chat Config ====================

@@ -130,8 +130,7 @@ impl TopicRepo {
             return Ok(());
         }
 
-        let mut builder =
-            QueryBuilder::new(format!("DELETE FROM {} WHERE {} IN (", table, column));
+        let mut builder = QueryBuilder::new(format!("DELETE FROM {} WHERE {} IN (", table, column));
         let mut separated = builder.separated(", ");
         for id in ids {
             separated.push_bind(*id);
@@ -184,9 +183,7 @@ impl TopicRepo {
             .collect();
 
         if !to_remove.is_empty() {
-            let mut builder = QueryBuilder::new(
-                "DELETE FROM topic_mcp_servers WHERE topic_id = ",
-            );
+            let mut builder = QueryBuilder::new("DELETE FROM topic_mcp_servers WHERE topic_id = ");
             builder.push_bind(topic_id);
             builder.push(" AND server_id IN (");
             let mut separated = builder.separated(", ");
@@ -198,9 +195,8 @@ impl TopicRepo {
         }
 
         if !to_add.is_empty() {
-            let mut builder = QueryBuilder::new(
-                "INSERT INTO topic_mcp_servers (topic_id, server_id)",
-            );
+            let mut builder =
+                QueryBuilder::new("INSERT INTO topic_mcp_servers (topic_id, server_id)");
             builder.push_values(to_add.iter(), |mut b, id| {
                 b.push_bind(topic_id).push_bind(*id);
             });

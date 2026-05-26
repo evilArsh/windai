@@ -85,7 +85,6 @@ async fn seed_data(wc: &WindCore, env: &common::Env) -> TestContext {
             model_id: model.id,
             topic_id: topic.id,
             is_boundary: false,
-            is_excluded: false,
             input_tokens: 0,
             output_tokens: 0,
         })
@@ -101,7 +100,6 @@ async fn seed_data(wc: &WindCore, env: &common::Env) -> TestContext {
             model_id: model.id,
             topic_id: topic.id,
             is_boundary: false,
-            is_excluded: false,
             input_tokens: 0,
             output_tokens: 0,
         })
@@ -531,7 +529,7 @@ async fn test_data_persistence_file_db() {
             model_id,
             topic_id,
             is_boundary: false,
-            is_excluded: false,
+
             input_tokens: 0,
             output_tokens: 0,
         })
@@ -547,7 +545,7 @@ async fn test_data_persistence_file_db() {
             model_id,
             topic_id,
             is_boundary: false,
-            is_excluded: false,
+
             input_tokens: 0,
             output_tokens: 0,
         })
@@ -662,7 +660,7 @@ async fn test_chat_missing_credentials() {
             model_id: model.id,
             topic_id: topic.id,
             is_boundary: false,
-            is_excluded: false,
+
             input_tokens: 0,
             output_tokens: 0,
         })
@@ -678,7 +676,7 @@ async fn test_chat_missing_credentials() {
             model_id: model.id,
             topic_id: topic.id,
             is_boundary: false,
-            is_excluded: false,
+
             input_tokens: 0,
             output_tokens: 0,
         })
@@ -763,7 +761,7 @@ async fn test_message_history_chain() {
                 model_id: ctx.model_id,
                 topic_id: ctx.topic_id,
                 is_boundary: false,
-                is_excluded: false,
+
                 input_tokens: 0,
                 output_tokens: 0,
             })
@@ -780,7 +778,7 @@ async fn test_message_history_chain() {
                 model_id: ctx.model_id,
                 topic_id: ctx.topic_id,
                 is_boundary: false,
-                is_excluded: false,
+
                 input_tokens: 0,
                 output_tokens: 0,
             })

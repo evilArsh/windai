@@ -15,10 +15,11 @@ impl MessageRepo {
         &self,
         tx: &mut Transaction<'_, sqlx::Sqlite>,
         message_index: i64,
+        is_excluded: bool,
         data: CreateMessage,
     ) -> Result<i64> {
         let row = sqlx::query(
-            r#"INSERT INTO messages 
+            r#"INSERT INTO messages
             (from_id, stream, content, model_id, topic_id, message_index, is_boundary, is_excluded, input_tokens, output_tokens)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
         )
@@ -29,7 +30,7 @@ impl MessageRepo {
         .bind(data.topic_id)
         .bind(message_index)
         .bind(data.is_boundary)
-        .bind(data.is_excluded)
+        .bind(is_excluded)
         .bind(data.input_tokens)
         .bind(data.output_tokens)
         .execute(&mut **tx)
@@ -199,6 +200,7 @@ impl MessageRepo {
     pub async fn batch_create(
         &self,
         tx: &mut Transaction<'_, sqlx::Sqlite>,
+        is_excluded: bool,
         data: Vec<(i64, CreateMessage)>,
     ) -> Result<Vec<i64>> {
         if data.is_empty() {
@@ -216,7 +218,7 @@ impl MessageRepo {
             b.push_bind(item.1.topic_id);
             b.push_bind(item.0);
             b.push_bind(item.1.is_boundary);
-            b.push_bind(item.1.is_excluded);
+            b.push_bind(is_excluded);
             b.push_bind(item.1.input_tokens);
             b.push_bind(item.1.output_tokens);
         });
@@ -226,6 +228,20 @@ impl MessageRepo {
         let first_id = last_id - data.len() as i64 + 1;
         // FIXME: 需要表中的id为自增
         Ok((first_id..=last_id).collect())
+    }
+
+    pub async fn update_is_excluded(
+        &self,
+        tx: &mut Transaction<'_, sqlx::Sqlite>,
+        id: i64,
+        is_excluded: bool,
+    ) -> Result<()> {
+        sqlx::query("UPDATE messages SET is_excluded = ? WHERE id = ?")
+            .bind(is_excluded)
+            .bind(id)
+            .execute(&mut **tx)
+            .await?;
+        Ok(())
     }
 
     pub async fn get_next_index(&self, topic_id: i64) -> Result<i64> {

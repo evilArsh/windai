@@ -190,34 +190,35 @@ pub struct CreateMessage {
     pub model_id: i64,
     pub topic_id: i64,
     pub is_boundary: bool,
-    pub is_excluded: bool,
     pub input_tokens: i32,
     pub output_tokens: i32,
 }
 
 pub struct UpdateMessage {
-    pub from_id: Option<i64>,
-    pub stream: Option<bool>,
     pub content_json: Option<String>,
     pub model_id: Option<i64>,
-    pub topic_id: Option<i64>,
-    pub is_boundary: Option<bool>,
-    pub is_excluded: Option<bool>,
     pub input_tokens: Option<i32>,
     pub output_tokens: Option<i32>,
 }
+
+impl Default for UpdateMessage {
+    fn default() -> Self {
+        Self {
+            content_json: None,
+            model_id: None,
+            input_tokens: None,
+            output_tokens: None,
+        }
+    }
+}
+
 impl From<Message> for UpdateMessage {
     fn from(value: Message) -> Self {
         Self {
-            from_id: value.from_id,
-            stream: Some(value.stream),
             content_json: Some(
                 serde_json::to_string(&value.content).unwrap_or_else(|_| "[]".to_string()),
             ),
             model_id: Some(value.model_id),
-            topic_id: Some(value.topic_id),
-            is_boundary: Some(value.is_boundary),
-            is_excluded: Some(value.is_excluded),
             input_tokens: Some(value.input_tokens),
             output_tokens: Some(value.output_tokens),
         }

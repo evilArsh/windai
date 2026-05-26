@@ -88,7 +88,6 @@ async fn setup_db(pool: &SqlitePool, env: &common::Env) -> TestContext {
             model_id: model.id,
             topic_id: topic.id,
             is_boundary: false,
-            is_excluded: false,
             input_tokens: 10,
             output_tokens: 0,
         })
@@ -103,7 +102,6 @@ async fn setup_db(pool: &SqlitePool, env: &common::Env) -> TestContext {
             model_id: model.id,
             topic_id: topic.id,
             is_boundary: false,
-            is_excluded: false,
             input_tokens: 0,
             output_tokens: 0,
         })
@@ -334,8 +332,6 @@ async fn test_chat_engine_send_mcp_non_stream() {
         .update(
             ctx.user_msg_id,
             UpdateMessage {
-                from_id: None,
-                stream: None,
                 content_json: Some(
                     serde_json::to_string(&vec![AiMessage::new_simple(
                         Role::User,
@@ -347,12 +343,7 @@ async fn test_chat_engine_send_mcp_non_stream() {
                     )])
                     .unwrap(),
                 ),
-                model_id: None,
-                topic_id: None,
-                is_boundary: None,
-                is_excluded: None,
-                input_tokens: None,
-                output_tokens: None,
+                ..Default::default()
             },
         )
         .await
@@ -471,8 +462,6 @@ async fn test_chat_engine_send_mcp_stream() {
         .update(
             ctx.user_msg_id,
             UpdateMessage {
-                from_id: None,
-                stream: None,
                 content_json: Some(
                     serde_json::to_string(&vec![AiMessage::new_simple(
                         Role::User,
@@ -484,12 +473,7 @@ async fn test_chat_engine_send_mcp_stream() {
                     )])
                     .unwrap(),
                 ),
-                model_id: None,
-                topic_id: None,
-                is_boundary: None,
-                is_excluded: None,
-                input_tokens: None,
-                output_tokens: None,
+                ..Default::default()
             },
         )
         .await

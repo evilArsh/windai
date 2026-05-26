@@ -16,12 +16,36 @@ impl MessageService {
         }
     }
 
-    /// 保存一条消息
+    /// 保存一条消息。
+    ///
+    /// - 用户消息（from_id 为 None）：`is_excluded = true`
+    /// - 助手消息（from_id 指向用户消息）：新消息和用户消息的 `is_excluded` 均为 `false`
+    /// - from_id 指向的消息不存在或不是用户消息：返回错误
     pub async fn create(&self, data: CreateMessage) -> Result<Message> {
         let index = self.repo.get_next_index(data.topic_id).await?;
 
+        let (is_excluded, user_msg_id) = match data.from_id {
+            Some(from_id) => {
+                let parent = self
+                    .repo
+                    .get(from_id)
+                    .await?
+                    .ok_or(CoreError::NotFound(format!("message {from_id}")))?;
+                if parent.from_id.is_some() {
+                    return Err(CoreError::Validation(
+                        "from_id must reference a user message".into(),
+                    ));
+                }
+                (false, Some(from_id))
+            }
+            None => (true, None),
+        };
+
         let mut tx = db::begin_tx(&self.repo.db).await?;
-        let id = self.repo.create(&mut tx, index, data).await?;
+        if let Some(uid) = user_msg_id {
+            self.repo.update_is_excluded(&mut tx, uid, false).await?;
+        }
+        let id = self.repo.create(&mut tx, index, is_excluded, data).await?;
         tx.commit().await?;
 
         self.repo
@@ -66,7 +90,10 @@ impl MessageService {
             .collect();
 
         let mut tx = db::begin_tx(&self.repo.db).await?;
-        let ids = self.repo.batch_create(&mut tx, rows).await?;
+        self.repo
+            .update_is_excluded(&mut tx, user_msg_id, false)
+            .await?;
+        let ids = self.repo.batch_create(&mut tx, false, rows).await?;
         tx.commit().await?;
         Ok(self.repo.batch_get(&ids).await?)
     }
@@ -83,8 +110,8 @@ impl MessageService {
             .update(
                 &mut tx,
                 id,
-                data.from_id.or(current.from_id),
-                data.stream.unwrap_or_else(|| current.stream),
+                current.from_id,
+                current.stream,
                 data.content_json
                     .unwrap_or_else(|| {
                         serde_json::to_string(&current.content)
@@ -92,10 +119,10 @@ impl MessageService {
                     })
                     .as_str(),
                 data.model_id.unwrap_or_else(|| current.model_id),
-                data.topic_id.unwrap_or_else(|| current.topic_id),
+                current.topic_id,
                 current.index,
-                data.is_boundary.unwrap_or_else(|| current.is_boundary),
-                data.is_excluded.unwrap_or_else(|| current.is_excluded),
+                current.is_boundary,
+                current.is_excluded,
                 data.input_tokens.unwrap_or_else(|| current.input_tokens),
                 data.output_tokens.unwrap_or_else(|| current.output_tokens),
             )
