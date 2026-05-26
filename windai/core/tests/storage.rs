@@ -406,6 +406,276 @@ async fn message_ordering() {
     assert!(m2.index > m1.index);
 }
 
+// ==================== Message Delete Logic ====================
+
+fn create_user_msg(topic_id: i64, model_id: i64) -> CreateMessage {
+    CreateMessage {
+        from_id: None,
+        stream: false,
+        content_json: r#"[{"role":"user","content":"hello"}]"#.into(),
+        model_id,
+        topic_id,
+        is_boundary: false,
+        is_excluded: false,
+        input_tokens: 5,
+        output_tokens: 0,
+    }
+}
+
+fn create_asst_msg(topic_id: i64, model_id: i64, from_id: i64, is_excluded: bool) -> CreateMessage {
+    CreateMessage {
+        from_id: Some(from_id),
+        stream: false,
+        content_json: r#"[{"role":"assistant","content":"hi"}]"#.into(),
+        model_id,
+        topic_id,
+        is_boundary: false,
+        is_excluded,
+        input_tokens: 0,
+        output_tokens: 10,
+    }
+}
+
+#[tokio::test]
+async fn delete_assistant_sole_child_excludes_user() {
+    let pool = setup().await;
+    let topic_svc = TopicService::new(pool.clone());
+    let msg_svc = MessageService::new(pool);
+    let t = topic_svc.create_topic(create_topic(0)).await.unwrap();
+
+    let user = msg_svc.create(create_user_msg(t.id, 1)).await.unwrap();
+    let asst = msg_svc
+        .create(create_asst_msg(t.id, 1, user.id, false))
+        .await
+        .unwrap();
+
+    msg_svc.delete(asst.id).await.unwrap();
+
+    // 用户消息被标记为排除
+    let user_after = msg_svc.get(user.id).await.unwrap().unwrap();
+    assert!(user_after.is_excluded);
+    // 助手消息已删除
+    assert!(msg_svc.get(asst.id).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn delete_assistant_with_siblings_unexcludes_next() {
+    let pool = setup().await;
+    let topic_svc = TopicService::new(pool.clone());
+    let msg_svc = MessageService::new(pool);
+    let t = topic_svc.create_topic(create_topic(0)).await.unwrap();
+
+    let user = msg_svc.create(create_user_msg(t.id, 1)).await.unwrap();
+    let asst1 = msg_svc
+        .create(create_asst_msg(t.id, 1, user.id, false))
+        .await
+        .unwrap();
+    let asst2 = msg_svc
+        .create(create_asst_msg(t.id, 1, user.id, true))
+        .await
+        .unwrap();
+
+    msg_svc.delete(asst1.id).await.unwrap();
+
+    // 用户消息不变化
+    let user_after = msg_svc.get(user.id).await.unwrap().unwrap();
+    assert!(!user_after.is_excluded);
+    // 下一条助手消息恢复为非排除
+    let asst2_after = msg_svc.get(asst2.id).await.unwrap().unwrap();
+    assert!(!asst2_after.is_excluded);
+}
+
+#[tokio::test]
+async fn delete_user_excludes_all_assistants() {
+    let pool = setup().await;
+    let topic_svc = TopicService::new(pool.clone());
+    let msg_svc = MessageService::new(pool);
+    let t = topic_svc.create_topic(create_topic(0)).await.unwrap();
+
+    let user = msg_svc.create(create_user_msg(t.id, 1)).await.unwrap();
+    let a1 = msg_svc
+        .create(create_asst_msg(t.id, 1, user.id, false))
+        .await
+        .unwrap();
+    let a2 = msg_svc
+        .create(create_asst_msg(t.id, 1, user.id, true))
+        .await
+        .unwrap();
+    let a3 = msg_svc
+        .create(create_asst_msg(t.id, 1, user.id, false))
+        .await
+        .unwrap();
+
+    msg_svc.delete(user.id).await.unwrap();
+
+    // 所有助手消息被排除
+    for id in [a1.id, a2.id, a3.id] {
+        let m = msg_svc.get(id).await.unwrap().unwrap();
+        assert!(m.is_excluded);
+    }
+}
+
+#[tokio::test]
+async fn delete_nonexistent_message_is_noop() {
+    let pool = setup().await;
+    let msg_svc = MessageService::new(pool);
+    let result = msg_svc.delete(999).await;
+    assert!(result.is_ok());
+}
+
+// ==================== Batch Create Assistant ====================
+
+#[tokio::test]
+async fn batch_create_assistant_success() {
+    let pool = setup().await;
+    let topic_svc = TopicService::new(pool.clone());
+    let msg_svc = MessageService::new(pool);
+    let t = topic_svc.create_topic(create_topic(0)).await.unwrap();
+
+    let user = msg_svc.create(create_user_msg(t.id, 1)).await.unwrap();
+    let data = vec![
+        create_asst_msg(t.id, 1, user.id, false),
+        create_asst_msg(t.id, 1, user.id, false),
+        create_asst_msg(t.id, 1, user.id, false),
+    ];
+
+    let messages = msg_svc.batch_create_assistant(data).await.unwrap();
+    assert_eq!(messages.len(), 3);
+
+    // from_id 一致
+    for m in &messages {
+        assert_eq!(m.from_id, Some(user.id));
+    }
+
+    // index 递增 1
+    assert_eq!(messages[1].index, messages[0].index + 1);
+    assert_eq!(messages[2].index, messages[0].index + 2);
+
+    // 可通过 list_by_topic 查到
+    let all = msg_svc.list_by_topic(t.id).await.unwrap();
+    assert_eq!(all.len(), 4); // user + 3 assistants
+}
+
+#[tokio::test]
+async fn batch_create_assistant_empty() {
+    let pool = setup().await;
+    let msg_svc = MessageService::new(pool);
+    let result = msg_svc.batch_create_assistant(vec![]).await.unwrap();
+    assert!(result.is_empty());
+}
+
+#[tokio::test]
+async fn batch_create_assistant_mismatched_from_id() {
+    let pool = setup().await;
+    let topic_svc = TopicService::new(pool.clone());
+    let msg_svc = MessageService::new(pool);
+    let t = topic_svc.create_topic(create_topic(0)).await.unwrap();
+
+    let user1 = msg_svc.create(create_user_msg(t.id, 1)).await.unwrap();
+    let user2 = msg_svc.create(create_user_msg(t.id, 1)).await.unwrap();
+
+    let err = msg_svc
+        .batch_create_assistant(vec![
+            create_asst_msg(t.id, 1, user1.id, false),
+            create_asst_msg(t.id, 1, user2.id, false), // 不同 from_id
+        ])
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("same from_id"));
+}
+
+#[tokio::test]
+async fn batch_create_assistant_missing_from_id() {
+    let pool = setup().await;
+    let topic_svc = TopicService::new(pool.clone());
+    let msg_svc = MessageService::new(pool);
+    let t = topic_svc.create_topic(create_topic(0)).await.unwrap();
+
+    let err = msg_svc
+        .batch_create_assistant(vec![create_user_msg(t.id, 1)]) // from_id = None
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("from_id is required"));
+}
+
+#[tokio::test]
+async fn batch_create_assistant_from_id_is_not_user() {
+    let pool = setup().await;
+    let topic_svc = TopicService::new(pool.clone());
+    let msg_svc = MessageService::new(pool);
+    let t = topic_svc.create_topic(create_topic(0)).await.unwrap();
+
+    let user = msg_svc.create(create_user_msg(t.id, 1)).await.unwrap();
+    let asst = msg_svc
+        .create(create_asst_msg(t.id, 1, user.id, false))
+        .await
+        .unwrap();
+
+    // from_id 指向助手消息而非用户消息
+    let err = msg_svc
+        .batch_create_assistant(vec![create_asst_msg(t.id, 1, asst.id, false)])
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("user message"));
+}
+
+#[tokio::test]
+async fn batch_create_assistant_from_id_not_found() {
+    let pool = setup().await;
+    let topic_svc = TopicService::new(pool.clone());
+    let msg_svc = MessageService::new(pool);
+    let t = topic_svc.create_topic(create_topic(0)).await.unwrap();
+
+    let err = msg_svc
+        .batch_create_assistant(vec![create_asst_msg(t.id, 1, 999, false)])
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("not found"));
+}
+
+// ==================== Batch Get ====================
+
+#[tokio::test]
+async fn batch_get_returns_messages() {
+    let pool = setup().await;
+    let topic_svc = TopicService::new(pool.clone());
+    let msg_svc = MessageService::new(pool);
+    let t = topic_svc.create_topic(create_topic(0)).await.unwrap();
+
+    let m1 = msg_svc.create(create_user_msg(t.id, 1)).await.unwrap();
+    let _m2 = msg_svc.create(create_user_msg(t.id, 1)).await.unwrap();
+    let m3 = msg_svc.create(create_user_msg(t.id, 1)).await.unwrap();
+
+    let results = msg_svc.batch_get(&[m1.id, m3.id]).await.unwrap();
+    assert_eq!(results.len(), 2);
+    let ids: Vec<i64> = results.iter().map(|m| m.id).collect();
+    assert!(ids.contains(&m1.id));
+    assert!(ids.contains(&m3.id));
+}
+
+#[tokio::test]
+async fn batch_get_partial_missing() {
+    let pool = setup().await;
+    let topic_svc = TopicService::new(pool.clone());
+    let msg_svc = MessageService::new(pool);
+    let t = topic_svc.create_topic(create_topic(0)).await.unwrap();
+
+    let m1 = msg_svc.create(create_user_msg(t.id, 1)).await.unwrap();
+
+    // 部分 id 不存在时只返回存在的
+    let results = msg_svc.batch_get(&[m1.id, 999, 1000]).await.unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].id, m1.id);
+}
+
+#[tokio::test]
+async fn batch_get_empty_input() {
+    let pool = setup().await;
+    let msg_svc = MessageService::new(pool);
+    let results = msg_svc.batch_get(&[]).await.unwrap();
+    assert!(results.is_empty());
+}
+
 // ==================== Chat Config ====================
 
 #[tokio::test]

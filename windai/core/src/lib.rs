@@ -16,9 +16,6 @@ use storage::provider::service::ProviderService;
 use storage::topic::service::TopicService;
 use wind_mcp::client::registry::{Registry, RegistryHandle};
 
-/// Wind Core 模块的主入口点。
-///
-/// 持有私有数据库连接池、共享的 JS 引擎以及全局 MCP 客户端。
 pub struct WindCore {
     db: Pool<Sqlite>,
     mcp: RegistryHandle,

@@ -103,9 +103,19 @@ CREATE TABLE IF NOT EXISTS json_rule (
     created_at  INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
     updated_at  INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
 );
+
+CREATE INDEX IF NOT EXISTS idx_name_provider ON providers(name);
+
 CREATE INDEX IF NOT EXISTS idx_models_provider ON models(provider_id);
+
 CREATE INDEX IF NOT EXISTS idx_credentials_provider ON credentials(provider_id);
+
 CREATE INDEX IF NOT EXISTS idx_messages_topic ON messages(topic_id, message_index);
+
+CREATE INDEX IF NOT EXISTS idx_topics_parent_id_topic_index ON topics(parent_id, topic_index);
+CREATE INDEX IF NOT EXISTS idx_topics_chat_config_id ON topics(chat_config_id);
+
+CREATE INDEX IF NOT EXISTS idx_provider_adaptor ON json_rule(provider_id,adaptor);
 "#;
 
 /// 初始化数据库表结构

@@ -1,6 +1,6 @@
 use crate::models::Message;
 use crate::{error::Result, models::CreateMessage};
-use sqlx::{Row, SqlitePool, Transaction};
+use sqlx::{QueryBuilder, Row, SqlitePool, Transaction};
 
 pub struct MessageRepo {
     pub(crate) db: SqlitePool,
@@ -91,9 +91,31 @@ impl MessageRepo {
         Ok(row)
     }
 
+    pub async fn batch_get(&self, ids: &[i64]) -> Result<Vec<Message>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut builder = QueryBuilder::new(
+            "SELECT id, from_id, stream, content, model_id, topic_id, message_index, is_boundary, is_excluded, input_tokens, output_tokens, created_at FROM messages WHERE id IN (",
+        );
+        let mut separated = builder.separated(", ");
+        for id in ids {
+            separated.push_bind(*id);
+        }
+        separated.push_unseparated(") ");
+
+        let rows = builder
+            .build()
+            .map(Self::row_to_message)
+            .fetch_all(&self.db)
+            .await?;
+        Ok(rows)
+    }
+
     pub async fn list_by_topic(&self, topic_id: i64) -> Result<Vec<Message>> {
         let rows = sqlx::query(
-            r#"select
+            r#"SELECT
             id, from_id, stream, content, model_id, topic_id, message_index, is_boundary, is_excluded, input_tokens, output_tokens,
             created_at
             FROM messages WHERE topic_id = ?
@@ -105,6 +127,105 @@ impl MessageRepo {
         .await?;
 
         Ok(rows)
+    }
+
+    pub async fn delete(&self, tx: &mut Transaction<'_, sqlx::Sqlite>, id: i64) -> Result<()> {
+        let msg = sqlx::query("SELECT id, from_id, message_index FROM messages WHERE id = ?")
+            .bind(id)
+            .map(|row: sqlx::sqlite::SqliteRow| {
+                (
+                    row.get::<i64, _>(0),
+                    row.get::<Option<i64>, _>(1),
+                    row.get::<i64, _>(2),
+                )
+            })
+            .fetch_optional(&mut **tx)
+            .await?;
+
+        let (msg_id, from_id, msg_index) = match msg {
+            Some(m) => m,
+            None => return Ok(()),
+        };
+
+        match from_id {
+            // 删除助手消息: 若该用户消息仅此一条助手回复，则排除用户消息；
+            // 若有多条，则恢复下一条助手消息（索引大于当前消息的第一条）
+            Some(user_msg_id) => {
+                let count: i64 = sqlx::query("SELECT COUNT(*) FROM messages WHERE from_id = ?")
+                    .bind(user_msg_id)
+                    .map(|row: sqlx::sqlite::SqliteRow| row.get(0))
+                    .fetch_one(&mut **tx)
+                    .await?;
+
+                if count == 1 {
+                    sqlx::query("UPDATE messages SET is_excluded = 1 WHERE id = ?")
+                        .bind(user_msg_id)
+                        .execute(&mut **tx)
+                        .await?;
+                } else {
+                    let next_id: Option<i64> = sqlx::query(
+                        "SELECT id FROM messages WHERE from_id = ? AND message_index > ? ORDER BY message_index ASC LIMIT 1",
+                    )
+                    .bind(user_msg_id)
+                    .bind(msg_index)
+                    .map(|row: sqlx::sqlite::SqliteRow| row.get(0))
+                    .fetch_optional(&mut **tx)
+                    .await?;
+
+                    if let Some(next_id) = next_id {
+                        sqlx::query("UPDATE messages SET is_excluded = 0 WHERE id = ?")
+                            .bind(next_id)
+                            .execute(&mut **tx)
+                            .await?;
+                    }
+                }
+            }
+            // 删除用户消息: 排除其所有助手回复
+            None => {
+                sqlx::query("UPDATE messages SET is_excluded = 1 WHERE from_id = ?")
+                    .bind(msg_id)
+                    .execute(&mut **tx)
+                    .await?;
+            }
+        }
+
+        sqlx::query("DELETE FROM messages WHERE id = ?")
+            .bind(id)
+            .execute(&mut **tx)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn batch_create(
+        &self,
+        tx: &mut Transaction<'_, sqlx::Sqlite>,
+        data: Vec<(i64, CreateMessage)>,
+    ) -> Result<Vec<i64>> {
+        if data.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut builder = QueryBuilder::new(
+            "INSERT INTO messages (from_id, stream, content, model_id, topic_id, message_index, is_boundary, is_excluded, input_tokens, output_tokens)",
+        );
+        builder.push_values(data.iter(), |mut b, item: &(i64, CreateMessage)| {
+            b.push_bind(item.1.from_id);
+            b.push_bind(item.1.stream);
+            b.push_bind(&item.1.content_json);
+            b.push_bind(item.1.model_id);
+            b.push_bind(item.1.topic_id);
+            b.push_bind(item.0);
+            b.push_bind(item.1.is_boundary);
+            b.push_bind(item.1.is_excluded);
+            b.push_bind(item.1.input_tokens);
+            b.push_bind(item.1.output_tokens);
+        });
+        let query = builder.build();
+        let result = query.execute(&mut **tx).await?;
+        let last_id = result.last_insert_rowid();
+        let first_id = last_id - data.len() as i64 + 1;
+        // FIXME: 需要表中的id为自增
+        Ok((first_id..=last_id).collect())
     }
 
     pub async fn get_next_index(&self, topic_id: i64) -> Result<i64> {

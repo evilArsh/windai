@@ -70,8 +70,7 @@ impl ModelRepo {
         .fetch_all(&self.db)
         .await?
         .into_iter()
-        .flatten()
-        .collect();
+        .collect::<Result<Vec<Model>>>()?;
 
         Ok(rows)
     }
@@ -90,9 +89,11 @@ impl ModelRepo {
         frequency: Option<i32>,
     ) -> Result<()> {
         sqlx::query(
-            r#"UPDATE models
-            SET name = ?, alias = ?, adaptor = ?, modalities = ?,
-            active = ?, icon = ?, endpoint = ?, frequency = ? WHERE id = ?"#,
+            r#"UPDATE models SET
+            name = ?, alias = ?, adaptor = ?, modalities = ?,
+            active = ?, icon = ?, endpoint = ?, frequency = ?,
+            updated_at = strftime('%s', 'now')
+            WHERE id = ?"#,
         )
         .bind(name)
         .bind(alias)

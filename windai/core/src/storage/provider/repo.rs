@@ -324,10 +324,9 @@ impl ProviderRepo {
         .map(Self::row_to_json_rule)
         .fetch_all(&self.db)
         .await?
-        .into_iter()
-        .flatten();
+        .into_iter();
 
-        Ok(rows.collect())
+        Ok(rows.collect::<Result<Vec<JsonRule>>>()?)
     }
 
     pub async fn delete_json_rule(

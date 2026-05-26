@@ -1,6 +1,6 @@
 use crate::models::{McpServerParam, Topic};
 use crate::{error::Result, models::ChatConfig};
-use sqlx::{Row, SqlitePool, Transaction};
+use sqlx::{QueryBuilder, Row, SqlitePool, Transaction};
 use wind_ai::message::ReqConfig;
 use wind_mcp::client::TransportType;
 
@@ -129,16 +129,15 @@ impl TopicRepo {
         if ids.is_empty() {
             return Ok(());
         }
-        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-        let sql = format!(
-            "DELETE FROM {} WHERE {} IN ({})",
-            table, column, placeholders
-        );
-        let mut query = sqlx::query(&sql);
+
+        let mut builder =
+            QueryBuilder::new(format!("DELETE FROM {} WHERE {} IN (", table, column));
+        let mut separated = builder.separated(", ");
         for id in ids {
-            query = query.bind(id);
+            separated.push_bind(*id);
         }
-        query.execute(&mut **tx).await?;
+        separated.push_unseparated(") ");
+        builder.build().execute(&mut **tx).await?;
 
         Ok(())
     }
@@ -185,32 +184,27 @@ impl TopicRepo {
             .collect();
 
         if !to_remove.is_empty() {
-            let placeholders = to_remove.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-            let sql = format!(
-                "DELETE FROM topic_mcp_servers WHERE topic_id = ? AND server_id IN ({})",
-                placeholders
+            let mut builder = QueryBuilder::new(
+                "DELETE FROM topic_mcp_servers WHERE topic_id = ",
             );
-            let mut query = sqlx::query(&sql).bind(topic_id);
+            builder.push_bind(topic_id);
+            builder.push(" AND server_id IN (");
+            let mut separated = builder.separated(", ");
             for id in &to_remove {
-                query = query.bind(id);
+                separated.push_bind(*id);
             }
-            query.execute(&mut **tx).await?;
+            separated.push_unseparated(") ");
+            builder.build().execute(&mut **tx).await?;
         }
 
         if !to_add.is_empty() {
-            let placeholders: Vec<String> = to_add
-                .iter()
-                .map(|_| format!("({}, ?)", topic_id))
-                .collect();
-            let sql = format!(
-                "INSERT INTO topic_mcp_servers (topic_id, server_id) VALUES {}",
-                placeholders.join(", ")
+            let mut builder = QueryBuilder::new(
+                "INSERT INTO topic_mcp_servers (topic_id, server_id)",
             );
-            let mut query = sqlx::query(&sql);
-            for id in &to_add {
-                query = query.bind(id);
-            }
-            query.execute(&mut **tx).await?;
+            builder.push_values(to_add.iter(), |mut b, id| {
+                b.push_bind(topic_id).push_bind(*id);
+            });
+            builder.build().execute(&mut **tx).await?;
         }
 
         Ok(())
