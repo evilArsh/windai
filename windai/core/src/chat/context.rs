@@ -1,3 +1,5 @@
+use std::cmp::max;
+
 use crate::error::{CoreError, Result};
 use crate::models::Message as CoreMessage;
 use wind_ai::message::{Message as AiMessage, Role};
@@ -55,45 +57,47 @@ pub fn build_chat_context(
     }
 
     let (system_idx, boundary_idx) = find_system_and_boundary(&raw);
-    let sys_offset = system_idx.map(|i| i + 1).unwrap_or(0);
-    let boundary_start = boundary_idx.map(|i| i + 1).unwrap_or(0);
-
-    let start_index = std::cmp::min(
-        boundary_start,
-        raw.len()
-            .saturating_sub(sys_offset)
-            .saturating_sub(max_context),
+    let start_index = max(
+        boundary_idx.unwrap_or(0),
+        max(
+            system_idx.unwrap_or(0),
+            raw.len().saturating_sub(max_context),
+        ),
     );
-
-    // 确保第一条记录是 Role::User
-    let start_pos = raw[start_index..]
-        .iter()
-        .position(|slice| {
-            slice
-                .content
-                .iter()
-                .any(|c| c.is_simple() && c.role == Role::User)
-        })
-        .unwrap_or(0);
-    let start = start_index + start_pos;
-
     let system_content = system_idx
         .map(|si| std::mem::take(&mut raw[si].content).into_iter().next())
         .flatten();
 
-    let est_len = raw.len().saturating_sub(start) + system_content.is_some() as usize;
-    let mut contexts = Vec::with_capacity(est_len);
+    // 确保第一条记录是 Role::User
+    let start = start_index
+        + raw[start_index..]
+            .iter()
+            .position(|slice| {
+                slice
+                    .content
+                    .iter()
+                    .any(|c| c.is_simple() && c.role == Role::User)
+            })
+            .unwrap_or(0);
+
+    let mut contexts =
+        Vec::with_capacity(raw.len().saturating_sub(start) + system_content.is_some() as usize);
 
     if let Some(sys) = system_content {
         contexts.push(sys);
     }
 
-    for (i, m) in raw.into_iter().enumerate().skip(start) {
-        if Some(i) == system_idx {
-            continue;
-        }
-        if let Some(c) = m.content.into_iter().find(|c| c.is_simple()) {
+    for mut m in raw.into_iter().skip(start) {
+        // 最后一条消息非 is_simple, 表示该消息未正常结束（用户未授权MCP调用或者模型未正常返回结果）
+        if let Some(c) = m.content.pop()
+            && c.is_simple()
+        {
             contexts.push(c);
+        } else {
+            return Err(CoreError::Chat(format!(
+                "Incomplete message found. messageId: {}",
+                m.id
+            )));
         }
     }
 

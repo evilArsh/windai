@@ -1,6 +1,6 @@
 use futures::StreamExt;
 use wind_ai::chat::{self as wind_ai_chat, ResEventStatus, handle_chat};
-use wind_ai::message::{Message as AiMessage, ReqConfig};
+use wind_ai::message::{Content, Message as AiMessage, ReqConfig, Role};
 use wind_ai::model::Model as AiModel;
 use wind_ai::provider::adaptor::get_chat_adaptor;
 use wind_ai::tool::Tools;
@@ -117,9 +117,14 @@ impl<'c> ChatEngine<'c> {
 
     /// 发起对话请求
     ///
+    /// 如果对话存在工具调用，且即将调用的函数没有被允许自动执行，
+    /// 对话会立即停止且当前状态被保存。
+    /// 当用户手动同意此轮对话中工具调用请求后并且再次
+    /// 调用该方法时对话将会继续进行。
+    ///
     /// - `from_message_id` 为用户消息的 id
     /// - `message_id` 为此次对话消息 id
-    pub fn send(
+    pub fn start(
         &self,
         topic_id: i64,
         model_id: i64,
@@ -192,12 +197,12 @@ impl<'c> ChatEngine<'c> {
 
         let stream = async_stream::stream! {
             yield ChatEvent::created(message_id);
-            let mut msg = AiMessage::default();
             let mut iter_index = 0;
             let chat_adaptor = get_chat_adaptor(adaptor_type);
             let mut has_error = false;
             let mut error_obj: Option<CoreError> = None;
             loop {
+                let mut msg = AiMessage::default();
                 let mut req_body = match wind_ai_chat::build_request(
                     chat_adaptor.as_ref(),
                     &ai_model,
@@ -255,7 +260,7 @@ impl<'c> ChatEngine<'c> {
                 let tool_calls = match msg.tool_calls {
                     Some(tools) if !tools.is_empty() => tools,
                     _ => {
-                        core_msg.append_content(&msg);
+                        core_msg.append_content(&msg); // 对话完全结束
                         break;
                     }
                 };
@@ -279,20 +284,22 @@ impl<'c> ChatEngine<'c> {
                 contexts.push(tool_call_result);
 
                 iter_index += 1;
-                msg = AiMessage::default();
             }
             if let Some(error) = &error_obj {
                 log::error!("Error when handling chat. {}", error);
+                core_msg.append_content(&AiMessage::new_simple(
+                    Role::Assistant,
+                    vec![Content::new_text(error.to_string())],
+                    None,
+                ));
             };
-            if !core_msg.content.is_empty() {
-                if let Err(e) = self
-                    .msg_svc
-                    .update(core_msg.id, core_msg.clone().into())
-                    .await
-                {
-                    error_obj = Some(e.into());
-                };
-            }
+            if let Err(e) = self
+                .msg_svc
+                .update(core_msg.id, core_msg.clone().into())
+                .await
+            {
+                error_obj = Some(e.into());
+            };
             yield ChatEvent::finish(core_msg.id, Some(core_msg.content), error_obj);
         };
 
