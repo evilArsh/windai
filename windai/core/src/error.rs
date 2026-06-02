@@ -1,6 +1,6 @@
 #[derive(thiserror::Error, Debug)]
 pub enum CoreError {
-    #[error("database error. {0}")]
+    #[error(transparent)]
     Database(#[from] sqlx::Error),
 
     #[error("row not found. {0}")]
@@ -12,22 +12,22 @@ pub enum CoreError {
     #[error("chat error. {0}")]
     Chat(String),
 
-    #[error("AI provider error. {0}")]
+    #[error(transparent)]
     Ai(#[from] wind_ai::ProviderError),
 
-    #[error("MCP error. {0}")]
+    #[error(transparent)]
     Mcp(#[from] wind_mcp::client::McpError),
 
     #[error("JS error. {0}")]
     Js(String),
 
-    #[error("url parse error. {0}")]
+    #[error(transparent)]
     UrlParse(#[from] url::ParseError),
 
-    #[error("string parse error. {0}")]
+    #[error(transparent)]
     StrumParse(#[from] strum::ParseError),
 
-    #[error("JSON error. {0}")]
+    #[error(transparent)]
     Json(#[from] serde_json::Error),
 
     #[error(transparent)]

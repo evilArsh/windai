@@ -19,7 +19,7 @@ fn build_context(
     }))
 }
 
-pub fn build_rule(rule: &Option<JsonRule>) -> Result<Option<RuleSet>> {
+pub fn build_rule(rule: Option<JsonRule>) -> Result<Option<RuleSet>> {
     let rule = match rule {
         Some(v) if !v.json_rule.is_empty() => Some(RuleSet::from_json(&v.json_rule)?),
         _ => None,
@@ -30,12 +30,12 @@ pub fn build_rule(rule: &Option<JsonRule>) -> Result<Option<RuleSet>> {
 /// 执行 Json规则 转换
 /// - rule 为空时，不做处理
 pub fn apply_json_rule(
-    rule: &Option<RuleSet>,
+    rule: Option<&RuleSet>,
     body: &mut Value,
     adaptor: AdaptorType,
     provider_name: &str,
     model_name: &str,
-    endpoint: &Option<String>,
+    endpoint: Option<&str>,
 ) {
     let rule = match rule {
         Some(rule) => rule,

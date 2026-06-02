@@ -229,7 +229,7 @@ impl CompiledOp {
             }
             CompiledOp::Compute { segs, op_tree } => {
                 let current = path::get(body, segs)?;
-                let result = eval_compute(op_tree, &current, ctx)?;
+                let result = eval_compute(op_tree, current, ctx)?;
                 let dst = path::walk(body, segs)?;
                 *dst = result;
                 Ok(())
@@ -339,23 +339,19 @@ fn find_mapping<'a>(
     }
 }
 
-fn eval_compute(
-    op_tree: &Node,
-    current_value: &Option<&Value>,
-    ctx: &EvalContext,
-) -> Result<Value> {
+fn eval_compute(op_tree: &Node, current_value: Option<&Value>, ctx: &EvalContext) -> Result<Value> {
     let mut eval_ctx = HashMapContext::new();
     // 注入当前字段值
     let _ = eval_ctx.set_value("$value".to_string(), json_to_evalexpr(current_value));
     // 注入上下文变量。TODO: 支持嵌套上下文路径
     for (k, v) in ctx.entries() {
-        let _ = eval_ctx.set_value(format!("$ctx.{k}"), json_to_evalexpr(&Some(v)));
+        let _ = eval_ctx.set_value(format!("$ctx.{k}"), json_to_evalexpr(Some(v)));
     }
     let result = op_tree.eval_with_context_mut(&mut eval_ctx)?;
     Ok(evalexpr_to_json(result))
 }
 
-fn json_to_evalexpr(v: &Option<&Value>) -> evalexpr::Value {
+fn json_to_evalexpr(v: Option<&Value>) -> evalexpr::Value {
     if let Some(v) = v {
         match v {
             Value::Bool(b) => evalexpr::Value::Boolean(*b),
@@ -371,7 +367,7 @@ fn json_to_evalexpr(v: &Option<&Value>) -> evalexpr::Value {
             Value::String(s) => evalexpr::Value::String(s.clone()),
             Value::Array(arr) => {
                 let items: Vec<evalexpr::Value> =
-                    arr.iter().map(|v| json_to_evalexpr(&Some(v))).collect();
+                    arr.iter().map(|v| json_to_evalexpr(Some(v))).collect();
                 evalexpr::Value::Tuple(items)
             }
             Value::Object(_) | Value::Null => evalexpr::Value::Empty,

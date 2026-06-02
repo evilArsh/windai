@@ -42,6 +42,13 @@ rmcp = { version = "1", features = [
     "transport-streamable-http-client-reqwest",
     "transport-streamable-http-server",
 ] }
+ferroid = { version = "2.0", features = [
+    "std",
+    "alloc",
+    "snowflake",
+    "atomic",
+    "async-tokio",
+] }
 
 # rquickjs = { version = "0.11" }
 evalexpr = { version = "13.0" }
@@ -49,7 +56,9 @@ evalexpr = { version = "13.0" }
 # rusqlite = { version = "0.39", features = ["bundled", "backup", "hooks"] }
 sqlx = { version = "0.8", features = [
     "runtime-tokio",
-    "sqlite",
+    # "sqlite",
+    # "postgres",
+    # "mysql",
     "derive",
     "chrono",
     "json",

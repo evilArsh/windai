@@ -1,9 +1,13 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use wind_ai::message::{self};
+use sqlx::Row;
+use wind_ai::message;
 use wind_ai::model::AdaptorType;
 use wind_mcp::client::TransportType;
+
+use crate::db::DbRow;
+use crate::storage::{self, utils};
 
 /// 模态类型, 用于UI展示
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, strum::EnumString, strum::Display)]
@@ -24,6 +28,17 @@ pub struct Credentials {
     pub created_at: i64,
     pub active: bool,
 }
+impl<'s> sqlx::FromRow<'s, DbRow> for Credentials {
+    fn from_row(row: &'s DbRow) -> Result<Self, sqlx::Error> {
+        Ok(Credentials {
+            id: row.get("id"),
+            active: row.get("active"),
+            provider_id: row.get("provider_id"),
+            key: row.get("key"),
+            created_at: row.get("created_at"),
+        })
+    }
+}
 
 /// 提供商
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -41,6 +56,20 @@ pub struct Provider {
     pub alias: Option<String>,
     pub active: bool,
     pub created_at: i64,
+}
+impl<'s> sqlx::FromRow<'s, DbRow> for Provider {
+    fn from_row(row: &'s DbRow) -> Result<Self, sqlx::Error> {
+        Ok(Provider {
+            id: row.get("id"),
+            name: row.get("name"),
+            alias: row.get("alias"),
+            created_at: row.get("created_at"),
+            base_url: row.get("base_url"),
+            description: row.get("description"),
+            doc: row.get("doc"),
+            active: row.get("active"),
+        })
+    }
 }
 
 /// 模型结构
@@ -70,6 +99,27 @@ pub struct Model {
     pub created_at: i64,
 }
 
+impl<'s> sqlx::FromRow<'s, DbRow> for Model {
+    fn from_row(row: &'s DbRow) -> Result<Self, sqlx::Error> {
+        Ok(Model {
+            id: row.get("id"),
+            name: row.get("name"),
+            provider_id: row.get("provider_id"),
+            alias: row.get("alias"),
+            adaptor: utils::parse_str_to(&row.get::<String, _>("adaptor")).map_err(|e| {
+                sqlx::Error::Decode(format!("Failed to deserialize adaptor type: {}", e).into())
+            })?,
+            modalities: utils::de_str_to(&row.get::<String, _>("modalities")).map_err(|e| {
+                sqlx::Error::Decode(format!("Failed to deserialize modalities: {}", e).into())
+            })?,
+            active: row.get("active"),
+            icon: row.get("icon"),
+            endpoint: row.get("endpoint"),
+            frequency: row.get("frequency"),
+            created_at: row.get("created_at"),
+        })
+    }
+}
 /// 聊天话题
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Topic {
@@ -85,6 +135,20 @@ pub struct Topic {
     /// 当前会话序号
     pub index: i64,
     pub created_at: i64,
+}
+impl<'s> sqlx::FromRow<'s, DbRow> for Topic {
+    fn from_row(row: &'s DbRow) -> Result<Self, sqlx::Error> {
+        Ok(Topic {
+            id: row.get("id"),
+            icon: row.get("icon"),
+            created_at: row.get("created_at"),
+            parent_id: row.get("parent_id"),
+            chat_config_id: row.get("chat_config_id"),
+            label: row.get("label"),
+            max_context: row.get("max_context"),
+            index: row.get("topic_index"),
+        })
+    }
 }
 
 /// 消息结构
@@ -116,6 +180,30 @@ pub struct Message {
     pub output_tokens: i32,
     pub created_at: i64,
 }
+impl<'s> sqlx::FromRow<'s, DbRow> for Message {
+    fn from_row(row: &'s DbRow) -> Result<Self, sqlx::Error> {
+        let content: String = row.try_get("content")?;
+        let parsed_content = storage::utils::de_str_to(content.as_str()).map_err(|e| {
+            sqlx::Error::Decode(format!("Failed to deserialize message content: {}", e).into())
+        })?;
+
+        Ok(Self {
+            id: row.try_get("id")?,
+            from_id: row.try_get("from_id")?,
+            stream: row.try_get("stream")?,
+            content: parsed_content,
+            model_id: row.try_get("model_id")?,
+            topic_id: row.try_get("topic_id")?,
+            index: row.try_get("message_index")?,
+            is_boundary: row.try_get("is_boundary")?,
+            is_excluded: row.try_get("is_excluded")?,
+            input_tokens: row.try_get("input_tokens")?,
+            output_tokens: row.try_get("output_tokens")?,
+            created_at: row.try_get("created_at")?,
+        })
+    }
+}
+
 impl Message {
     pub fn append_content(&mut self, message: &message::Message) {
         self.input_tokens += message.input_tokens;
@@ -131,6 +219,25 @@ pub struct ChatConfig {
     #[serde(flatten)]
     pub data: message::ReqConfig,
     pub created_at: i64,
+}
+impl<'s> sqlx::FromRow<'s, DbRow> for ChatConfig {
+    fn from_row(row: &'s DbRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            id: row.get("id"),
+            topic_id: row.get("topic_id"),
+            data: message::ReqConfig {
+                temperature: row.get("temperature"),
+                top_p: row.get("top_p"),
+                max_tokens: row.get("max_tokens"),
+                stream: row.get("stream"),
+                presence_penalty: row.get("presence_penalty"),
+                frequency_penalty: row.get("frequency_penalty"),
+                parallel_tool_calls: row.get("parallel_tool_calls"),
+                reasoning: row.get("reasoning"),
+            },
+            created_at: row.get("created_at"),
+        })
+    }
 }
 
 /// 文本消息类型，当前文本消息细分为以下类型
@@ -160,6 +267,20 @@ pub struct JsonRule {
     pub active: bool,
     pub created_at: i64,
 }
+impl<'s> sqlx::FromRow<'s, DbRow> for JsonRule {
+    fn from_row(row: &'s DbRow) -> Result<Self, sqlx::Error> {
+        Ok(JsonRule {
+            id: row.get("id"),
+            provider_id: row.get("provider_id"),
+            adaptor: utils::parse_str_to(&row.get::<String, _>("adaptor")).map_err(|e| {
+                sqlx::Error::Decode(format!("Failed to deserialize adaptor type: {}", e).into())
+            })?,
+            active: row.get("active"),
+            created_at: row.get("created_at"),
+            json_rule: row.get("json_rule"),
+        })
+    }
+}
 
 /// MCP 服务配置，(Stdio, Streamable-HTTP)
 #[derive(Debug, Serialize, Clone)]
@@ -178,7 +299,37 @@ pub struct McpServerParam {
     pub args: Option<Vec<String>>,
     /// 环境变量
     pub env: Option<HashMap<String, String>>,
+    /// 允许自动执行的工具名
+    pub auto_approves: Option<Vec<String>>,
     pub created_at: i64,
+}
+impl<'s> sqlx::FromRow<'s, DbRow> for McpServerParam {
+    fn from_row(row: &'s DbRow) -> Result<Self, sqlx::Error> {
+        let r#type: TransportType =
+            storage::utils::parse_str_to(row.get::<String, _>("type").as_str()).map_err(|e| {
+                sqlx::Error::Decode(format!("deserialize type failed: {}", e).into())
+            })?;
+        let args = storage::utils::de_str_to(row.get::<String, _>("args").as_str())
+            .map_err(|e| sqlx::Error::Decode(format!("deserialize args failed: {}", e).into()))?;
+        let env = storage::utils::de_str_to(row.get::<String, _>("env").as_str())
+            .map_err(|e| sqlx::Error::Decode(format!("deserialize env failed: {}", e).into()))?;
+        let auto_approves =
+            storage::utils::de_str_to(row.get::<String, _>("auto_approves").as_str()).map_err(
+                |e| sqlx::Error::Decode(format!("deserialize auto_approves failed: {}", e).into()),
+            )?;
+        Ok(McpServerParam {
+            id: row.get("id"),
+            r#type,
+            name: row.get("name"),
+            url: row.get("url"),
+            description: row.get("description"),
+            command: row.get("command"),
+            args,
+            env,
+            auto_approves,
+            created_at: row.get("created_at"),
+        })
+    }
 }
 
 // ============ CRUD DTO  ============
@@ -186,7 +337,7 @@ pub struct McpServerParam {
 pub struct CreateMessage {
     pub from_id: Option<i64>,
     pub stream: bool,
-    pub content_json: String,
+    pub content: Vec<wind_ai::message::Message>,
     pub model_id: i64,
     pub topic_id: i64,
     pub is_boundary: bool,
@@ -195,7 +346,7 @@ pub struct CreateMessage {
 }
 
 pub struct UpdateMessage {
-    pub content_json: Option<String>,
+    pub content: Option<Vec<wind_ai::message::Message>>,
     pub model_id: Option<i64>,
     pub input_tokens: Option<i32>,
     pub output_tokens: Option<i32>,
@@ -204,7 +355,7 @@ pub struct UpdateMessage {
 impl Default for UpdateMessage {
     fn default() -> Self {
         Self {
-            content_json: None,
+            content: None,
             model_id: None,
             input_tokens: None,
             output_tokens: None,
@@ -215,9 +366,7 @@ impl Default for UpdateMessage {
 impl From<Message> for UpdateMessage {
     fn from(value: Message) -> Self {
         Self {
-            content_json: Some(
-                serde_json::to_string(&value.content).unwrap_or_else(|_| "[]".to_string()),
-            ),
+            content: Some(value.content),
             model_id: Some(value.model_id),
             input_tokens: Some(value.input_tokens),
             output_tokens: Some(value.output_tokens),
@@ -232,7 +381,6 @@ pub struct CreateProvider {
     pub base_url: String,
     pub doc: Option<String>,
     pub alias: Option<String>,
-    pub active: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -336,7 +484,6 @@ pub struct CreateJsonRule {
     pub provider_id: i64,
     pub adaptor: AdaptorType,
     pub json_rule: String,
-    pub active: bool,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -356,15 +503,17 @@ pub struct CreateMcpServer {
     pub command: Option<String>,
     pub args: Option<Vec<String>>,
     pub env: Option<HashMap<String, String>>,
+    pub auto_approves: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Clone, Default)]
 pub struct UpdateMcpServer {
     pub r#type: Option<TransportType>,
-    pub name: Option<String>,
+    pub name: String,
     pub url: Option<String>,
     pub description: Option<String>,
     pub command: Option<String>,
     pub args: Option<Vec<String>>,
     pub env: Option<HashMap<String, String>>,
+    pub auto_approves: Option<Vec<String>>,
 }

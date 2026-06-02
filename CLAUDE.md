@@ -5,149 +5,104 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build & Test
 
 ```bash
-# Build the entire workspace
-cargo build
-
-# Build a specific crate
-cargo build -p wind-core
-
-# Run all tests (uses SQLite; no external DB needed)
-cargo test
-
-# Run tests for a specific crate
-cargo test -p wind-core
-cargo test -p wind-ai
-cargo test -p wind-mcp
-cargo test -p wind-rule
-
-# Run a single test
-cargo test -p wind-ai -- test_build_request
-
-# Integration tests that require API keys
-# Copy .env.example to .env and fill in your keys, then run:
-cargo test -p wind-core -- test_chat
-
-# MCP integration tests (use .env values)
-cargo test -p wind-core -- test_chat_mcp
-
-# Real MCP server tests (require npx/uvx installed; #[ignore] by default)
-cargo test -p wind-core -- --ignored
-
-# The MCP registry tests also require npx/uvx
-cargo test -p wind-mcp -- --ignored
+cargo build                           # Build entire workspace
+cargo build -p wind-core              # Build a specific crate
+cargo test                            # Run all tests (SQLite, no external DB)
+cargo test -p wind-core               # Tests for a specific crate
+cargo test -p wind-core -- test_chat  # Integration tests that need API keys (.env)
+cargo test -p wind-core -- --ignored  # MCP tests (require npx/uvx installed)
 ```
 
-Copy `.env.example` to `.env` and fill in the `TEST_*` values. Integration tests auto-discover this file via `dotenvy` by walking up from `CARGO_MANIFEST_DIR`. See `.env.example` for all supported variables.
+Copy `.env.example` to `.env` and fill in `TEST_*` values for integration tests.
 
 ## Architecture
 
-This is a Rust workspace with four crates under `windai/`:
-
-### Crate dependency graph
-
 ```
 wind-core  ──depends-on──>  wind-ai, wind-mcp, wind-rule
-wind-mcp   ──depends-on──>  (rmcp for MCP transport)
-wind-ai    ──depends-on──>  (reqwest for HTTP, no other wind-* crates)
-wind-rule  ──depends-on──>  (evalexpr, standalone)
+wind-mcp   ──depends-on──>  rmcp
+wind-ai    ──depends-on──>  reqwest
+wind-rule  ──depends-on──>  evalexpr
 ```
 
-Each crate is self-contained: `wind-ai` knows nothing about `wind-mcp` or the database. The `wind-core` crate is the only one that ties everything together.
+### `wind-core` — Central orchestration
 
-### `wind-core` - Central orchestration
-
-`WindCore` (`windai/core/src/lib.rs:22`) is the application entry point. It owns:
-- A `SqlitePool` for persistence
-- An MCP `RegistryHandle` for managing MCP server connections
-
-It exposes service facades (`provider()`, `model()`, `topic()`, `message()`, `chat()`) that each create a service instance backed by the shared pool.
-
-The **`ChatEngine`** (`windai/core/src/chat/engine.rs`) is the core chat loop:
-1. Loads `Topic`, `Model`, `Provider`, credentials, and `ReqConfig` from the DB
-2. Builds message context from history (respecting `is_boundary` markers and `max_context` limits)
-3. Fetches MCP tools registered to the topic
-4. Constructs the request via the adaptor's `build_request()`
-5. Applies JSON rules (user-defined `RuleSet` transforms stored in `json_rule` table)
-6. Sends the request; on tool calls, executes them via MCP and loops back to step 4
-
-The chat loop emits a `ChatEvent` stream (`Created → Partial x N → Finished` for streaming; `Response` for non-streaming).
-
-### `wind-ai` - AI provider abstraction
-
-The **adaptor pattern** (`windai/ai/src/provider/adaptor.rs`) is the key abstraction. The `ChatAdaptor` trait has three methods:
+`WindCore` (`lib.rs`) owns a `SqlitePool` and a `RegistryHandle`. It exposes:
 
 ```rust
-fn build_request(model, config, contexts, tools) -> Value
-fn parse_response(bytes) -> Message
-fn parse_stream_chunk(bytes) -> Vec<Message>
+core.storage()          // &Storage — all CRUD access
+core.storage().provider()    // &ProviderStorage
+core.storage().model()       // &ModelStorage
+core.storage().topic()       // &TopicStorage
+core.storage().message()     // &MessageStorage
+core.chat()             // ChatEngine — conversation loop
 ```
 
-Two implementations exist:
-- **`OpenAICompletionAdaptor`** - for `/chat/completions` endpoints (OpenAI, DeepSeek, OpenRouter, etc.)
-- **`OpenAIResponseAdaptor`** - for `/responses` endpoints (newer OpenAI API)
+The `Storage` struct (`storage.rs`) wraps `ProviderStorage`, `ModelStorage`, `TopicStorage`, `MessageStorage`. `McpStorage` is standalone. All `create()` methods return `i64` (the new ID), not the full object — use `get()` to retrieve the record.
 
-`adaptor::get_chat_adaptor(type)` returns a boxed trait object. The adaptor type is stored per-model in the database.
+**`init_id_generator(machine_id)`** must be called before any `create()` operation. `WindCore::init()` does this automatically; standalone tests using `XxxStorage` directly must call it in setup.
 
-Each adaptor has companion schema types under `provider/adaptor/schema/` that define the provider-specific JSON structures.
+**SQL macros** (`storage.rs`): `insert!`, `update!`, `update_fields!`, `insert_fields!`, `delete_by_id!`, `select_fields!`, `get_by_id!`. Values must be `Option`-wrapped; `None` fields are skipped. `update!` appends `updated_at` and `WHERE id = ?` automatically.
 
-**Message type** (`message.rs`): The unified `Message` struct carries role, content (vec of text/image/audio/file/function_call), reasoning_content, token counts, and optional `tool_calls`. `append_chunk()` merges streaming deltas.
+**`ChatEngine`** (`chat/engine.rs`) — the core loop:
+1. Load topic, model, provider, credentials, config from DB
+2. Build message context from history (respects `is_boundary`, `max_context`)
+3. Fetch MCP tools registered to the topic
+4. Build request via adaptor, apply JSON rules
+5. Send request; on tool calls, execute via MCP and loop back
 
-**Request config** (`ReqConfig`): temperature, top_p, max_tokens, stream, penalties, parallel_tool_calls, reasoning.
+Emits `ChatEvent::Created → Partial x N → Finish`.
 
-**Streaming**: `handle_chat()` checks `req_body.stream`; if true, uses `client::request_sse()` + `client::handle_stream()` which buffers SSE chunks by `\n\n` boundaries, then `parse_stream_chunk()` converts each SSE block into `Message` fragments.
+### `wind-ai` — Provider abstraction
 
-### `wind-mcp` - MCP client registry
+`ChatAdaptor` trait (`provider/adaptor.rs`): `build_request()` / `parse_response()` / `parse_stream_chunk()`. Two implementations: `OpenAICompletionAdaptor` (for `/chat/completions`) and `OpenAIResponseAdaptor` (for `/responses`).
 
-The **Registry** (`windai/mcp/src/client/registry.rs`) uses an actor pattern: `Registry::new()` spawns a tokio task that owns all server state and communicates via `mpsc` channels through a `RegistryHandle` clone.
+`Message` (`message.rs`) carries role, content (vec of Content variants), reasoning_content, token counts, tool_calls. `append_chunk()` merges streaming deltas. `ReqConfig` holds temperature, top_p, max_tokens, stream, penalties, parallel_tool_calls, reasoning.
 
-`RegistryHandle` supports:
-- `acquire(session_id, params)` - start/reuse an MCP server (shared across sessions via reference counting)
-- `release(session_id, name)` - drop a session reference; last one disconnects
-- `list_all_tools()` / `call_tool(param)` - tool discovery and execution
+Streaming: `handle_chat()` → `request_sse()` → buffer by `\n\n` → `parse_stream_chunk()`.
 
-`ServerHandle::connect()` (`connector.rs`) supports two transports:
-- **Stdio** - spawns a child process, uses a dedup map to serialize concurrent starts of the same command (avoids npm/uvx file-write conflicts)
-- **Streamable HTTP** - connects via URL
+### `wind-mcp` — MCP client registry
 
-Tool names are namespaced: `{server_name}0m0{tool_name}` where `0m0` is the separator constant (`MCP_TOOL_IDENTIFIER`).
+Actor pattern: `Registry::new()` spawns a tokio task; all interaction via `RegistryHandle` (cloneable, `mpsc` channels).
 
-### `wind-rule` - JSON rule engine
+- `acquire(session_id, params)` — start/reuse server (ref-counted across sessions)
+- `release(session_id, name)` — drop a session reference
+- `list_all_tools()` / `call_tool(param)` — discovery & execution
 
-`RuleSet` (`windai/rule/src/compile.rs`) is a JSON-based rule engine that transforms request bodies. Users store rule JSON in the `json_rule` table keyed by `(provider_id, adaptor)`. Before each API request, the chat engine calls `apply_json_rule()` which applies the `RuleSet` to the request body using an `EvalContext` that includes `{provider, model, endpoint, adaptor}`. This allows per-provider request rewriting without code changes.
+Transports: **Stdio** (child process, with dedup map for concurrent starts) and **Streamable HTTP**. Tool names: `{server_name}0m0{tool_name}`.
 
-**Operations** (defined in `RawOp` / compiled to `CompiledOp`):
+### `wind-rule` — JSON rule engine
+
+Rules stored in `json_rule` table keyed by `(provider_id, adaptor)`. Applied to request bodies before each API call.
 
 | Op | Purpose |
 |----|---------|
-| `set` | Set a value at a JSON path; creates intermediate objects as needed |
-| `remove` | Delete a field at a JSON path |
-| `map_value` | Map a field's value to a target object via a lookup table; optionally removes the source field. Merges the target object into the body root |
-| `compute` | Evaluate an `evalexpr` expression over `$value` (current field value) and `$ctx.*` (context variables). Result replaces the field |
-| `when` | Conditional: `cond` is compiled via `CompiledCond` (supports `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `contains`, `and`, `or`, `not`, `in`). Executes `then` or `else` sub-rules |
+| `set` | Set value at JSON path (creates intermediate objects) |
+| `remove` | Delete field at JSON path |
+| `map_value` | Map field value via lookup table → merge result into body root |
+| `compute` | Evaluate `evalexpr` over `$value` + `$ctx.*` → replace field |
+| `when` | Conditional: `cond` (eq/neq/gt/lt/contains/and/or/not/in) with `then`/`else` sub-rules |
 
-Key implementation details:
-- Path segments are pre-split at compile time (dot-separated, e.g. `foo.bar.zoo` → `["foo", "bar", "zoo"]`)
-- `compute` expressions are pre-compiled into `evalexpr::Node` trees at rule parse time
-- `map_value` mappings are compiled from JSON into `Vec<(Value, Value)>` lookup tables with special handling for `"null"` keys and numeric-string keys
-- `merge_root()` does a shallow merge at the body root level; nested objects are merged recursively one level deep
-- `EvalContext` is constructed from a `Value::Object`; nested path access is not yet implemented (flat `$ctx.key` only)
+### Database tables (SQLite, `schema.rs`)
 
-### Database schema (SQLite)
+`providers`, `models`, `credentials`, `topics`, `messages`, `chat_configs`, `mcp_servers`, `topic_mcp_servers`, `json_rule`.
 
-`windai/core/src/schema.rs` creates these tables on init:
-- `providers` - API provider configs (name, base_url, active)
-- `models` - AI models linked to providers with adaptor type
-- `credentials` - API keys per provider
-- `topics` - conversation threads with max_context and ordering
-- `messages` - chat messages with content as JSON, boundary/excluded flags, token counts
-- `chat_configs` - per-topic request parameters
-- `topic_mcp_servers` - MCP servers linked to topics
-- `json_rule` - per-provider+adaptor JSON rule transforms
+### Test organization
 
-### Key flows
+| File | Content |
+|------|---------|
+| `tests/storage.rs` | Integration tests for all `*Storage` structs — CRUD, validation, cascade, batch |
+| `tests/chat_engine.rs` | ChatEngine integration (needs `.env`) |
+| `tests/core_chat.rs` | WindCore + chat + json_rule + persistence (needs `.env`) |
+| `tests/chat.rs` | AI adaptor tests (needs `.env`) |
+| `tests/mcp.rs` | MCP integration tests (needs `.env`) |
+| `src/storage.rs` (cfg test) | SQL macro unit tests |
 
-**Adding a new provider adaptor**: Implement `ChatAdaptor` trait in `wind-ai`, add the variant to `AdaptorType` enum in `windai/ai/src/model.rs`, and register it in `get_chat_adaptor()`.
+### Key patterns
 
-**Adding a new provider**: Insert a row in `providers`, add credentials, insert models referencing the adaptor type. No code changes needed.
+**Adding a new provider adaptor:** Implement `ChatAdaptor`, add variant to `AdaptorType`, register in `get_chat_adaptor()`.
 
-**MCP tool calling flow**: Topic → `topic_mcp_servers` links servers → Registry acquires connections → tools discovered → tool names prefixed with server name → AI model returns `tool_calls` → `execute_function_calls()` parses server+tool names, dispatches to registry → results fed back as context for next AI turn.
+**Adding a new provider:** Insert into `providers`, add credentials, insert models — no code changes.
+
+**MCP tool flow:** Topic → `topic_mcp_servers` → Registry acquire → tools discovered → prefixed names → `tool_calls` in response → `execute_function_calls()` → results as context → loop.
+
+**`create()` returns `i64`:** Call `get(id)` to retrieve the full record. This allows batch operations to allocate IDs without re-fetching.

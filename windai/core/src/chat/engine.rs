@@ -12,72 +12,71 @@ use super::function_call::{build_tools_from_mcp, execute_function_calls};
 use super::rule::{apply_json_rule, build_rule};
 use crate::error::{CoreError, Result};
 use crate::models::{JsonRule, Message as CoreMessage, Model, Provider, Topic};
-use crate::storage::message::service::MessageService;
-use crate::storage::model::service::ModelService;
-use crate::storage::provider::service::ProviderService;
-use crate::storage::topic::service::TopicService;
+use crate::storage::Storage;
 
 pub struct ChatEngine<'c> {
     mcp_registry: RegistryHandle,
-
-    topic_svc: &'c TopicService,
-    model_svc: &'c ModelService,
-    provider_svc: &'c ProviderService,
-    msg_svc: &'c MessageService,
+    storage: &'c Storage,
 }
 
 impl<'c> ChatEngine<'c> {
-    pub fn new(
-        topic_svc: &'c TopicService,
-        provider_svc: &'c ProviderService,
-        model_svc: &'c ModelService,
-        msg_svc: &'c MessageService,
-        mcp_registry: RegistryHandle,
-    ) -> Self {
+    pub fn new(mcp_registry: RegistryHandle, storage: &'c Storage) -> Self {
         Self {
-            topic_svc,
-            model_svc,
-            provider_svc,
-            msg_svc,
             mcp_registry,
+            storage,
         }
     }
 
-    /// 获取必要的聊天请求信息.
+    /// 获取必要的对话请求信息.
     async fn load_info(
         &self,
-        topic_svc: &TopicService,
-        model_svc: &ModelService,
-        provider_svc: &ProviderService,
         topic_id: i64,
         model_id: i64,
     ) -> Result<(Topic, Model, Provider, ReqConfig, Option<JsonRule>, String)> {
-        let topic = topic_svc.get_topic(topic_id).await?.ok_or_else(|| {
-            CoreError::NotFound(format!("Cannot find a topic. topic_id: {}", topic_id))
-        })?;
-        let mut model = model_svc.get(model_id).await?.ok_or_else(|| {
+        let topic = self
+            .storage
+            .topic()
+            .get_topic(topic_id)
+            .await?
+            .ok_or_else(|| {
+                CoreError::NotFound(format!("Cannot find a topic. topic_id: {}", topic_id))
+            })?;
+        let mut model = self.storage.model().get(model_id).await?.ok_or_else(|| {
             CoreError::NotFound(format!("Cannot find a model. model_id: {}", model_id))
         })?;
-        let rule_set = provider_svc
+        let rule_set = self
+            .storage
+            .provider()
             .get_json_rule(model.provider_id, model.adaptor)
             .await?;
 
         model.endpoint = model.endpoint.filter(|e| !e.is_empty());
-        let provider = provider_svc.get(model.provider_id).await?.ok_or_else(|| {
-            CoreError::NotFound(format!(
-                "Cannot find a provider. provider_id: {}",
-                model.provider_id
-            ))
-        })?;
+        let provider = self
+            .storage
+            .provider()
+            .get(model.provider_id)
+            .await?
+            .ok_or_else(|| {
+                CoreError::NotFound(format!(
+                    "Cannot find a provider. provider_id: {}",
+                    model.provider_id
+                ))
+            })?;
 
-        let credentials = provider_svc.list_credentials(model.provider_id).await?;
+        let credentials = self
+            .storage
+            .provider()
+            .get_provider_credentials(model.provider_id)
+            .await?;
         if credentials.is_empty() {
             return Err(CoreError::NotFound(format!(
                 "no credentials for provider {}",
                 model.provider_id
             )));
         }
-        let req_config = topic_svc
+        let req_config = self
+            .storage
+            .topic()
             .get_chat_config(topic_id)
             .await?
             .and_then(|opt| Some(opt))
@@ -97,12 +96,8 @@ impl<'c> ChatEngine<'c> {
     }
 
     /// 获取某个 topic 下可用的 MCP 工具
-    async fn get_topic_tools(
-        &self,
-        topic_svc: &TopicService,
-        topic_id: i64,
-    ) -> Result<Option<Vec<Tools>>> {
-        let params = topic_svc.list_mcp_servers(topic_id).await?;
+    async fn get_topic_tools(&self, topic_id: i64) -> Result<Option<Vec<Tools>>> {
+        let params = self.storage.topic().list_mcp_servers(topic_id).await?;
         if params.is_empty() {
             return Ok(None);
         }
@@ -156,18 +151,12 @@ impl<'c> ChatEngine<'c> {
         user_message_id: i64,
         message_id: i64,
     ) -> Result<impl futures::Stream<Item = ChatEvent>> {
-        let (topic, model, provider, req_config, rule_set, api_key) = self
-            .load_info(
-                self.topic_svc,
-                self.model_svc,
-                self.provider_svc,
-                topic_id,
-                model_id,
-            )
-            .await?;
+        let (topic, model, provider, req_config, rule_set, api_key) =
+            self.load_info(topic_id, model_id).await?;
 
         let messages = self
-            .msg_svc
+            .storage
+            .message()
             .list_by_topic(topic_id)
             .await?
             .into_iter()
@@ -181,7 +170,7 @@ impl<'c> ChatEngine<'c> {
             topic.max_context,
         )?;
 
-        let tools = self.get_topic_tools(self.topic_svc, topic_id).await?;
+        let tools = self.get_topic_tools(topic_id).await?;
         let mcp_client = self.mcp_registry.clone();
         let base_url = provider.base_url.clone();
         let endpoint = model.endpoint.clone();
@@ -193,7 +182,7 @@ impl<'c> ChatEngine<'c> {
         let provider_name = provider.name;
         let model_name = model.name.clone();
         let adaptor_type = model.adaptor;
-        let rule = build_rule(&rule_set)?;
+        let rule = build_rule(rule_set)?;
 
         let stream = async_stream::stream! {
             yield ChatEvent::created(message_id);
@@ -217,12 +206,12 @@ impl<'c> ChatEngine<'c> {
                     }
                 };
                 apply_json_rule(
-                    &rule,
+                    rule.as_ref(),
                     &mut req_body,
                     adaptor_type,
                     &provider_name,
                     &model_name,
-                    &endpoint,
+                    endpoint.as_deref(),
                 );
 
                 let stream = handle_chat(
@@ -294,7 +283,7 @@ impl<'c> ChatEngine<'c> {
                 ));
             };
             if let Err(e) = self
-                .msg_svc
+                .storage.message()
                 .update(core_msg.id, core_msg.clone().into())
                 .await
             {

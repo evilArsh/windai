@@ -187,7 +187,7 @@ pub struct Tool {
     _p: u8,
 }
 impl Tool {
-    /// 解析出MCP服务名和真实工具名
+    /// 解析出MCP服务名和函数名
     /// - (MCP server name, tool name)
     pub fn parse_name(tool_name: &str) -> Result<(String, String), McpError> {
         if let Some(pos) = tool_name.find(MCP_TOOL_IDENTIFIER) {

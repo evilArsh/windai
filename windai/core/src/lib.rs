@@ -6,23 +6,15 @@ pub mod models;
 pub mod schema;
 pub mod storage;
 
+use self::storage::Storage;
 use chat::ChatEngine;
 use error::Result;
-use sqlx::{Pool, Sqlite};
 use std::path::Path;
-use storage::message::service::MessageService;
-use storage::model::service::ModelService;
-use storage::provider::service::ProviderService;
-use storage::topic::service::TopicService;
 use wind_mcp::client::registry::{Registry, RegistryHandle};
 
 pub struct WindCore {
-    db: Pool<Sqlite>,
     mcp: RegistryHandle,
-    provider_svc: ProviderService,
-    topic_svc: TopicService,
-    model_svc: ModelService,
-    message_svc: MessageService,
+    storage: Storage,
 }
 
 impl WindCore {
@@ -60,50 +52,27 @@ impl WindCore {
     }
 
     async fn init(db_url: &str) -> Result<Self> {
-        let db = db::connect(db_url)
+        let db = db::init_db(db_url)
             .await
             .map_err(|e| error::CoreError::Database(e))?;
-
         schema::init_schema(&db).await?;
-
+        storage::init_id_generator(0);
         let mcp = Registry::new();
-
         Ok(Self {
-            db: db.clone(),
             mcp,
-            provider_svc: ProviderService::new(db.clone()),
-            topic_svc: TopicService::new(db.clone()),
-            model_svc: ModelService::new(db.clone()),
-            message_svc: MessageService::new(db.clone()),
+            storage: Storage::new(db),
         })
     }
-    pub fn provider(&self) -> &ProviderService {
-        &self.provider_svc
-    }
-    pub fn model(&self) -> &ModelService {
-        &self.model_svc
-    }
-    pub fn topic(&self) -> &TopicService {
-        &self.topic_svc
-    }
-    pub fn message(&self) -> &MessageService {
-        &self.message_svc
+    pub fn storage(&self) -> &Storage {
+        &self.storage
     }
     pub fn chat(&self) -> ChatEngine<'_> {
-        ChatEngine::new(
-            self.topic(),
-            self.provider(),
-            self.model(),
-            self.message(),
-            self.mcp.clone(),
-        )
+        ChatEngine::new(self.mcp.clone(), self.storage())
     }
     /// 关闭所有服务
     /// - 关闭所有 MCP 客户端
     pub async fn shutdown(&self) {
         self.mcp.shutdown().await;
-        if !self.db.is_closed() {
-            self.db.close().await;
-        }
+        self.storage.close().await;
     }
 }
