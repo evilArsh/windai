@@ -1,12 +1,12 @@
 # windai
 
-AI 引擎核心库，提供数据库驱动的多轮对话、工具调用、多供应商适配和声明式请求改写。
+An AI engine core library providing database-driven multi-turn chat, tool calling with approval flow, multi-provider adaptors, and declarative request transformation.
 
-## 快速开始
+## Quick Start
 
 ```bash
 cargo build
-cargo test                   # SQLite 内存库，无需外部依赖
+cargo test                   # SQLite in-memory, no external dependencies
 ```
 
 ```toml
@@ -14,18 +14,24 @@ cargo test                   # SQLite 内存库，无需外部依赖
 wind-core = { git = "https://github.com/evilArsh/windai" }
 ```
 
-## 使用
+## Usage
 
-### 初始化
+### Initialization
 
 ```rust
 use wind_core::WindCore;
 
+// In-memory SQLite (tests / ephemeral)
 let core = WindCore::init_memory().await?;
-let core = WindCore::init_local(Some("db.path")).await?;
+
+// File-backed SQLite
+let core = WindCore::init_local(Some("/path/to/windai.db")).await?;
+
+// Custom connection pool (e.g. shared-cache for tests)
+let core = WindCore::init_with_pool(pool).await?;
 ```
 
-### 注册供应商和模型
+### Register Provider & Model
 
 ```rust
 use wind_core::models::{CreateProvider, CreateCredentials, CreateModel};
@@ -34,83 +40,173 @@ use wind_ai::model::AdaptorType;
 let storage = core.storage();
 
 let pid = storage.provider().create(CreateProvider {
-    name: "deepseek".into(), base_url: "https://api.deepseek.com".into(),
-    description: None, doc: None, alias: None,
+    name: "deepseek".into(),
+    base_url: "https://api.deepseek.com".into(),
+    description: None,
+    doc: None,
+    alias: None,
 }).await?;
 
 storage.provider().create_credentials(CreateCredentials {
-    provider_id: pid, key: "sk-xxx".into(),
+    provider_id: pid,
+    key: "sk-xxx".into(),
 }).await?;
 
 let mid = storage.model().create(CreateModel {
-    name: "deepseek-chat".into(), provider_id: pid,
+    name: "deepseek-chat".into(),
+    provider_id: pid,
     adaptor: AdaptorType::OpenAICompletion,
-    alias: None, modalities: None, active: Some(true),
-    icon: None, endpoint: None,
+    alias: None,
+    modalities: Some(vec![ModelType::Chat]),
+    active: Some(true),
+    icon: None,
+    endpoint: None,
 }).await?;
 ```
 
-### 创建话题并发起对话
+### Create Topic & Start Chat
 
 ```rust
 use wind_core::models::{CreateTopic, CreateMessage};
 use wind_ai::message::{Message, Content, Role, ReqConfig};
-
-let storage = core.storage();
-let tid = storage.topic().create(CreateTopic {
-    parent_id: None, chat_config_id: 0,
-    label: "聊天".into(), icon: None, max_context: None,
-}).await?;
-
-storage.topic().create_chat_config(tid, ReqConfig {
-    temperature: Some(0.7), stream: Some(true), ..Default::default()
-}).await?;
-
-// 用户消息
-let uid = storage.message().create(CreateMessage {
-    from_id: None, stream: false, is_boundary: false,
-    content: vec![Message::new_simple(Role::User, vec![
-        Content::new_text("你好".into())
-    ], None)],
-    topic_id: tid, model_id: mid, input_tokens: 0, output_tokens: 0,
-}).await?;
-
-// 助手消息
-let aid = storage.message().create(CreateMessage {
-    from_id: Some(uid), stream: false, is_boundary: false,
-    content: vec![],
-    topic_id: tid, model_id: mid, input_tokens: 0, output_tokens: 0,
-}).await?;
-
-// 流式对话
 use futures::StreamExt;
 use wind_core::chat::ChatEvent;
 
-let mut stream = core.chat().start(tid, mid, uid, aid);
+let tid = storage.topic().create(CreateTopic {
+    parent_id: None,
+    chat_config_id: 0,
+    label: "My Chat".into(),
+    icon: None,
+    max_context: Some(50),
+    mcp_server_ids: None,
+}).await?;
+
+storage.topic().create_chat_config(tid, ReqConfig {
+    temperature: Some(0.7),
+    stream: Some(true),
+    ..Default::default()
+}).await?;
+
+// Create user message
+let uid = storage.message().create(CreateMessage {
+    from_id: None,
+    stream: false,
+    is_boundary: false,
+    content: vec![Message::new_simple(Role::User, vec![
+        Content::new_text("Hello!".into())
+    ], None)],
+    topic_id: tid,
+    model_id: mid,
+    input_tokens: 0,
+    output_tokens: 0,
+    tools_allowed: None,
+    tools_denied: None,
+}).await?;
+
+// Create assistant message placeholder
+let aid = storage.message().create(CreateMessage {
+    from_id: Some(uid),
+    stream: false,
+    is_boundary: false,
+    content: vec![],
+    topic_id: tid,
+    model_id: mid,
+    input_tokens: 0,
+    output_tokens: 0,
+    tools_allowed: None,
+    tools_denied: None,
+}).await?;
+
+// Start streaming chat
+let mut stream = core.chat().start(tid, uid, aid);
 while let Some(event) = stream.next().await {
     match event {
-        ChatEvent::Created { .. } => {},
+        ChatEvent::Created { .. } => {}
         ChatEvent::Partial { delta, .. } => {
-            if let Some(c) = delta.content.first() {
-                print!("{}", c.text());
+            for c in &delta.content {
+                match c {
+                    Content::Text { data } => print!("{data}"),
+                    _ => {}
+                }
             }
         }
+        ChatEvent::AwaitToolCall { message_id, tools } => {
+            println!("Waiting for approval: {} tools", tools.len());
+            // See Tool Approval section below
+        }
         ChatEvent::Finish { error, .. } => {
-            if let Some(e) = error { eprintln!("错误: {e}"); }
+            if let Some(e) = error {
+                eprintln!("Error: {e}");
+            }
         }
     }
 }
 ```
 
-### JSON 规则引擎
+### MCP Tool Calling
 
-用 JSON 定义请求改写规则，存到数据库后自动生效。例如将 DeepSeek 的 `reasoning_effort` 转成 `thinking` 参数：
+Register MCP servers and attach them to topics. The engine auto-discovers tools, sends them with each request, and executes approved calls.
+
+```rust
+use wind_core::models::CreateMcpServer;
+use wind_mcp::client::TransportType;
+
+let sid = storage.mcp().create(CreateMcpServer {
+    r#type: TransportType::Stdio,
+    name: "everything".into(),
+    command: Some("npx".into()),
+    args: Some(vec![
+        "-y".into(),
+        "@modelcontextprotocol/server-everything".into(),
+    ]),
+    url: None,
+    description: None,
+    env: None,
+}).await?;
+
+// Attach server to topic — tools become available on next chat request
+storage.topic().create(CreateTopic {
+    // ...
+    mcp_server_ids: Some(vec![sid]),
+    // ...
+}).await?;
+```
+
+### Tool Approval Flow
+
+When the model requests tool calls that are not auto-approved, the engine emits `AwaitToolCall` and saves the assistant message state. The caller must explicitly approve or reject before resuming.
+
+```rust
+// After receiving AwaitToolCall:
+// Approve specific tool call IDs
+storage.message().update(
+    message_id,
+    UpdateMessage {
+        tools_allowed: Some(vec!["call_abc123".into()]),
+        ..Default::default()
+    },
+).await?;
+
+// Resume — the engine re-loads state and executes approved tools
+let mut stream = core.chat().start(topic_id, user_msg_id, message_id);
+```
+
+**Approve:** Set `tools_allowed` with the tool call IDs to execute. Approved tools run, results are fed back as context, and the model continues.
+
+**Reject:** Leave `tools_allowed` empty or omit it. Unapproved tools receive `{"error": "User denied this tool call"}` as their result, and the model continues with those rejection markers in context.
+
+**Auto-approve:** Configure per-topic (`topic.auto_approves`) or per-server (`mcp_servers.auto_approves`) to skip the approval step for certain tools.
+
+### JSON Rule Engine
+
+Define declarative request transformations stored in the database. Rules are applied to every API request before sending.
 
 ```rust
 use wind_core::models::CreateJsonRule;
 
 storage.provider().create_json_rule(CreateJsonRule {
-    provider_id: pid, adaptor: AdaptorType::OpenAICompletion,
+    provider_id: pid,
+    adaptor: AdaptorType::OpenAICompletion,
     json_rule: r#"{
         "rules": [{
             "type": "map_value",
@@ -126,55 +222,61 @@ storage.provider().create_json_rule(CreateJsonRule {
 }).await?;
 ```
 
-支持 `set`、`remove`、`map_value`、`compute`、`when` 五种操作。条件支持 `eq`/`neq`/`gt`/`lt`/`contains`/`and`/`or`/`not`/`in`。上下文变量 `$ctx.provider` / `$ctx.model` / `$ctx.adaptor` 自动注入。
+**Operations:** `set`, `remove`, `map_value`, `compute`, `when`.
 
-### MCP 工具调用
+**Conditions:** `eq`, `neq`, `gt`, `lt`, `contains`, `and`, `or`, `not`, `in`.
 
-```rust
-use wind_core::models::CreateMcpServer;
-use wind_core::storage::mcp::McpStorage;
-use wind_mcp::client::TransportType;
+**Context variables** (`$ctx.*`) auto-injected: `$ctx.provider`, `$ctx.model`, `$ctx.adaptor`, `$ctx.endpoint`.
 
-let mcp = McpStorage::new(/* pool */);
-let sid = mcp.create(CreateMcpServer {
-    r#type: TransportType::Stdio, name: "fetch".into(),
-    command: Some("uvx".into()), args: Some(vec!["mcp-server-fetch".into()]),
-    url: None, description: None, env: None, auto_approves: None,
-}).await?;
-
-storage.topic().set_mcp_servers(tid, vec![sid]).await?;
-// chat().start() 会自动发现工具并循环执行工具调用
-```
-
-### 实体管理
+### Entity Management
 
 ```rust
 let s = core.storage();
+
+// Lists
 s.provider().list_all().await?;
 s.model().list_by_provider().await?;
 s.topic().list_topics().await?;
 s.message().list_by_topic(tid).await?;
-s.topic().delete_topics(&[tid]).await?;
-s.provider().delete(pid).await?;  // 级联删除 credentials + json_rules
 
-core.shutdown().await;  // 优雅关闭
+// Cascade delete
+s.topic().delete_topics(&[tid]).await?;
+s.provider().delete(pid).await?;  // cascades credentials + json_rules
+
+// MCP
+s.mcp().get_by_name("everything").await?;
+s.mcp().list_all().await?;
+
+// Graceful shutdown
+core.shutdown().await;
 ```
 
-## Crate 结构
+## Crate Map
 
-| Crate       | 职责                                               |
-| ----------- | -------------------------------------------------- |
-| `wind-core` | 编排层 — SQLite 存储、对话引擎、规则应用、MCP 协调 |
-| `wind-ai`   | 供应商抽象 — 流式/非流式、adaptor 模式、SSE 解析   |
-| `wind-mcp`  | MCP 客户端 — actor 模式、stdio/HTTP 传输、工具发现 |
-| `wind-rule` | JSON 规则引擎 — 声明式请求变换、表达式编译         |
+| Crate | Responsibility |
+|-------|---------------|
+| `wind-core` | Orchestration — SQLite storage, chat engine, MCP coordination, rule application |
+| `wind-ai` | Provider abstraction — streaming/non-streaming, adaptor pattern, SSE parsing |
+| `wind-mcp` | MCP client — actor-based registry, stdio/HTTP transports, tool discovery & execution |
+| `wind-rule` | JSON rule engine — declarative request transformation, expression evaluation |
 
-## 环境变量
+## Chat Events
 
-| 变量              | 用途                          |
-| ----------------- | ----------------------------- |
-| `WINDAI_ROOT_DIR` | 数据目录（默认 `~/.windai/`） |
-| `RUST_LOG`        | 日志级别                      |
+| Event | When |
+|-------|------|
+| `Created` | Chat round started |
+| `Partial` | Streaming content chunk or intermediate tool-call frame |
+| `AwaitToolCall` | Tool calls require manual approval before execution |
+| `Finish` | Chat round ended (may carry final message or error) |
+
+A typical tool-call flow: `Created → Partial(tool_request) → AwaitToolCall → [user approves] → Partial(tool_result) → Partial(text) → Finish`.
+
+## Environment Variables
+
+| Variable | Purpose |
+|----------|---------|
+| `WINDAI_ROOT_DIR` | Data directory (default `~/.windai/`) |
+| `RUST_LOG` | Log level (`debug`, `info`, `warn`, `error`) |
 
 ## License
 
