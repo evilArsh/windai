@@ -6,7 +6,8 @@ pub mod topic;
 pub mod utils;
 
 use self::{
-    message::MessageStorage, model::ModelStorage, provider::ProviderStorage, topic::TopicStorage,
+    mcp::McpStorage, message::MessageStorage, model::ModelStorage, provider::ProviderStorage,
+    topic::TopicStorage,
 };
 use super::db::DbPool;
 use chrono::Utc;
@@ -23,6 +24,7 @@ pub struct Storage {
     topic: topic::TopicStorage,
     model: model::ModelStorage,
     message: message::MessageStorage,
+    mcp: mcp::McpStorage,
 }
 
 impl Storage {
@@ -32,6 +34,7 @@ impl Storage {
             topic: TopicStorage::new(db.clone()),
             model: ModelStorage::new(db.clone()),
             message: MessageStorage::new(db.clone()),
+            mcp: McpStorage::new(db.clone()),
             db,
         }
     }
@@ -46,6 +49,10 @@ impl Storage {
     }
     pub fn message(&self) -> &MessageStorage {
         &self.message
+    }
+
+    pub fn mcp(&self) -> &McpStorage {
+        &self.mcp
     }
 
     pub async fn close(&self) {
@@ -374,11 +381,7 @@ mod tests {
 
     #[test]
     fn update_fields_basic() {
-        let qb = update_fields!(
-            "users",
-            ("name", Some("alice")),
-            ("age", Some(30)),
-        );
+        let qb = update_fields!("users", ("name", Some("alice")), ("age", Some(30)),);
         assert_eq!(qb.sql(), "UPDATE users SET name = ?, age = ?");
     }
 

@@ -39,7 +39,6 @@ fn sample_mcp(name: &str, t: TransportType) -> CreateMcpServer {
         command: Some("node".into()),
         args: Some(vec!["server.js".into()]),
         env: None,
-        auto_approves: None,
     }
 }
 
@@ -63,6 +62,7 @@ fn sample_topic(label: &str, parent_id: Option<i64>) -> CreateTopic {
         label: label.into(),
         icon: None,
         max_context: None,
+        mcp_server_ids: None,
     }
 }
 
@@ -80,6 +80,8 @@ fn user_msg(topic_id: i64, model_id: i64, text: &str) -> CreateMessage {
         is_boundary: false,
         input_tokens: 5,
         output_tokens: 0,
+        tools_allowed: None,
+        tools_denied: None,
     }
 }
 
@@ -97,6 +99,8 @@ fn asst_msg(topic_id: i64, model_id: i64, from_id: i64) -> CreateMessage {
         is_boundary: false,
         input_tokens: 0,
         output_tokens: 10,
+        tools_allowed: None,
+        tools_denied: None,
     }
 }
 
@@ -131,15 +135,29 @@ async fn provider_crud() {
     // update
     svc.update(
         id,
-        UpdateProvider { name: Some("p1-renamed".into()), ..Default::default() },
-    ).await.unwrap();
+        UpdateProvider {
+            name: Some("p1-renamed".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
     assert_eq!(svc.get(id).await.unwrap().unwrap().name, "p1-renamed");
 
     // delete cascades credentials & json_rules
-    svc.create_credentials(CreateCredentials { provider_id: id, key: "k".into() }).await.unwrap();
+    svc.create_credentials(CreateCredentials {
+        provider_id: id,
+        key: "k".into(),
+    })
+    .await
+    .unwrap();
     svc.create_json_rule(CreateJsonRule {
-        provider_id: id, adaptor: AdaptorType::OpenAICompletion, json_rule: "{}".into(),
-    }).await.unwrap();
+        provider_id: id,
+        adaptor: AdaptorType::OpenAICompletion,
+        json_rule: "{}".into(),
+    })
+    .await
+    .unwrap();
     svc.delete(id).await.unwrap();
     assert!(svc.get(id).await.unwrap().is_none());
     assert_eq!(svc.get_provider_credentials(id).await.unwrap().len(), 0);
@@ -151,8 +169,16 @@ async fn provider_validation() {
     let svc = ProviderStorage::new(setup().await);
 
     // empty name on create
-    let err = svc.create(CreateProvider { name: "".into(), base_url: "u".into(), description: None, doc: None, alias: None })
-        .await.unwrap_err();
+    let err = svc
+        .create(CreateProvider {
+            name: "".into(),
+            base_url: "u".into(),
+            description: None,
+            doc: None,
+            alias: None,
+        })
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("cannot be empty"));
 
     // duplicate name on create
@@ -162,12 +188,28 @@ async fn provider_validation() {
 
     // empty name on update
     let id = svc.create(sample_provider("u1")).await.unwrap();
-    let err = svc.update(id, UpdateProvider { name: Some("".into()), ..Default::default() }).await;
+    let err = svc
+        .update(
+            id,
+            UpdateProvider {
+                name: Some("".into()),
+                ..Default::default()
+            },
+        )
+        .await;
     assert!(err.unwrap_err().to_string().contains("cannot be empty"));
 
     // duplicate name on update
     let id2 = svc.create(sample_provider("u2")).await.unwrap();
-    let err = svc.update(id2, UpdateProvider { name: Some("u1".into()), ..Default::default() }).await;
+    let err = svc
+        .update(
+            id2,
+            UpdateProvider {
+                name: Some("u1".into()),
+                ..Default::default()
+            },
+        )
+        .await;
     assert!(err.unwrap_err().to_string().contains("already exists"));
 }
 
@@ -177,8 +219,20 @@ async fn credentials_crud() {
     let svc = ProviderStorage::new(pool);
     let pid = svc.create(sample_provider("p")).await.unwrap();
 
-    let cid = svc.create_credentials(CreateCredentials { provider_id: pid, key: "sk-1".into() }).await.unwrap();
-    let cid2 = svc.create_credentials(CreateCredentials { provider_id: pid, key: "sk-2".into() }).await.unwrap();
+    let cid = svc
+        .create_credentials(CreateCredentials {
+            provider_id: pid,
+            key: "sk-1".into(),
+        })
+        .await
+        .unwrap();
+    let cid2 = svc
+        .create_credentials(CreateCredentials {
+            provider_id: pid,
+            key: "sk-2".into(),
+        })
+        .await
+        .unwrap();
 
     let list = svc.get_provider_credentials(pid).await.unwrap();
     assert_eq!(list.len(), 2);
@@ -197,35 +251,63 @@ async fn json_rule_crud() {
     let pid = svc.create(sample_provider("p")).await.unwrap();
 
     // create
-    let rid = svc.create_json_rule(CreateJsonRule {
-        provider_id: pid, adaptor: AdaptorType::OpenAICompletion, json_rule: "{}".into(),
-    }).await.unwrap();
+    let rid = svc
+        .create_json_rule(CreateJsonRule {
+            provider_id: pid,
+            adaptor: AdaptorType::OpenAICompletion,
+            json_rule: "{}".into(),
+        })
+        .await
+        .unwrap();
 
     // get by id, get by provider+adaptor
     let r = svc.get_json_rule_by_id(rid).await.unwrap().unwrap();
     assert_eq!(r.provider_id, pid);
-    let r2 = svc.get_json_rule(pid, AdaptorType::OpenAICompletion).await.unwrap().unwrap();
+    let r2 = svc
+        .get_json_rule(pid, AdaptorType::OpenAICompletion)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(r2.id, r.id);
-    assert!(svc.get_json_rule(pid, AdaptorType::OpenAIResponse).await.unwrap().is_none());
+    assert!(
+        svc.get_json_rule(pid, AdaptorType::OpenAIResponse)
+            .await
+            .unwrap()
+            .is_none()
+    );
 
     // list
     assert_eq!(svc.list_json_rules(pid).await.unwrap().len(), 1);
 
     // partial update — only json_rule, keep others
-    svc.update_json_rule(rid, UpdateJsonRule {
-        json_rule: Some(r#"{"v":2}"#.into()),
-        active: None, provider_id: None, adaptor: None,
-    }).await.unwrap();
+    svc.update_json_rule(
+        rid,
+        UpdateJsonRule {
+            json_rule: Some(r#"{"v":2}"#.into()),
+            active: None,
+            provider_id: None,
+            adaptor: None,
+        },
+    )
+    .await
+    .unwrap();
     let updated = svc.get_json_rule_by_id(rid).await.unwrap().unwrap();
     assert_eq!(updated.json_rule, r#"{"v":2}"#);
     assert_eq!(updated.adaptor, AdaptorType::OpenAICompletion);
     assert!(updated.active);
 
     // full update
-    svc.update_json_rule(rid, UpdateJsonRule {
-        json_rule: Some(r#"{"v":3}"#.into()),
-        active: Some(false), provider_id: None, adaptor: None,
-    }).await.unwrap();
+    svc.update_json_rule(
+        rid,
+        UpdateJsonRule {
+            json_rule: Some(r#"{"v":3}"#.into()),
+            active: Some(false),
+            provider_id: None,
+            adaptor: None,
+        },
+    )
+    .await
+    .unwrap();
     let updated = svc.get_json_rule_by_id(rid).await.unwrap().unwrap();
     assert_eq!(updated.json_rule, r#"{"v":3}"#);
     assert!(!updated.active);
@@ -255,13 +337,27 @@ async fn model_crud() {
     assert!(m_svc.get(999).await.unwrap().is_none());
 
     // list_by_provider
-    m_svc.create(CreateModel { name: "m2".into(), ..sample_model(pid) }).await.unwrap();
+    m_svc
+        .create(CreateModel {
+            name: "m2".into(),
+            ..sample_model(pid)
+        })
+        .await
+        .unwrap();
     assert_eq!(m_svc.list_by_provider().await.unwrap().len(), 2);
 
     // update
-    m_svc.update(mid, UpdateModel {
-        name: Some("gpt-4-turbo".into()), frequency: Some(5), ..Default::default()
-    }).await.unwrap();
+    m_svc
+        .update(
+            mid,
+            UpdateModel {
+                name: Some("gpt-4-turbo".into()),
+                frequency: Some(5),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
     let updated = m_svc.get(mid).await.unwrap().unwrap();
     assert_eq!(updated.name, "gpt-4-turbo");
     assert_eq!(updated.frequency, Some(5));
@@ -278,7 +374,13 @@ async fn model_create_empty_name() {
     let m_svc = ModelStorage::new(pool);
     let pid = p_svc.create(sample_provider("p")).await.unwrap();
 
-    let err = m_svc.create(CreateModel { name: "".into(), ..sample_model(pid) }).await.unwrap_err();
+    let err = m_svc
+        .create(CreateModel {
+            name: "".into(),
+            ..sample_model(pid)
+        })
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("cannot be empty"));
 }
 
@@ -308,14 +410,26 @@ async fn topic_crud() {
     assert!(list[0].index <= list[1].index);
 
     // update
-    svc.update(tid, UpdateTopic {
-        label: Some("root-renamed".into()), max_context: Some(500), ..Default::default()
-    }).await.unwrap();
-    assert_eq!(svc.get_topic(tid).await.unwrap().unwrap().label, "root-renamed");
+    svc.update(
+        tid,
+        UpdateTopic {
+            label: Some("root-renamed".into()),
+            max_context: Some(500),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        svc.get_topic(tid).await.unwrap().unwrap().label,
+        "root-renamed"
+    );
 
     // delete cascade
     msg_svc.create(user_msg(tid, 1, "hi")).await.unwrap();
-    svc.create_chat_config(tid, ReqConfig::default()).await.unwrap();
+    svc.create_chat_config(tid, ReqConfig::default())
+        .await
+        .unwrap();
     svc.delete_topics(&[tid, cid]).await.unwrap();
     assert!(svc.get_topic(tid).await.unwrap().is_none());
     assert!(svc.get_topic(cid).await.unwrap().is_none());
@@ -329,16 +443,27 @@ async fn topic_chat_config() {
     let tid = svc.create(sample_topic("t", None)).await.unwrap();
 
     // create
-    let cfg = ReqConfig { temperature: Some(0.7), max_tokens: Some(2048), ..Default::default() };
+    let cfg = ReqConfig {
+        temperature: Some(0.7),
+        max_tokens: Some(2048),
+        ..Default::default()
+    };
     svc.create_chat_config(tid, cfg).await.unwrap();
     let saved = svc.get_chat_config(tid).await.unwrap().unwrap();
     assert_eq!(saved.data.temperature, Some(0.7));
     assert_eq!(saved.data.max_tokens, Some(2048));
 
     // update — set some, skip others (None = don't change)
-    svc.update_chat_config(tid, ReqConfig {
-        temperature: Some(0.2), top_p: Some(0.9), ..Default::default()
-    }).await.unwrap();
+    svc.update_chat_config(
+        tid,
+        ReqConfig {
+            temperature: Some(0.2),
+            top_p: Some(0.9),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
     let updated = svc.get_chat_config(tid).await.unwrap().unwrap();
     assert_eq!(updated.data.temperature, Some(0.2));
     assert_eq!(updated.data.top_p, Some(0.9));
@@ -355,24 +480,54 @@ async fn topic_mcp_servers() {
     let topic_svc = TopicStorage::new(pool);
     let tid = topic_svc.create(sample_topic("t", None)).await.unwrap();
 
-    let s1 = mcp_svc.create(sample_mcp("s1", TransportType::Stdio)).await.unwrap();
-    let s2 = mcp_svc.create(sample_mcp("s2", TransportType::Streamable)).await.unwrap();
+    let s1 = mcp_svc
+        .create(sample_mcp("s1", TransportType::Stdio))
+        .await
+        .unwrap();
+    let s2 = mcp_svc
+        .create(sample_mcp("s2", TransportType::Streamable))
+        .await
+        .unwrap();
 
     // set
-    topic_svc.set_mcp_servers(tid, vec![s1, s2]).await.unwrap();
-    let servers = topic_svc.list_mcp_servers(tid).await.unwrap();
-    assert_eq!(servers.len(), 2);
+    topic_svc
+        .update(
+            tid,
+            UpdateTopic {
+                mcp_server_ids: Some(vec![s1, s2]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
 
     // replace
-    let s3 = mcp_svc.create(sample_mcp("s3", TransportType::Stdio)).await.unwrap();
-    topic_svc.set_mcp_servers(tid, vec![s3]).await.unwrap();
-    let servers = topic_svc.list_mcp_servers(tid).await.unwrap();
-    assert_eq!(servers.len(), 1);
-    assert_eq!(servers[0].id, s3);
+    let s3 = mcp_svc
+        .create(sample_mcp("s3", TransportType::Stdio))
+        .await
+        .unwrap();
+    topic_svc
+        .update(
+            tid,
+            UpdateTopic {
+                mcp_server_ids: Some(vec![s3]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
 
     // clear
-    topic_svc.set_mcp_servers(tid, vec![]).await.unwrap();
-    assert_eq!(topic_svc.list_mcp_servers(tid).await.unwrap().len(), 0);
+    topic_svc
+        .update(
+            tid,
+            UpdateTopic {
+                mcp_server_ids: Some(vec![]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
 }
 
 // ==================== MessageStorage ====================
@@ -403,14 +558,17 @@ async fn message_crud_and_is_excluded() {
     assert!(list[0].index < list[1].index);
 
     // update
-    msg_svc.update(aid, UpdateMessage {
-        input_tokens: Some(10), ..UpdateMessage::from(a.clone())
-    }).await.unwrap();
+    msg_svc
+        .update(
+            aid,
+            UpdateMessage {
+                input_tokens: Some(10),
+                ..UpdateMessage::from(a.clone())
+            },
+        )
+        .await
+        .unwrap();
     assert_eq!(msg_svc.get(aid).await.unwrap().unwrap().input_tokens, 10);
-
-    // update_is_excluded
-    msg_svc.update_is_excluded(aid, true).await.unwrap();
-    assert!(msg_svc.get(aid).await.unwrap().unwrap().is_excluded);
 }
 
 #[tokio::test]
@@ -490,17 +648,22 @@ async fn message_batch() {
     let uid = msg_svc.create(user_msg(tid, 1, "q")).await.unwrap();
 
     // --- batch_create_assistant success ---
-    let ids = msg_svc.batch_create_assistant(vec![
-        asst_msg_empty(tid, 1, uid),
-        asst_msg_empty(tid, 1, uid),
-        asst_msg_empty(tid, 1, uid),
-    ]).await.unwrap();
+    let ids = msg_svc
+        .batch_create_assistant(vec![
+            asst_msg_empty(tid, 1, uid),
+            asst_msg_empty(tid, 1, uid),
+            asst_msg_empty(tid, 1, uid),
+        ])
+        .await
+        .unwrap();
     assert_eq!(ids.len(), 3);
 
     let msgs = msg_svc.batch_get(&ids).await.unwrap();
     assert_eq!(msgs.len(), 3);
     // from_id consistent
-    for m in &msgs { assert_eq!(m.from_id, Some(uid)); }
+    for m in &msgs {
+        assert_eq!(m.from_id, Some(uid));
+    }
     // index incrementing sequentially
     assert_eq!(msgs[1].index, msgs[0].index + 1);
     assert_eq!(msgs[2].index, msgs[0].index + 2);
@@ -524,18 +687,42 @@ async fn message_batch() {
     // empty
     assert!(msg_svc.batch_create_assistant(vec![]).await.is_err());
     // missing from_id
-    assert!(msg_svc.batch_create_assistant(vec![user_msg(tid, 1, "x")]).await.unwrap_err().to_string().contains("from_id"));
+    assert!(
+        msg_svc
+            .batch_create_assistant(vec![user_msg(tid, 1, "x")])
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("from_id")
+    );
     // mismatched from_id
     let u2 = msg_svc.create(user_msg(tid, 1, "x")).await.unwrap();
-    assert!(msg_svc.batch_create_assistant(vec![
-        asst_msg_empty(tid, 1, uid),
-        asst_msg_empty(tid, 1, u2),
-    ]).await.unwrap_err().to_string().contains("same from_id"));
+    assert!(
+        msg_svc
+            .batch_create_assistant(vec![
+                asst_msg_empty(tid, 1, uid),
+                asst_msg_empty(tid, 1, u2),
+            ])
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("same from_id")
+    );
     // from_id not user message
-    let err = msg_svc.batch_create_assistant(vec![asst_msg_empty(tid, 1, ids[0])]).await.unwrap_err();
+    let err = msg_svc
+        .batch_create_assistant(vec![asst_msg_empty(tid, 1, ids[0])])
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("user message"));
     // from_id not found
-    assert!(msg_svc.batch_create_assistant(vec![asst_msg_empty(tid, 1, 99999)]).await.unwrap_err().to_string().contains("not found"));
+    assert!(
+        msg_svc
+            .batch_create_assistant(vec![asst_msg_empty(tid, 1, 99999)])
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("not found")
+    );
 }
 
 // ==================== McpStorage ====================
@@ -546,7 +733,10 @@ async fn mcp_server_crud() {
     let svc = McpStorage::new(pool);
 
     // create
-    let id = svc.create(sample_mcp("srv", TransportType::Stdio)).await.unwrap();
+    let id = svc
+        .create(sample_mcp("srv", TransportType::Stdio))
+        .await
+        .unwrap();
     assert!(id > 0);
     let s = svc.get(id).await.unwrap().unwrap();
     assert_eq!(s.name, "srv");
@@ -560,9 +750,15 @@ async fn mcp_server_crud() {
     assert_eq!(svc.list().await.unwrap().len(), 1);
 
     // update — partial (keeps originals for None)
-    svc.update(id, UpdateMcpServer {
-        name: "renamed".into(), ..Default::default()
-    }).await.unwrap();
+    svc.update(
+        id,
+        UpdateMcpServer {
+            name: "renamed".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
     let u = svc.get(id).await.unwrap().unwrap();
     assert_eq!(u.name, "renamed");
     assert_eq!(u.r#type, TransportType::Stdio); // kept
@@ -570,13 +766,18 @@ async fn mcp_server_crud() {
     // update — full
     let mut env = HashMap::new();
     env.insert("PORT".into(), "3000".into());
-    svc.update(id, UpdateMcpServer {
-        name: "srv2".into(),
-        url: Some("https://new.test.com".into()),
-        args: Some(vec![]),
-        env: Some(env.clone()),
-        ..Default::default()
-    }).await.unwrap();
+    svc.update(
+        id,
+        UpdateMcpServer {
+            name: "srv2".into(),
+            url: Some("https://new.test.com".into()),
+            args: Some(vec![]),
+            env: Some(env.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
     let u = svc.get(id).await.unwrap().unwrap();
     assert_eq!(u.name, "srv2");
     assert_eq!(u.url, Some("https://new.test.com".into()));
@@ -593,14 +794,33 @@ async fn mcp_server_validation() {
     let svc = McpStorage::new(setup().await);
 
     // create empty name
-    let err = svc.create(CreateMcpServer {
-        name: "".into(), r#type: TransportType::Stdio,
-        url: None, description: None, command: None, args: None, env: None, auto_approves: None,
-    }).await.unwrap_err();
+    let err = svc
+        .create(CreateMcpServer {
+            name: "".into(),
+            r#type: TransportType::Stdio,
+            url: None,
+            description: None,
+            command: None,
+            args: None,
+            env: None,
+        })
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("cannot be empty"));
 
     // update empty name
-    let id = svc.create(sample_mcp("ok", TransportType::Stdio)).await.unwrap();
-    let err = svc.update(id, UpdateMcpServer { name: "".into(), ..Default::default() }).await;
+    let id = svc
+        .create(sample_mcp("ok", TransportType::Stdio))
+        .await
+        .unwrap();
+    let err = svc
+        .update(
+            id,
+            UpdateMcpServer {
+                name: "".into(),
+                ..Default::default()
+            },
+        )
+        .await;
     assert!(err.unwrap_err().to_string().contains("cannot be empty"));
 }

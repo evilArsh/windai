@@ -76,3 +76,117 @@ pub fn load_env() -> Env {
 fn var(name: &str) -> Result<String, std::env::VarError> {
     std::env::var(name)
 }
+
+// ---------------------------------------------------------------------------
+// 共享测试核心初始化
+// ---------------------------------------------------------------------------
+
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+use std::str::FromStr;
+use wind_core::WindCore;
+
+#[allow(dead_code)]
+pub async fn init_test_core() -> WindCore {
+    let options = SqliteConnectOptions::from_str("sqlite::memory:")
+        .unwrap()
+        .shared_cache(true)
+        .foreign_keys(true)
+        .journal_mode(SqliteJournalMode::Wal);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect_with(options)
+        .await
+        .unwrap();
+    WindCore::init_with_pool(pool).await.unwrap()
+}
+
+// ---------------------------------------------------------------------------
+// MCP 测试辅助
+// ---------------------------------------------------------------------------
+
+#[allow(dead_code)]
+pub struct McpTestEnv {
+    pub base_url: String,
+    pub key: String,
+    pub model: String,
+    pub adaptor: AdaptorType,
+    pub endpoint: Option<String>,
+}
+
+#[allow(dead_code)]
+pub fn mcp_completion_env() -> McpTestEnv {
+    let env = load_env();
+    McpTestEnv {
+        base_url: env.test_mcp_completion_base_url,
+        key: env.test_mcp_completion_key,
+        model: env.test_mcp_completion_model,
+        adaptor: AdaptorType::OpenAICompletion,
+        endpoint: env.test_mcp_completion_endpoint,
+    }
+}
+
+#[allow(dead_code)]
+pub fn mcp_responses_env() -> McpTestEnv {
+    let env = load_env();
+    McpTestEnv {
+        base_url: env.test_mcp_responses_base_url,
+        key: env.test_mcp_responses_key,
+        model: env.test_mcp_responses_model,
+        adaptor: AdaptorType::OpenAIResponse,
+        endpoint: env.test_mcp_responses_endpoint,
+    }
+}
+
+use wind_core::models::CreateMcpServer;
+use wind_mcp::client::{ServerParams, StdioParams, TransportType};
+
+#[allow(dead_code)]
+pub fn everything_params() -> ServerParams {
+    ServerParams::Stdio(StdioParams {
+        name: "everything".to_string(),
+        description: None,
+        command: "npx".to_string(),
+        args: vec![
+            "-y".to_string(),
+            "@modelcontextprotocol/server-everything".to_string(),
+        ],
+        env: serde_json::from_str(
+            r#"{
+            "NPM_CONFIG_REGISTRY": "https://registry.npmmirror.com",
+        }"#,
+        )
+        .ok(),
+    })
+}
+
+#[allow(dead_code)]
+pub fn fetch_params() -> ServerParams {
+    ServerParams::Stdio(StdioParams {
+        name: "fetch".to_string(),
+        description: None,
+        command: "uvx".to_string(),
+        args: vec!["mcp-server-fetch".to_string()],
+        env: serde_json::from_str(
+            r#"{
+            "UV_DEFAULT_INDEX": "https://pypi.tuna.tsinghua.edu.cn/simple/",
+            "PIP_INDEX_URL": "https://pypi.tuna.tsinghua.edu.cn/simple/",
+        }"#,
+        )
+        .ok(),
+    })
+}
+#[allow(dead_code)]
+pub fn create_everything_server_params() -> CreateMcpServer {
+    CreateMcpServer {
+        r#type: TransportType::Stdio,
+        name: "everything".into(),
+        url: None,
+        description: None,
+        command: Some("npx".into()),
+        args: Some(vec![
+            "-y".into(),
+            "@modelcontextprotocol/server-everything".into(),
+        ]),
+        env: None,
+    }
+}

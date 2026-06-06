@@ -8,6 +8,7 @@ pub mod storage;
 
 use self::storage::Storage;
 use chat::ChatEngine;
+use db::DbPool;
 use error::Result;
 use std::path::Path;
 use wind_mcp::client::registry::{Registry, RegistryHandle};
@@ -55,12 +56,16 @@ impl WindCore {
         let db = db::init_db(db_url)
             .await
             .map_err(|e| error::CoreError::Database(e))?;
-        schema::init_schema(&db).await?;
+        Self::init_with_pool(db).await
+    }
+    /// 使用外部构建的连接池初始化，供测试使用。
+    pub async fn init_with_pool(pool: DbPool) -> Result<Self> {
+        schema::init_schema(&pool).await?;
         storage::init_id_generator(0);
         let mcp = Registry::new();
         Ok(Self {
             mcp,
-            storage: Storage::new(db),
+            storage: Storage::new(pool),
         })
     }
     pub fn storage(&self) -> &Storage {
@@ -68,6 +73,9 @@ impl WindCore {
     }
     pub fn chat(&self) -> ChatEngine<'_> {
         ChatEngine::new(self.mcp.clone(), self.storage())
+    }
+    pub fn registry(&self) -> RegistryHandle {
+        self.mcp.clone()
     }
     /// 关闭所有服务
     /// - 关闭所有 MCP 客户端

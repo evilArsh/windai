@@ -16,7 +16,9 @@
       "WebFetch(domain:api.github.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(gh repo *)",
-      "Bash(Select-Object FullName)"
+      "Bash(Select-Object FullName)",
+      "Bash(Select-Object -First 50)",
+      "Bash(where.exe rust-analyzer *)"
     ]
   },
   "enabledPlugins": {

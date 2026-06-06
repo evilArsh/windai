@@ -3,13 +3,13 @@ pub enum CoreError {
     #[error(transparent)]
     Database(#[from] sqlx::Error),
 
-    #[error("row not found. {0}")]
+    #[error("row not found: {0}")]
     NotFound(String),
 
-    #[error("validation error. {0}")]
+    #[error("validation error: {0}")]
     Validation(String),
 
-    #[error("chat error. {0}")]
+    #[error("chat error: {0}")]
     Chat(String),
 
     #[error(transparent)]
@@ -17,9 +17,6 @@ pub enum CoreError {
 
     #[error(transparent)]
     Mcp(#[from] wind_mcp::client::McpError),
-
-    #[error("JS error. {0}")]
-    Js(String),
 
     #[error(transparent)]
     UrlParse(#[from] url::ParseError),
@@ -33,7 +30,7 @@ pub enum CoreError {
     #[error(transparent)]
     JsonRule(#[from] wind_rule::Error),
 
-    #[error("Internal error. {0}")]
+    #[error("Internal error: {0}")]
     Internal(String),
 }
 

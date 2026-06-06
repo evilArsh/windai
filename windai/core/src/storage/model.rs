@@ -30,7 +30,10 @@ impl ModelStorage {
             ("provider_id", data.provider_id),
             ("alias", data.alias),
             ("adaptor", data.adaptor.to_string()),
-            ("modalities", utils::vec_to_str(data.modalities.as_deref())?),
+            (
+                "modalities",
+                utils::vec_to_str_default(data.modalities.as_deref())?
+            ),
             ("active", data.active),
             ("icon", data.icon),
             ("endpoint", data.endpoint),
@@ -48,7 +51,7 @@ impl ModelStorage {
             ("adaptor", data.adaptor.map(|a| a.to_string())),
             (
                 "modalities",
-                Some(utils::vec_to_str(data.modalities.as_deref())?)
+                utils::vec_to_str_optional(data.modalities.as_deref())?
             ),
             ("active", data.active),
             ("icon", data.icon),

@@ -68,8 +68,8 @@ impl ChatAdaptor for OpenAICompletionAdaptor {
         &self,
         model_name: &str,
         config: &ReqConfig,
-        contexts: &Vec<Message>,
-        tools: Option<&Vec<Tools>>,
+        contexts: &[Message],
+        tools: Option<&[Tools]>,
     ) -> Result<Value, AdaptorError> {
         let tools = transform_tools(tools);
 
@@ -320,7 +320,7 @@ impl ChatAdaptor for OpenAICompletionAdaptor {
     }
 }
 
-fn transform_tools(tools: Option<&Vec<Tools>>) -> Option<Vec<ToolCallRequest>> {
+fn transform_tools(tools: Option<&[Tools]>) -> Option<Vec<ToolCallRequest>> {
     tools
         .map(|tools| {
             tools

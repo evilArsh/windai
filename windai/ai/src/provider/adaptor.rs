@@ -47,8 +47,8 @@ pub trait ChatAdaptor: Adaptor + Send + Sync {
         &self,
         model_name: &str,
         config: &ReqConfig,
-        contexts: &Vec<Message>,
-        tools: Option<&Vec<Tools>>,
+        contexts: &[Message],
+        tools: Option<&[Tools]>,
     ) -> Result<Value, AdaptorError>;
     /// 将原始响应字节解析为统一格式消息
     fn parse_response(&self, data: &[u8]) -> Result<Message, AdaptorError>;

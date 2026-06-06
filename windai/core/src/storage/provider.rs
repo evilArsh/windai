@@ -247,7 +247,14 @@ impl ProviderStorage {
     pub async fn list_json_rules(&self, provider_id: i64) -> Result<Vec<JsonRule>> {
         let mut qb = select_fields!(
             "json_rule",
-            ("id", "provider_id", "adaptor", "json_rule", "active", "created_at")
+            (
+                "id",
+                "provider_id",
+                "adaptor",
+                "json_rule",
+                "active",
+                "created_at"
+            )
         );
         let row = qb
             .push(" WHERE provider_id = ")
@@ -268,7 +275,14 @@ impl ProviderStorage {
     ) -> Result<Option<JsonRule>> {
         let mut qb = select_fields!(
             "json_rule",
-            ("id", "provider_id", "adaptor", "json_rule", "active", "created_at")
+            (
+                "id",
+                "provider_id",
+                "adaptor",
+                "json_rule",
+                "active",
+                "created_at"
+            )
         );
         let row = qb
             .push(" WHERE provider_id = ")
@@ -286,7 +300,14 @@ impl ProviderStorage {
         let mut qb = get_by_id!(
             "json_rule",
             id,
-            ("id", "provider_id", "adaptor", "json_rule", "active", "created_at")
+            (
+                "id",
+                "provider_id",
+                "adaptor",
+                "json_rule",
+                "active",
+                "created_at"
+            )
         );
         let row = qb
             .build_query_as::<JsonRule>()

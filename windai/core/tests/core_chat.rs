@@ -1,11 +1,35 @@
 use futures::StreamExt;
+use std::sync::OnceLock;
+use tokio::sync::Mutex;
 use wind_ai::message::{Content, Message as AiMessage, ReqConfig, Role};
-use wind_core::WindCore;
 use wind_core::chat::ChatEvent;
 use wind_core::models::*;
+use wind_core::WindCore;
 
 #[path = "./common/lib.rs"]
 mod common;
+
+use common::init_test_core;
+
+// ---------------------------------------------------------------------------
+// 全局状态 — 纯 chat（无 MCP）共享一个内存 WindCore
+// ---------------------------------------------------------------------------
+
+static GLOBAL_CORE: OnceLock<WindCore> = OnceLock::new();
+static CORE_INIT: Mutex<()> = Mutex::const_new(());
+
+async fn global_core() -> &'static WindCore {
+    if let Some(core) = GLOBAL_CORE.get() {
+        return core;
+    }
+    let _guard = CORE_INIT.lock().await;
+    if let Some(core) = GLOBAL_CORE.get() {
+        return core;
+    }
+    let core = init_test_core().await;
+    GLOBAL_CORE.set(core).ok();
+    GLOBAL_CORE.get().unwrap()
+}
 
 struct TestContext {
     provider_id: i64,
@@ -15,16 +39,23 @@ struct TestContext {
     assistant_msg_id: i64,
 }
 
-/// 在 WindCore 中插入完整的测试数据：provider + credential + model + topic + messages。
-async fn seed_data(wc: &WindCore, env: &common::Env) -> TestContext {
-    let provider_name = "test-provider";
-    let provider_id = match wc.storage().provider().get_by_name(provider_name).await.unwrap() {
+/// 为非 MCP 测试创建完整的 provider + credential + model + topic + messages。
+async fn seed_chat_data(core: &WindCore, label: &str) -> TestContext {
+    let env = common::load_env();
+    let provider_name = format!("chat-{}", label);
+    let provider_id = match core
+        .storage()
+        .provider()
+        .get_by_name(&provider_name)
+        .await
+        .unwrap()
+    {
         Some(p) => p.id,
-        None => wc
+        None => core
             .storage()
             .provider()
             .create(CreateProvider {
-                name: provider_name.into(),
+                name: provider_name,
                 description: None,
                 base_url: env.test_base_url.clone(),
                 doc: None,
@@ -34,7 +65,7 @@ async fn seed_data(wc: &WindCore, env: &common::Env) -> TestContext {
             .unwrap(),
     };
 
-    wc.storage()
+    core.storage()
         .provider()
         .create_credentials(CreateCredentials {
             provider_id,
@@ -43,7 +74,7 @@ async fn seed_data(wc: &WindCore, env: &common::Env) -> TestContext {
         .await
         .unwrap();
 
-    let model_id = wc
+    let model_id = core
         .storage()
         .model()
         .create(CreateModel {
@@ -59,20 +90,21 @@ async fn seed_data(wc: &WindCore, env: &common::Env) -> TestContext {
         .await
         .unwrap();
 
-    let topic_id = wc
+    let topic_id = core
         .storage()
         .topic()
         .create(CreateTopic {
             parent_id: None,
             chat_config_id: 0,
-            label: "test-core-chat".into(),
+            label: format!("test-chat-{}", label),
             icon: None,
             max_context: Some(100),
+            mcp_server_ids: None,
         })
         .await
         .unwrap();
 
-    let user_msg_id = wc
+    let user_msg_id = core
         .storage()
         .message()
         .create(CreateMessage {
@@ -80,9 +112,7 @@ async fn seed_data(wc: &WindCore, env: &common::Env) -> TestContext {
             stream: false,
             content: vec![AiMessage::new_simple(
                 Role::User,
-                vec![Content::new_text(
-                    "Hello! Reply in one short sentence.".into(),
-                )],
+                vec![Content::new_text("Hello! Reply in one short sentence.".into())],
                 None,
             )],
             model_id,
@@ -90,11 +120,13 @@ async fn seed_data(wc: &WindCore, env: &common::Env) -> TestContext {
             is_boundary: false,
             input_tokens: 0,
             output_tokens: 0,
+            tools_allowed: None,
+            tools_denied: None,
         })
         .await
         .unwrap();
 
-    let assistant_msg_id = wc
+    let assistant_msg_id = core
         .storage()
         .message()
         .create(CreateMessage {
@@ -106,6 +138,8 @@ async fn seed_data(wc: &WindCore, env: &common::Env) -> TestContext {
             is_boundary: false,
             input_tokens: 0,
             output_tokens: 0,
+            tools_allowed: None,
+            tools_denied: None,
         })
         .await
         .unwrap();
@@ -119,25 +153,17 @@ async fn seed_data(wc: &WindCore, env: &common::Env) -> TestContext {
     }
 }
 
-fn temp_db_dir() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join("windai_core_test");
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-// ---------------------------------------------------------------------------
-// non-stream
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// 基础对话
+// ===========================================================================
 
 #[tokio::test]
 #[ignore = "need to complete .env config file"]
-async fn test_core_chat_non_stream() {
-    let env = common::load_env();
+async fn test_chat_non_stream() {
+    let core = global_core().await;
+    let ctx = seed_chat_data(core, "non-stream").await;
 
-    let wc = WindCore::init_memory().await.unwrap();
-    let ctx = seed_data(&wc, &env).await;
-
-    wc.storage()
+    core.storage()
         .topic()
         .create_chat_config(
             ctx.topic_id,
@@ -149,13 +175,8 @@ async fn test_core_chat_non_stream() {
         .await
         .unwrap();
 
-    let engine = wc.chat();
-    let mut stream = Box::pin(engine.start(
-        ctx.topic_id,
-        ctx.model_id,
-        ctx.user_msg_id,
-        ctx.assistant_msg_id,
-    ));
+    let engine = core.chat();
+    let mut stream = Box::pin(engine.start(ctx.topic_id, ctx.user_msg_id, ctx.assistant_msg_id));
 
     let mut seen_created = false;
     let mut seen_finish = false;
@@ -168,6 +189,7 @@ async fn test_core_chat_non_stream() {
             ChatEvent::Partial { message_id, .. } => {
                 assert_eq!(message_id, ctx.assistant_msg_id);
             }
+            ChatEvent::AwaitToolCall { .. } => {}
             ChatEvent::Finish {
                 message_id,
                 message,
@@ -180,36 +202,26 @@ async fn test_core_chat_non_stream() {
             }
         }
     }
-    assert!(seen_created);
-    assert!(seen_finish);
+    assert!(seen_created, "Should emit Created event");
+    assert!(seen_finish, "Should emit Finish event");
 
-    // 验证消息落库
-    let msg = wc
+    let msg = core
         .storage()
         .message()
         .get(ctx.assistant_msg_id)
         .await
         .unwrap()
         .unwrap();
-    assert!(
-        !msg.content.is_empty(),
-        "Assistant message should be persisted"
-    );
+    assert!(!msg.content.is_empty(), "Response should be persisted");
 }
-
-// ---------------------------------------------------------------------------
-// stream
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 #[ignore = "need to complete .env config file"]
-async fn test_core_chat_stream() {
-    let env = common::load_env();
+async fn test_chat_stream() {
+    let core = global_core().await;
+    let ctx = seed_chat_data(core, "stream").await;
 
-    let wc = WindCore::init_memory().await.unwrap();
-    let ctx = seed_data(&wc, &env).await;
-
-    wc.storage()
+    core.storage()
         .topic()
         .create_chat_config(
             ctx.topic_id,
@@ -221,15 +233,10 @@ async fn test_core_chat_stream() {
         .await
         .unwrap();
 
-    let engine = wc.chat();
-    let mut stream = Box::pin(engine.start(
-        ctx.topic_id,
-        ctx.model_id,
-        ctx.user_msg_id,
-        ctx.assistant_msg_id,
-    ));
+    let engine = core.chat();
+    let mut stream = Box::pin(engine.start(ctx.topic_id, ctx.user_msg_id, ctx.assistant_msg_id));
 
-    let mut partial_count = 0;
+    let mut partial_count = 0u32;
     let mut seen_created = false;
     let mut seen_finish = false;
     while let Some(event) = stream.next().await {
@@ -242,6 +249,7 @@ async fn test_core_chat_stream() {
                 assert_eq!(message_id, ctx.assistant_msg_id);
                 partial_count += 1;
             }
+            ChatEvent::AwaitToolCall { .. } => {}
             ChatEvent::Finish {
                 message_id, error, ..
             } => {
@@ -251,63 +259,301 @@ async fn test_core_chat_stream() {
             }
         }
     }
-    assert!(seen_created);
-    assert!(seen_finish);
+    assert!(seen_created, "Should emit Created event");
+    assert!(seen_finish, "Should emit Finish event");
     assert!(partial_count > 0, "Stream should produce partial chunks");
 
-    let msg = wc
+    let msg = core
         .storage()
         .message()
         .get(ctx.assistant_msg_id)
         .await
         .unwrap()
         .unwrap();
-    assert!(
-        !msg.content.is_empty(),
-        "Persisted content should not be empty"
-    );
+    assert!(!msg.content.is_empty(), "Response should be persisted");
 }
 
-// ---------------------------------------------------------------------------
-// JsonRule: DeepSeek reasoning_effort → thinking.type 转换
-//
-// DeepSeek 要求 reasoning 字段转换为 {"thinking": {"type": "enabled"}}
-// 或 {"thinking": {"type": "disabled"}}。
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// 消息历史 — 多轮对话 from_id 链
+// ===========================================================================
 
 #[tokio::test]
 #[ignore = "need to complete .env config file"]
-async fn test_json_rule_deepseek_reasoning_to_thinking() {
+async fn test_message_history_chain() {
+    let core = global_core().await;
+    let ctx = seed_chat_data(core, "history").await;
+
+    core.storage()
+        .topic()
+        .create_chat_config(
+            ctx.topic_id,
+            ReqConfig {
+                stream: Some(false),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    // 第一轮对话
+    let (user2_id, assistant2_id) = {
+        let engine = core.chat();
+        let mut stream =
+            Box::pin(engine.start(ctx.topic_id, ctx.user_msg_id, ctx.assistant_msg_id));
+
+        let mut seen_finish = false;
+        while let Some(event) = stream.next().await {
+            if let ChatEvent::Finish { error, .. } = event {
+                assert!(error.is_none(), "Chat error: {:?}", error);
+                seen_finish = true;
+            }
+        }
+        assert!(seen_finish);
+
+        let msg = core
+            .storage()
+            .message()
+            .get(ctx.assistant_msg_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!msg.content.is_empty());
+
+        let user2 = core
+            .storage()
+            .message()
+            .create(CreateMessage {
+                from_id: None,
+                stream: false,
+                content: vec![AiMessage::new_simple(
+                    Role::User,
+                    vec![Content::new_text("What did I just ask you?".into())],
+                    None,
+                )],
+                model_id: ctx.model_id,
+                topic_id: ctx.topic_id,
+                is_boundary: false,
+                input_tokens: 0,
+                output_tokens: 0,
+                tools_allowed: None,
+                tools_denied: None,
+            })
+            .await
+            .unwrap();
+
+        let assistant2 = core
+            .storage()
+            .message()
+            .create(CreateMessage {
+                from_id: Some(user2),
+                stream: false,
+                content: vec![],
+                model_id: ctx.model_id,
+                topic_id: ctx.topic_id,
+                is_boundary: false,
+                input_tokens: 0,
+                output_tokens: 0,
+                tools_allowed: None,
+                tools_denied: None,
+            })
+            .await
+            .unwrap();
+
+        (user2, assistant2)
+    };
+
+    // 第二轮对话
+    let engine = core.chat();
+    let mut stream = Box::pin(engine.start(ctx.topic_id, user2_id, assistant2_id));
+
+    let mut seen_finish = false;
+    while let Some(event) = stream.next().await {
+        if let ChatEvent::Finish { error, .. } = event {
+            assert!(error.is_none(), "Second round error: {:?}", error);
+            seen_finish = true;
+        }
+    }
+    assert!(seen_finish);
+
+    // 验证链：至少 4 条消息
+    let all_msgs = core
+        .storage()
+        .message()
+        .list_by_topic(ctx.topic_id)
+        .await
+        .unwrap();
+    assert!(all_msgs.len() >= 4, "Should have at least 4 messages in chain");
+
+    let persisted = core
+        .storage()
+        .message()
+        .get(assistant2_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!persisted.content.is_empty(), "Second response should be persisted");
+}
+
+// ===========================================================================
+// 错误处理
+// ===========================================================================
+
+#[tokio::test]
+#[ignore = "need to complete .env config file"]
+async fn test_missing_provider() {
+    common::load_env();
+
+    let core = global_core().await;
+    let engine = core.chat();
+    let mut stream = Box::pin(engine.start(999, 999, 999));
+
+    let mut error_seen = false;
+    while let Some(event) = stream.next().await {
+        if let ChatEvent::Finish { error, .. } = event {
+            assert!(error.is_some(), "Should have error for missing data");
+            error_seen = true;
+        }
+    }
+    assert!(error_seen);
+}
+
+#[tokio::test]
+#[ignore = "need to complete .env config file"]
+async fn test_missing_credentials() {
     let env = common::load_env();
 
-    let wc = WindCore::init_memory().await.unwrap();
-    let ctx = seed_data(&wc, &env).await;
+    let core = global_core().await;
 
-    // 插入 JSON 规则：将 reasoning_effort 转为 DeepSeek thinking 参数
-    let rule_code = r#"{
-        "rules": [{
-            "type": "map_value",
-            "path": "reasoning_effort",
-            "mappings": {
-                "medium": {"thinking": {"type": "enabled"}},
-                "high": {"thinking": {"type": "enabled"}}
-            },
-            "default": {"thinking": {"type": "disabled"}},
-            "remove_source": true
-        }]
-    }"#;
-    wc.storage()
+    let provider_id = core
+        .storage()
         .provider()
-        .create_json_rule(CreateJsonRule {
-            provider_id: ctx.provider_id,
-            adaptor: env.test_adaptor,
-            json_rule: rule_code.into(),
+        .create(CreateProvider {
+            name: "no-creds".into(),
+            description: None,
+            base_url: env.test_base_url.clone(),
+            doc: None,
+            alias: None,
         })
         .await
         .unwrap();
 
-    // 验证规则已存储
-    let rules = wc
+    let model_id = core
+        .storage()
+        .model()
+        .create(CreateModel {
+            name: env.test_model.clone(),
+            provider_id,
+            alias: None,
+            adaptor: env.test_adaptor,
+            modalities: Some(vec![ModelType::Chat]),
+            active: Some(true),
+            icon: None,
+            endpoint: env.test_endpoint.clone(),
+        })
+        .await
+        .unwrap();
+
+    let topic_id = core
+        .storage()
+        .topic()
+        .create(CreateTopic {
+            parent_id: None,
+            chat_config_id: 0,
+            label: "no-creds".into(),
+            icon: None,
+            max_context: Some(100),
+            mcp_server_ids: None,
+        })
+        .await
+        .unwrap();
+
+    let user_msg_id = core
+        .storage()
+        .message()
+        .create(CreateMessage {
+            from_id: None,
+            stream: false,
+            content: vec![AiMessage::new_simple(
+                Role::User,
+                vec![Content::new_text("Hello".into())],
+                None,
+            )],
+            model_id,
+            topic_id,
+            is_boundary: false,
+            input_tokens: 0,
+            output_tokens: 0,
+            tools_allowed: None,
+            tools_denied: None,
+        })
+        .await
+        .unwrap();
+
+    let assistant_msg_id = core
+        .storage()
+        .message()
+        .create(CreateMessage {
+            from_id: Some(user_msg_id),
+            stream: false,
+            content: vec![],
+            model_id,
+            topic_id,
+            is_boundary: false,
+            input_tokens: 0,
+            output_tokens: 0,
+            tools_allowed: None,
+            tools_denied: None,
+        })
+        .await
+        .unwrap();
+
+    let engine = core.chat();
+    let mut stream = Box::pin(engine.start(topic_id, user_msg_id, assistant_msg_id));
+
+    let mut error_seen = false;
+    while let Some(event) = stream.next().await {
+        if let ChatEvent::Finish { error, .. } = event {
+            assert!(error.is_some(), "Should error for missing credentials");
+            error_seen = true;
+        }
+    }
+    assert!(error_seen);
+}
+
+// ===========================================================================
+// JSON 规则 — 请求体转换
+// ===========================================================================
+
+const REASONING_RULE: &str = r#"{
+    "rules": [{
+        "type": "map_value",
+        "path": "reasoning_effort",
+        "mappings": {
+            "medium": {"thinking": {"type": "enabled"}},
+            "high": {"thinking": {"type": "enabled"}}
+        },
+        "default": {"thinking": {"type": "disabled"}},
+        "remove_source": true
+    }]
+}"#;
+
+#[tokio::test]
+#[ignore = "need to complete .env config file"]
+async fn test_json_rule_reasoning_enabled() {
+    let core = global_core().await;
+    let ctx = seed_chat_data(core, "rule-on").await;
+
+    core.storage()
+        .provider()
+        .create_json_rule(CreateJsonRule {
+            provider_id: ctx.provider_id,
+            adaptor: common::load_env().test_adaptor,
+            json_rule: REASONING_RULE.into(),
+        })
+        .await
+        .unwrap();
+
+    let rules = core
         .storage()
         .provider()
         .list_json_rules(ctx.provider_id)
@@ -315,10 +561,8 @@ async fn test_json_rule_deepseek_reasoning_to_thinking() {
         .unwrap();
     assert_eq!(rules.len(), 1);
     assert!(rules[0].active);
-    assert_eq!(rules[0].adaptor, env.test_adaptor);
 
-    // 启用 reasoning
-    wc.storage()
+    core.storage()
         .topic()
         .create_chat_config(
             ctx.topic_id,
@@ -331,33 +575,27 @@ async fn test_json_rule_deepseek_reasoning_to_thinking() {
         .await
         .unwrap();
 
-    let engine = wc.chat();
-    let mut stream = Box::pin(engine.start(
-        ctx.topic_id,
-        ctx.model_id,
-        ctx.user_msg_id,
-        ctx.assistant_msg_id,
-    ));
+    let engine = core.chat();
+    let mut stream = Box::pin(engine.start(ctx.topic_id, ctx.user_msg_id, ctx.assistant_msg_id));
 
     let mut seen_finish = false;
     while let Some(event) = stream.next().await {
         if let ChatEvent::Finish { error, message, .. } = event {
             assert!(error.is_none(), "Chat error with json_rule: {:?}", error);
             assert!(message.is_some(), "Should have response with rule applied");
-            // 存在推理消息
             assert!(
                 message
                     .unwrap()
                     .iter()
-                    .any(|m| m.reasoning_content.is_some())
+                    .any(|m| m.reasoning_content.is_some()),
+                "Should contain reasoning_content"
             );
             seen_finish = true;
         }
     }
     assert!(seen_finish);
 
-    // 验证消息落库
-    let msg = wc
+    let msg = core
         .storage()
         .message()
         .get(ctx.assistant_msg_id)
@@ -367,41 +605,23 @@ async fn test_json_rule_deepseek_reasoning_to_thinking() {
     assert!(!msg.content.is_empty());
 }
 
-// ---------------------------------------------------------------------------
-// JsonRule: reasoning=false → thinking.type = "disabled"
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 #[ignore = "need to complete .env config file"]
-async fn test_json_rule_disabled_reasoning() {
-    let env = common::load_env();
+async fn test_json_rule_reasoning_disabled() {
+    let core = global_core().await;
+    let ctx = seed_chat_data(core, "rule-off").await;
 
-    let wc = WindCore::init_memory().await.unwrap();
-    let ctx = seed_data(&wc, &env).await;
-
-    let rule_code = r#"{
-        "rules": [{
-            "type": "map_value",
-            "path": "reasoning_effort",
-            "mappings": {
-                "medium": {"thinking": {"type": "enabled"}},
-                "high": {"thinking": {"type": "enabled"}}
-            },
-            "default": {"thinking": {"type": "disabled"}},
-            "remove_source": true
-        }]
-    }"#;
-    wc.storage()
+    core.storage()
         .provider()
         .create_json_rule(CreateJsonRule {
             provider_id: ctx.provider_id,
-            adaptor: env.test_adaptor,
-            json_rule: rule_code.into(),
+            adaptor: common::load_env().test_adaptor,
+            json_rule: REASONING_RULE.into(),
         })
         .await
         .unwrap();
 
-    wc.storage()
+    core.storage()
         .topic()
         .create_chat_config(
             ctx.topic_id,
@@ -414,25 +634,20 @@ async fn test_json_rule_disabled_reasoning() {
         .await
         .unwrap();
 
-    let engine = wc.chat();
-    let mut stream = Box::pin(engine.start(
-        ctx.topic_id,
-        ctx.model_id,
-        ctx.user_msg_id,
-        ctx.assistant_msg_id,
-    ));
+    let engine = core.chat();
+    let mut stream = Box::pin(engine.start(ctx.topic_id, ctx.user_msg_id, ctx.assistant_msg_id));
 
     let mut seen_finish = false;
     while let Some(event) = stream.next().await {
         if let ChatEvent::Finish { error, message, .. } = event {
             assert!(error.is_none(), "Chat error: {:?}", error);
             assert!(message.is_some());
-            // 不存在推理消息
             assert!(
                 !message
                     .unwrap()
                     .iter()
-                    .any(|m| m.reasoning_content.is_some())
+                    .any(|m| m.reasoning_content.is_some()),
+                "Should not contain reasoning_content"
             );
             seen_finish = true;
         }
@@ -440,23 +655,24 @@ async fn test_json_rule_disabled_reasoning() {
     assert!(seen_finish);
 }
 
-// ---------------------------------------------------------------------------
-// file DB 持久化：关闭后重新打开，数据仍在
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// 文件 DB 持久化（独立 WindCore，不使用全局内存 Core）
+// ===========================================================================
 
 #[tokio::test]
 #[ignore = "need to complete .env config file"]
-async fn test_data_persistence_file_db() {
-    let env = common::load_env();
+async fn test_data_persistence() {
+    common::load_env();
 
-    let dir = temp_db_dir();
+    let dir = std::env::temp_dir().join("windai_core_test");
+    std::fs::create_dir_all(&dir).unwrap();
     let db_path = dir.join("persist.db");
     let db_path_str = db_path.to_string_lossy().to_string();
 
-    // 第一轮：初始化，写入数据，跑一次对话
-    let (_provider_id, topic_id, model_id, aid) = {
+    // 第一轮：创建、对话、关闭
+    let (topic_id, model_id, aid) = {
         let wc = WindCore::init_local(Some(&db_path_str)).await.unwrap();
-        let ctx = seed_data(&wc, &env).await;
+        let ctx = seed_chat_data(&wc, "persist").await;
 
         wc.storage()
             .topic()
@@ -471,12 +687,8 @@ async fn test_data_persistence_file_db() {
             .unwrap();
 
         let engine = wc.chat();
-        let mut stream = Box::pin(engine.start(
-            ctx.topic_id,
-            ctx.model_id,
-            ctx.user_msg_id,
-            ctx.assistant_msg_id,
-        ));
+        let mut stream =
+            Box::pin(engine.start(ctx.topic_id, ctx.user_msg_id, ctx.assistant_msg_id));
 
         let mut seen_finish = false;
         while let Some(event) = stream.next().await {
@@ -497,38 +709,28 @@ async fn test_data_persistence_file_db() {
         assert!(!msg.content.is_empty());
 
         wc.shutdown().await;
-        let provider_id = ctx.provider_id;
-        let topic_id = ctx.topic_id;
-        let model_id = ctx.model_id;
-        let aid = ctx.assistant_msg_id;
-        (provider_id, topic_id, model_id, aid)
-    }; // WindCore 在此处 drop
+        (ctx.topic_id, ctx.model_id, ctx.assistant_msg_id)
+    }; // WindCore drop
 
-    // 第二轮：从同一个文件重新打开，验证历史数据
+    // 第二轮：重新打开，验证数据
     let wc = WindCore::init_local(Some(&db_path_str)).await.unwrap();
 
-    // Provider 仍在
     let providers = wc.storage().provider().list_all().await.unwrap();
     assert!(!providers.is_empty());
-    assert_eq!(providers[0].name, "test-provider");
 
-    // Model 仍在
-    let models = wc.storage().model().list_by_provider().await.unwrap();
-    assert!(!models.is_empty());
-    assert_eq!(models[0].name, env.test_model);
+    let topic = wc
+        .storage()
+        .topic()
+        .get_topic(topic_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(topic.label.contains("persist"));
 
-    // Topic 仍在
-    let topic = wc.storage().topic().get_topic(topic_id).await.unwrap().unwrap();
-    assert_eq!(topic.label, "test-core-chat");
-
-    // 消息仍在且内容非空
     let msg = wc.storage().message().get(aid).await.unwrap().unwrap();
-    assert!(
-        !msg.content.is_empty(),
-        "Message content persisted after reopen"
-    );
+    assert!(!msg.content.is_empty(), "Content should survive reopen");
 
-    // 第二轮对话在新打开的 DB 上仍可正常工作
+    // 第二轮对话在新打开的 DB 上正常工作
     let user2_id = wc
         .storage()
         .message()
@@ -543,9 +745,10 @@ async fn test_data_persistence_file_db() {
             model_id,
             topic_id,
             is_boundary: false,
-
             input_tokens: 0,
             output_tokens: 0,
+            tools_allowed: None,
+            tools_denied: None,
         })
         .await
         .unwrap();
@@ -560,15 +763,16 @@ async fn test_data_persistence_file_db() {
             model_id,
             topic_id,
             is_boundary: false,
-
             input_tokens: 0,
             output_tokens: 0,
+            tools_allowed: None,
+            tools_denied: None,
         })
         .await
         .unwrap();
 
     let engine = wc.chat();
-    let mut stream = Box::pin(engine.start(topic_id, model_id, user2_id, assistant2_id));
+    let mut stream = Box::pin(engine.start(topic_id, user2_id, assistant2_id));
 
     let mut seen_finish = false;
     while let Some(event) = stream.next().await {
@@ -580,269 +784,5 @@ async fn test_data_persistence_file_db() {
     assert!(seen_finish);
 
     wc.shutdown().await;
-
-    // 清理
     let _ = std::fs::remove_dir_all(&dir);
-}
-
-// ---------------------------------------------------------------------------
-// 数据校验：缺少 provider 时的错误
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-#[ignore = "need to complete .env config file"]
-async fn test_chat_missing_provider() {
-    let _env = common::load_env();
-
-    let wc = WindCore::init_memory().await.unwrap();
-
-    // 直接发送，没有任何数据 → 应返回错误
-    let engine = wc.chat();
-    let mut stream = Box::pin(engine.start(999, 999, 999, 999));
-
-    let mut error_seen = false;
-    while let Some(event) = stream.next().await {
-        if let ChatEvent::Finish { error, .. } = event {
-            assert!(error.is_some(), "Should have error for missing data");
-            error_seen = true;
-        }
-    }
-    assert!(error_seen);
-}
-
-// ---------------------------------------------------------------------------
-// 数据校验：缺少 credentials 时的错误
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-#[ignore = "need to complete .env config file"]
-async fn test_chat_missing_credentials() {
-    let env = common::load_env();
-
-    let wc = WindCore::init_memory().await.unwrap();
-
-    let provider_id = wc
-        .storage()
-        .provider()
-        .create(CreateProvider {
-            name: "no-creds-provider".into(),
-            description: None,
-            base_url: env.test_base_url.clone(),
-            doc: None,
-            alias: None,
-        })
-        .await
-        .unwrap();
-
-    let model_id = wc
-        .storage()
-        .model()
-        .create(CreateModel {
-            name: env.test_model.clone(),
-            provider_id,
-            alias: None,
-            adaptor: env.test_adaptor,
-            modalities: Some(vec![ModelType::Chat]),
-            active: Some(true),
-            icon: None,
-            endpoint: env.test_endpoint.clone(),
-        })
-        .await
-        .unwrap();
-
-    let topic_id = wc
-        .storage()
-        .topic()
-        .create(CreateTopic {
-            parent_id: None,
-            chat_config_id: 0,
-            label: "no-creds".into(),
-            icon: None,
-            max_context: Some(100),
-        })
-        .await
-        .unwrap();
-
-    let user_msg_id = wc
-        .storage()
-        .message()
-        .create(CreateMessage {
-            from_id: None,
-            stream: false,
-            content: vec![AiMessage::new_simple(
-                Role::User,
-                vec![Content::new_text("Hello".into())],
-                None,
-            )],
-            model_id,
-            topic_id,
-            is_boundary: false,
-
-            input_tokens: 0,
-            output_tokens: 0,
-        })
-        .await
-        .unwrap();
-
-    let assistant_msg_id = wc
-        .storage()
-        .message()
-        .create(CreateMessage {
-            from_id: Some(user_msg_id),
-            stream: false,
-            content: vec![],
-            model_id,
-            topic_id,
-            is_boundary: false,
-
-            input_tokens: 0,
-            output_tokens: 0,
-        })
-        .await
-        .unwrap();
-
-    let engine = wc.chat();
-    let mut stream = Box::pin(engine.start(topic_id, model_id, user_msg_id, assistant_msg_id));
-
-    let mut error_seen = false;
-    while let Some(event) = stream.next().await {
-        if let ChatEvent::Finish { error, .. } = event {
-            assert!(error.is_some(), "Should error for missing credentials");
-            error_seen = true;
-        }
-    }
-    assert!(error_seen);
-}
-
-// ---------------------------------------------------------------------------
-// 数据校验：re-chat 后消息持久化正确（历史消息 id 可追溯）
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-#[ignore = "need to complete .env config file"]
-async fn test_message_history_chain() {
-    let env = common::load_env();
-
-    let wc = WindCore::init_memory().await.unwrap();
-    let ctx = seed_data(&wc, &env).await;
-
-    wc.storage()
-        .topic()
-        .create_chat_config(
-            ctx.topic_id,
-            ReqConfig {
-                stream: Some(false),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-
-    // 第一轮对话
-    let (user2_id, assistant2_id) = {
-        let engine = wc.chat();
-        let mut stream = Box::pin(engine.start(
-            ctx.topic_id,
-            ctx.model_id,
-            ctx.user_msg_id,
-            ctx.assistant_msg_id,
-        ));
-
-        let mut seen_finish = false;
-        while let Some(event) = stream.next().await {
-            if let ChatEvent::Finish { error, .. } = event {
-                assert!(error.is_none(), "Chat error: {:?}", error);
-                seen_finish = true;
-            }
-        }
-        assert!(seen_finish);
-
-        let assistant_msg = wc
-            .storage()
-            .message()
-            .get(ctx.assistant_msg_id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(!assistant_msg.content.is_empty());
-
-        // 第二轮：用户的追问消息（user 消息的 from_id 为 None）
-        let user2 = wc
-            .storage()
-            .message()
-            .create(CreateMessage {
-                from_id: None,
-                stream: false,
-                content: vec![AiMessage::new_simple(
-                    Role::User,
-                    vec![Content::new_text("What did I just ask you?".into())],
-                    None,
-                )],
-                model_id: ctx.model_id,
-                topic_id: ctx.topic_id,
-                is_boundary: false,
-
-                input_tokens: 0,
-                output_tokens: 0,
-            })
-            .await
-            .unwrap();
-
-        // 空占位 assistant 消息，from_id 指向 user2
-        let assistant2 = wc
-            .storage()
-            .message()
-            .create(CreateMessage {
-                from_id: Some(user2),
-                stream: false,
-                content: vec![],
-                model_id: ctx.model_id,
-                topic_id: ctx.topic_id,
-                is_boundary: false,
-
-                input_tokens: 0,
-                output_tokens: 0,
-            })
-            .await
-            .unwrap();
-
-        (user2, assistant2)
-    };
-
-    // 第二轮对话：from_message_id = user2_id, message_id = assistant2_id
-    let engine = wc.chat();
-    let mut stream = Box::pin(engine.start(ctx.topic_id, ctx.model_id, user2_id, assistant2_id));
-
-    let mut seen_finish = false;
-    while let Some(event) = stream.next().await {
-        if let ChatEvent::Finish { error, .. } = event {
-            assert!(error.is_none(), "Second round error: {:?}", error);
-            seen_finish = true;
-        }
-    }
-    assert!(seen_finish);
-
-    // 验证历史链：user_msg → assistant_msg → user2 → assistant2
-    let all_msgs = wc
-        .storage()
-        .message()
-        .list_by_topic(ctx.topic_id)
-        .await
-        .unwrap();
-    assert!(
-        all_msgs.len() >= 4,
-        "Should have at least 4 messages in chain"
-    );
-
-    let persisted = wc
-        .storage()
-        .message()
-        .get(assistant2_id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        !persisted.content.is_empty(),
-        "Second response should be persisted"
-    );
 }

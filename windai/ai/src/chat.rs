@@ -109,8 +109,8 @@ pub fn build_request(
     chat_adaptor: &dyn ChatAdaptor,
     model: &Model,
     config: &ReqConfig,
-    contexts: &Vec<Message>,
-    tools: Option<&Vec<Tools>>,
+    contexts: &[Message],
+    tools: Option<&[Tools]>,
 ) -> Result<Value, ProviderError> {
     let req_body = match chat_adaptor.build_request(&model.name, config, contexts, tools) {
         Ok(body) => body,

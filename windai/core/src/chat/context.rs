@@ -19,29 +19,18 @@ pub fn build_chat_context(
     raw_messages: Vec<CoreMessage>,
     topic_id: i64,
     user_message_id: i64,
-    message_id: i64,
     max_context: Option<i32>,
-) -> Result<(CoreMessage, Vec<AiMessage>)> {
+) -> Result<Vec<AiMessage>> {
     let max_context = max_context
         .map(|c| if c < 1 { 1 } else { c as usize })
         .unwrap_or(1);
     let user_index = raw_messages
         .iter()
         .position(|m| m.id == user_message_id)
-        .ok_or_else(|| CoreError::Chat("User message not found".to_string()))?;
+        .ok_or_else(|| CoreError::Chat("User message not found in current topic".to_string()))?;
 
     let mut raw = raw_messages;
-    let mut assistants = raw.split_off(user_index + 1);
-
-    let asst_pos = assistants
-        .iter()
-        .position(|a| a.id == message_id && a.from_id == Some(user_message_id))
-        .ok_or_else(|| {
-            CoreError::Chat(format!(
-                "Cannot find assistant message in current topic. (topic_id={}, message_id={})",
-                topic_id, message_id
-            ))
-        })?;
+    let _ = raw.split_off(user_index + 1);
 
     let last = raw.last().ok_or_else(|| {
         CoreError::Chat(format!(
@@ -56,6 +45,7 @@ pub fn build_chat_context(
         )));
     }
 
+    // 寻找系统消息和边界消息
     let (system_idx, boundary_idx) = find_system_and_boundary(&raw);
     let start_index = max(
         boundary_idx.unwrap_or(0),
@@ -101,7 +91,7 @@ pub fn build_chat_context(
         }
     }
 
-    Ok((assistants.swap_remove(asst_pos), contexts))
+    Ok(contexts)
 }
 
 fn find_system_and_boundary(messages: &[CoreMessage]) -> (Option<usize>, Option<usize>) {

@@ -1,9 +1,11 @@
+use sqlx::QueryBuilder;
+
 use super::utils;
 use crate::{
-    db::DbPool,
+    db::{DbDriver, DbPool},
     delete_by_id,
     error::{CoreError, Result},
-    get_by_id, insert,
+    insert,
     models::{CreateMcpServer, McpServerParam, UpdateMcpServer},
     select_fields,
     storage::next_id,
@@ -24,10 +26,6 @@ impl McpStorage {
                 "mcp server name cannot be empty".into(),
             ));
         }
-        let args_json = utils::vec_to_str(data.args.as_deref())?;
-        let env_json = utils::map_to_str(data.env.as_ref())?;
-        let auto_approves_json = utils::vec_to_str(data.auto_approves.as_deref())?;
-
         let id = next_id();
         let mut qb = insert!(
             "mcp_servers",
@@ -37,9 +35,9 @@ impl McpStorage {
             ("url", data.url),
             ("description", data.description),
             ("command", data.command),
-            ("args", args_json),
-            ("env", env_json),
-            ("auto_approves", auto_approves_json),
+            ("args", utils::vec_to_str_default(data.args.as_deref())?),
+            ("env", utils::map_to_str_default(data.env.as_ref())?),
+            // ("auto_approves", utils::vec_to_str_default(data.auto_approves.as_deref())?),
         );
         qb.build().execute(&self.db).await?;
         Ok(id)
@@ -59,12 +57,12 @@ impl McpStorage {
             ("url", data.url),
             ("description", data.description),
             ("command", data.command),
-            ("args", Some(utils::vec_to_str(data.args.as_deref())?)),
-            ("env", Some(utils::map_to_str(data.env.as_ref())?)),
-            (
-                "auto_approves",
-                Some(utils::vec_to_str(data.auto_approves.as_deref())?)
-            ),
+            ("args", utils::vec_to_str_optional(data.args.as_deref())?),
+            ("env", utils::map_to_str_optional(data.env.as_ref())?),
+            // (
+            //     "auto_approves",
+            //     Some(utils::vec_to_str(data.auto_approves.as_deref())?)
+            // ),
         );
         qb.build().execute(&self.db).await?;
         Ok(())
@@ -76,10 +74,9 @@ impl McpStorage {
         Ok(())
     }
 
-    pub async fn get(&self, id: i64) -> Result<Option<McpServerParam>> {
-        let mut qb = get_by_id!(
+    fn common_select<'a>() -> QueryBuilder<'a, DbDriver> {
+        select_fields!(
             "mcp_servers",
-            id,
             (
                 "id",
                 "type",
@@ -92,8 +89,14 @@ impl McpStorage {
                 "auto_approves",
                 "created_at"
             )
-        );
+        )
+    }
+
+    pub async fn get(&self, id: i64) -> Result<Option<McpServerParam>> {
+        let mut qb = Self::common_select();
         let row = qb
+            .push(" WHERE id = ")
+            .push_bind(id)
             .build_query_as::<McpServerParam>()
             .fetch_optional(&self.db)
             .await?;
@@ -101,22 +104,62 @@ impl McpStorage {
         Ok(row)
     }
 
+    /// 通过服务名字查询
+    pub async fn get_by_name(&self, name: &str) -> Result<Option<McpServerParam>> {
+        let mut qb = Self::common_select();
+        let row = qb
+            .push(" WHERE name = ")
+            .push_bind(name)
+            .build_query_as::<McpServerParam>()
+            .fetch_optional(&self.db)
+            .await?;
+
+        Ok(row)
+    }
+
+    /// 通过MCP服务名字批量查询
+    pub async fn batch_get_by_names(&self, names: &[String]) -> Result<Vec<McpServerParam>> {
+        if names.is_empty() {
+            return Err(CoreError::Validation("names are empty".into()));
+        }
+        let mut qb = Self::common_select();
+        qb.push(" WHERE name IN ( ");
+        let mut separated = qb.separated(", ");
+        for name in names {
+            separated.push_bind(name);
+        }
+        separated.push_unseparated(") ");
+
+        let rows = qb
+            .build_query_as::<McpServerParam>() // 使用 build_query_as 触发 FromRow
+            .fetch_all(&self.db)
+            .await?;
+        Ok(rows)
+    }
+
+    /// 通过MCP服务ID批量查询
+    pub async fn batch_get_by_ids(&self, ids: &[i64]) -> Result<Vec<McpServerParam>> {
+        if ids.is_empty() {
+            return Err(CoreError::Validation("mcp ids are empty".into()));
+        }
+        let mut qb = Self::common_select();
+        qb.push(" WHERE id IN ( ");
+        // TODO: 使用宏优化
+        let mut separated = qb.separated(", ");
+        for id in ids {
+            separated.push_bind(id);
+        }
+        separated.push_unseparated(") ");
+
+        let rows = qb
+            .build_query_as::<McpServerParam>() // 使用 build_query_as 触发 FromRow
+            .fetch_all(&self.db)
+            .await?;
+        Ok(rows)
+    }
+
     pub async fn list(&self) -> Result<Vec<McpServerParam>> {
-        let mut qb = select_fields!(
-            "mcp_servers",
-            (
-                "id",
-                "type",
-                "name",
-                "url",
-                "description",
-                "command",
-                "args",
-                "env",
-                "auto_approves",
-                "created_at"
-            )
-        );
+        let mut qb = Self::common_select();
         qb.push(" ORDER BY id ASC ");
         let rows = qb
             .build_query_as::<McpServerParam>()

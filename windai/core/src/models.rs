@@ -135,6 +135,11 @@ pub struct Topic {
     /// 当前会话序号
     pub index: i64,
     pub created_at: i64,
+    /// topic级别自动执行的 tool_call 名；
+    /// 名字包含MCP服务名称
+    pub auto_approves: Option<Vec<String>>,
+    /// 引用的 MCP 服务 id
+    pub mcp_server_ids: Option<Vec<i64>>,
 }
 impl<'s> sqlx::FromRow<'s, DbRow> for Topic {
     fn from_row(row: &'s DbRow) -> Result<Self, sqlx::Error> {
@@ -147,6 +152,20 @@ impl<'s> sqlx::FromRow<'s, DbRow> for Topic {
             label: row.get("label"),
             max_context: row.get("max_context"),
             index: row.get("topic_index"),
+            auto_approves: utils::de_str_to(&row.get::<String, _>("auto_approves")).map_err(
+                |e| {
+                    sqlx::Error::Decode(
+                        format!("Failed to deserialize auto_approves: {}", e).into(),
+                    )
+                },
+            )?,
+            mcp_server_ids: utils::de_str_to(&row.get::<String, _>("mcp_server_ids")).map_err(
+                |e| {
+                    sqlx::Error::Decode(
+                        format!("Failed to deserialize mcp_server_ids: {}", e).into(),
+                    )
+                },
+            )?,
         })
     }
 }
@@ -178,13 +197,32 @@ pub struct Message {
     pub input_tokens: i32,
     /// 模型输出的token数
     pub output_tokens: i32,
+    /// （工具调用）可调用的工具名称
+    pub tools_allowed: Option<Vec<String>>,
+    /// （工具调用）拒绝调用的工具名称
+    pub tools_denied: Option<Vec<String>>,
     pub created_at: i64,
 }
 impl<'s> sqlx::FromRow<'s, DbRow> for Message {
     fn from_row(row: &'s DbRow) -> Result<Self, sqlx::Error> {
-        let content: String = row.try_get("content")?;
-        let parsed_content = storage::utils::de_str_to(content.as_str()).map_err(|e| {
+        let parsed_content = storage::utils::de_str_to(
+            row.try_get::<String, _>("content")?.as_str(),
+        )
+        .map_err(|e| {
             sqlx::Error::Decode(format!("Failed to deserialize message content: {}", e).into())
+        })?;
+        let tools_allowed =
+            storage::utils::de_str_to(row.try_get::<String, _>("tools_allowed")?.as_str())
+                .map_err(|e| {
+                    sqlx::Error::Decode(
+                        format!("Failed to deserialize tools_allowed: {}", e).into(),
+                    )
+                })?;
+        let tools_denied = storage::utils::de_str_to(
+            row.try_get::<String, _>("tools_denied")?.as_str(),
+        )
+        .map_err(|e| {
+            sqlx::Error::Decode(format!("Failed to deserialize tools_denied : {}", e).into())
         })?;
 
         Ok(Self {
@@ -199,6 +237,8 @@ impl<'s> sqlx::FromRow<'s, DbRow> for Message {
             is_excluded: row.try_get("is_excluded")?,
             input_tokens: row.try_get("input_tokens")?,
             output_tokens: row.try_get("output_tokens")?,
+            tools_allowed,
+            tools_denied,
             created_at: row.try_get("created_at")?,
         })
     }
@@ -299,7 +339,7 @@ pub struct McpServerParam {
     pub args: Option<Vec<String>>,
     /// 环境变量
     pub env: Option<HashMap<String, String>>,
-    /// 允许自动执行的工具名
+    /// 允许自动执行的工具名,不包含服务名前缀
     pub auto_approves: Option<Vec<String>>,
     pub created_at: i64,
 }
@@ -343,6 +383,8 @@ pub struct CreateMessage {
     pub is_boundary: bool,
     pub input_tokens: i32,
     pub output_tokens: i32,
+    pub tools_allowed: Option<Vec<String>>,
+    pub tools_denied: Option<Vec<String>>,
 }
 
 pub struct UpdateMessage {
@@ -350,6 +392,8 @@ pub struct UpdateMessage {
     pub model_id: Option<i64>,
     pub input_tokens: Option<i32>,
     pub output_tokens: Option<i32>,
+    pub tools_allowed: Option<Vec<String>>,
+    pub tools_denied: Option<Vec<String>>,
 }
 
 impl Default for UpdateMessage {
@@ -359,6 +403,8 @@ impl Default for UpdateMessage {
             model_id: None,
             input_tokens: None,
             output_tokens: None,
+            tools_allowed: None,
+            tools_denied: None,
         }
     }
 }
@@ -370,6 +416,8 @@ impl From<Message> for UpdateMessage {
             model_id: Some(value.model_id),
             input_tokens: Some(value.input_tokens),
             output_tokens: Some(value.output_tokens),
+            tools_allowed: value.tools_allowed,
+            tools_denied: value.tools_denied,
         }
     }
 }
@@ -458,6 +506,7 @@ pub struct CreateTopic {
     pub label: String,
     pub icon: Option<String>,
     pub max_context: Option<i32>,
+    pub mcp_server_ids: Option<Vec<i64>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -466,6 +515,8 @@ pub struct UpdateTopic {
     pub label: Option<String>,
     pub icon: Option<String>,
     pub max_context: Option<i32>,
+    pub auto_approves: Option<Vec<String>>,
+    pub mcp_server_ids: Option<Vec<i64>>,
 }
 
 impl Default for UpdateTopic {
@@ -475,6 +526,8 @@ impl Default for UpdateTopic {
             icon: None,
             max_context: None,
             parent_id: None,
+            auto_approves: None,
+            mcp_server_ids: None,
         }
     }
 }
@@ -503,7 +556,8 @@ pub struct CreateMcpServer {
     pub command: Option<String>,
     pub args: Option<Vec<String>>,
     pub env: Option<HashMap<String, String>>,
-    pub auto_approves: Option<Vec<String>>,
+    // TODO: 暂不使用
+    // pub auto_approves: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Clone, Default)]
@@ -515,5 +569,5 @@ pub struct UpdateMcpServer {
     pub command: Option<String>,
     pub args: Option<Vec<String>>,
     pub env: Option<HashMap<String, String>>,
-    pub auto_approves: Option<Vec<String>>,
+    // pub auto_approves: Option<Vec<String>>,
 }

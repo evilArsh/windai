@@ -9,12 +9,14 @@ use crate::{
     storage::next_id,
     update,
 };
-use sqlx::Row;
+use sqlx::{QueryBuilder, Row};
 
 struct PreparedMessage {
     id: i64,
     message_index: i64,
     content_str: String,
+    tools_allowed_str: String,
+    tools_denied_str: String,
     is_excluded: bool,
     original: CreateMessage,
 }
@@ -27,6 +29,27 @@ impl MessageStorage {
         Self { db }
     }
 
+    fn select_common<'a>() -> QueryBuilder<'a, DbDriver> {
+        select_fields!(
+            "messages",
+            (
+                "id",
+                "from_id",
+                "stream",
+                "content",
+                "model_id",
+                "topic_id",
+                "message_index",
+                "is_boundary",
+                "is_excluded",
+                "input_tokens",
+                "output_tokens",
+                "tools_allowed",
+                "tools_denied",
+                "created_at"
+            )
+        )
+    }
     async fn update_is_excluded_inner<'e, E>(executor: E, id: i64, is_excluded: bool) -> Result<()>
     where
         E: sqlx::Executor<'e, Database = DbDriver>,
@@ -40,25 +63,9 @@ impl MessageStorage {
     where
         E: sqlx::Executor<'e, Database = DbDriver>,
     {
-        let mut qb = get_by_id!(
-            "messages",
-            id,
-            (
-                "id",
-                "from_id",
-                "stream",
-                "content",
-                "model_id",
-                "topic_id",
-                "message_index",
-                "is_boundary",
-                "is_excluded",
-                "input_tokens",
-                "output_tokens",
-                "created_at"
-            )
-        );
-        let row = qb
+        let row = Self::select_common()
+            .push(" WHERE id = ")
+            .push_bind(id)
             .build_query_as::<Message>()
             .fetch_optional(executor)
             .await?;
@@ -110,14 +117,22 @@ impl MessageStorage {
             ("id", id),
             ("from_id", data.from_id),
             ("stream", data.stream),
-            ("content", utils::vec_to_str(Some(&data.content))?),
+            ("content", utils::vec_to_str_default(Some(&data.content))?),
             ("model_id", data.model_id),
             ("topic_id", data.topic_id),
             ("message_index", index),
             ("is_boundary", data.is_boundary),
             ("is_excluded", is_excluded),
             ("input_tokens", data.input_tokens),
-            ("output_tokens", data.output_tokens)
+            ("output_tokens", data.output_tokens),
+            (
+                "tools_allowed",
+                utils::vec_to_str_default(data.tools_allowed.as_deref())?
+            ),
+            (
+                "tools_denied",
+                utils::vec_to_str_default(data.tools_denied.as_deref())?
+            ),
         )
         .build()
         .execute(&mut *tx)
@@ -132,17 +147,24 @@ impl MessageStorage {
         let mut qb = update!(
             "messages",
             id,
-            ("content", Some(utils::vec_to_str(data.content.as_deref())?)),
+            (
+                "content",
+                utils::vec_to_str_optional(data.content.as_deref())?
+            ),
             ("model_id", data.model_id),
             ("input_tokens", data.input_tokens),
-            ("output_tokens", data.output_tokens)
+            ("output_tokens", data.output_tokens),
+            (
+                "tools_allowed",
+                utils::vec_to_str_optional(data.tools_allowed.as_deref())?
+            ),
+            (
+                "tools_denied",
+                utils::vec_to_str_optional(data.tools_denied.as_deref())?
+            ),
         );
         qb.build().execute(&self.db).await?;
         Ok(())
-    }
-
-    pub async fn update_is_excluded(&self, id: i64, is_excluded: bool) -> Result<()> {
-        Self::update_is_excluded_inner(&self.db, id, is_excluded).await
     }
 
     pub async fn get(&self, id: i64) -> Result<Option<Message>> {
@@ -151,28 +173,10 @@ impl MessageStorage {
 
     /// 查询 topic_id 下所有的消息
     pub async fn list_by_topic(&self, topic_id: i64) -> Result<Vec<Message>> {
-        let mut qb = select_fields!(
-            "messages",
-            (
-                "id",
-                "from_id",
-                "stream",
-                "content",
-                "model_id",
-                "topic_id",
-                "message_index",
-                "is_boundary",
-                "is_excluded",
-                "input_tokens",
-                "output_tokens",
-                "created_at"
-            )
-        );
-        qb.push(" WHERE topic_id = ")
+        let rows = Self::select_common()
+            .push(" WHERE topic_id = ")
             .push_bind(topic_id)
-            .push(" ORDER BY message_index ASC ");
-
-        let rows = qb
+            .push(" ORDER BY message_index ASC ")
             .build_query_as::<Message>() // 使用 build_query_as 触发 FromRow
             .fetch_all(&self.db)
             .await?;
@@ -285,7 +289,9 @@ impl MessageStorage {
             prepared_rows.push(PreparedMessage {
                 id: next_id(),
                 message_index: base_index + index as i64,
-                content_str: utils::vec_to_str(Some(&msg.content))?,
+                content_str: utils::vec_to_str_default(Some(&msg.content))?,
+                tools_allowed_str: utils::vec_to_str_default(msg.tools_allowed.as_deref())?,
+                tools_denied_str: utils::vec_to_str_default(msg.tools_denied.as_deref())?,
                 // 第一条默认作为消息上下文
                 is_excluded: index == 0,
                 original: msg,
@@ -305,6 +311,8 @@ impl MessageStorage {
                 "is_excluded",
                 "input_tokens",
                 "output_tokens",
+                "tools_allowed",
+                "tools_denied",
                 "created_at"
             )
         )
@@ -320,6 +328,8 @@ impl MessageStorage {
             b.push_bind(item.is_excluded);
             b.push_bind(item.original.input_tokens);
             b.push_bind(item.original.output_tokens);
+            b.push_bind(&item.tools_allowed_str);
+            b.push_bind(&item.tools_denied_str);
             b.push_bind(now_ts());
         })
         .build()
@@ -332,25 +342,9 @@ impl MessageStorage {
 
     pub async fn batch_get(&self, ids: &[i64]) -> Result<Vec<Message>> {
         if ids.is_empty() {
-            return Err(CoreError::Validation("ids are empty".into()));
+            return Err(CoreError::Validation("message ids are empty".into()));
         }
-        let mut qb = select_fields!(
-            "messages",
-            (
-                "id",
-                "from_id",
-                "stream",
-                "content",
-                "model_id",
-                "topic_id",
-                "message_index",
-                "is_boundary",
-                "is_excluded",
-                "input_tokens",
-                "output_tokens",
-                "created_at"
-            )
-        );
+        let mut qb = Self::select_common();
         qb.push(" WHERE id IN ( ");
         let mut separated = qb.separated(", ");
         for id in ids {

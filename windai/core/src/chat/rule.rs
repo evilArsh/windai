@@ -19,7 +19,7 @@ fn build_context(
     }))
 }
 
-pub fn build_rule(rule: Option<JsonRule>) -> Result<Option<RuleSet>> {
+pub fn build_rule(rule: Option<&JsonRule>) -> Result<Option<RuleSet>> {
     let rule = match rule {
         Some(v) if !v.json_rule.is_empty() => Some(RuleSet::from_json(&v.json_rule)?),
         _ => None,

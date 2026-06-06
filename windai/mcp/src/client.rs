@@ -204,7 +204,7 @@ impl Tool {
         }
     }
 
-    fn build_name(server_name: &str, tool_name: &str) -> String {
+    pub fn build_name(server_name: &str, tool_name: &str) -> String {
         if server_name.is_empty() {
             tool_name.to_string()
         } else {

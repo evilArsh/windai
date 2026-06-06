@@ -10,7 +10,7 @@ use crate::provider::sse::SseBlock;
 use crate::tool;
 use serde_json::Value;
 
-fn transfer_response_tools(tools: Option<&Vec<tool::Tools>>) -> Option<Vec<Tools>> {
+fn transfer_response_tools(tools: Option<&[tool::Tools]>) -> Option<Vec<Tools>> {
     tools
         .map(|tools| {
             tools
@@ -46,8 +46,8 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
         &self,
         model_name: &str,
         config: &ReqConfig,
-        contexts: &Vec<Message>,
-        tools: Option<&Vec<tool::Tools>>,
+        contexts: &[Message],
+        tools: Option<&[tool::Tools]>,
     ) -> Result<Value, AdaptorError> {
         let tools = transfer_response_tools(tools);
         let input_messages = contexts

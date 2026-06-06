@@ -3,7 +3,7 @@ use serde::{Serialize, de::DeserializeOwned};
 
 /// 将vec序列化为json字符串。
 /// 如果vec为None，则返回"[]"。
-pub fn vec_to_str<T>(vec: Option<&[T]>) -> Result<String>
+pub fn vec_to_str_default<T>(vec: Option<&[T]>) -> Result<String>
 where
     T: Serialize,
 {
@@ -13,9 +13,18 @@ where
     }
 }
 
+/// 将vec序列化为json字符串。
+pub fn vec_to_str_optional<T>(vec: Option<&[T]>) -> Result<Option<String>>
+where
+    T: Serialize,
+{
+    vec.map(|v| serde_json::to_string(v).map_err(Into::into))
+        .transpose()
+}
+
 /// 将map序列化为json字符串。
 /// 如果map为None，则返回"{}"。
-pub fn map_to_str<T>(map: Option<&T>) -> Result<String>
+pub fn map_to_str_default<T>(map: Option<&T>) -> Result<String>
 where
     T: Serialize,
 {
@@ -23,6 +32,15 @@ where
         Some(m) => serde_json::to_string(m).map_err(Into::into),
         None => Ok("{}".to_string()),
     }
+}
+
+/// 将map序列化为json字符串。
+pub fn map_to_str_optional<T>(map: Option<&T>) -> Result<Option<String>>
+where
+    T: Serialize,
+{
+    map.map(|m| serde_json::to_string(m).map_err(Into::into))
+        .transpose()
 }
 
 /// 将json字符串反序列化为 T。

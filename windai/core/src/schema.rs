@@ -42,6 +42,8 @@ CREATE TABLE IF NOT EXISTS topics (
     icon            TEXT,
     max_context     INTEGER,
     topic_index     INTEGER NOT NULL,
+    auto_approves   TEXT    DEFAULT '[]',
+    mcp_server_ids  TEXT    DEFAULT '[]',
     created_at      INTEGER,
     updated_at      INTEGER
 );
@@ -57,6 +59,8 @@ CREATE TABLE IF NOT EXISTS messages (
     is_excluded     BOOLEAN NOT NULL,
     input_tokens    INTEGER NOT NULL DEFAULT 0,
     output_tokens   INTEGER NOT NULL DEFAULT 0,
+    tools_allowed   TEXT    DEFAULT '[]',
+    tools_denied    TEXT    DEFAULT '[]',
     created_at      INTEGER,
     updated_at      INTEGER
 );
@@ -77,7 +81,7 @@ CREATE TABLE IF NOT EXISTS chat_configs (
 CREATE TABLE IF NOT EXISTS mcp_servers ( 
     id              INTEGER PRIMARY KEY,
     type            TEXT NOT NULL,
-    name            TEXT NOT NULL,
+    name            TEXT NOT NULL UNIQUE,
     url             TEXT,
     description     TEXT,
     command         TEXT,
@@ -86,13 +90,6 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
     auto_approves   TEXT DEFAULT '[]',
     created_at      INTEGER,
     updated_at      INTEGER
-);
-CREATE TABLE IF NOT EXISTS topic_mcp_servers (
-    id          INTEGER PRIMARY KEY,
-    topic_id    INTEGER NOT NULL,
-    server_id   INTEGER NOT NULL,
-    created_at  INTEGER,
-    UNIQUE(topic_id, server_id)
 );
 CREATE TABLE IF NOT EXISTS json_rule (
     id          INTEGER PRIMARY KEY,
@@ -114,6 +111,10 @@ CREATE INDEX IF NOT EXISTS idx_messages_topic ON messages(topic_id, message_inde
 
 CREATE INDEX IF NOT EXISTS idx_topics_parent_id_topic_index ON topics(parent_id, topic_index);
 CREATE INDEX IF NOT EXISTS idx_topics_chat_config_id ON topics(chat_config_id);
+
+CREATE INDEX IF NOT EXISTS idx_chat_configs_topic_id ON chat_configs(topic_id);
+
+CREATE INDEX IF NOT EXISTS idx_mcp_servers_name ON mcp_servers(name);
 
 CREATE INDEX IF NOT EXISTS idx_provider_adaptor ON json_rule(provider_id,adaptor);
 "#;
