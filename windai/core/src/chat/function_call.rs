@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
+use super::events::ChatEvent;
 use crate::error::{CoreError, Result};
 use crate::models::Message as CoreMessage;
-use crate::models::{McpServerParam, Topic};
+use crate::models::ToolApprovalPolicy;
 use serde_json::{Value, json};
 use wind_ai::message::{Content, Message as AiMessage};
 use wind_ai::tool::{FunctionCall, FunctionCallOutput, FunctionTool, Tools};
@@ -60,50 +61,35 @@ pub async fn execute_tool_calls(
         results
             .into_iter()
             .enumerate()
-            .map(|(index, res)| FunctionCallOutput {
-                id: tool_calls[index].id.clone(),
-                content: res.content,
+            .map(|(index, res)| {
+                log::debug!(
+                    "[tool call result] id: {}, res: {:?}",
+                    &tool_calls[index].id,
+                    &res
+                );
+                return FunctionCallOutput {
+                    id: tool_calls[index].id.clone(),
+                    content: res.content,
+                };
             })
             .collect(),
     ))
 }
 
-/// 合并并去重 topic 级别和 MCP 服务级别的 `auto_approves`。
+/// 根据 Topic 级审批策略拆分可自动执行和需要人工审批的工具调用。
 ///
-/// - `topic.auto_approves`：话题维度配置的自动执行工具名
-/// - `tools`：各 MCP 服务的 `auto_approves`
-///
-/// 返回 `None` 表示没有任何自动执行工具配置。
-pub fn merge_approved_tools(
-    topic: &Topic,
-    servers: Option<&[McpServerParam]>,
-) -> Option<Vec<String>> {
-    let mut seen = HashSet::new();
-    for tool_name in topic.auto_approves.iter().flatten() {
-        seen.insert(tool_name.clone());
-    }
-    for server in servers.into_iter().flatten() {
-        server.auto_approves.iter().flatten().for_each(|tool_name| {
-            seen.insert(McpTool::build_name(&server.name, &tool_name));
-        });
-    }
-    match seen.len() {
-        0 => None,
-        _ => Some(seen.into_iter().collect()),
-    }
-}
-
-/// 筛选出 dst 中工具名称在 approved 中的函数调用
-pub fn filter_tool_calls(
-    approved: Option<&[String]>,
-    dst: &[FunctionCall],
+/// (自动审批,手动审批)
+pub fn partition_tool_calls_by_policy(
+    topic_policy: &ToolApprovalPolicy,
+    pending: &[FunctionCall],
 ) -> (Vec<FunctionCall>, Vec<FunctionCall>) {
-    match approved {
-        Some(approved_list) => dst
+    match topic_policy {
+        ToolApprovalPolicy::AllowAll => (pending.to_vec(), vec![]),
+        ToolApprovalPolicy::AllowList(approved_list) => pending
             .iter()
             .cloned()
             .partition(|call| approved_list.contains(&call.name)),
-        None => (vec![], dst.to_vec()),
+        ToolApprovalPolicy::Manual => (vec![], pending.to_vec()),
     }
 }
 
@@ -144,7 +130,10 @@ fn find_pending_calls(content: &[AiMessage]) -> Result<Vec<FunctionCall>> {
     ))
 }
 
-/// 处理暂停的工具调用审批。
+/// 处理工具调用审批。
+///
+/// 用户未审批的工具将交由用户继续审批，直到所有工具都审批。
+/// （一般情况下每一轮的tool call, 用户会一次性审批通过。但为了通用性考虑，假设用户可能分批次审批）
 ///
 /// 根据 `tools_allowed` 决定哪些工具执行、哪些拒绝：
 /// - 在 `tools_allowed` 中的 → 执行 MCP 调用
@@ -153,20 +142,59 @@ fn find_pending_calls(content: &[AiMessage]) -> Result<Vec<FunctionCall>> {
 /// 调用后 `assistant.content` 和 `contexts` 中会追加新的 `ToolResult` 帧，
 pub async fn resume_tool_approval(
     mcp_registry: &RegistryHandle,
+    policy: &ToolApprovalPolicy,
     assistant: &mut CoreMessage,
     contexts: &mut Vec<AiMessage>,
-) -> Result<()> {
+) -> Result<Option<ChatEvent>> {
+    // 剩下未自动审批的工具，需要用户手动审批
     let pending = find_pending_calls(&assistant.content)?;
     // 恢复上下文
     contexts.extend(assistant.content.iter().cloned());
+    if pending.is_empty() {
+        log::debug!(
+            "no pending tool calls to approve. assistant_id: {}",
+            assistant.id
+        );
+        return Ok(None);
+    }
+    let (auto_approved, manual_calls) = partition_tool_calls_by_policy(policy, &pending);
     let allowed_set: HashSet<&str> = match assistant.tools_allowed {
         Some(ref tools) => tools.iter().map(|t| t.as_str()).collect(),
         None => HashSet::new(),
     };
-    let calls_to_exec: Vec<FunctionCall> = pending
+    let denied_set: HashSet<&str> = match assistant.tools_denied {
+        Some(ref tools) => tools.iter().map(|t| t.as_str()).collect(),
+        None => HashSet::new(),
+    };
+
+    let mut unreviewed = Vec::new();
+    let mut manual_allowed = Vec::new();
+    let mut manual_denied = HashSet::new();
+    for call in manual_calls {
+        if allowed_set.contains(call.id.as_str()) {
+            manual_allowed.push(call);
+        } else if denied_set.contains(call.id.as_str()) {
+            manual_denied.insert(call.id.clone());
+        } else {
+            unreviewed.push(call);
+        }
+    }
+    log::debug!(
+        "auto_approved: {}, manual_allowed: {}, manual_denied: {}",
+        auto_approved.len(),
+        manual_allowed.len(),
+        manual_denied.len(),
+    );
+    if auto_approved.is_empty() && manual_allowed.is_empty() && manual_denied.is_empty() {
+        return Err(CoreError::Chat(
+            "Tool calls need approval before resuming".into(),
+        ));
+    }
+
+    let calls_to_exec: Vec<FunctionCall> = auto_approved
         .iter()
-        .filter(|c| allowed_set.contains(c.id.as_str()))
         .cloned()
+        .chain(manual_allowed.iter().cloned())
         .collect();
 
     let mut result_map: HashMap<String, FunctionCallOutput> = HashMap::new();
@@ -177,26 +205,37 @@ pub async fn resume_tool_approval(
                 result_map.insert(data.id.clone(), data);
             }
         }
-    } else {
-        log::warn!("No tools to execute");
     }
 
-    // 按原始 tool_request 顺序组装结果，未执行的视为拒绝
+    // 按原始 tool_request 顺序组装已经处理的结果，未审批的保留到下一次 resume。
     let results: Vec<FunctionCallOutput> = pending
         .iter()
-        .map(|call| {
-            result_map
-                .remove(&call.id)
-                .unwrap_or_else(|| FunctionCallOutput {
+        .filter_map(|call| {
+            if let Some(result) = result_map.remove(&call.id) {
+                Some(result)
+            } else if manual_denied.contains(&call.id) {
+                Some(FunctionCallOutput {
                     id: call.id.clone(),
                     content: json!({"error": "User denied this tool call"}),
                 })
+            } else {
+                None
+            }
         })
         .collect();
 
-    let tool_result = AiMessage::new_tool_result(results);
-    contexts.push(tool_result.clone());
-    assistant.append_content(&tool_result);
+    if !results.is_empty() {
+        let tool_result = AiMessage::new_tool_result(results);
+        contexts.push(tool_result.clone());
+        assistant.append_content(&tool_result);
+    }
 
-    Ok(())
+    assistant.tools_allowed = Some(vec![]);
+    assistant.tools_denied = Some(vec![]);
+
+    if unreviewed.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(ChatEvent::await_tool_calls(assistant.id, &unreviewed)))
+    }
 }

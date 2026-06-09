@@ -81,7 +81,7 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
                                 message::Content::FunctionCall { data } => {
                                     Some(InputItem::FunctionCallOutput(FunctionCallOutput {
                                         call_id: data.id.clone(),
-                                        output: data.content.clone(),
+                                        output: Value::String(data.content.to_string()),
                                         r#type: String::from("function_call_output"),
                                         id: None,
                                         status: None,

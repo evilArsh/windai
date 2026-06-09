@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS topics (
     icon            TEXT,
     max_context     INTEGER,
     topic_index     INTEGER NOT NULL,
-    auto_approves   TEXT    DEFAULT '[]',
+    tool_approval_policy TEXT NOT NULL DEFAULT '{"type":"allow_all"}',
     mcp_server_ids  TEXT    DEFAULT '[]',
     created_at      INTEGER,
     updated_at      INTEGER

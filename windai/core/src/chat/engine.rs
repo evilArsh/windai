@@ -1,8 +1,7 @@
 use super::context;
 use super::events::ChatEvent;
 use super::function_call::{
-    build_tools_from_mcp, execute_tool_calls, filter_tool_calls, merge_approved_tools,
-    resume_tool_approval,
+    build_tools_from_mcp, execute_tool_calls, partition_tool_calls_by_policy, resume_tool_approval,
 };
 use super::rule::{apply_json_rule, build_rule};
 use crate::error::{CoreError, Result};
@@ -12,7 +11,7 @@ use crate::models::{
 use crate::storage::Storage;
 use async_stream::{stream, try_stream};
 use futures::{Stream, StreamExt};
-use std::pin::pin;
+use std::pin::{Pin, pin};
 use wind_ai::chat::{ResEventStatus, build_request, handle_chat};
 use wind_ai::message::{Content, Message as AiMessage, ReqConfig, Role};
 use wind_ai::model::Model as AiModel;
@@ -29,7 +28,6 @@ struct Context {
     credential: Credentials,
     rule_set: Option<JsonRule>,
     tools: Option<Vec<Tools>>,
-    approved_tools: Option<Vec<String>>,
 }
 
 pub struct ChatEngine<'c> {
@@ -88,7 +86,6 @@ impl<'c> ChatEngine<'c> {
         })?;
 
         let tool_params = self.get_topic_tools(&topic).await?;
-        let approved_tools = merge_approved_tools(&topic, tool_params.as_deref());
         let tools = match tool_params {
             Some(params) => Some(build_tools_from_mcp(
                 self.mcp_registry
@@ -123,7 +120,6 @@ impl<'c> ChatEngine<'c> {
             rule_set,
             credential,
             tools,
-            approved_tools,
         })
     }
     /// 获取 topic 下详细的MCP服务信息
@@ -153,7 +149,7 @@ impl<'c> ChatEngine<'c> {
         topic_id: i64,
         user_message_id: i64,
         message_id: i64,
-    ) -> Result<impl Stream<Item = ChatEvent>> {
+    ) -> Result<Pin<Box<dyn Stream<Item = ChatEvent> + '_>>> {
         let mut assistant = match self.storage.message().get(message_id).await? {
             Some(m) => {
                 if m.topic_id != topic_id {
@@ -180,9 +176,23 @@ impl<'c> ChatEngine<'c> {
                 return Err(CoreError::Chat("Chat completed".to_string()));
             }
             Some(msg) if msg.is_tool_request() || msg.is_tool_result() => {
-                // FIXME: 用户审批了空的工具名或者审批了无关的工具名，会导致无限循环
-                resume_tool_approval(&self.mcp_registry, &mut assistant, &mut contexts).await?;
-                return self.start_chat(ctx, assistant, contexts).await;
+                let maybe_event = resume_tool_approval(
+                    &self.mcp_registry,
+                    &ctx.topic.tool_approval_policy,
+                    &mut assistant,
+                    &mut contexts,
+                )
+                .await?;
+                if let Some(event) = maybe_event {
+                    self.storage
+                        .message()
+                        .update(assistant.id, assistant.into())
+                        .await?;
+                    return Ok(Box::pin(stream! {
+                        yield event;
+                    }));
+                }
+                return Ok(Box::pin(self.start_chat(ctx, assistant, contexts).await?));
             }
             // 未知的消息类型
             Some(msg) => {
@@ -192,7 +202,7 @@ impl<'c> ChatEngine<'c> {
             }
             // 开始新对话
             None => {
-                return self.start_chat(ctx, assistant, contexts).await;
+                return Ok(Box::pin(self.start_chat(ctx, assistant, contexts).await?));
             }
         }
     }
@@ -275,7 +285,7 @@ impl<'c> ChatEngine<'c> {
                     yield ChatEvent::partial(iter_index, assistant_id, tool_request);
 
                     let (auto_approved, left) =
-                        filter_tool_calls(ctx.approved_tools.as_deref(), &tools);
+                        partition_tool_calls_by_policy(&ctx.topic.tool_approval_policy, &tools);
                     if auto_approved.is_empty() {
                         log::debug!("[start_chat] all tools need to be approved:\n{:#?}", &left);
                         break_event = Some(ChatEvent::await_tool_calls(assistant_id, &tools));
@@ -311,16 +321,17 @@ impl<'c> ChatEngine<'c> {
             } // loop end
 
             if let Some(event) = break_event {
-                yield event;
                 if let Err(e) = self
-                    .storage
-                    .message()
+                .storage
+                .message()
                     .update(assistant_id, assistant.into())
                     .await
                 {
                     log::error!("[start_chat] error when saving break_event assistant:\n{:#?}", &e);
                     yield ChatEvent::finish(assistant_id, None, Some(e.into()));
+                    return;
                 };
+                yield event;
                 return;
             }
             if let Some(error) = &error_obj {
@@ -419,8 +430,7 @@ impl<'c> ChatEngine<'c> {
                 .start_prepare(topic_id, user_message_id, message_id)
                 .await;
             match result {
-                Ok(stream) => {
-                    let mut stream = std::pin::pin!(stream);
+                Ok(mut stream) => {
                     while let Some(event) = stream.next().await {
                         yield event;
                     }

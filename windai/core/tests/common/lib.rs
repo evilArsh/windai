@@ -84,20 +84,38 @@ fn var(name: &str) -> Result<String, std::env::VarError> {
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use std::str::FromStr;
 use wind_core::WindCore;
+use wind_mcp::client::registry::RegistryHandle;
 
 #[allow(dead_code)]
-pub async fn init_test_core() -> WindCore {
+async fn init_test_pool() -> sqlx::SqlitePool {
     let options = SqliteConnectOptions::from_str("sqlite::memory:")
         .unwrap()
         .shared_cache(true)
         .foreign_keys(true)
         .journal_mode(SqliteJournalMode::Wal);
     let pool = SqlitePoolOptions::new()
-        .max_connections(5)
+        // `sqlite::memory:` is scoped to the physical SQLite connection.
+        // Keep test pools single-connection so schema initialization and
+        // later queries always operate on the same in-memory database.
+        .max_connections(1)
         .connect_with(options)
         .await
         .unwrap();
+    pool
+}
+
+#[allow(dead_code)]
+pub async fn init_test_core() -> WindCore {
+    let pool = init_test_pool().await;
     WindCore::init_with_pool(pool).await.unwrap()
+}
+
+#[allow(dead_code)]
+pub async fn init_test_core_with_registry(registry: RegistryHandle) -> WindCore {
+    let pool = init_test_pool().await;
+    WindCore::init_with_pool_and_registry(pool, registry)
+        .await
+        .unwrap()
 }
 
 // ---------------------------------------------------------------------------

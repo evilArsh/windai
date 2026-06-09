@@ -2,7 +2,7 @@ use crate::{
     db::{DbDriver, DbPool},
     error::Result,
     get_by_id, insert,
-    models::{ChatConfig, CreateTopic, Topic, UpdateTopic},
+    models::{ChatConfig, CreateTopic, ToolApprovalPolicy, Topic, UpdateTopic},
     select_fields,
     storage::{next_id, now_ts},
     update, update_fields,
@@ -72,6 +72,10 @@ impl TopicStorage {
             ("max_context", data.max_context.or_else(|| Some(999))),
             ("topic_index", next_index),
             (
+                "tool_approval_policy",
+                serde_json::to_string(&ToolApprovalPolicy::default())?
+            ),
+            (
                 "mcp_server_ids",
                 utils::vec_to_str_default(data.mcp_server_ids.as_deref())?
             )
@@ -90,8 +94,8 @@ impl TopicStorage {
             ("icon", data.icon),
             ("max_context", data.max_context),
             (
-                "auto_approves",
-                utils::vec_to_str_optional(data.auto_approves.as_deref())?
+                "tool_approval_policy",
+                utils::map_to_str_optional(data.tool_approval_policy.as_ref())?
             ),
             (
                 "mcp_server_ids",
@@ -114,7 +118,7 @@ impl TopicStorage {
                 "icon",
                 "max_context",
                 "topic_index",
-                "auto_approves",
+                "tool_approval_policy",
                 "mcp_server_ids",
                 "created_at"
             )
@@ -138,7 +142,7 @@ impl TopicStorage {
                 "icon",
                 "max_context",
                 "topic_index",
-                "auto_approves",
+                "tool_approval_policy",
                 "mcp_server_ids",
                 "created_at"
             )

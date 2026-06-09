@@ -135,9 +135,8 @@ pub struct Topic {
     /// 当前会话序号
     pub index: i64,
     pub created_at: i64,
-    /// topic级别自动执行的 tool_call 名；
-    /// 名字包含MCP服务名称
-    pub auto_approves: Option<Vec<String>>,
+    /// 工具审批策略。
+    pub tool_approval_policy: ToolApprovalPolicy,
     /// 引用的 MCP 服务 id
     pub mcp_server_ids: Option<Vec<i64>>,
 }
@@ -152,13 +151,12 @@ impl<'s> sqlx::FromRow<'s, DbRow> for Topic {
             label: row.get("label"),
             max_context: row.get("max_context"),
             index: row.get("topic_index"),
-            auto_approves: utils::de_str_to(&row.get::<String, _>("auto_approves")).map_err(
-                |e| {
-                    sqlx::Error::Decode(
-                        format!("Failed to deserialize auto_approves: {}", e).into(),
-                    )
-                },
-            )?,
+            tool_approval_policy: utils::de_str_to(&row.get::<String, _>("tool_approval_policy"))
+                .map_err(|e| {
+                sqlx::Error::Decode(
+                    format!("Failed to deserialize tool_approval_policy: {}", e).into(),
+                )
+            })?,
             mcp_server_ids: utils::de_str_to(&row.get::<String, _>("mcp_server_ids")).map_err(
                 |e| {
                     sqlx::Error::Decode(
@@ -167,6 +165,20 @@ impl<'s> sqlx::FromRow<'s, DbRow> for Topic {
                 },
             )?,
         })
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(tag = "type", content = "tools", rename_all = "snake_case")]
+pub enum ToolApprovalPolicy {
+    Manual,
+    AllowList(Vec<String>),
+    AllowAll,
+}
+
+impl Default for ToolApprovalPolicy {
+    fn default() -> Self {
+        Self::AllowAll
     }
 }
 
@@ -515,7 +527,7 @@ pub struct UpdateTopic {
     pub label: Option<String>,
     pub icon: Option<String>,
     pub max_context: Option<i32>,
-    pub auto_approves: Option<Vec<String>>,
+    pub tool_approval_policy: Option<ToolApprovalPolicy>,
     pub mcp_server_ids: Option<Vec<i64>>,
 }
 
@@ -526,7 +538,7 @@ impl Default for UpdateTopic {
             icon: None,
             max_context: None,
             parent_id: None,
-            auto_approves: None,
+            tool_approval_policy: None,
             mcp_server_ids: None,
         }
     }

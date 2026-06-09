@@ -398,6 +398,7 @@ async fn topic_crud() {
     assert_eq!(t.label, "root");
     assert!(t.index > 0);
     assert_eq!(t.max_context, Some(999));
+    assert_eq!(t.tool_approval_policy, ToolApprovalPolicy::AllowAll);
 
     // create child
     let cid = svc.create(sample_topic("child", Some(tid))).await.unwrap();
@@ -423,6 +424,32 @@ async fn topic_crud() {
     assert_eq!(
         svc.get_topic(tid).await.unwrap().unwrap().label,
         "root-renamed"
+    );
+    assert_eq!(
+        svc.get_topic(tid)
+            .await
+            .unwrap()
+            .unwrap()
+            .tool_approval_policy,
+        ToolApprovalPolicy::AllowAll
+    );
+
+    svc.update(
+        tid,
+        UpdateTopic {
+            tool_approval_policy: Some(ToolApprovalPolicy::AllowList(vec!["srv0m0tool".into()])),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        svc.get_topic(tid)
+            .await
+            .unwrap()
+            .unwrap()
+            .tool_approval_policy,
+        ToolApprovalPolicy::AllowList(vec!["srv0m0tool".into()])
     );
 
     // delete cascade

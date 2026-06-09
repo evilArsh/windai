@@ -1,34 +1,47 @@
 use futures::StreamExt;
 use std::sync::OnceLock;
-use tokio::sync::Mutex;
 use wind_ai::message::{Content, Message as AiMessage, ReqConfig, Role};
+use wind_core::WindCore;
 use wind_core::chat::ChatEvent;
 use wind_core::models::*;
-use wind_core::WindCore;
+use wind_mcp::client::registry::{Registry, RegistryHandle};
 
 #[path = "./common/lib.rs"]
 mod common;
 
-use common::init_test_core;
+use common::init_test_core_with_registry;
 
 // ---------------------------------------------------------------------------
-// 全局状态 — 纯 chat（无 MCP）共享一个内存 WindCore
+// 全局 registry — 纯 chat 流程不启动 MCP 服务，只复用空 registry
 // ---------------------------------------------------------------------------
 
-static GLOBAL_CORE: OnceLock<WindCore> = OnceLock::new();
-static CORE_INIT: Mutex<()> = Mutex::const_new(());
+static CHAT_REGISTRY: OnceLock<RegistryHandle> = OnceLock::new();
 
-async fn global_core() -> &'static WindCore {
-    if let Some(core) = GLOBAL_CORE.get() {
-        return core;
-    }
-    let _guard = CORE_INIT.lock().await;
-    if let Some(core) = GLOBAL_CORE.get() {
-        return core;
-    }
-    let core = init_test_core().await;
-    GLOBAL_CORE.set(core).ok();
-    GLOBAL_CORE.get().unwrap()
+fn shared_chat_registry() -> RegistryHandle {
+    CHAT_REGISTRY
+        .get_or_init(|| {
+            let (tx, rx) = std::sync::mpsc::sync_channel(1);
+            std::thread::Builder::new()
+                .name("chat-test-registry".to_string())
+                .spawn(move || {
+                    let rt = tokio::runtime::Builder::new_multi_thread()
+                        .enable_all()
+                        .thread_name("chat-test-registry-worker")
+                        .build()
+                        .expect("failed to build chat test runtime");
+                    let registry = rt.block_on(async { Registry::new() });
+                    tx.send(registry)
+                        .expect("failed to publish chat test registry");
+                    rt.block_on(std::future::pending::<()>());
+                })
+                .expect("failed to spawn chat test registry thread");
+            rx.recv().expect("chat test registry thread stopped")
+        })
+        .clone()
+}
+
+async fn test_core() -> WindCore {
+    init_test_core_with_registry(shared_chat_registry()).await
 }
 
 struct TestContext {
@@ -112,7 +125,9 @@ async fn seed_chat_data(core: &WindCore, label: &str) -> TestContext {
             stream: false,
             content: vec![AiMessage::new_simple(
                 Role::User,
-                vec![Content::new_text("Hello! Reply in one short sentence.".into())],
+                vec![Content::new_text(
+                    "Hello! Reply in one short sentence.".into(),
+                )],
                 None,
             )],
             model_id,
@@ -160,8 +175,8 @@ async fn seed_chat_data(core: &WindCore, label: &str) -> TestContext {
 #[tokio::test]
 #[ignore = "need to complete .env config file"]
 async fn test_chat_non_stream() {
-    let core = global_core().await;
-    let ctx = seed_chat_data(core, "non-stream").await;
+    let core = test_core().await;
+    let ctx = seed_chat_data(&core, "non-stream").await;
 
     core.storage()
         .topic()
@@ -218,8 +233,8 @@ async fn test_chat_non_stream() {
 #[tokio::test]
 #[ignore = "need to complete .env config file"]
 async fn test_chat_stream() {
-    let core = global_core().await;
-    let ctx = seed_chat_data(core, "stream").await;
+    let core = test_core().await;
+    let ctx = seed_chat_data(&core, "stream").await;
 
     core.storage()
         .topic()
@@ -280,8 +295,8 @@ async fn test_chat_stream() {
 #[tokio::test]
 #[ignore = "need to complete .env config file"]
 async fn test_message_history_chain() {
-    let core = global_core().await;
-    let ctx = seed_chat_data(core, "history").await;
+    let core = test_core().await;
+    let ctx = seed_chat_data(&core, "history").await;
 
     core.storage()
         .topic()
@@ -382,7 +397,10 @@ async fn test_message_history_chain() {
         .list_by_topic(ctx.topic_id)
         .await
         .unwrap();
-    assert!(all_msgs.len() >= 4, "Should have at least 4 messages in chain");
+    assert!(
+        all_msgs.len() >= 4,
+        "Should have at least 4 messages in chain"
+    );
 
     let persisted = core
         .storage()
@@ -391,7 +409,10 @@ async fn test_message_history_chain() {
         .await
         .unwrap()
         .unwrap();
-    assert!(!persisted.content.is_empty(), "Second response should be persisted");
+    assert!(
+        !persisted.content.is_empty(),
+        "Second response should be persisted"
+    );
 }
 
 // ===========================================================================
@@ -403,7 +424,7 @@ async fn test_message_history_chain() {
 async fn test_missing_provider() {
     common::load_env();
 
-    let core = global_core().await;
+    let core = test_core().await;
     let engine = core.chat();
     let mut stream = Box::pin(engine.start(999, 999, 999));
 
@@ -422,7 +443,7 @@ async fn test_missing_provider() {
 async fn test_missing_credentials() {
     let env = common::load_env();
 
-    let core = global_core().await;
+    let core = test_core().await;
 
     let provider_id = core
         .storage()
@@ -540,8 +561,8 @@ const REASONING_RULE: &str = r#"{
 #[tokio::test]
 #[ignore = "need to complete .env config file"]
 async fn test_json_rule_reasoning_enabled() {
-    let core = global_core().await;
-    let ctx = seed_chat_data(core, "rule-on").await;
+    let core = test_core().await;
+    let ctx = seed_chat_data(&core, "rule-on").await;
 
     core.storage()
         .provider()
@@ -608,8 +629,8 @@ async fn test_json_rule_reasoning_enabled() {
 #[tokio::test]
 #[ignore = "need to complete .env config file"]
 async fn test_json_rule_reasoning_disabled() {
-    let core = global_core().await;
-    let ctx = seed_chat_data(core, "rule-off").await;
+    let core = test_core().await;
+    let ctx = seed_chat_data(&core, "rule-off").await;
 
     core.storage()
         .provider()

@@ -1,51 +1,62 @@
 use futures::StreamExt;
 use std::sync::OnceLock;
-use tokio::sync::Mutex;
 use wind_ai::message::{Content, Message as AiMessage, ReqConfig, Role};
 use wind_core::WindCore;
 use wind_core::chat::ChatEvent;
 use wind_core::models::*;
 use wind_mcp::client::ClientStatus;
+use wind_mcp::client::registry::{Registry, RegistryHandle};
 
 #[path = "./common/lib.rs"]
 mod common;
 
 use common::{
-    McpTestEnv, create_everything_server_params, everything_params, init_test_core,
+    McpTestEnv, create_everything_server_params, everything_params, init_test_core_with_registry,
     mcp_completion_env, mcp_responses_env,
 };
 
 // ---------------------------------------------------------------------------
-// 全局状态 — WindCore + MCP 服务器仅初始化一次
+// 全局 MCP registry — 在独立 runtime 中仅初始化一次
 // ---------------------------------------------------------------------------
 
-static GLOBAL_CORE: OnceLock<WindCore> = OnceLock::new();
-static CORE_INIT: Mutex<()> = Mutex::const_new(());
-static MCP_SERVER_ID: OnceLock<i64> = OnceLock::new();
-static MCP_SERVER_INIT: Mutex<()> = Mutex::const_new(());
+static MCP_REGISTRY: OnceLock<RegistryHandle> = OnceLock::new();
 
-async fn global_core() -> &'static WindCore {
-    if let Some(core) = GLOBAL_CORE.get() {
-        return core;
-    }
-    let _guard = CORE_INIT.lock().await;
-    if let Some(core) = GLOBAL_CORE.get() {
-        return core;
-    }
-    let core = init_test_core().await;
-    GLOBAL_CORE.set(core).ok();
-    GLOBAL_CORE.get().unwrap()
+fn shared_mcp_registry() -> RegistryHandle {
+    MCP_REGISTRY
+        .get_or_init(|| {
+            let (tx, rx) = std::sync::mpsc::sync_channel(1);
+            std::thread::Builder::new()
+                .name("mcp-test-registry".to_string())
+                .spawn(move || {
+                    let rt = tokio::runtime::Builder::new_multi_thread()
+                        .enable_all()
+                        .thread_name("mcp-test-registry-worker")
+                        .build()
+                        .expect("failed to build MCP test runtime");
+                    let registry = rt.block_on(async {
+                        let registry = Registry::new();
+                        let snapshot = registry
+                            .acquire("mcp-global-session", everything_params())
+                            .await
+                            .expect("failed to acquire everything MCP server");
+                        assert_eq!(
+                            snapshot.status,
+                            ClientStatus::Connected,
+                            "MCP everything server must be connected"
+                        );
+                        registry
+                    });
+                    tx.send(registry)
+                        .expect("failed to publish MCP test registry");
+                    rt.block_on(std::future::pending::<()>());
+                })
+                .expect("failed to spawn MCP test registry thread");
+            rx.recv().expect("MCP test registry thread stopped")
+        })
+        .clone()
 }
 
-async fn global_mcp_server_id() -> i64 {
-    if let Some(id) = MCP_SERVER_ID.get() {
-        return *id;
-    }
-    let _guard = MCP_SERVER_INIT.lock().await;
-    if let Some(id) = MCP_SERVER_ID.get() {
-        return *id;
-    }
-    let core = global_core().await;
+async fn create_mcp_server_record(core: &WindCore) -> i64 {
     let id = match core
         .storage()
         .mcp()
@@ -61,17 +72,6 @@ async fn global_mcp_server_id() -> i64 {
             .await
             .unwrap(),
     };
-    let snapshot = core
-        .registry()
-        .acquire("mcp-global-session", everything_params())
-        .await
-        .expect("failed to acquire everything MCP server");
-    assert_eq!(
-        snapshot.status,
-        ClientStatus::Connected,
-        "MCP everything server must be connected"
-    );
-    MCP_SERVER_ID.set(id).ok();
     id
 }
 
@@ -90,6 +90,7 @@ struct TestContext {
 async fn seed_mcp_data(
     core: &WindCore,
     env: &McpTestEnv,
+    mcp_server_id: i64,
     label: &str,
     prompt: &str,
 ) -> TestContext {
@@ -141,7 +142,6 @@ async fn seed_mcp_data(
         .await
         .unwrap();
 
-    let mcp_server_id = global_mcp_server_id().await;
     let topic_id = core
         .storage()
         .topic()
@@ -211,14 +211,28 @@ async fn seed_mcp_data(
 
 /// MCP 工具拒绝 — 模型调用 echo 工具，用户拒绝执行
 async fn test_mcp_tool_reject(env: &McpTestEnv) {
-    let core = global_core().await;
+    let core = init_test_core_with_registry(shared_mcp_registry()).await;
+    let mcp_server_id = create_mcp_server_record(&core).await;
     let ctx = seed_mcp_data(
-        core,
+        &core,
         env,
+        mcp_server_id,
         "reject",
-        "Returns all environment variables;calculate 10000 plus 90000",
+        "Use the echo tool to echo: APPROVE_TEST;calculate 10000 plus 90000",
     )
     .await;
+
+    core.storage()
+        .topic()
+        .update(
+            ctx.topic_id,
+            UpdateTopic {
+                tool_approval_policy: Some(ToolApprovalPolicy::Manual),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
 
     core.storage()
         .topic()
@@ -256,9 +270,9 @@ async fn test_mcp_tool_reject(env: &McpTestEnv) {
             match event {
                 ChatEvent::AwaitToolCall { message_id, tools } => {
                     saw_await_this_round = true;
-                    if captured_tool_ids.is_empty() {
+                    captured_tool_ids = tools.iter().map(|t| t.id.clone()).collect();
+                    if !seen_await {
                         seen_await = true;
-                        captured_tool_ids = tools.iter().map(|t| t.id.clone()).collect();
                         eprintln!(
                             "[reject] round {round}: {} tools captured",
                             captured_tool_ids.len()
@@ -294,7 +308,17 @@ async fn test_mcp_tool_reject(env: &McpTestEnv) {
         }
 
         if saw_await_this_round {
-            // 不设置 tools_allowed = 隐式拒绝，继续下一轮
+            core.storage()
+                .message()
+                .update(
+                    current_message_id,
+                    UpdateMessage {
+                        tools_denied: Some(captured_tool_ids.clone()),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
             continue;
         }
         break;
@@ -317,20 +341,35 @@ async fn test_mcp_tool_reject(env: &McpTestEnv) {
         assert!(!msg.content.is_empty());
         assert!(msg.content.iter().any(|m| m.is_tool_request()));
         assert!(msg.content.iter().any(|m| m.is_tool_result()));
+        assert!(msg.tools_allowed.unwrap_or_default().is_empty());
+        assert!(msg.tools_denied.unwrap_or_default().is_empty());
     }
 }
 
 /// MCP 工具批准 — 模型调用 echo 工具，用户批准执行
 async fn test_mcp_tool_approve(env: &McpTestEnv) {
-    let core = global_core().await;
+    let core = init_test_core_with_registry(shared_mcp_registry()).await;
+    let mcp_server_id = create_mcp_server_record(&core).await;
     let ctx: TestContext = seed_mcp_data(
-        core,
+        &core,
         env,
+        mcp_server_id,
         "approve",
-        "Returns all environment variables;calculate 10000 plus 90000",
-        // "Use the echo tool to echo: APPROVE_TEST",
+        "Use the echo tool to echo: APPROVE_TEST;calculate 10000 plus 90000",
     )
     .await;
+
+    core.storage()
+        .topic()
+        .update(
+            ctx.topic_id,
+            UpdateTopic {
+                tool_approval_policy: Some(ToolApprovalPolicy::Manual),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
 
     core.storage()
         .topic()
@@ -468,7 +507,80 @@ async fn test_mcp_tool_approve(env: &McpTestEnv) {
         assert!(!msg.content.is_empty());
         assert!(msg.content.iter().any(|m| m.is_tool_request()));
         assert!(msg.content.iter().any(|m| m.is_tool_result()));
+        assert!(msg.tools_allowed.unwrap_or_default().is_empty());
+        assert!(msg.tools_denied.unwrap_or_default().is_empty());
     }
+}
+
+/// MCP 工具审批 — 未审批直接 resume 应失败，而不是隐式拒绝
+async fn test_mcp_tool_requires_explicit_review(env: &McpTestEnv) {
+    let core = init_test_core_with_registry(shared_mcp_registry()).await;
+    let mcp_server_id = create_mcp_server_record(&core).await;
+    let ctx = seed_mcp_data(
+        &core,
+        env,
+        mcp_server_id,
+        "requires-review",
+        "Use the echo tool to echo exactly: REQUIRES_REVIEW_TEST. Do not answer without calling the tool.",
+    )
+    .await;
+
+    core.storage()
+        .topic()
+        .update(
+            ctx.topic_id,
+            UpdateTopic {
+                tool_approval_policy: Some(ToolApprovalPolicy::Manual),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    core.storage()
+        .topic()
+        .create_chat_config(
+            ctx.topic_id,
+            ReqConfig {
+                stream: Some(false),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let mut current_message_id = ctx.assistant_msg_id;
+    let mut seen_await = false;
+    let engine = core.chat();
+    let mut stream = Box::pin(engine.start(ctx.topic_id, ctx.user_msg_id, current_message_id));
+    while let Some(event) = stream.next().await {
+        if let ChatEvent::AwaitToolCall { message_id, tools } = event {
+            seen_await = true;
+            assert!(!tools.is_empty());
+            current_message_id = message_id;
+            break;
+        } else if let ChatEvent::Finish { error, .. } = event {
+            log::debug!("finish with error: {error:?}");
+        }
+    }
+    drop(stream);
+
+    assert!(seen_await, "Should emit AwaitToolCall before resume");
+
+    let mut stream = Box::pin(engine.start(ctx.topic_id, ctx.user_msg_id, current_message_id));
+    let mut finish_error: Option<String> = None;
+    while let Some(event) = stream.next().await {
+        if let ChatEvent::Finish { error, .. } = event {
+            finish_error = error;
+            break;
+        }
+    }
+
+    let error = finish_error.expect("resume without approval should finish with error");
+    assert!(
+        error.contains("approval"),
+        "error should mention approval, got: {error}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -501,4 +613,18 @@ async fn test_mcp_tool_approve_completion() {
 async fn test_mcp_tool_approve_responses() {
     let env = mcp_responses_env();
     test_mcp_tool_approve(&env).await;
+}
+
+#[tokio::test]
+#[ignore = "need to complete .env config file"]
+async fn test_mcp_tool_requires_explicit_review_completion() {
+    let env = mcp_completion_env();
+    test_mcp_tool_requires_explicit_review(&env).await;
+}
+
+#[tokio::test]
+#[ignore = "need to complete .env config file"]
+async fn test_mcp_tool_requires_explicit_review_responses() {
+    let env = mcp_responses_env();
+    test_mcp_tool_requires_explicit_review(&env).await;
 }

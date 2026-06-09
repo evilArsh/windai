@@ -60,9 +60,13 @@ impl WindCore {
     }
     /// 使用外部构建的连接池初始化，供测试使用。
     pub async fn init_with_pool(pool: DbPool) -> Result<Self> {
+        Self::init_with_pool_and_registry(pool, Registry::new()).await
+    }
+
+    /// 使用外部构建的连接池和 MCP registry 初始化，供测试复用 MCP 服务。
+    pub async fn init_with_pool_and_registry(pool: DbPool, mcp: RegistryHandle) -> Result<Self> {
         schema::init_schema(&pool).await?;
         storage::init_id_generator(0);
-        let mcp = Registry::new();
         Ok(Self {
             mcp,
             storage: Storage::new(pool),
