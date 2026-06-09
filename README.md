@@ -6,7 +6,9 @@ An AI engine core library providing database-driven multi-turn chat, tool callin
 
 ```bash
 cargo build
-cargo test                   # SQLite in-memory, no external dependencies
+cargo test                   # unit + storage tests; ignored integration tests need .env
+cargo test -p wind-core --test core_chat -- --include-ignored --test-threads=1
+cargo test -p wind-core --test core_chat_mcp -- --include-ignored --test-threads=1
 ```
 
 ```toml
@@ -29,12 +31,15 @@ let core = WindCore::init_local(Some("/path/to/windai.db")).await?;
 
 // Custom connection pool (e.g. shared-cache for tests)
 let core = WindCore::init_with_pool(pool).await?;
+
+// Custom connection pool + shared MCP registry (test harnesses / advanced embedding)
+let core = WindCore::init_with_pool_and_registry(pool, registry).await?;
 ```
 
 ### Register Provider & Model
 
 ```rust
-use wind_core::models::{CreateProvider, CreateCredentials, CreateModel};
+use wind_core::models::{CreateProvider, CreateCredentials, CreateModel, ModelType};
 use wind_ai::model::AdaptorType;
 
 let storage = core.storage();
@@ -174,7 +179,26 @@ storage.topic().create(CreateTopic {
 
 ### Tool Approval Flow
 
-When the model requests tool calls that are not auto-approved, the engine emits `AwaitToolCall` and saves the assistant message state. The caller must explicitly approve or reject before resuming.
+Tool execution is controlled by `Topic.tool_approval_policy`.
+
+```rust
+use wind_core::models::{ToolApprovalPolicy, UpdateMessage, UpdateTopic};
+
+storage.topic().update(tid, UpdateTopic {
+    tool_approval_policy: Some(ToolApprovalPolicy::Manual),
+    ..Default::default()
+}).await?;
+```
+
+Policies:
+
+| Policy                   | Behavior                                                     |
+| ------------------------ | ------------------------------------------------------------ |
+| `AllowAll`               | Default. Execute all requested MCP tools automatically.      |
+| `AllowList(Vec<String>)` | Execute listed tool names automatically; pause for the rest. |
+| `Manual`                 | Pause for every tool call and emit `AwaitToolCall`.          |
+
+When manual review is required, the engine emits `AwaitToolCall` and saves the assistant message state. The caller must explicitly approve or reject each pending tool call before resuming.
 
 ```rust
 // After receiving AwaitToolCall:
@@ -193,9 +217,21 @@ let mut stream = core.chat().start(topic_id, user_msg_id, message_id);
 
 **Approve:** Set `tools_allowed` with the tool call IDs to execute. Approved tools run, results are fed back as context, and the model continues.
 
-**Reject:** Leave `tools_allowed` empty or omit it. Unapproved tools receive `{"error": "User denied this tool call"}` as their result, and the model continues with those rejection markers in context.
+**Reject:** Set `tools_denied` with the tool call IDs to reject.
 
-**Auto-approve:** Configure per-topic (`topic.auto_approves`) or per-server (`mcp_servers.auto_approves`) to skip the approval step for certain tools.
+```rust
+storage.message().update(
+    message_id,
+    UpdateMessage {
+        tools_denied: Some(vec!["call_abc123".into()]),
+        ..Default::default()
+    },
+).await?;
+```
+
+Rejected tools receive `{"error": "User denied this tool call"}` as their result, and the model continues with those rejection markers in context.
+
+**Explicit review required:** Resuming a manual tool request without either `tools_allowed` or `tools_denied` returns an approval error instead of implicitly rejecting calls. After a reviewed batch is processed, approval fields are cleared on the persisted assistant message.
 
 ### JSON Rule Engine
 
@@ -253,30 +289,39 @@ core.shutdown().await;
 
 ## Crate Map
 
-| Crate | Responsibility |
-|-------|---------------|
-| `wind-core` | Orchestration — SQLite storage, chat engine, MCP coordination, rule application |
-| `wind-ai` | Provider abstraction — streaming/non-streaming, adaptor pattern, SSE parsing |
-| `wind-mcp` | MCP client — actor-based registry, stdio/HTTP transports, tool discovery & execution |
-| `wind-rule` | JSON rule engine — declarative request transformation, expression evaluation |
+| Crate       | Responsibility                                                                       |
+| ----------- | ------------------------------------------------------------------------------------ |
+| `wind-core` | Orchestration — SQLite storage, chat engine, MCP coordination, rule application      |
+| `wind-ai`   | Provider abstraction — streaming/non-streaming, adaptor pattern, SSE parsing         |
+| `wind-mcp`  | MCP client — actor-based registry, stdio/HTTP transports, tool discovery & execution |
+| `wind-rule` | JSON rule engine — declarative request transformation, expression evaluation         |
 
 ## Chat Events
 
-| Event | When |
-|-------|------|
-| `Created` | Chat round started |
-| `Partial` | Streaming content chunk or intermediate tool-call frame |
-| `AwaitToolCall` | Tool calls require manual approval before execution |
-| `Finish` | Chat round ended (may carry final message or error) |
+| Event           | When                                                    |
+| --------------- | ------------------------------------------------------- |
+| `Created`       | Chat round started                                      |
+| `Partial`       | Streaming content chunk or intermediate tool-call frame |
+| `AwaitToolCall` | Tool calls require manual approval before execution     |
+| `Finish`        | Chat round ended (may carry final message or error)     |
 
 A typical tool-call flow: `Created → Partial(tool_request) → AwaitToolCall → [user approves] → Partial(tool_result) → Partial(text) → Finish`.
 
+## Test Organization
+
+| File                                 | Content                                                                 |
+| ------------------------------------ | ----------------------------------------------------------------------- |
+| `windai/core/tests/storage.rs`       | Storage CRUD, validation, cascades, batch operations                    |
+| `windai/core/tests/core_chat.rs`     | Non-MCP chat flows: streaming, history, errors, JSON rules, persistence |
+| `windai/core/tests/core_chat_mcp.rs` | MCP approval, rejection, and explicit-review resume behavior            |
+| `windai/core/tests/common/lib.rs`    | Shared `.env`, SQLite, provider, and MCP test helpers                   |
+
 ## Environment Variables
 
-| Variable | Purpose |
-|----------|---------|
-| `WINDAI_ROOT_DIR` | Data directory (default `~/.windai/`) |
-| `RUST_LOG` | Log level (`debug`, `info`, `warn`, `error`) |
+| Variable          | Purpose                                      |
+| ----------------- | -------------------------------------------- |
+| `WINDAI_ROOT_DIR` | Data directory (default `~/.windai/`)        |
+| `RUST_LOG`        | Log level (`debug`, `info`, `warn`, `error`) |
 
 ## License
 

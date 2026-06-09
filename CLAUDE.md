@@ -29,6 +29,10 @@ wind-rule  ──depends-on──>  evalexpr
 `WindCore` (`lib.rs`) owns a `SqlitePool` and a `RegistryHandle`. It exposes:
 
 ```rust
+WindCore::init()                                            // Standard init (creates its own Registry)
+WindCore::init_with_pool(pool)                              // Init with external pool (creates its own Registry)
+WindCore::init_with_pool_and_registry(pool, registry)       // Init with external pool + shared Registry (used in tests)
+
 core.storage()              // &Storage — all CRUD access
 core.storage().provider()   // &ProviderStorage
 core.storage().model()      // &ModelStorage
@@ -62,33 +66,55 @@ The `Storage` struct (`storage.rs`) wraps `ProviderStorage`, `ModelStorage`, `To
 3. `start_prepare()`: Load the assistant message; check `.content.last()` to determine state:
    - `None` → new chat → `start_chat()`
    - `is_simple()` → already completed → error
-   - `is_tool_request()` or `is_tool_result()` → resume → `resume_tool_approval()` then `start_chat()`
+   - `is_tool_request()` or `is_tool_result()` → call `resume_tool_approval()`, which may return `Some(ChatEvent::AwaitToolCall)` (more tools need manual approval → yield event, save state, return) or `None` (all resolved → proceed to `start_chat()`)
 4. `start_chat()`: Build request via adaptor, apply JSON rules, send. Loop on tool calls.
 
 **Chat events**: `Created → Partial × N → (AwaitToolCall → [resume])? → Finish`
 
+**Return type**: `start()` returns `Pin<Box<dyn Stream<Item = ChatEvent> + '_>>`. All stream return paths in `start_prepare()` must be wrapped in `Box::pin()`.
+
 ### Tool Approval Flow
 
-When the model requests tool calls that are not auto-approved:
+Tool approval is governed by `ToolApprovalPolicy` on the `Topic`:
 
-1. Engine appends `tool_request` to `assistant.content`, yields `AwaitToolCall`
-2. Engine **saves** assistant state (`content`, etc.) to DB via `assistant.into()` → `UpdateMessage`
-3. Caller sets `tools_allowed` (approve) or leaves it empty (reject) via `message().update()`
-4. Caller re-invokes `engine.start()` — `start_prepare()` sees `is_tool_request()`, calls `resume_tool_approval()`
-5. `resume_tool_approval()` (`chat/function_call.rs`):
-   - `find_pending_calls()`: Reverse-scan `assistant.content` for tool requests not yet executed
+```rust
+pub enum ToolApprovalPolicy {
+    Manual,                    // All tools require manual approval
+    AllowList(Vec<String>),   // Listed tools auto-execute; others require approval
+    AllowAll,                 // All tools auto-execute (default)
+}
+```
+
+When the model requests tool calls:
+
+1. Engine appends `tool_request` to `assistant.content`
+2. `partition_tool_calls_by_policy()` splits tools into auto-approved and manual-review groups
+3. Auto-approved tools execute immediately and append results
+4. If manual-review tools remain → `assistant` saved to DB via `assistant.into()` → `UpdateMessage`, yield `AwaitToolCall`
+5. Caller sets `tools_allowed` (approve by call ID) or `tools_denied` (reject) via `message().update()`
+6. Caller re-invokes `engine.start()` — `start_prepare()` sees `is_tool_request()`, calls `resume_tool_approval()`
+7. `resume_tool_approval()` (`chat/function_call.rs`):
+   - `find_pending_calls()`: Reverse-scan `assistant.content` for unexecuted tool calls
    - `contexts.extend(assistant.content.iter().cloned())` — restores previous context
-   - Execute approved tools, mark others as denied with `{"error": "User denied this tool call"}`
+   - `partition_tool_calls_by_policy()` again: any policy-allowed tools execute immediately
+   - `allowed_set` vs `denied_set`: approved tools execute, denied tools get `{"error": "User denied this tool call"}`
+   - Unreviewed tools (not in `tools_allowed` or `tools_denied`) → return `Some(ChatEvent::AwaitToolCall)` for another approval round
+   - Clears `tools_allowed` and `tools_denied` to `Some(vec![])` after processing
+   - Returns error if no tools were approved/denied (prevents infinite loop)
    - Append `tool_result` to both `assistant.content` and `contexts`
-6. `start_chat()` sends request with full context — model continues
+8. Returning `Some(event)` → engine saves assistant state and yields the event; returning `None` → engine proceeds to `start_chat()`
 
-**`From<Message> for UpdateMessage`** (`models.rs`) preserves `tools_allowed` and `tools_denied` from the source message. Do NOT set them to `None` — that would clear the approval state on save, causing `resume_tool_approval()` to treat all tools as rejected.
+**`From<Message> for UpdateMessage`** (`models.rs`) preserves `tools_allowed` and `tools_denied` from the source message. Do NOT set them to `None` — that would clear the approval state on save.
 
-**Rejection markers**: Unapproved tools get `FunctionCallOutput` with `content: {"error": "User denied this tool call"}`. Tests assert these markers are absent in the approve path.
+**Rejection markers**: Denied tools get `FunctionCallOutput` with `content: {"error": "User denied this tool call"}`. Tests assert these markers are absent in the approve path.
+
+**`resume_tool_approval()` returns `Option<ChatEvent>`**: `None` means all pending tools are resolved; `Some(AwaitToolCall)` means unreviewed tools remain and need another approval round. This supports batch-partitioned approval where the user may approve only a subset of tools per round.
 
 ### `wind-ai` — Provider abstraction
 
 `ChatAdaptor` trait (`provider/adaptor.rs`): `build_request()` / `parse_response()` / `parse_stream_chunk()`. Two implementations: `OpenAICompletionAdaptor` (for `/chat/completions`) and `OpenAIResponseAdaptor` (for `/responses`).
+
+**OpenAIResponseAdaptor**: Function call output must use `Value::String(data.content.to_string())` — not `data.content.clone()`. The Responses API expects a JSON string for the `output` field of `function_call_output` items.
 
 `Message` (`message.rs`) carries role, content (vec of Content variants), reasoning_content, token counts, tool_calls. `append_chunk()` merges streaming deltas. `ReqConfig` holds temperature, top_p, max_tokens, stream, penalties, parallel_tool_calls, reasoning.
 
@@ -123,7 +149,7 @@ Rules stored in `json_rule` table keyed by `(provider_id, adaptor)`. Applied to 
 
 ### Database tables (SQLite, `schema.rs`)
 
-`providers`, `models`, `credentials`, `topics`, `messages`, `chat_configs`, `mcp_servers`, `topic_mcp_servers`, `json_rule`.
+`providers`, `models`, `credentials`, `topics` (with `tool_approval_policy` JSON column), `messages`, `chat_configs`, `mcp_servers`, `topic_mcp_servers`, `json_rule`.
 
 ### Test organization
 
@@ -131,17 +157,25 @@ Rules stored in `json_rule` table keyed by `(provider_id, adaptor)`. Applied to 
 |------|---------|
 | `tests/storage.rs` | Integration tests for all `*Storage` structs — CRUD, validation, cascade, batch |
 | `tests/core_chat.rs` | Non-MCP chat tests: basic chat, streaming, error handling, JSON rules, message history, persistence |
-| `tests/core_chat_mcp.rs` | MCP tool approval/rejection tests with global WindCore singleton |
+| `tests/core_chat_mcp.rs` | MCP tool approval/rejection tests — per-test WindCore with shared RegistryHandle |
 | `tests/chat.rs` | AI adaptor tests (needs `.env`) |
 | `tests/mcp.rs` | MCP integration tests (needs `.env`) |
 | `tests/common/lib.rs` | Shared test helpers: `init_test_core()`, `McpTestEnv`, MCP server params |
 | `src/storage.rs` (cfg test) | SQL macro unit tests |
 
 **Test architecture for MCP tests:**
-- Global `WindCore` singleton (`OnceLock` + `tokio::sync::Mutex` double-check locking)
-- `shared_cache(true)` SQLite `:memory:` pool shared across all tests
-- MCP `everything` server acquired once via `global_mcp_server_id()`
+- Shared `RegistryHandle` in a dedicated long-lived tokio runtime thread (`OnceLock` + `mpsc::sync_channel`)
+- MCP `everything` server acquired once in the shared registry via `shared_mcp_registry()`
+- Each test creates its **own** `WindCore` via `init_test_core_with_registry(shared_mcp_registry())` — `sqlite::memory:` pools use `max_connections(1)` to ensure all queries hit the same in-memory DB
+- MCP server record created per-test via `create_mcp_server_record()` (not globally shared)
 - Each test creates its own provider/model/topic via `seed_mcp_data()`
+- Pure chat tests (no MCP) use the same pattern with an empty shared registry via `shared_chat_registry()`
+
+**Test helpers in `tests/common/lib.rs`:**
+- `init_test_core()` — standalone core with fresh pool + fresh registry
+- `init_test_core_with_registry(registry)` — fresh pool + shared registry (for MCP tests)
+- `McpTestEnv` — holds env-loaded MCP provider config for completion and responses adaptors
+- `everything_params()` / `create_everything_server_params()` — MCP server connection params
 
 ### VS Code debugging
 
@@ -153,7 +187,9 @@ Rules stored in `json_rule` table keyed by `(provider_id, adaptor)`. Applied to 
 
 **Adding a new provider:** Insert into `providers`, add credentials, insert models — no code changes.
 
-**MCP tool flow:** Topic → `topic_mcp_servers` → Registry acquire → tools discovered → prefixed names → `tool_calls` in response → `execute_function_calls()` → results as context → loop.
+**MCP tool flow:** Topic → `topic_mcp_servers` → Registry acquire → tools discovered → prefixed names → `tool_calls` in response → `partition_tool_calls_by_policy()` splits by `Topic.tool_approval_policy` → auto-approved execute immediately, manual-review yield `AwaitToolCall` → `resume_tool_approval()` on resume → results as context → loop.
+
+**`ToolApprovalPolicy`**: Per-topic enum controlling tool execution: `AllowAll` (default — all auto-execute), `AllowList(Vec<String>)` (listed tool names auto-execute), `Manual` (all require approval). Stored as JSON in the `topics.tool_approval_policy` column. Replaces the old `auto_approves: Option<Vec<String>>` field. MCP-server-level `auto_approves` has been removed entirely — approval policy is now topic-scoped only.
 
 **`create()` returns `i64`:** Call `get(id)` to retrieve the full record. This allows batch operations to allocate IDs without re-fetching.
 
