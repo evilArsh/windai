@@ -351,8 +351,6 @@ pub struct McpServerParam {
     pub args: Option<Vec<String>>,
     /// 环境变量
     pub env: Option<HashMap<String, String>>,
-    /// 允许自动执行的工具名,不包含服务名前缀
-    pub auto_approves: Option<Vec<String>>,
     pub created_at: i64,
 }
 impl<'s> sqlx::FromRow<'s, DbRow> for McpServerParam {
@@ -365,10 +363,6 @@ impl<'s> sqlx::FromRow<'s, DbRow> for McpServerParam {
             .map_err(|e| sqlx::Error::Decode(format!("deserialize args failed: {}", e).into()))?;
         let env = storage::utils::de_str_to(row.get::<String, _>("env").as_str())
             .map_err(|e| sqlx::Error::Decode(format!("deserialize env failed: {}", e).into()))?;
-        let auto_approves =
-            storage::utils::de_str_to(row.get::<String, _>("auto_approves").as_str()).map_err(
-                |e| sqlx::Error::Decode(format!("deserialize auto_approves failed: {}", e).into()),
-            )?;
         Ok(McpServerParam {
             id: row.get("id"),
             r#type,
@@ -378,7 +372,6 @@ impl<'s> sqlx::FromRow<'s, DbRow> for McpServerParam {
             command: row.get("command"),
             args,
             env,
-            auto_approves,
             created_at: row.get("created_at"),
         })
     }
@@ -568,8 +561,6 @@ pub struct CreateMcpServer {
     pub command: Option<String>,
     pub args: Option<Vec<String>>,
     pub env: Option<HashMap<String, String>>,
-    // TODO: 暂不使用
-    // pub auto_approves: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Clone, Default)]
@@ -581,5 +572,4 @@ pub struct UpdateMcpServer {
     pub command: Option<String>,
     pub args: Option<Vec<String>>,
     pub env: Option<HashMap<String, String>>,
-    // pub auto_approves: Option<Vec<String>>,
 }

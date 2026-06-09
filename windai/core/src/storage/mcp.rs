@@ -37,7 +37,6 @@ impl McpStorage {
             ("command", data.command),
             ("args", utils::vec_to_str_default(data.args.as_deref())?),
             ("env", utils::map_to_str_default(data.env.as_ref())?),
-            // ("auto_approves", utils::vec_to_str_default(data.auto_approves.as_deref())?),
         );
         qb.build().execute(&self.db).await?;
         Ok(id)
@@ -58,11 +57,7 @@ impl McpStorage {
             ("description", data.description),
             ("command", data.command),
             ("args", utils::vec_to_str_optional(data.args.as_deref())?),
-            ("env", utils::map_to_str_optional(data.env.as_ref())?),
-            // (
-            //     "auto_approves",
-            //     Some(utils::vec_to_str(data.auto_approves.as_deref())?)
-            // ),
+            ("env", utils::map_to_str_optional(data.env.as_ref())?)
         );
         qb.build().execute(&self.db).await?;
         Ok(())
@@ -86,7 +81,6 @@ impl McpStorage {
                 "command",
                 "args",
                 "env",
-                "auto_approves",
                 "created_at"
             )
         )

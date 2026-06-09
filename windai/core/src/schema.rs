@@ -87,7 +87,6 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
     command         TEXT,
     args            TEXT DEFAULT '[]',
     env             TEXT DEFAULT '{}',
-    auto_approves   TEXT DEFAULT '[]',
     created_at      INTEGER,
     updated_at      INTEGER
 );
