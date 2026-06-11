@@ -1,7 +1,13 @@
-use sqlx::SqlitePool;
+use sqlx::{
+    SqlitePool,
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
+};
 use std::collections::HashMap;
+use std::{path::PathBuf, sync::Arc};
+use tokio::sync::{Barrier, oneshot};
 use wind_ai::message::{Content, Message as AiMessage, ReqConfig, Role};
 use wind_ai::model::AdaptorType;
+use wind_core::error::CoreError;
 use wind_core::models::*;
 use wind_core::schema::init_schema;
 use wind_core::storage::mcp::McpStorage;
@@ -11,11 +17,77 @@ use wind_core::storage::provider::ProviderStorage;
 use wind_core::storage::topic::TopicStorage;
 use wind_mcp::client::TransportType;
 
+struct TempDbFile {
+    path: PathBuf,
+}
+
+impl TempDbFile {
+    fn new() -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "windai-storage-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        Self { path }
+    }
+
+    fn path(&self) -> &PathBuf {
+        &self.path
+    }
+
+    fn remove_files(&self) {
+        for path in [
+            self.path.clone(),
+            self.path.with_extension("db-wal"),
+            self.path.with_extension("db-shm"),
+        ] {
+            for _ in 0..5 {
+                match std::fs::remove_file(&path) {
+                    Ok(_) => break,
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => break,
+                    Err(_) => std::thread::sleep(std::time::Duration::from_millis(20)),
+                }
+            }
+        }
+    }
+}
+
+impl Drop for TempDbFile {
+    fn drop(&mut self) {
+        self.remove_files();
+    }
+}
+
 async fn setup() -> SqlitePool {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
     init_schema(&pool).await.unwrap();
     wind_core::storage::init_id_generator(0);
     pool
+}
+
+async fn setup_file_pool(file: &TempDbFile) -> SqlitePool {
+    let options = SqliteConnectOptions::new()
+        .filename(file.path())
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect_with(options)
+        .await
+        .unwrap();
+    init_schema(&pool).await.unwrap();
+    wind_core::storage::init_id_generator(0);
+    pool
+}
+
+fn assert_not_found<T: std::fmt::Debug>(result: wind_core::error::Result<T>) {
+    assert!(
+        matches!(result, Err(CoreError::NotFound(_))),
+        "expected NotFound, got {result:?}"
+    );
 }
 
 // ---- helpers ----
@@ -317,6 +389,24 @@ async fn json_rule_crud() {
     assert!(svc.get_json_rule_by_id(rid).await.unwrap().is_none());
 }
 
+#[tokio::test]
+async fn json_rule_update_missing_returns_not_found() {
+    let svc = ProviderStorage::new(setup().await);
+
+    assert_not_found(
+        svc.update_json_rule(
+            99999,
+            UpdateJsonRule {
+                json_rule: Some("{}".into()),
+                active: None,
+                provider_id: None,
+                adaptor: None,
+            },
+        )
+        .await,
+    );
+}
+
 // ==================== ModelStorage ====================
 
 #[tokio::test]
@@ -382,6 +472,22 @@ async fn model_create_empty_name() {
         .await
         .unwrap_err();
     assert!(err.to_string().contains("cannot be empty"));
+}
+
+#[tokio::test]
+async fn model_update_missing_returns_not_found() {
+    let svc = ModelStorage::new(setup().await);
+
+    assert_not_found(
+        svc.update(
+            99999,
+            UpdateModel {
+                name: Some("missing".into()),
+                ..Default::default()
+            },
+        )
+        .await,
+    );
 }
 
 // ==================== TopicStorage ====================
@@ -498,6 +604,22 @@ async fn topic_chat_config() {
 
     // get non-existent
     assert!(svc.get_chat_config(999).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn chat_config_update_missing_returns_not_found() {
+    let svc = TopicStorage::new(setup().await);
+
+    assert_not_found(
+        svc.update_chat_config(
+            99999,
+            ReqConfig {
+                temperature: Some(0.3),
+                ..Default::default()
+            },
+        )
+        .await,
+    );
 }
 
 #[tokio::test]
@@ -664,6 +786,23 @@ async fn message_create_validation() {
     // from_id references assistant (must be user message)
     let err = msg_svc.create(asst_msg(tid, 1, a1)).await.unwrap_err();
     assert!(err.to_string().contains("user message"));
+}
+
+#[tokio::test]
+async fn message_update_missing_returns_not_found() {
+    let msg_svc = MessageStorage::new(setup().await);
+
+    assert_not_found(
+        msg_svc
+            .update(
+                99999,
+                UpdateMessage {
+                    input_tokens: Some(1),
+                    ..Default::default()
+                },
+            )
+            .await,
+    );
 }
 
 #[tokio::test]
@@ -850,4 +989,106 @@ async fn mcp_server_validation() {
         )
         .await;
     assert!(err.unwrap_err().to_string().contains("cannot be empty"));
+}
+
+#[tokio::test]
+async fn mcp_update_missing_returns_not_found() {
+    let svc = McpStorage::new(setup().await);
+
+    assert_not_found(
+        svc.update(
+            99999,
+            UpdateMcpServer {
+                name: "missing".into(),
+                ..Default::default()
+            },
+        )
+        .await,
+    );
+}
+
+// ==================== Concurrent CRUD Risk Checks ====================
+
+#[tokio::test]
+async fn concurrent_delete_then_update_same_model_returns_not_found() {
+    let file = TempDbFile::new();
+    let pool = setup_file_pool(&file).await;
+    let p_svc = ProviderStorage::new(pool.clone());
+    let m_svc = ModelStorage::new(pool.clone());
+    let pid = p_svc.create(sample_provider("concurrent-p")).await.unwrap();
+    let mid = m_svc.create(sample_model(pid)).await.unwrap();
+    let (deleted_tx, deleted_rx) = oneshot::channel();
+
+    let delete_pool = pool.clone();
+    let delete_task = tokio::spawn(async move {
+        let svc = ModelStorage::new(delete_pool);
+        svc.delete(mid).await.unwrap();
+        deleted_tx.send(()).unwrap();
+    });
+
+    let update_pool = pool.clone();
+    let update_task = tokio::spawn(async move {
+        deleted_rx.await.unwrap();
+        let svc = ModelStorage::new(update_pool);
+        svc.update(
+            mid,
+            UpdateModel {
+                name: Some("after-delete".into()),
+                ..Default::default()
+            },
+        )
+        .await
+    });
+
+    delete_task.await.unwrap();
+    assert_not_found(update_task.await.unwrap());
+    assert!(m_svc.get(mid).await.unwrap().is_none());
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn concurrent_update_and_delete_same_model_has_consistent_final_state() {
+    let file = TempDbFile::new();
+    let pool = setup_file_pool(&file).await;
+    let p_svc = ProviderStorage::new(pool.clone());
+    let m_svc = ModelStorage::new(pool.clone());
+    let pid = p_svc.create(sample_provider("race-p")).await.unwrap();
+    let mid = m_svc.create(sample_model(pid)).await.unwrap();
+    let barrier = Arc::new(Barrier::new(2));
+
+    let update_pool = pool.clone();
+    let update_barrier = barrier.clone();
+    let update_task = tokio::spawn(async move {
+        let svc = ModelStorage::new(update_pool);
+        update_barrier.wait().await;
+        svc.update(
+            mid,
+            UpdateModel {
+                name: Some("raced-update".into()),
+                ..Default::default()
+            },
+        )
+        .await
+    });
+
+    let delete_pool = pool.clone();
+    let delete_barrier = barrier.clone();
+    let delete_task = tokio::spawn(async move {
+        let svc = ModelStorage::new(delete_pool);
+        delete_barrier.wait().await;
+        svc.delete(mid).await
+    });
+
+    let update_result = update_task.await.unwrap();
+    let delete_result = delete_task.await.unwrap();
+
+    delete_result.unwrap();
+    if let Err(err) = update_result {
+        assert!(
+            matches!(err, CoreError::NotFound(_)),
+            "unexpected update error: {err:?}"
+        );
+    }
+    assert!(m_svc.get(mid).await.unwrap().is_none());
+    pool.close().await;
 }
