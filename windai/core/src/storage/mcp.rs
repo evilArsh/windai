@@ -1,6 +1,6 @@
 use sqlx::QueryBuilder;
 
-use super::utils;
+use super::utils::{self, ensure_affected};
 use crate::{
     db::{DbDriver, DbPool},
     delete_by_id,
@@ -59,7 +59,7 @@ impl McpStorage {
             ("args", utils::vec_to_str_optional(data.args.as_deref())?),
             ("env", utils::map_to_str_optional(data.env.as_ref())?)
         );
-        qb.build().execute(&self.db).await?;
+        ensure_affected(&qb.build().execute(&self.db).await?)?;
         Ok(())
     }
 

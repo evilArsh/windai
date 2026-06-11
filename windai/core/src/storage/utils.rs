@@ -1,4 +1,7 @@
-use crate::error::{CoreError, Result};
+use crate::{
+    db::DbQueryResult,
+    error::{CoreError, Result},
+};
 use serde::{Serialize, de::DeserializeOwned};
 
 /// 将vec序列化为json字符串。
@@ -57,4 +60,11 @@ where
     T::Err: Into<CoreError>,
 {
     value.parse::<T>().map_err(Into::into)
+}
+
+pub fn ensure_affected(result: &DbQueryResult) -> Result<()> {
+    if result.rows_affected() == 0 {
+        return Err(CoreError::NotFound("Data not found".to_string()));
+    }
+    Ok(())
 }

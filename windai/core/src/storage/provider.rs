@@ -13,6 +13,8 @@ use crate::{
     storage::next_id,
     update,
 };
+
+use super::utils::ensure_affected;
 pub struct ProviderStorage {
     db: DbPool,
 }
@@ -240,7 +242,7 @@ impl ProviderStorage {
             ("active", data.active),
             ("json_rule", data.json_rule),
         );
-        qb.build().execute(&self.db).await?;
+        ensure_affected(&qb.build().execute(&self.db).await?)?;
         Ok(())
     }
 

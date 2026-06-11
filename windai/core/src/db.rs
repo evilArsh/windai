@@ -18,6 +18,7 @@ mod driver_impl {
     pub type DbDriver = sqlx::Sqlite;
     pub type DbTransaction = sqlx::Transaction<'static, sqlx::Sqlite>;
     pub type DbRow = sqlx::sqlite::SqliteRow;
+    pub type DbQueryResult = sqlx::sqlite::SqliteQueryResult;
     pub async fn create_pool(db_url: &str) -> Result<DbPool, sqlx::Error> {
         let options = SqliteConnectOptions::from_str(db_url)?
             .create_if_missing(true)

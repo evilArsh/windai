@@ -1,4 +1,7 @@
-use super::{now_ts, utils};
+use super::{
+    now_ts,
+    utils::{self, ensure_affected},
+};
 use crate::{
     db::{DbDriver, DbPool, DbRow},
     delete_by_id,
@@ -163,7 +166,7 @@ impl MessageStorage {
                 utils::vec_to_str_optional(data.tools_denied.as_deref())?
             ),
         );
-        qb.build().execute(&self.db).await?;
+        ensure_affected(&qb.build().execute(&self.db).await?)?;
         Ok(())
     }
 

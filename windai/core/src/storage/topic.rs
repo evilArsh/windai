@@ -10,7 +10,7 @@ use crate::{
 use sqlx::{QueryBuilder, Row};
 use wind_ai::message::ReqConfig;
 
-use super::utils;
+use super::utils::{self, ensure_affected};
 pub struct TopicStorage {
     db: DbPool,
 }
@@ -188,23 +188,25 @@ impl TopicStorage {
     }
 
     pub async fn update_chat_config(&self, topic_id: i64, config: ReqConfig) -> Result<()> {
-        update_fields!(
-            "chat_configs",
-            ("temperature", config.temperature),
-            ("top_p", config.top_p),
-            ("max_tokens", config.max_tokens),
-            ("stream", config.stream),
-            ("presence_penalty", config.presence_penalty),
-            ("frequency_penalty", config.frequency_penalty),
-            ("parallel_tool_calls", config.parallel_tool_calls),
-            ("reasoning", config.reasoning),
-            ("updated_at", Some(now_ts()))
-        )
-        .push(" WHERE topic_id =  ")
-        .push_bind(topic_id)
-        .build()
-        .execute(&self.db)
-        .await?;
+        ensure_affected(
+            &update_fields!(
+                "chat_configs",
+                ("temperature", config.temperature),
+                ("top_p", config.top_p),
+                ("max_tokens", config.max_tokens),
+                ("stream", config.stream),
+                ("presence_penalty", config.presence_penalty),
+                ("frequency_penalty", config.frequency_penalty),
+                ("parallel_tool_calls", config.parallel_tool_calls),
+                ("reasoning", config.reasoning),
+                ("updated_at", Some(now_ts()))
+            )
+            .push(" WHERE topic_id =  ")
+            .push_bind(topic_id)
+            .build()
+            .execute(&self.db)
+            .await?,
+        )?;
 
         Ok(())
     }

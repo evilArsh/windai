@@ -1,4 +1,4 @@
-use super::utils;
+use super::utils::{self, ensure_affected};
 use crate::{
     db::DbPool,
     delete_by_id,
@@ -58,7 +58,7 @@ impl ModelStorage {
             ("endpoint", data.endpoint),
             ("frequency", data.frequency),
         );
-        qb.build().execute(&self.db).await?;
+        ensure_affected(&qb.build().execute(&self.db).await?)?;
         Ok(())
     }
 
