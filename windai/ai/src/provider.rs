@@ -1,4 +1,4 @@
-pub mod adaptor;
+pub mod adapter;
 
 mod sse;
 

@@ -15,7 +15,7 @@ use std::pin::{Pin, pin};
 use wind_ai::chat::{ResEventStatus, build_request, handle_chat};
 use wind_ai::message::{Content, Message as AiMessage, ReqConfig, Role};
 use wind_ai::model::Model as AiModel;
-use wind_ai::provider::adaptor::{ChatAdaptor, get_chat_adaptor};
+use wind_ai::provider::adapter::{ChatAdapter, get_chat_adapter};
 use wind_ai::tool::Tools;
 use wind_mcp::client::registry::RegistryHandle;
 use wind_rule::RuleSet;
@@ -59,7 +59,7 @@ impl<'c> ChatEngine<'c> {
         let rule_set = self
             .storage
             .provider()
-            .get_json_rule(model.provider_id, model.adaptor)
+            .get_json_rule(model.provider_id, model.adapter)
             .await?;
 
         model.endpoint = model.endpoint.filter(|e| !e.is_empty());
@@ -225,10 +225,10 @@ impl<'c> ChatEngine<'c> {
         let rule = build_rule(ctx.rule_set.as_ref())?;
         let ai_model = AiModel {
             name: ctx.model.name.clone(),
-            adaptor: ctx.model.adaptor,
+            adapter: ctx.model.adapter,
             endpoint: ctx.model.endpoint.clone(),
         };
-        let chat_adaptor = get_chat_adaptor(ctx.model.adaptor);
+        let chat_adapter = get_chat_adapter(ctx.model.adapter);
 
         let mut iter_index = 0;
         let mut error_obj: Option<CoreError> = None;
@@ -239,7 +239,7 @@ impl<'c> ChatEngine<'c> {
             loop {
                 {
                     let forward = pin!(self.forward_stream(
-                        chat_adaptor.as_ref(),
+                        chat_adapter.as_ref(),
                         &ai_model,
                         &ctx,
                         contexts.as_slice(),
@@ -362,7 +362,7 @@ impl<'c> ChatEngine<'c> {
     /// 返回 (is_finished, stream)
     fn forward_stream(
         &self,
-        chat_adaptor: &dyn ChatAdaptor,
+        chat_adapter: &dyn ChatAdapter,
         model: &AiModel,
         ctx: &Context,
         contexts: &[AiMessage],
@@ -370,7 +370,7 @@ impl<'c> ChatEngine<'c> {
     ) -> impl Stream<Item = Result<(bool, AiMessage)>> {
         try_stream! {
             let mut req_body = build_request(
-                chat_adaptor,
+                chat_adapter,
                 model,
                 &ctx.req_config,
                 contexts,
@@ -380,14 +380,14 @@ impl<'c> ChatEngine<'c> {
             apply_json_rule(
                 rule,
                 &mut req_body,
-                ctx.model.adaptor,
+                ctx.model.adapter,
                 &ctx.provider.name,
                 &ctx.model.name,
                 ctx.model.endpoint.as_deref(),
             );
 
             let stream = handle_chat(
-                chat_adaptor,
+                chat_adapter,
                 &req_body,
                 &ctx.provider.base_url,
                 &ctx.credential.key,

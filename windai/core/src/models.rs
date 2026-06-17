@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use wind_ai::message;
-use wind_ai::model::AdaptorType;
+use wind_ai::model::AdapterType;
 use wind_mcp::client::TransportType;
 
 use crate::db::DbRow;
@@ -83,7 +83,7 @@ pub struct Model {
     pub alias: Option<String>,
     /// 当前模型的适配器类型。
     /// 该类型决定了模型请求和响应结果的处理方式
-    pub adaptor: AdaptorType,
+    pub adapter: AdapterType,
     /// 标注模态类型
     pub modalities: Option<Vec<ModelType>>,
     /// 模型是否启用
@@ -92,7 +92,7 @@ pub struct Model {
     pub icon: Option<String>,
     /// 模型专属端点地址
     ///
-    /// 默认使用[AdaptorType]类型下的不同提供商的默认端点。
+    /// 默认使用[AdapterType]类型下的不同提供商的默认端点。
     pub endpoint: Option<String>,
     /// 模型使用次数统计
     pub frequency: Option<i32>,
@@ -106,8 +106,8 @@ impl<'s> sqlx::FromRow<'s, DbRow> for Model {
             name: row.get("name"),
             provider_id: row.get("provider_id"),
             alias: row.get("alias"),
-            adaptor: utils::parse_str_to(&row.get::<String, _>("adaptor")).map_err(|e| {
-                sqlx::Error::Decode(format!("Failed to deserialize adaptor type: {}", e).into())
+            adapter: utils::parse_str_to(&row.get::<String, _>("adapter")).map_err(|e| {
+                sqlx::Error::Decode(format!("Failed to deserialize adapter type: {}", e).into())
             })?,
             modalities: utils::de_str_to(&row.get::<String, _>("modalities")).map_err(|e| {
                 sqlx::Error::Decode(format!("Failed to deserialize modalities: {}", e).into())
@@ -314,7 +314,7 @@ pub enum ContentType {
 pub struct JsonRule {
     pub id: i64,
     pub provider_id: i64,
-    pub adaptor: AdaptorType,
+    pub adapter: AdapterType,
     pub json_rule: String,
     pub active: bool,
     pub created_at: i64,
@@ -324,8 +324,8 @@ impl<'s> sqlx::FromRow<'s, DbRow> for JsonRule {
         Ok(JsonRule {
             id: row.get("id"),
             provider_id: row.get("provider_id"),
-            adaptor: utils::parse_str_to(&row.get::<String, _>("adaptor")).map_err(|e| {
-                sqlx::Error::Decode(format!("Failed to deserialize adaptor type: {}", e).into())
+            adapter: utils::parse_str_to(&row.get::<String, _>("adapter")).map_err(|e| {
+                sqlx::Error::Decode(format!("Failed to deserialize adapter type: {}", e).into())
             })?,
             active: row.get("active"),
             created_at: row.get("created_at"),
@@ -470,7 +470,7 @@ pub struct CreateModel {
     pub name: String,
     pub provider_id: i64,
     pub alias: Option<String>,
-    pub adaptor: AdaptorType,
+    pub adapter: AdapterType,
     pub modalities: Option<Vec<ModelType>>,
     pub active: Option<bool>,
     pub icon: Option<String>,
@@ -481,7 +481,7 @@ pub struct CreateModel {
 pub struct UpdateModel {
     pub name: Option<String>,
     pub alias: Option<String>,
-    pub adaptor: Option<AdaptorType>,
+    pub adapter: Option<AdapterType>,
     pub modalities: Option<Vec<ModelType>>,
     pub active: Option<bool>,
     pub icon: Option<String>,
@@ -494,7 +494,7 @@ impl Default for UpdateModel {
         Self {
             name: None,
             alias: None,
-            adaptor: None,
+            adapter: None,
             modalities: None,
             active: None,
             icon: None,
@@ -540,14 +540,14 @@ impl Default for UpdateTopic {
 #[derive(Debug, Serialize, Clone)]
 pub struct CreateJsonRule {
     pub provider_id: i64,
-    pub adaptor: AdaptorType,
+    pub adapter: AdapterType,
     pub json_rule: String,
 }
 
 #[derive(Debug, Serialize, Clone)]
 pub struct UpdateJsonRule {
     pub provider_id: Option<i64>,
-    pub adaptor: Option<AdaptorType>,
+    pub adapter: Option<AdapterType>,
     pub json_rule: Option<String>,
     pub active: Option<bool>,
 }

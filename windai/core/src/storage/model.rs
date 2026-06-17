@@ -29,7 +29,7 @@ impl ModelStorage {
             ("name", data.name),
             ("provider_id", data.provider_id),
             ("alias", data.alias),
-            ("adaptor", data.adaptor.to_string()),
+            ("adapter", data.adapter.to_string()),
             (
                 "modalities",
                 utils::vec_to_str_default(data.modalities.as_deref())?
@@ -48,7 +48,7 @@ impl ModelStorage {
             id,
             ("name", Some(data.name)),
             ("alias", data.alias),
-            ("adaptor", data.adaptor.map(|a| a.to_string())),
+            ("adapter", data.adapter.map(|a| a.to_string())),
             (
                 "modalities",
                 utils::vec_to_str_optional(data.modalities.as_deref())?
@@ -77,7 +77,7 @@ impl ModelStorage {
                 "name",
                 "provider_id",
                 "alias",
-                "adaptor",
+                "adapter",
                 "modalities",
                 "active",
                 "icon",
@@ -102,7 +102,7 @@ impl ModelStorage {
                 "name",
                 "provider_id",
                 "alias",
-                "adaptor",
+                "adapter",
                 "modalities",
                 "active",
                 "icon",

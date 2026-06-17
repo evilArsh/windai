@@ -5,26 +5,26 @@ use super::schema::openai_completion::{
     ChatCompletionMessageToolCall, ChatCompletionRequest, ChatStreamCompletion, Content,
     ContentObject, FileContentPart, ToolCallRequest, ToolCallRequestParams,
 };
-use super::{Adaptor, AdaptorError, ChatAdaptor};
+use super::{Adapter, AdapterError, ChatAdapter};
 use crate::message::{self, Message, MessageBuilder, ReqConfig, Role};
-use crate::model::AdaptorType;
+use crate::model::AdapterType;
 use crate::provider::sse::SseBlock;
 use crate::tool::{FunctionCall, Tools};
 use serde_json::{Value, json};
 
-pub struct OpenAICompletionAdaptor;
+pub struct OpenAICompletionAdapter;
 
-impl Adaptor for OpenAICompletionAdaptor {
-    fn get_type(&self) -> AdaptorType {
-        AdaptorType::OpenAICompletion
+impl Adapter for OpenAICompletionAdapter {
+    fn get_type(&self) -> AdapterType {
+        AdapterType::OpenAICompletion
     }
 }
-impl OpenAICompletionAdaptor {
+impl OpenAICompletionAdapter {
     fn parse_common(
         &self,
         msg: ChatCompletionMessage,
         created_at: i64,
-    ) -> Result<Message, AdaptorError> {
+    ) -> Result<Message, AdapterError> {
         let content = msg.content.unwrap_or_else(|| String::new());
         let content = match msg.audio {
             Some(audio) => message::Content::new_audio(audio.data, String::new()),
@@ -63,14 +63,14 @@ impl OpenAICompletionAdaptor {
         })
     }
 }
-impl ChatAdaptor for OpenAICompletionAdaptor {
+impl ChatAdapter for OpenAICompletionAdapter {
     fn build_request(
         &self,
         model_name: &str,
         config: &ReqConfig,
         contexts: &[Message],
         tools: Option<&[Tools]>,
-    ) -> Result<Value, AdaptorError> {
+    ) -> Result<Value, AdapterError> {
         let tools = transform_tools(tools);
 
         let input_messages = contexts
@@ -259,7 +259,7 @@ impl ChatAdaptor for OpenAICompletionAdaptor {
         Ok(serde_json::to_value(&req)?)
     }
 
-    fn parse_response(&self, data: &[u8]) -> Result<Message, AdaptorError> {
+    fn parse_response(&self, data: &[u8]) -> Result<Message, AdapterError> {
         log::debug!(
             "[raw completion]\n{}",
             serde_json::to_string_pretty(&serde_json::from_slice::<serde_json::Value>(data)?)?
@@ -280,7 +280,7 @@ impl ChatAdaptor for OpenAICompletionAdaptor {
         }
     }
 
-    fn parse_stream_chunk(&self, data: &[u8]) -> Result<Vec<Message>, AdaptorError> {
+    fn parse_stream_chunk(&self, data: &[u8]) -> Result<Vec<Message>, AdapterError> {
         let blocks = SseBlock::parse(data);
         blocks
             .into_iter()
@@ -316,7 +316,7 @@ impl ChatAdaptor for OpenAICompletionAdaptor {
                     Some(Ok(msg))
                 }
             })
-            .collect::<Result<Vec<Message>, AdaptorError>>()
+            .collect::<Result<Vec<Message>, AdapterError>>()
     }
 }
 

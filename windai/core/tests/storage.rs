@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::{Barrier, oneshot};
 use wind_ai::message::{Content, Message as AiMessage, ReqConfig, Role};
-use wind_ai::model::AdaptorType;
+use wind_ai::model::AdapterType;
 use wind_core::error::CoreError;
 use wind_core::models::*;
 use wind_core::schema::init_schema;
@@ -119,7 +119,7 @@ fn sample_model(provider_id: i64) -> CreateModel {
         name: "gpt-4".into(),
         provider_id,
         alias: None,
-        adaptor: AdaptorType::OpenAICompletion,
+        adapter: AdapterType::OpenAICompletion,
         modalities: Some(vec![ModelType::Chat]),
         active: Some(true),
         icon: None,
@@ -225,7 +225,7 @@ async fn provider_crud() {
     .unwrap();
     svc.create_json_rule(CreateJsonRule {
         provider_id: id,
-        adaptor: AdaptorType::OpenAICompletion,
+        adapter: AdapterType::OpenAICompletion,
         json_rule: "{}".into(),
     })
     .await
@@ -326,23 +326,23 @@ async fn json_rule_crud() {
     let rid = svc
         .create_json_rule(CreateJsonRule {
             provider_id: pid,
-            adaptor: AdaptorType::OpenAICompletion,
+            adapter: AdapterType::OpenAICompletion,
             json_rule: "{}".into(),
         })
         .await
         .unwrap();
 
-    // get by id, get by provider+adaptor
+    // get by id, get by provider+adapter
     let r = svc.get_json_rule_by_id(rid).await.unwrap().unwrap();
     assert_eq!(r.provider_id, pid);
     let r2 = svc
-        .get_json_rule(pid, AdaptorType::OpenAICompletion)
+        .get_json_rule(pid, AdapterType::OpenAICompletion)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(r2.id, r.id);
     assert!(
-        svc.get_json_rule(pid, AdaptorType::OpenAIResponse)
+        svc.get_json_rule(pid, AdapterType::OpenAIResponse)
             .await
             .unwrap()
             .is_none()
@@ -358,14 +358,14 @@ async fn json_rule_crud() {
             json_rule: Some(r#"{"v":2}"#.into()),
             active: None,
             provider_id: None,
-            adaptor: None,
+            adapter: None,
         },
     )
     .await
     .unwrap();
     let updated = svc.get_json_rule_by_id(rid).await.unwrap().unwrap();
     assert_eq!(updated.json_rule, r#"{"v":2}"#);
-    assert_eq!(updated.adaptor, AdaptorType::OpenAICompletion);
+    assert_eq!(updated.adapter, AdapterType::OpenAICompletion);
     assert!(updated.active);
 
     // full update
@@ -375,7 +375,7 @@ async fn json_rule_crud() {
             json_rule: Some(r#"{"v":3}"#.into()),
             active: Some(false),
             provider_id: None,
-            adaptor: None,
+            adapter: None,
         },
     )
     .await
@@ -400,7 +400,7 @@ async fn json_rule_update_missing_returns_not_found() {
                 json_rule: Some("{}".into()),
                 active: None,
                 provider_id: None,
-                adaptor: None,
+                adapter: None,
             },
         )
         .await,

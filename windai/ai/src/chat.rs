@@ -10,11 +10,11 @@ use super::{
     ProviderError,
     message::{Message, ReqConfig},
     model::Model,
-    provider::adaptor::AdaptorError,
+    provider::adapter::AdapterError,
     tool::Tools,
 };
 use crate::provider::{
-    adaptor::{self, ChatAdaptor},
+    adapter::{self, ChatAdapter},
     client,
 };
 
@@ -85,8 +85,8 @@ impl From<client::ClientError> for ResEvent {
         }
     }
 }
-impl From<AdaptorError> for ResEvent {
-    fn from(value: AdaptorError) -> Self {
+impl From<AdapterError> for ResEvent {
+    fn from(value: AdapterError) -> Self {
         ResEvent {
             status: ResEventStatus::Error,
             data: None,
@@ -106,13 +106,13 @@ impl From<url::ParseError> for ResEvent {
 
 /// 生成请求体
 pub fn build_request(
-    chat_adaptor: &dyn ChatAdaptor,
+    chat_adapter: &dyn ChatAdapter,
     model: &Model,
     config: &ReqConfig,
     contexts: &[Message],
     tools: Option<&[Tools]>,
 ) -> Result<Value, ProviderError> {
-    let req_body = match chat_adaptor.build_request(&model.name, config, contexts, tools) {
+    let req_body = match chat_adapter.build_request(&model.name, config, contexts, tools) {
         Ok(body) => body,
         Err(e) => return Err(e.into()),
     };
@@ -120,12 +120,12 @@ pub fn build_request(
 }
 
 fn parse_url(
-    chat_adaptor: &dyn ChatAdaptor,
+    chat_adapter: &dyn ChatAdapter,
     api_base_url: &str,
     api_endpoint: Option<&str>,
 ) -> Result<Url, url::ParseError> {
     let endpoint = api_endpoint.map_or(
-        adaptor::get_default_endpoint(chat_adaptor.get_type()),
+        adapter::get_default_endpoint(chat_adapter.get_type()),
         |e| e.to_string(),
     );
 
@@ -139,14 +139,14 @@ fn parse_url(
 ///
 /// 根据 `req_body` 中的 `stream` 字段来决定启用流式或者非流式对话请求
 pub fn handle_chat(
-    chat_adaptor: &dyn ChatAdaptor,
+    chat_adapter: &dyn ChatAdapter,
     req_body: &Value,
     api_base_url: &str,
     api_key: &str,
     api_endpoint: Option<&str>,
 ) -> impl Stream<Item = ResEvent> {
     stream! {
-        let api_url = match parse_url(chat_adaptor, api_base_url, api_endpoint) {
+        let api_url = match parse_url(chat_adapter, api_base_url, api_endpoint) {
             Ok(api_url) => api_url,
             Err(err) => {
                 yield err.into();
@@ -163,7 +163,7 @@ pub fn handle_chat(
         );
         match is_stream {
             true => {
-                let api_url = match parse_url(chat_adaptor, api_base_url, api_endpoint) {
+                let api_url = match parse_url(chat_adapter, api_base_url, api_endpoint) {
                     Ok(r) => r,
                     Err(e) => {
                         yield e.into();
@@ -187,7 +187,7 @@ pub fn handle_chat(
                 for await result in stream {
                     match result {
                         Ok(bytes) => {
-                            let chunks = match chat_adaptor.parse_stream_chunk(&bytes) {
+                            let chunks = match chat_adapter.parse_stream_chunk(&bytes) {
                                 Ok(c) => c,
                                 Err(e) => {
                                     log::error!("[parse_stream_chunk error]\n{}", e.to_string());
@@ -229,7 +229,7 @@ pub fn handle_chat(
                         return;
                     }
                 };
-                let response = match chat_adaptor.parse_response(&res) {
+                let response = match chat_adapter.parse_response(&res) {
                     Ok(r) => r,
                     Err(e) => {
                         log::error!("[parse response error]\n{}", e);

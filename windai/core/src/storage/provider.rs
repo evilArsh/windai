@@ -1,4 +1,4 @@
-use wind_ai::model::AdaptorType;
+use wind_ai::model::AdapterType;
 
 use crate::{
     db::{DbDriver, DbPool},
@@ -225,7 +225,7 @@ impl ProviderStorage {
             "json_rule",
             ("id", id),
             ("provider_id", data.provider_id),
-            ("adaptor", data.adaptor.to_string()),
+            ("adapter", data.adapter.to_string()),
             ("active", true),
             ("json_rule", data.json_rule),
         );
@@ -238,7 +238,7 @@ impl ProviderStorage {
             "json_rule",
             id,
             ("provider_id", data.provider_id),
-            ("adaptor", data.adaptor.map(|a| a.to_string())),
+            ("adapter", data.adapter.map(|a| a.to_string())),
             ("active", data.active),
             ("json_rule", data.json_rule),
         );
@@ -252,7 +252,7 @@ impl ProviderStorage {
             (
                 "id",
                 "provider_id",
-                "adaptor",
+                "adapter",
                 "json_rule",
                 "active",
                 "created_at"
@@ -269,18 +269,18 @@ impl ProviderStorage {
         Ok(row)
     }
 
-    /// 通过 provider id 和 adaptor 类型获取 json_rule
+    /// 通过 provider id 和 adapter 类型获取 json_rule
     pub async fn get_json_rule(
         &self,
         provider_id: i64,
-        adaptor: AdaptorType,
+        adapter: AdapterType,
     ) -> Result<Option<JsonRule>> {
         let mut qb = select_fields!(
             "json_rule",
             (
                 "id",
                 "provider_id",
-                "adaptor",
+                "adapter",
                 "json_rule",
                 "active",
                 "created_at"
@@ -289,8 +289,8 @@ impl ProviderStorage {
         let row = qb
             .push(" WHERE provider_id = ")
             .push_bind(provider_id)
-            .push(" AND adaptor = ")
-            .push_bind(adaptor.to_string())
+            .push(" AND adapter = ")
+            .push_bind(adapter.to_string())
             .build_query_as::<JsonRule>()
             .fetch_optional(&self.db)
             .await?;
@@ -305,7 +305,7 @@ impl ProviderStorage {
             (
                 "id",
                 "provider_id",
-                "adaptor",
+                "adapter",
                 "json_rule",
                 "active",
                 "created_at"

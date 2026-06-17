@@ -94,7 +94,7 @@ async fn seed_chat_data(core: &WindCore, label: &str) -> TestContext {
             name: env.test_model.clone(),
             provider_id,
             alias: None,
-            adaptor: env.test_adaptor,
+            adapter: env.test_adapter,
             modalities: Some(vec![ModelType::Chat]),
             active: Some(true),
             icon: None,
@@ -465,7 +465,7 @@ async fn test_missing_credentials() {
             name: env.test_model.clone(),
             provider_id,
             alias: None,
-            adaptor: env.test_adaptor,
+            adapter: env.test_adapter,
             modalities: Some(vec![ModelType::Chat]),
             active: Some(true),
             icon: None,
@@ -568,7 +568,7 @@ async fn test_json_rule_reasoning_enabled() {
         .provider()
         .create_json_rule(CreateJsonRule {
             provider_id: ctx.provider_id,
-            adaptor: common::load_env().test_adaptor,
+            adapter: common::load_env().test_adapter,
             json_rule: REASONING_RULE.into(),
         })
         .await
@@ -636,7 +636,7 @@ async fn test_json_rule_reasoning_disabled() {
         .provider()
         .create_json_rule(CreateJsonRule {
             provider_id: ctx.provider_id,
-            adaptor: common::load_env().test_adaptor,
+            adapter: common::load_env().test_adapter,
             json_rule: REASONING_RULE.into(),
         })
         .await

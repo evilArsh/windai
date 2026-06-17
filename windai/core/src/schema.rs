@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS models (
     name            TEXT    NOT NULL,
     provider_id     INTEGER NOT NULL,
     alias           TEXT,
-    adaptor         TEXT    NOT NULL,
+    adapter         TEXT    NOT NULL,
     modalities      TEXT    DEFAULT '[]',
     active          BOOLEAN NOT NULL,
     icon            TEXT,
@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
 CREATE TABLE IF NOT EXISTS json_rule (
     id          BIGINT  PRIMARY KEY,
     provider_id INTEGER NOT NULL,
-    adaptor     TEXT    NOT NULL,
+    adapter     TEXT    NOT NULL,
     json_rule   TEXT    NOT NULL,
     active      BOOLEAN NOT NULL,
     created_at  INTEGER,
@@ -115,7 +115,7 @@ CREATE INDEX IF NOT EXISTS idx_chat_configs_topic_id ON chat_configs(topic_id);
 
 CREATE INDEX IF NOT EXISTS idx_mcp_servers_name ON mcp_servers(name);
 
-CREATE INDEX IF NOT EXISTS idx_provider_adaptor ON json_rule(provider_id,adaptor);
+CREATE INDEX IF NOT EXISTS idx_provider_adapter ON json_rule(provider_id,adapter);
 "#;
 
 /// 初始化数据库表结构

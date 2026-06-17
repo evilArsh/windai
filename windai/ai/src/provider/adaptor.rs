@@ -1,6 +1,6 @@
 use crate::{
     message::{Message, ReqConfig},
-    model::AdaptorType,
+    model::AdapterType,
     tool::Tools,
 };
 use serde_json::Value;
@@ -11,7 +11,7 @@ mod openai_responses;
 mod schema;
 
 #[derive(Error, Debug)]
-pub enum AdaptorError {
+pub enum AdapterError {
     #[error("Transfer error: {0}")]
     Transfer(String),
 
@@ -29,19 +29,19 @@ pub enum AdaptorError {
 }
 
 /// 获取适配器默认的 endpoint
-pub fn get_default_endpoint(adaptor: AdaptorType) -> String {
-    match adaptor {
-        AdaptorType::OpenAICompletion => String::from("/chat/completions"),
-        AdaptorType::OpenAIResponse => String::from("/responses"),
+pub fn get_default_endpoint(adapter: AdapterType) -> String {
+    match adapter {
+        AdapterType::OpenAICompletion => String::from("/chat/completions"),
+        AdapterType::OpenAIResponse => String::from("/responses"),
     }
 }
 
-pub trait Adaptor {
-    fn get_type(&self) -> AdaptorType;
+pub trait Adapter {
+    fn get_type(&self) -> AdapterType;
 }
 
 /// 文本对话适配器
-pub trait ChatAdaptor: Adaptor + Send + Sync {
+pub trait ChatAdapter: Adapter + Send + Sync {
     /// 将统一请求配置和消息列表转换为提供商标准请求格式
     fn build_request(
         &self,
@@ -49,17 +49,17 @@ pub trait ChatAdaptor: Adaptor + Send + Sync {
         config: &ReqConfig,
         contexts: &[Message],
         tools: Option<&[Tools]>,
-    ) -> Result<Value, AdaptorError>;
+    ) -> Result<Value, AdapterError>;
     /// 将原始响应字节解析为统一格式消息
-    fn parse_response(&self, data: &[u8]) -> Result<Message, AdaptorError>;
+    fn parse_response(&self, data: &[u8]) -> Result<Message, AdapterError>;
     /// 将原始流式响应单块字节解析为统一格式消息
-    fn parse_stream_chunk(&self, data: &[u8]) -> Result<Vec<Message>, AdaptorError>;
+    fn parse_stream_chunk(&self, data: &[u8]) -> Result<Vec<Message>, AdapterError>;
 }
 
-/// 根据 AdaptorType 获取对应的对话适配器实例
-pub fn get_chat_adaptor(adaptor: AdaptorType) -> Box<dyn ChatAdaptor + Send + Sync> {
-    match adaptor {
-        AdaptorType::OpenAICompletion => Box::new(openai_completion::OpenAICompletionAdaptor),
-        AdaptorType::OpenAIResponse => Box::new(openai_responses::OpenAIResponseAdaptor),
+/// 根据 AdapterType 获取对应的对话适配器实例
+pub fn get_chat_adapter(adapter: AdapterType) -> Box<dyn ChatAdapter + Send + Sync> {
+    match adapter {
+        AdapterType::OpenAICompletion => Box::new(openai_completion::OpenAICompletionAdapter),
+        AdapterType::OpenAIResponse => Box::new(openai_responses::OpenAIResponseAdapter),
     }
 }

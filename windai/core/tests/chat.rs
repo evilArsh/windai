@@ -3,7 +3,7 @@ use wind_ai::{
     chat::{self, ResEventStatus},
     message::{Content, Message, ReqConfig, Role},
     model::Model,
-    provider::adaptor::{self},
+    provider::adapter::{self},
 };
 #[path = "./common/lib.rs"]
 mod common;
@@ -25,7 +25,7 @@ async fn test_handle_chat() {
     };
     let model = Model {
         name: env.test_model,
-        adaptor: env.test_adaptor,
+        adapter: env.test_adapter,
         endpoint: env.test_endpoint,
     };
     let contexts = vec![
@@ -43,12 +43,12 @@ async fn test_handle_chat() {
         ),
     ];
     let mut seen_stream = false;
-    let chat_adaptor = adaptor::get_chat_adaptor(model.adaptor);
+    let chat_adapter = adapter::get_chat_adapter(model.adapter);
     let req_body =
-        chat::build_request(chat_adaptor.as_ref(), &model, &chat_config, &contexts, None).unwrap();
+        chat::build_request(chat_adapter.as_ref(), &model, &chat_config, &contexts, None).unwrap();
 
     let res = chat::handle_chat(
-        chat_adaptor.as_ref(),
+        chat_adapter.as_ref(),
         &req_body,
         &env.test_base_url,
         &env.test_key,

@@ -1,7 +1,7 @@
 use crate::error::Result;
 use crate::models::JsonRule;
 use serde_json::Value;
-use wind_ai::{model::AdaptorType, provider::adaptor::get_default_endpoint};
+use wind_ai::{model::AdapterType, provider::adapter::get_default_endpoint};
 use wind_rule::{EvalContext, RuleSet};
 
 /// 构建传递给JsonRule转换函数的上下文对象。
@@ -9,13 +9,13 @@ fn build_context(
     provider_name: &str,
     model_name: &str,
     endpoint: &str,
-    adaptor: &str,
+    adapter: &str,
 ) -> EvalContext {
     EvalContext::from(serde_json::json!({
         "provider": provider_name,
         "model": model_name,
         "endpoint": endpoint,
-        "adaptor": adaptor,
+        "adapter": adapter,
     }))
 }
 
@@ -32,7 +32,7 @@ pub fn build_rule(rule: Option<&JsonRule>) -> Result<Option<RuleSet>> {
 pub fn apply_json_rule(
     rule: Option<&RuleSet>,
     body: &mut Value,
-    adaptor: AdaptorType,
+    adapter: AdapterType,
     provider_name: &str,
     model_name: &str,
     endpoint: Option<&str>,
@@ -46,8 +46,8 @@ pub fn apply_json_rule(
         model_name,
         endpoint
             .as_deref()
-            .unwrap_or(get_default_endpoint(adaptor).as_str()),
-        &adaptor.to_string(),
+            .unwrap_or(get_default_endpoint(adapter).as_str()),
+        &adapter.to_string(),
     );
 
     let _ = rule.apply(body, &context);

@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
     strum::EnumString,
     strum::Display,
 )]
-pub enum AdaptorType {
+pub enum AdapterType {
     OpenAICompletion,
     OpenAIResponse,
 }
@@ -23,9 +23,9 @@ pub struct Model {
     pub name: String,
     /// 当前模型的适配器类型。
     /// 该类型决定了模型请求和响应结果的处理方式
-    pub adaptor: AdaptorType,
+    pub adapter: AdapterType,
     /// 模型专属端点地址
     ///
-    /// 默认使用与 [AdaptorType] 关联的提供商的默认端点。
+    /// 默认使用与 [AdapterType] 关联的提供商的默认端点。
     pub endpoint: Option<String>,
 }

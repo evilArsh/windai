@@ -5,6 +5,7 @@ pub mod error;
 pub mod models;
 pub mod schema;
 pub mod storage;
+pub mod agent;
 
 use self::storage::Storage;
 use chat::ChatEngine;

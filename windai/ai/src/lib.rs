@@ -1,4 +1,4 @@
-use crate::provider::{adaptor::AdaptorError, client::ClientError};
+use crate::provider::{adapter::AdapterError, client::ClientError};
 
 #[derive(thiserror::Error, Debug)]
 pub enum ProviderError {
@@ -6,7 +6,7 @@ pub enum ProviderError {
     Client(#[from] ClientError),
 
     #[error(transparent)]
-    Adaptor(#[from] AdaptorError),
+    Adapter(#[from] AdapterError),
 
     #[error("Url parse error: {0}")]
     UrlParse(#[from] url::ParseError),

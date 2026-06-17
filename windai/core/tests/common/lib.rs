@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use wind_ai::model::AdaptorType;
+use wind_ai::model::AdapterType;
 
 pub fn setup_env() {
     let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
@@ -25,7 +25,7 @@ pub struct Env {
     pub test_base_url: String,
     pub test_key: String,
     pub test_model: String,
-    pub test_adaptor: AdaptorType,
+    pub test_adapter: AdapterType,
     pub test_endpoint: Option<String>,
     // mcp completion
     pub test_mcp_completion_key: String,
@@ -55,10 +55,10 @@ pub fn load_env() -> Env {
         test_base_url: var("TEST_BASE_URL").unwrap_or_default(),
         test_key: var("TEST_KEY").unwrap_or_default(),
         test_model: var("TEST_MODEL").unwrap_or_default(),
-        test_adaptor: var("TEST_ADAPTOR")
+        test_adapter: var("TEST_ADAPTER")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(AdaptorType::OpenAICompletion),
+            .unwrap_or(AdapterType::OpenAICompletion),
         test_endpoint: var("TEST_ENDPOINT").ok(),
         test_mcp_completion_key: var("TEST_MCP_COMPLETION_KEY").unwrap_or_default(),
         test_mcp_completion_model: var("TEST_MCP_COMPLETION_MODEL").unwrap_or_default(),
@@ -127,7 +127,7 @@ pub struct McpTestEnv {
     pub base_url: String,
     pub key: String,
     pub model: String,
-    pub adaptor: AdaptorType,
+    pub adapter: AdapterType,
     pub endpoint: Option<String>,
 }
 
@@ -138,7 +138,7 @@ pub fn mcp_completion_env() -> McpTestEnv {
         base_url: env.test_mcp_completion_base_url,
         key: env.test_mcp_completion_key,
         model: env.test_mcp_completion_model,
-        adaptor: AdaptorType::OpenAICompletion,
+        adapter: AdapterType::OpenAICompletion,
         endpoint: env.test_mcp_completion_endpoint,
     }
 }
@@ -150,7 +150,7 @@ pub fn mcp_responses_env() -> McpTestEnv {
         base_url: env.test_mcp_responses_base_url,
         key: env.test_mcp_responses_key,
         model: env.test_mcp_responses_model,
-        adaptor: AdaptorType::OpenAIResponse,
+        adapter: AdapterType::OpenAIResponse,
         endpoint: env.test_mcp_responses_endpoint,
     }
 }

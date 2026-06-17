@@ -133,7 +133,7 @@ async fn seed_mcp_data(
             name: env.model.clone(),
             provider_id,
             alias: None,
-            adaptor: env.adaptor,
+            adapter: env.adapter,
             modalities: Some(vec![ModelType::Chat]),
             active: Some(true),
             icon: None,

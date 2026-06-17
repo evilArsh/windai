@@ -3,9 +3,9 @@ use super::schema::openai_responses::{
     Response, ResponseInputFile, ResponseInputImage, ResponseInputText, ResponseOutput,
     ResponseReasoning, ResponseRequest, ResponseStream, Tools,
 };
-use super::{Adaptor, AdaptorError, ChatAdaptor};
+use super::{Adapter, AdapterError, ChatAdapter};
 use crate::message::{self, Content, Message, MessageBuilder, ReqConfig};
-use crate::model::AdaptorType;
+use crate::model::AdapterType;
 use crate::provider::sse::SseBlock;
 use crate::tool;
 use serde_json::Value;
@@ -33,22 +33,22 @@ fn transfer_response_tools(tools: Option<&[tool::Tools]>) -> Option<Vec<Tools>> 
         .or(None)
 }
 
-pub struct OpenAIResponseAdaptor;
+pub struct OpenAIResponseAdapter;
 
-impl Adaptor for OpenAIResponseAdaptor {
-    fn get_type(&self) -> AdaptorType {
-        AdaptorType::OpenAIResponse
+impl Adapter for OpenAIResponseAdapter {
+    fn get_type(&self) -> AdapterType {
+        AdapterType::OpenAIResponse
     }
 }
 
-impl ChatAdaptor for OpenAIResponseAdaptor {
+impl ChatAdapter for OpenAIResponseAdapter {
     fn build_request(
         &self,
         model_name: &str,
         config: &ReqConfig,
         contexts: &[Message],
         tools: Option<&[tool::Tools]>,
-    ) -> Result<Value, AdaptorError> {
+    ) -> Result<Value, AdapterError> {
         let tools = transfer_response_tools(tools);
         let input_messages = contexts
             .into_iter()
@@ -192,7 +192,7 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
         Ok(req)
     }
 
-    fn parse_response(&self, data: &[u8]) -> Result<Message, AdaptorError> {
+    fn parse_response(&self, data: &[u8]) -> Result<Message, AdapterError> {
         log::debug!(
             "[raw completion]\n{}",
             serde_json::to_string_pretty(&serde_json::from_slice::<serde_json::Value>(data)?)?
@@ -214,7 +214,7 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
             match output {
                 OutputItem::ResponseOutputMessage(msg) => {
                     let c = msg.content.into_iter().next().ok_or_else(|| {
-                        AdaptorError::Transfer("no output message in response".into())
+                        AdapterError::Transfer("no output message in response".into())
                     })?;
                     res.content.push(Content::new_text(match c {
                         ResponseOutput::ResponseOutputText(output_text) => output_text.text,
@@ -250,7 +250,7 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
 
         Ok(res)
     }
-    fn parse_stream_chunk(&self, data: &[u8]) -> Result<Vec<Message>, AdaptorError> {
+    fn parse_stream_chunk(&self, data: &[u8]) -> Result<Vec<Message>, AdapterError> {
         let blocks = SseBlock::parse(data);
         blocks
             .into_iter()
@@ -280,7 +280,7 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
                                     .unwrap_or_default(),
                             ))
                         } else {
-                            Err(AdaptorError::Transfer("no data in response".into()))
+                            Err(AdapterError::Transfer("no data in response".into()))
                         }
                     }
 
@@ -353,6 +353,6 @@ impl ChatAdaptor for OpenAIResponseAdaptor {
                     Err(err) => Some(Err(err)),
                 }
             })
-            .collect::<Result<Vec<Message>, AdaptorError>>()
+            .collect::<Result<Vec<Message>, AdapterError>>()
     }
 }
