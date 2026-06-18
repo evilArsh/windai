@@ -1,13 +1,11 @@
 use super::context;
 use super::events::ChatEvent;
 use super::function_call::{
-    build_tools_from_mcp, execute_tool_calls, partition_tool_calls_by_policy, resume_tool_approval,
+    execute_tool_calls, partition_tool_calls_by_policy, resume_tool_approval,
 };
 use super::rule::{apply_json_rule, build_rule};
 use crate::error::{CoreError, Result};
-use crate::models::{
-    Credentials, JsonRule, McpServerParam, Message as CoreMessage, Model, Provider, Topic,
-};
+use crate::models::{Credentials, JsonRule, Message as CoreMessage, Model, Provider, Topic};
 use crate::storage::Storage;
 use async_stream::{stream, try_stream};
 use futures::{Stream, StreamExt};
@@ -85,18 +83,7 @@ impl<'c> ChatEngine<'c> {
             CoreError::NotFound(format!("no credentials for provider {}", model.provider_id))
         })?;
 
-        let tool_params = self.get_topic_tools(&topic).await?;
-        let tools = match tool_params {
-            Some(params) => Some(build_tools_from_mcp(
-                self.mcp_registry
-                    .list_tools_by_names(
-                        &params.into_iter().map(|p| p.name).collect::<Vec<String>>(),
-                    )
-                    .await?
-                    .as_slice(),
-            )),
-            _ => None,
-        };
+        let tools = None;
 
         let req_config = self
             .storage
@@ -121,18 +108,6 @@ impl<'c> ChatEngine<'c> {
             credential,
             tools,
         })
-    }
-    /// 获取 topic 下详细的MCP服务信息
-    async fn get_topic_tools(&self, topic: &Topic) -> Result<Option<Vec<McpServerParam>>> {
-        let ids = match topic.mcp_server_ids {
-            Some(ref ids) if !ids.is_empty() => ids,
-            _ => return Ok(None),
-        };
-        let params = self.storage.mcp().batch_get_by_ids(ids.as_slice()).await?;
-        if params.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(params))
     }
     async fn get_raw_messages(&self, topic_id: i64) -> Result<Vec<CoreMessage>> {
         Ok(self
@@ -169,7 +144,7 @@ impl<'c> ChatEngine<'c> {
             self.get_raw_messages(topic_id).await?,
             topic_id,
             user_message_id,
-            ctx.topic.max_context,
+            None,
         )?;
         match assistant.content.iter().last() {
             Some(msg) if msg.is_simple() => {

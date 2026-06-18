@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod chat;
 pub mod db;
 mod env;
@@ -5,7 +6,6 @@ pub mod error;
 pub mod models;
 pub mod schema;
 pub mod storage;
-pub mod agent;
 
 use self::storage::Storage;
 use chat::ChatEngine;

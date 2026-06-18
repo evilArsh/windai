@@ -1,13 +1,19 @@
+pub mod activity;
+pub mod agent;
+pub mod approval;
+pub mod artifact;
 pub mod mcp;
 pub mod message;
 pub mod model;
+pub mod prompt;
 pub mod provider;
 pub mod topic;
 pub mod utils;
 
 use self::{
-    mcp::McpStorage, message::MessageStorage, model::ModelStorage, provider::ProviderStorage,
-    topic::TopicStorage,
+    activity::TopicActivityStorage, agent::AgentStorage, approval::ToolApprovalStorage,
+    artifact::AgentArtifactStorage, mcp::McpStorage, message::MessageStorage, model::ModelStorage,
+    prompt::PromptStorage, provider::ProviderStorage, topic::TopicStorage,
 };
 use super::db::DbPool;
 use chrono::Utc;
@@ -25,6 +31,11 @@ pub struct Storage {
     model: model::ModelStorage,
     message: message::MessageStorage,
     mcp: mcp::McpStorage,
+    agent: agent::AgentStorage,
+    prompt: prompt::PromptStorage,
+    approval: approval::ToolApprovalStorage,
+    activity: activity::TopicActivityStorage,
+    artifact: artifact::AgentArtifactStorage,
 }
 
 impl Storage {
@@ -35,6 +46,11 @@ impl Storage {
             model: ModelStorage::new(db.clone()),
             message: MessageStorage::new(db.clone()),
             mcp: McpStorage::new(db.clone()),
+            agent: AgentStorage::new(db.clone()),
+            prompt: PromptStorage::new(db.clone()),
+            approval: ToolApprovalStorage::new(db.clone()),
+            activity: TopicActivityStorage::new(db.clone()),
+            artifact: AgentArtifactStorage::new(db.clone()),
             db,
         }
     }
@@ -53,6 +69,26 @@ impl Storage {
 
     pub fn mcp(&self) -> &McpStorage {
         &self.mcp
+    }
+
+    pub fn agent(&self) -> &AgentStorage {
+        &self.agent
+    }
+
+    pub fn prompt(&self) -> &PromptStorage {
+        &self.prompt
+    }
+
+    pub fn approval(&self) -> &ToolApprovalStorage {
+        &self.approval
+    }
+
+    pub fn activity(&self) -> &TopicActivityStorage {
+        &self.activity
+    }
+
+    pub fn artifact(&self) -> &AgentArtifactStorage {
+        &self.artifact
     }
 
     pub async fn close(&self) {

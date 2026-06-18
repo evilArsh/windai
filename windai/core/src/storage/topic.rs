@@ -11,6 +11,11 @@ use sqlx::{QueryBuilder, Row};
 use wind_ai::message::ReqConfig;
 
 use super::utils::{self, ensure_affected};
+
+const DEFAULT_AGENT_KEY: &str = "default-helpful-assistant";
+const DEFAULT_AGENT_NAME: &str = "Helpful Assistant";
+const DEFAULT_AGENT_PROMPT: &str = "you are a helpful assistant";
+
 pub struct TopicStorage {
     db: DbPool,
 }
@@ -69,18 +74,133 @@ impl TopicStorage {
             ("chat_config_id", data.chat_config_id),
             ("label", data.label),
             ("icon", data.icon),
-            ("max_context", data.max_context.or_else(|| Some(999))),
             ("topic_index", next_index),
             (
                 "tool_approval_policy",
                 serde_json::to_string(&ToolApprovalPolicy::default())?
-            ),
-            (
-                "mcp_server_ids",
-                utils::vec_to_str_default(data.mcp_server_ids.as_deref())?
             )
         );
         qb.build().execute(&mut *tx).await?;
+
+        let prompt_id = match select_fields!("prompt_modules", ("id"))
+            .push(" WHERE key = ")
+            .push_bind(DEFAULT_AGENT_KEY)
+            .build()
+            .map(|row: crate::db::DbRow| row.get::<i64, _>("id"))
+            .fetch_optional(&mut *tx)
+            .await?
+        {
+            Some(id) => id,
+            None => {
+                let prompt_id = next_id();
+                insert!(
+                    "prompt_modules",
+                    ("id", prompt_id),
+                    ("key", DEFAULT_AGENT_KEY),
+                    ("name", DEFAULT_AGENT_NAME),
+                    ("description", "Default helpful assistant prompt"),
+                    ("module_type", "identity"),
+                    ("content", DEFAULT_AGENT_PROMPT),
+                    ("active", true),
+                    ("data", "{}")
+                )
+                .build()
+                .execute(&mut *tx)
+                .await?;
+                prompt_id
+            }
+        };
+
+        let agent_id = match select_fields!("agent_definitions", ("id"))
+            .push(" WHERE key = ")
+            .push_bind(DEFAULT_AGENT_KEY)
+            .build()
+            .map(|row: crate::db::DbRow| row.get::<i64, _>("id"))
+            .fetch_optional(&mut *tx)
+            .await?
+        {
+            Some(id) => id,
+            None => {
+                let agent_id = next_id();
+                let agent_data = serde_json::json!({
+                    "prompt_modules": [{
+                        "prompt_module_id": prompt_id,
+                        "required": true,
+                        "order": 0,
+                        "variables": {},
+                        "enabled": true
+                    }],
+                    "mcp_servers": [],
+                    "skills": [],
+                    "max_context": null,
+                    "supported_modes": ["sync", "background"],
+                    "default_mode": "sync",
+                    "context_policy": {
+                        "inherit_mode": "summary",
+                        "include_parent_summary": true,
+                        "include_recent_messages": true,
+                        "recent_message_limit": 20,
+                        "include_artifact_ids": [],
+                        "redact_secrets": true,
+                        "max_context_messages": null
+                    },
+                    "permission_policy": {
+                        "can_spawn_agents": false,
+                        "can_spawn_sync": false,
+                        "can_spawn_background": false,
+                        "can_spawn_team": false,
+                        "can_spawn_fork": false,
+                        "can_spawn_recursive": false,
+                        "max_spawn_depth": 0
+                    },
+                    "runtime_limits": {
+                        "max_runtime_ms": null,
+                        "max_llm_calls": null,
+                        "max_tool_calls": null,
+                        "max_child_agents": 0,
+                        "max_parallel_child_agents": 0,
+                        "max_input_tokens": null,
+                        "max_output_tokens": null,
+                        "max_artifact_bytes": null
+                    },
+                    "output_contract": null
+                });
+                insert!(
+                    "agent_definitions",
+                    ("id", agent_id),
+                    ("key", DEFAULT_AGENT_KEY),
+                    ("name", DEFAULT_AGENT_NAME),
+                    ("description", "Default general-purpose assistant"),
+                    ("scope", "global"),
+                    ("owner_topic_id", Option::<i64>::None),
+                    ("cloned_from_agent_id", Option::<i64>::None),
+                    ("role", "general"),
+                    ("active", true),
+                    ("data", serde_json::to_string(&agent_data)?)
+                )
+                .build()
+                .execute(&mut *tx)
+                .await?;
+                agent_id
+            }
+        };
+
+        insert!(
+            "topic_agent_bindings",
+            ("id", next_id()),
+            ("topic_id", id),
+            ("agent_id", agent_id),
+            ("binding_role", "main"),
+            ("alias", Option::<String>::None),
+            ("model_id", Option::<i64>::None),
+            ("chat_config_id", Option::<i64>::None),
+            ("enabled", true),
+            ("config", "{}")
+        )
+        .build()
+        .execute(&mut *tx)
+        .await?;
+
         tx.commit().await?;
         Ok(id)
     }
@@ -92,15 +212,10 @@ impl TopicStorage {
             ("parent_id", data.parent_id),
             ("label", data.label),
             ("icon", data.icon),
-            ("max_context", data.max_context),
             (
                 "tool_approval_policy",
                 utils::map_to_str_optional(data.tool_approval_policy.as_ref())?
-            ),
-            (
-                "mcp_server_ids",
-                utils::vec_to_str_optional(data.mcp_server_ids.as_deref())?
-            ),
+            )
         );
         qb.build().execute(&self.db).await?;
         Ok(())
@@ -116,10 +231,8 @@ impl TopicStorage {
                 "chat_config_id",
                 "label",
                 "icon",
-                "max_context",
                 "topic_index",
                 "tool_approval_policy",
-                "mcp_server_ids",
                 "created_at"
             )
         );
@@ -140,10 +253,8 @@ impl TopicStorage {
                 "chat_config_id",
                 "label",
                 "icon",
-                "max_context",
                 "topic_index",
                 "tool_approval_policy",
-                "mcp_server_ids",
                 "created_at"
             )
         );
@@ -160,6 +271,7 @@ impl TopicStorage {
 
         Self::batch_delete_by_ids(&mut *tx, "chat_configs", "topic_id", ids).await?;
         Self::batch_delete_by_ids(&mut *tx, "messages", "topic_id", ids).await?;
+        Self::batch_delete_by_ids(&mut *tx, "topic_agent_bindings", "topic_id", ids).await?;
         Self::batch_delete_by_ids(&mut *tx, "topics", "id", ids).await?;
         tx.commit().await?;
         Ok(())

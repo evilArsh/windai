@@ -1,0 +1,97 @@
+use serde::{Deserialize, Serialize};
+use sqlx::Row;
+
+use crate::db::DbRow;
+
+/// 提供商账号
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Credentials {
+    pub id: i64,
+    pub provider_id: i64,
+    pub key: String,
+    pub created_at: i64,
+    pub active: bool,
+}
+
+impl<'s> sqlx::FromRow<'s, DbRow> for Credentials {
+    fn from_row(row: &'s DbRow) -> Result<Self, sqlx::Error> {
+        Ok(Credentials {
+            id: row.get("id"),
+            active: row.get("active"),
+            provider_id: row.get("provider_id"),
+            key: row.get("key"),
+            created_at: row.get("created_at"),
+        })
+    }
+}
+
+/// 提供商
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Provider {
+    pub id: i64,
+    /// 唯一的提供商名字
+    pub name: String,
+    /// 提供商 base api 地址
+    pub base_url: String,
+    /// 提供商描述
+    pub description: Option<String>,
+    /// 提供商官方文档地址
+    pub doc: Option<String>,
+    /// 提供商别名
+    pub alias: Option<String>,
+    pub active: bool,
+    pub created_at: i64,
+}
+
+impl<'s> sqlx::FromRow<'s, DbRow> for Provider {
+    fn from_row(row: &'s DbRow) -> Result<Self, sqlx::Error> {
+        Ok(Provider {
+            id: row.get("id"),
+            name: row.get("name"),
+            alias: row.get("alias"),
+            created_at: row.get("created_at"),
+            base_url: row.get("base_url"),
+            description: row.get("description"),
+            doc: row.get("doc"),
+            active: row.get("active"),
+        })
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CreateProvider {
+    pub name: String,
+    pub description: Option<String>,
+    pub base_url: String,
+    pub doc: Option<String>,
+    pub alias: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct UpdateProvider {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub base_url: Option<String>,
+    pub doc: Option<String>,
+    pub alias: Option<String>,
+    pub active: Option<bool>,
+}
+
+impl Default for UpdateProvider {
+    fn default() -> Self {
+        Self {
+            name: None,
+            description: None,
+            base_url: None,
+            doc: None,
+            alias: None,
+            active: None,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CreateCredentials {
+    pub provider_id: i64,
+    pub key: String,
+}

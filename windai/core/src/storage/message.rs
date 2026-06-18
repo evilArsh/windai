@@ -18,8 +18,6 @@ struct PreparedMessage {
     id: i64,
     message_index: i64,
     content_str: String,
-    tools_allowed_str: String,
-    tools_denied_str: String,
     is_excluded: bool,
     original: CreateMessage,
 }
@@ -47,8 +45,6 @@ impl MessageStorage {
                 "is_excluded",
                 "input_tokens",
                 "output_tokens",
-                "tools_allowed",
-                "tools_denied",
                 "created_at"
             )
         )
@@ -128,14 +124,6 @@ impl MessageStorage {
             ("is_excluded", is_excluded),
             ("input_tokens", data.input_tokens),
             ("output_tokens", data.output_tokens),
-            (
-                "tools_allowed",
-                utils::vec_to_str_default(data.tools_allowed.as_deref())?
-            ),
-            (
-                "tools_denied",
-                utils::vec_to_str_default(data.tools_denied.as_deref())?
-            ),
         )
         .build()
         .execute(&mut *tx)
@@ -157,14 +145,6 @@ impl MessageStorage {
             ("model_id", data.model_id),
             ("input_tokens", data.input_tokens),
             ("output_tokens", data.output_tokens),
-            (
-                "tools_allowed",
-                utils::vec_to_str_optional(data.tools_allowed.as_deref())?
-            ),
-            (
-                "tools_denied",
-                utils::vec_to_str_optional(data.tools_denied.as_deref())?
-            ),
         );
         ensure_affected(&qb.build().execute(&self.db).await?)?;
         Ok(())
@@ -293,8 +273,6 @@ impl MessageStorage {
                 id: next_id(),
                 message_index: base_index + index as i64,
                 content_str: utils::vec_to_str_default(Some(&msg.content))?,
-                tools_allowed_str: utils::vec_to_str_default(msg.tools_allowed.as_deref())?,
-                tools_denied_str: utils::vec_to_str_default(msg.tools_denied.as_deref())?,
                 // 第一条默认作为消息上下文
                 is_excluded: index == 0,
                 original: msg,
@@ -314,8 +292,6 @@ impl MessageStorage {
                 "is_excluded",
                 "input_tokens",
                 "output_tokens",
-                "tools_allowed",
-                "tools_denied",
                 "created_at"
             )
         )
@@ -331,8 +307,6 @@ impl MessageStorage {
             b.push_bind(item.is_excluded);
             b.push_bind(item.original.input_tokens);
             b.push_bind(item.original.output_tokens);
-            b.push_bind(&item.tools_allowed_str);
-            b.push_bind(&item.tools_denied_str);
             b.push_bind(now_ts());
         })
         .build()
