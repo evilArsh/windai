@@ -18,7 +18,6 @@ mod driver_impl {
     pub type DbDriver = sqlx::Sqlite;
     pub type DbTransaction = sqlx::Transaction<'static, sqlx::Sqlite>;
     pub type DbRow = sqlx::sqlite::SqliteRow;
-    pub type DbQueryResult = sqlx::sqlite::SqliteQueryResult;
     pub async fn create_pool(db_url: &str) -> Result<DbPool, sqlx::Error> {
         let options = SqliteConnectOptions::from_str(db_url)?
             .create_if_missing(true)
@@ -71,6 +70,7 @@ mod driver_impl {
 }
 
 pub use driver_impl::*;
+pub type DbQueryResult = <DbDriver as sqlx::Database>::QueryResult;
 /// 初始化SQL连接池
 pub async fn init_db(db_url: &str) -> Result<DbPool, sqlx::Error> {
     create_pool(db_url).await

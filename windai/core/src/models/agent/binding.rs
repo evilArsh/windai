@@ -1,127 +1,156 @@
+use crate::storage::utils;
+use crate::{db::DbRow, models::ToolApprovalPolicy};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
-use crate::db::DbRow;
-use crate::storage::utils;
+/// AgentInstance 生命周期状态。WaitingApproval 用于后台 Agent 等待用户审批 MCP。
+#[derive(
+    Debug, Serialize, Deserialize, Clone, PartialEq, Eq, strum::EnumString, strum::Display, Copy,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum AgentStatus {
+    /// 已创建。
+    Created,
+    /// 正在运行。
+    Running,
+    /// 正在等待用户审批。
+    WaitingApproval,
+    /// 正在等待子 Agent。
+    WaitingChild,
+    /// 已完成。
+    Finished,
+    /// 已失败。
+    Failed,
+    /// 已取消。
+    Cancelled,
+}
 
-use super::context::ContextPolicy;
-use super::definition::AgentMode;
-use super::policy::RuntimeLimits;
-
-/// 某个 Topic 对某个 Agent 的使用绑定。Topic 通过它单向依赖 Agent。
+/// Topic 对某个 Agent 的使用绑定。Topic 通过它单向依赖 Agent。
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct TopicAgentBinding {
-    /// TopicAgentBinding 主键。
+pub struct AgentBinding {
     pub id: i64,
-    /// 绑定所属 Topic id。
+    /// 该binding的Topic id。
     pub topic_id: i64,
+    /// 该binding的父Topic id。
+    pub parent_topic_id: i64,
     /// 被绑定的 AgentDefinition id。
     pub agent_id: i64,
+    /// 该Agent运行模式。
+    pub mode: Option<AgentMode>,
     /// Agent 在当前 Topic 中的角色。
-    pub binding_role: TopicAgentBindingRole,
-    /// 当前 Topic 中暴露给 UI 或 LLM 的 Agent 别名。
-    pub alias: Option<String>,
-    /// 当前 Topic 中该 Agent 使用的模型 id；None 表示继承调用上下文模型。
+    pub role: AgentRole,
+    /// 当前实例生命周期状态。
+    pub status: AgentStatus,
+    /// 当前 Topic 中该 Agent 使用的模型 id；
     pub model_id: Option<i64>,
-    /// 当前 Topic 中该 Agent 的专属 ChatConfig id；None 表示使用 Topic.chat_config_id。
+    /// 工具审批策略。
+    pub tool_approval_policy: Option<ToolApprovalPolicy>,
+    /// 关联的对话配置
     pub chat_config_id: Option<i64>,
     /// 当前绑定是否启用。
     pub enabled: bool,
-    /// 当前 Topic 对该 Agent 的运行覆盖配置。
-    pub config: TopicAgentBindingConfig,
     /// 创建时间戳。
     pub created_at: i64,
 }
 
-impl<'s> sqlx::FromRow<'s, DbRow> for TopicAgentBinding {
+impl<'s> sqlx::FromRow<'s, DbRow> for AgentBinding {
     fn from_row(row: &'s DbRow) -> Result<Self, sqlx::Error> {
         Ok(Self {
             id: row.get("id"),
             topic_id: row.get("topic_id"),
+            parent_topic_id: row.get("parent_topic_id"),
             agent_id: row.get("agent_id"),
-            binding_role: utils::parse_str_to(&row.get::<String, _>("binding_role")).map_err(
-                |e| sqlx::Error::Decode(format!("deserialize binding role: {}", e).into()),
-            )?,
-            alias: row.get("alias"),
+            role: utils::parse_str_to(&row.get::<String, _>("role")).map_err(|e| {
+                sqlx::Error::Decode(format!("deserialize binding role: {}", e).into())
+            })?,
             model_id: row.get("model_id"),
             chat_config_id: row.get("chat_config_id"),
             enabled: row.get("enabled"),
-            config: utils::de_str_to(&row.get::<String, _>("config")).map_err(|e| {
-                sqlx::Error::Decode(format!("deserialize binding config: {}", e).into())
-            })?,
             created_at: row.get("created_at"),
+            tool_approval_policy: match row.get::<Option<String>, _>("tool_approval_policy") {
+                Some(s) => Some(utils::de_str_to(&s).map_err(|e| {
+                    sqlx::Error::Decode(
+                        format!("Failed to deserialize tool_approval_policy: {}", e).into(),
+                    )
+                })?),
+                None => None,
+            },
+            mode: match row.get::<Option<String>, _>("mode") {
+                Some(mode) => Some(utils::parse_str_to(&mode).map_err(|e| {
+                    sqlx::Error::Decode(format!("deserialize agent mode: {}", e).into())
+                })?),
+                None => None,
+            },
+            status: utils::parse_str_to(&row.get::<String, _>("status")).map_err(|e| {
+                sqlx::Error::Decode(format!("deserialize agent instance status: {}", e).into())
+            })?,
         })
     }
 }
 
-/// Agent 在当前 Topic 中的角色。每个 Topic 只能有一个 Main。
+/// 用于展示当前Agent运行模式
 #[derive(
-    Debug, Serialize, Deserialize, Clone, PartialEq, Eq, strum::EnumString, strum::Display,
+    Debug, Serialize, Deserialize, Clone, PartialEq, Eq, strum::EnumString, strum::Display, Copy,
 )]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
-pub enum TopicAgentBindingRole {
-    /// 当前 Topic 的主 Agent。
-    Main,
-    /// 当前 Topic 中可被主 Agent 调度的子 Agent。
-    Child,
-    /// 当前 Topic 中保留给团队协作模式的 Agent。
+pub enum AgentMode {
+    /// 同步执行。
+    Sync,
+    /// 后台执行，立即返回实例句柄。
+    Background,
+    /// 长期团队协作模式。
     Team,
+    /// fork 上下文分支模式。
+    Fork,
 }
 
-/// Topic 使用 Agent 时的运行覆盖配置。这里不覆盖 Prompt/MCP/Skill；修改那些能力时应复制 Agent。
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct TopicAgentBindingConfig {
-    /// 当前 Topic 中覆盖 AgentDefinition.description 的说明。
-    pub description_override: Option<String>,
-    /// 当前 Topic 允许该 Agent 使用的运行模式。
-    pub allowed_modes: Vec<AgentMode>,
-    /// 当前 Topic 中未显式指定模式时的默认运行模式。
-    pub default_mode: Option<AgentMode>,
-    /// 当前 Topic 中覆盖 AgentDefinition.context_policy 的上下文策略。
-    pub context_policy_override: Option<ContextPolicy>,
-    /// 当前 Topic 中覆盖 AgentDefinition.runtime_limits 的资源限制。
-    pub runtime_limits_override: Option<RuntimeLimits>,
-    /// 创建该 Agent 实例时是否需要用户审批。
-    pub requires_spawn_approval: bool,
+/// Agent 在当前 Topic 中的角色。每个 Topic 只能有一个 Main。
+#[derive(
+    Debug, Serialize, Deserialize, Clone, PartialEq, Eq, strum::EnumString, strum::Display, Copy,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum AgentRole {
+    /// 主Agent标识
+    Main,
+    /// 子Agent标识
+    Child,
 }
 
 /// 创建 TopicAgentBinding 的 DTO。
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct CreateTopicAgentBinding {
+pub struct CreateAgentBinding {
     /// 绑定所属 Topic id。
     pub topic_id: i64,
+    pub parent_topic_id: i64,
     /// 被绑定的 AgentDefinition id。
     pub agent_id: i64,
     /// Agent 在当前 Topic 中的角色。
-    pub binding_role: TopicAgentBindingRole,
-    /// 当前 Topic 中暴露给 UI 或 LLM 的 Agent 别名。
-    pub alias: Option<String>,
+    pub role: AgentRole,
     /// 当前 Topic 中该 Agent 使用的模型 id。
     pub model_id: Option<i64>,
     /// 当前 Topic 中该 Agent 的专属 ChatConfig id。
     pub chat_config_id: Option<i64>,
     /// 当前绑定是否启用；None 时默认启用。
     pub enabled: Option<bool>,
-    /// 当前 Topic 对该 Agent 的运行覆盖配置。
-    pub config: TopicAgentBindingConfig,
 }
 
 /// 更新 TopicAgentBinding 的 DTO。
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
-pub struct UpdateTopicAgentBinding {
+pub struct UpdateAgentBinding {
     /// 新的 AgentDefinition id。
     pub agent_id: Option<i64>,
     /// 新的绑定角色。
-    pub binding_role: Option<TopicAgentBindingRole>,
-    /// 新的别名。
-    pub alias: Option<String>,
+    pub role: Option<AgentRole>,
     /// 新的模型 id。
     pub model_id: Option<i64>,
     /// 新的专属 ChatConfig id。
     pub chat_config_id: Option<i64>,
     /// 新的启用状态。
     pub enabled: Option<bool>,
-    /// 新的运行覆盖配置。
-    pub config: Option<TopicAgentBindingConfig>,
+    pub status: Option<AgentStatus>,
+    pub mode: Option<AgentMode>,
+    pub tool_approval_policy: Option<ToolApprovalPolicy>,
 }

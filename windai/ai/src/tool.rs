@@ -1,5 +1,3 @@
-use std::fmt;
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -44,14 +42,4 @@ pub struct FunctionCallOutput {
     pub id: String,
     /// 本地函数调用结果
     pub content: Value,
-}
-
-impl fmt::Display for FunctionCall {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "FunctionCall {{")?;
-        writeln!(f, "  id: {}", self.id)?;
-        writeln!(f, "  name: {}", self.name)?;
-        writeln!(f, "  arguments: {}", self.arguments)?;
-        write!(f, "}}")
-    }
 }

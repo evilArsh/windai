@@ -1,7 +1,7 @@
 use wind_ai::model::AdapterType;
 
+use super::{executor::StorageExecutor, now_ts, utils::ensure_affected};
 use crate::{
-    db::{DbDriver, DbPool},
     delete_by_id,
     error::{CoreError, Result},
     get_by_id, insert,
@@ -10,26 +10,39 @@ use crate::{
         UpdateJsonRule, UpdateProvider,
     },
     select_fields,
-    storage::next_id,
+    storage::{TableName, next_id},
     update,
 };
-
-use super::utils::ensure_affected;
+use sqlx::QueryBuilder;
+#[derive(Clone)]
 pub struct ProviderStorage {
-    db: DbPool,
+    executor: StorageExecutor,
 }
 
 impl ProviderStorage {
-    pub fn new(db: DbPool) -> Self {
-        Self { db }
+    pub(crate) fn new(executor: StorageExecutor) -> Self {
+        Self { executor }
     }
 
-    async fn get_by_name_inner<'e, E>(executor: E, name: &str) -> Result<Option<Provider>>
-    where
-        E: sqlx::Executor<'e, Database = DbDriver>,
-    {
+    async fn delete_by_column(
+        executor: &StorageExecutor,
+        table: &str,
+        column: &str,
+        value: i64,
+    ) -> Result<()> {
+        let mut qb = QueryBuilder::new("DELETE FROM ");
+        qb.push(table)
+            .push(" WHERE ")
+            .push(column)
+            .push(" = ")
+            .push_bind(value);
+        executor.execute(qb.build()).await?;
+        Ok(())
+    }
+
+    pub async fn get_by_name(&self, name: &str) -> Result<Option<Provider>> {
         let mut qb = select_fields!(
-            "providers",
+            TableName::PROVIDERS,
             (
                 "id",
                 "name",
@@ -42,59 +55,77 @@ impl ProviderStorage {
             )
         );
 
-        let row = qb
-            .push(" WHERE name = ")
-            .push_bind(name)
-            .build_query_as::<Provider>()
-            .fetch_optional(executor)
+        let row = self
+            .executor
+            .fetch_optional(
+                qb.push(" WHERE name = ")
+                    .push_bind(name)
+                    .build_query_as::<Provider>(),
+            )
             .await?;
 
         Ok(row)
     }
-    pub async fn get_by_name(&self, name: &str) -> Result<Option<Provider>> {
-        Self::get_by_name_inner(&self.db, name).await
-    }
 
     /// 创建提供商，提供商名称必须唯一
-    pub async fn create(&self, data: CreateProvider) -> Result<i64> {
-        let mut tx = self.db.begin().await?;
+    pub async fn create(&self, data: CreateProvider) -> Result<Provider> {
+        self.executor
+            .transaction_required(
+                |executor| async move { Self::new(executor).create_inner(data).await },
+            )
+            .await
+    }
 
+    async fn create_inner(&self, data: CreateProvider) -> Result<Provider> {
         if data.name.is_empty() {
             return Err(CoreError::Validation(
                 "provider name cannot be empty".into(),
             ));
         }
-        if Self::get_by_name_inner(&mut *tx, data.name.trim())
-            .await?
-            .is_some()
-        {
+        if self.get_by_name(data.name.trim()).await?.is_some() {
             return Err(CoreError::Validation("provider name already exists".into()));
         }
 
         let id = next_id();
+        let now = now_ts();
         let mut qb = insert!(
-            "providers",
+            TableName::PROVIDERS,
             ("id", id),
-            ("name", data.name),
-            ("alias", data.alias),
-            ("description", data.description),
-            ("base_url", data.base_url),
-            ("doc", data.doc),
+            ("name", data.name.clone()),
+            ("alias", data.alias.clone()),
+            ("description", data.description.clone()),
+            ("base_url", data.base_url.clone()),
+            ("doc", data.doc.clone()),
             ("active", true),
+            ("created_at", now),
         );
-        qb.build().execute(&mut *tx).await?;
-        tx.commit().await?;
-        Ok(id)
+        self.executor.execute(qb.build()).await?;
+        Ok(Provider {
+            id,
+            name: data.name,
+            base_url: data.base_url,
+            description: data.description,
+            doc: data.doc,
+            alias: data.alias,
+            active: true,
+            created_at: now,
+        })
     }
 
     pub async fn update(&self, id: i64, data: UpdateProvider) -> Result<()> {
-        let mut tx = self.db.begin().await?;
+        self.executor
+            .transaction_required(|executor| async move {
+                Self::new(executor).update_inner(id, data).await
+            })
+            .await
+    }
 
+    async fn update_inner(&self, id: i64, data: UpdateProvider) -> Result<()> {
         if let Some(name) = &data.name {
             if name.is_empty() {
                 return Err(CoreError::Validation("name cannot be empty".to_string()));
             }
-            if let Some(exists) = Self::get_by_name_inner(&mut *tx, &name.trim()).await?
+            if let Some(exists) = self.get_by_name(&name.trim()).await?
                 && exists.id != id
             {
                 return Err(CoreError::Validation("provider name already exists".into()));
@@ -102,7 +133,7 @@ impl ProviderStorage {
         }
 
         let mut qb = update!(
-            "providers",
+            TableName::PROVIDERS,
             id,
             ("name", data.name),
             ("alias", data.alias),
@@ -111,35 +142,24 @@ impl ProviderStorage {
             ("doc", data.doc),
             ("active", data.active),
         );
-        qb.build().execute(&mut *tx).await?;
-        tx.commit().await?;
+        self.executor.execute(qb.build()).await?;
         Ok(())
     }
 
     pub async fn delete(&self, id: i64) -> Result<()> {
-        let mut tx = self.db.begin().await?;
-        sqlx::query("DELETE FROM providers WHERE id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-
-        sqlx::query("DELETE FROM credentials WHERE provider_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-
-        sqlx::query("DELETE FROM json_rule WHERE provider_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-
-        tx.commit().await?;
-        Ok(())
+        self.executor
+            .transaction_required(|executor| async move {
+                Self::delete_by_column(&executor, TableName::PROVIDERS, "id", id).await?;
+                Self::delete_by_column(&executor, "credentials", "provider_id", id).await?;
+                Self::delete_by_column(&executor, "json_rule", "provider_id", id).await?;
+                Ok(())
+            })
+            .await
     }
 
     pub async fn get(&self, id: i64) -> Result<Option<Provider>> {
         let mut qb = get_by_id!(
-            "providers",
+            TableName::PROVIDERS,
             id,
             (
                 "id",
@@ -152,9 +172,9 @@ impl ProviderStorage {
                 "created_at"
             )
         );
-        let row = qb
-            .build_query_as::<Provider>()
-            .fetch_optional(&self.db)
+        let row = self
+            .executor
+            .fetch_optional(qb.build_query_as::<Provider>())
             .await?;
 
         Ok(row)
@@ -162,7 +182,7 @@ impl ProviderStorage {
 
     pub async fn list_all(&self) -> Result<Vec<Provider>> {
         let mut qb = select_fields!(
-            "providers",
+            TableName::PROVIDERS,
             (
                 "id",
                 "name",
@@ -175,7 +195,10 @@ impl ProviderStorage {
             )
         );
         qb.push(" ORDER BY id DESC ");
-        let rows = qb.build_query_as::<Provider>().fetch_all(&self.db).await?;
+        let rows = self
+            .executor
+            .fetch_all(qb.build_query_as::<Provider>())
+            .await?;
 
         Ok(rows)
     }
@@ -183,17 +206,25 @@ impl ProviderStorage {
     // --- Credentials ---
 
     /// 创建一条提供商凭证
-    pub async fn create_credentials(&self, data: CreateCredentials) -> Result<i64> {
+    pub async fn create_credentials(&self, data: CreateCredentials) -> Result<Credentials> {
         let id = next_id();
+        let now = now_ts();
         let mut qb = insert!(
             "credentials",
             ("id", id),
             ("provider_id", data.provider_id),
-            ("key", data.key),
+            ("key", data.key.clone()),
             ("active", true),
+            ("created_at", now),
         );
-        qb.build().execute(&self.db).await?;
-        Ok(id)
+        self.executor.execute(qb.build()).await?;
+        Ok(Credentials {
+            id,
+            provider_id: data.provider_id,
+            key: data.key,
+            active: true,
+            created_at: now,
+        })
     }
 
     pub async fn get_provider_credentials(&self, provider_id: i64) -> Result<Vec<Credentials>> {
@@ -205,9 +236,9 @@ impl ProviderStorage {
             .push_bind(provider_id)
             .push(" ORDER BY active DESC ");
 
-        let rows = qb
-            .build_query_as::<Credentials>()
-            .fetch_all(&self.db)
+        let rows = self
+            .executor
+            .fetch_all(qb.build_query_as::<Credentials>())
             .await?;
 
         Ok(rows)
@@ -215,22 +246,30 @@ impl ProviderStorage {
 
     pub async fn delete_credentials(&self, id: i64) -> Result<()> {
         let mut qb = delete_by_id!("credentials", id);
-        qb.build().execute(&self.db).await?;
-        Ok(())
+        ensure_affected(self.executor.execute(qb.build()).await?)
     }
 
-    pub async fn create_json_rule(&self, data: CreateJsonRule) -> Result<i64> {
+    pub async fn create_json_rule(&self, data: CreateJsonRule) -> Result<JsonRule> {
         let id = next_id();
+        let now = now_ts();
         let mut qb = insert!(
             "json_rule",
             ("id", id),
             ("provider_id", data.provider_id),
             ("adapter", data.adapter.to_string()),
             ("active", true),
-            ("json_rule", data.json_rule),
+            ("json_rule", data.json_rule.clone()),
+            ("created_at", now),
         );
-        qb.build().execute(&self.db).await?;
-        Ok(id)
+        self.executor.execute(qb.build()).await?;
+        Ok(JsonRule {
+            id,
+            provider_id: data.provider_id,
+            adapter: data.adapter,
+            json_rule: data.json_rule,
+            active: true,
+            created_at: now,
+        })
     }
 
     pub async fn update_json_rule(&self, id: i64, data: UpdateJsonRule) -> Result<()> {
@@ -242,8 +281,7 @@ impl ProviderStorage {
             ("active", data.active),
             ("json_rule", data.json_rule),
         );
-        ensure_affected(&qb.build().execute(&self.db).await?)?;
-        Ok(())
+        ensure_affected(self.executor.execute(qb.build()).await?)
     }
 
     pub async fn list_json_rules(&self, provider_id: i64) -> Result<Vec<JsonRule>> {
@@ -258,12 +296,14 @@ impl ProviderStorage {
                 "created_at"
             )
         );
-        let row = qb
-            .push(" WHERE provider_id = ")
-            .push_bind(provider_id)
-            .push(" ORDER BY id DESC")
-            .build_query_as::<JsonRule>()
-            .fetch_all(&self.db)
+        let row = self
+            .executor
+            .fetch_all(
+                qb.push(" WHERE provider_id = ")
+                    .push_bind(provider_id)
+                    .push(" ORDER BY id DESC")
+                    .build_query_as::<JsonRule>(),
+            )
             .await?;
 
         Ok(row)
@@ -286,13 +326,15 @@ impl ProviderStorage {
                 "created_at"
             )
         );
-        let row = qb
-            .push(" WHERE provider_id = ")
-            .push_bind(provider_id)
-            .push(" AND adapter = ")
-            .push_bind(adapter.to_string())
-            .build_query_as::<JsonRule>()
-            .fetch_optional(&self.db)
+        let row = self
+            .executor
+            .fetch_optional(
+                qb.push(" WHERE provider_id = ")
+                    .push_bind(provider_id)
+                    .push(" AND adapter = ")
+                    .push_bind(adapter.to_string())
+                    .build_query_as::<JsonRule>(),
+            )
             .await?;
 
         Ok(row)
@@ -311,9 +353,9 @@ impl ProviderStorage {
                 "created_at"
             )
         );
-        let row = qb
-            .build_query_as::<JsonRule>()
-            .fetch_optional(&self.db)
+        let row = self
+            .executor
+            .fetch_optional(qb.build_query_as::<JsonRule>())
             .await?;
 
         Ok(row)
@@ -321,7 +363,6 @@ impl ProviderStorage {
 
     pub async fn delete_json_rule(&self, id: i64) -> Result<()> {
         let mut qb = delete_by_id!("json_rule", id);
-        qb.build().execute(&self.db).await?;
-        Ok(())
+        ensure_affected(self.executor.execute(qb.build()).await?)
     }
 }

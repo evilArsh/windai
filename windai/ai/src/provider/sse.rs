@@ -2,9 +2,6 @@
 //!
 //! 参考：https://developer.mozilla.org/zh-CN/docs/Web/API/Server-sent_events/Using_server-sent_events
 //! 参考：https://html.spec.whatwg.org/multipage/server-sent-events.html#dispatchMessage
-
-use std::fmt;
-
 /// 解析后的单个 SSE 事件
 ///
 /// 五个字段对应 SSE 协议的五个字段前缀，并非所有字段都会同时出现。
@@ -22,29 +19,6 @@ pub struct SseBlock {
     pub comment: Option<String>,
 }
 
-impl fmt::Display for SseBlock {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(ref event) = self.event {
-            write!(f, "SseBlock(event={}", event)?;
-            if let Some(ref id) = self.id {
-                write!(f, ", id={}", id)?;
-            }
-            writeln!(f, ")")?;
-        } else {
-            writeln!(f, "SseBlock {{")?;
-        }
-        if let Some(ref data) = self.data {
-            writeln!(f, "  data: {}", data)?;
-        }
-        if let Some(ref retry) = self.retry {
-            writeln!(f, "  retry: {}ms", retry)?;
-        }
-        if let Some(ref comment) = self.comment {
-            writeln!(f, "  comment: {}", comment)?;
-        }
-        write!(f, "}}")
-    }
-}
 fn debug_sse(_s: &SseBlock) {
     // log::debug!("[SseBlock]\n{:?}", &s.data);
 }
@@ -348,7 +322,7 @@ mod tests {
         for chunk in chunks {
             msg.append_chunk(chunk);
         }
-        println!("{}", msg);
+        println!("{:#?}", msg);
         assert!(msg.tool_calls.is_some());
         assert!(msg.tool_calls.unwrap().len() == 2);
     }
@@ -390,7 +364,7 @@ mod tests {
         for chunk in chunks {
             msg.append_chunk(chunk);
         }
-        println!("{}", msg);
+        println!("{:#?}", msg);
         assert!(msg.tool_calls.is_some());
         assert!(msg.tool_calls.unwrap().len() == 2);
     }

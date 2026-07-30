@@ -1,43 +1,35 @@
-use crate::error::CoreError;
+use crate::{error::CoreError, models::Message};
 use serde::Serialize;
 use wind_ai::{message::Message as AiMessage, tool::FunctionCall};
 
-/// 统一聊天事件，适用于流式和非流式模式。
-///
-/// 非流式模式：返回单个 Finish 事件；或在多轮 tool_call 中返回 多个Partial 事件。
-/// 流式模式：返回 Created -> Partial x N -> Finished。
+/// 统一对话事件，适用于流式和非流式模式。
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ChatEvent {
-    /// 此轮对话已创建并开始
-    Created { message_id: i64 },
     /// 流式消息分块内容
-    /// - 在非流式请求中，也会返回多轮工具调用结果
+    /// FIXME(修改之后重新评估): - 在非流式请求中，也会返回多轮工具调用结果
     Partial {
         index: i32,
         message_id: i64,
         delta: AiMessage,
     },
-    /// 对话结束，因 tool_call 需要手动授权而终止
+    /// 终止该轮对话，并通知上层需要审批和调用 tool_call
     AwaitToolCall {
-        message_id: i64,
+        message: Message,
+        contexts: Vec<AiMessage>,
         tools: Vec<FunctionCall>,
     },
     /// 对话结束，可能包含错误
     Finish {
-        message_id: i64,
-        // 该轮对话完整信息，非流式对话中，包含所有响应结果
-        message: Option<Vec<AiMessage>>,
+        message: Message,
+        contexts: Vec<AiMessage>,
         // 出错信息
         error: Option<String>,
     },
 }
 
 impl ChatEvent {
-    pub fn created(message_id: i64) -> Self {
-        Self::Created { message_id }
-    }
-
+    #[inline]
     pub fn partial(index: i32, message_id: i64, delta: AiMessage) -> Self {
         Self::Partial {
             index,
@@ -46,31 +38,25 @@ impl ChatEvent {
         }
     }
 
-    pub fn finish(
-        message_id: i64,
-        message: Option<Vec<AiMessage>>,
-        error: Option<CoreError>,
-    ) -> Self {
+    #[inline]
+    pub fn finish(message: Message, contexts: Vec<AiMessage>, error: Option<CoreError>) -> Self {
         Self::Finish {
-            message_id,
             message,
+            contexts,
             error: error.map(|e| e.to_string()),
         }
     }
 
-    pub fn await_tool_calls(message_id: i64, tools: &[FunctionCall]) -> Self {
+    #[inline]
+    pub fn await_tool_calls(
+        message: Message,
+        contexts: Vec<AiMessage>,
+        tools: Vec<FunctionCall>,
+    ) -> Self {
         Self::AwaitToolCall {
-            message_id,
-            tools: tools.to_vec(),
-        }
-    }
-
-    /// Finish 事件
-    pub fn from_core_error(message_id: i64, error: CoreError) -> Self {
-        Self::Finish {
-            message_id,
-            message: None,
-            error: Some(error.to_string()),
+            message,
+            contexts,
+            tools,
         }
     }
 }

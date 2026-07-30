@@ -62,9 +62,9 @@ where
     value.parse::<T>().map_err(Into::into)
 }
 
-pub fn ensure_affected(result: &DbQueryResult) -> Result<()> {
+pub fn ensure_affected(result: DbQueryResult) -> Result<()> {
     if result.rows_affected() == 0 {
-        return Err(CoreError::NotFound("Data not found".to_string()));
+        return Err(CoreError::RowNotFound(format!("Data affect failed")));
     }
     Ok(())
 }

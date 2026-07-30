@@ -1,50 +1,66 @@
-use super::utils::{self, ensure_affected};
+use super::{
+    executor::StorageExecutor,
+    utils::{self, ensure_affected},
+};
 use crate::{
-    db::DbPool,
     delete_by_id,
     error::{CoreError, Result},
     get_by_id, insert,
     models::{CreateModel, Model, UpdateModel},
     select_fields,
-    storage::next_id,
+    storage::{TableName, next_id},
     update,
 };
+#[derive(Clone)]
 pub struct ModelStorage {
-    db: DbPool,
+    executor: StorageExecutor,
 }
 
 impl ModelStorage {
-    pub fn new(db: DbPool) -> Self {
-        Self { db }
+    pub(crate) fn new(executor: StorageExecutor) -> Self {
+        Self { executor }
     }
 
-    pub async fn create(&self, data: CreateModel) -> Result<i64> {
+    pub async fn create(&self, data: CreateModel) -> Result<Model> {
         if data.name.is_empty() {
             return Err(CoreError::Validation("model name cannot be empty".into()));
         }
         let id = next_id();
+        let now = crate::storage::now_ts();
+        let active = data.active.unwrap_or(true);
+        let modalities = utils::vec_to_str_default(data.modalities.as_deref())?;
         let mut qb = insert!(
-            "models",
+            TableName::MODELS,
             ("id", id),
-            ("name", data.name),
+            ("name", data.name.clone()),
             ("provider_id", data.provider_id),
-            ("alias", data.alias),
+            ("alias", data.alias.clone()),
             ("adapter", data.adapter.to_string()),
-            (
-                "modalities",
-                utils::vec_to_str_default(data.modalities.as_deref())?
-            ),
-            ("active", data.active),
-            ("icon", data.icon),
-            ("endpoint", data.endpoint),
+            ("modalities", modalities),
+            ("active", active),
+            ("icon", data.icon.clone()),
+            ("endpoint", data.endpoint.clone()),
+            ("created_at", now),
         );
-        qb.build().execute(&self.db).await?;
-        Ok(id)
+        self.executor.execute(qb.build()).await?;
+        Ok(Model {
+            id,
+            name: data.name,
+            provider_id: data.provider_id,
+            alias: data.alias,
+            adapter: data.adapter,
+            modalities: data.modalities,
+            active,
+            icon: data.icon,
+            endpoint: data.endpoint,
+            frequency: Some(0),
+            created_at: now,
+        })
     }
 
     pub async fn update(&self, id: i64, data: UpdateModel) -> Result<()> {
         let mut qb = update!(
-            "models",
+            TableName::MODELS,
             id,
             ("name", Some(data.name)),
             ("alias", data.alias),
@@ -58,19 +74,17 @@ impl ModelStorage {
             ("endpoint", data.endpoint),
             ("frequency", data.frequency),
         );
-        ensure_affected(&qb.build().execute(&self.db).await?)?;
-        Ok(())
+        ensure_affected(self.executor.execute(qb.build()).await?)
     }
 
     pub async fn delete(&self, id: i64) -> Result<()> {
-        let mut qb = delete_by_id!("models", id);
-        qb.build().execute(&self.db).await?;
-        Ok(())
+        let mut qb = delete_by_id!(TableName::MODELS, id);
+        ensure_affected(self.executor.execute(qb.build()).await?)
     }
 
     pub async fn get(&self, id: i64) -> Result<Option<Model>> {
         let mut qb = get_by_id!(
-            "models",
+            TableName::MODELS,
             id,
             (
                 "id",
@@ -86,9 +100,9 @@ impl ModelStorage {
                 "created_at",
             )
         );
-        let row = qb
-            .build_query_as::<Model>()
-            .fetch_optional(&self.db)
+        let row = self
+            .executor
+            .fetch_optional(qb.build_query_as::<Model>())
             .await?;
 
         Ok(row)
@@ -96,7 +110,7 @@ impl ModelStorage {
 
     pub async fn list_by_provider(&self) -> Result<Vec<Model>> {
         let mut qb = select_fields!(
-            "models",
+            TableName::MODELS,
             (
                 "id",
                 "name",
@@ -112,7 +126,10 @@ impl ModelStorage {
             )
         );
         qb.push(" ORDER BY id DESC ");
-        let rows = qb.build_query_as::<Model>().fetch_all(&self.db).await?;
+        let rows = self
+            .executor
+            .fetch_all(qb.build_query_as::<Model>())
+            .await?;
 
         Ok(rows)
     }

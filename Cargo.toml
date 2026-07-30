@@ -16,6 +16,7 @@ license = "MIT OR Apache-2.0"
 futures = "0.3"
 regex = "1.12"
 tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
 reqwest = { version = "0.13", features = ["json", "stream"] }
 serde = { version = "1.0", features = ["derive"] }
 strum = { version = "0.28", features = ["derive"] }
@@ -27,6 +28,7 @@ encoding_rs = "0.8"
 dotenvy = "0.15"
 thiserror = "2"
 async-stream = "0.3"
+async-trait = "0.1"
 dirs = "6.0"
 log = "0.4"
 env_logger = "0.11"

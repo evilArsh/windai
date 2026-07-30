@@ -1,124 +1,145 @@
 use crate::{
-    db::DbPool,
+    db::DbDriver,
     delete_by_id,
     error::{CoreError, Result},
     get_by_id, insert,
     models::agent::{CreatePromptModule, PromptModule, UpdatePromptModule},
     select_fields,
-    storage::next_id,
+    storage::{TableName, next_id},
     update,
 };
+use sqlx::QueryBuilder;
 
-use super::utils::{self, ensure_affected};
+use super::{executor::StorageExecutor, now_ts, utils::ensure_affected};
 
+#[derive(Clone)]
 pub struct PromptStorage {
-    db: DbPool,
+    executor: StorageExecutor,
 }
 
 impl PromptStorage {
-    pub fn new(db: DbPool) -> Self {
-        Self { db }
+    pub(crate) fn new(executor: StorageExecutor) -> Self {
+        Self { executor }
     }
 
-    pub async fn create(&self, data: CreatePromptModule) -> Result<i64> {
+    pub async fn create(&self, data: CreatePromptModule) -> Result<PromptModule> {
         if data.key.trim().is_empty() {
             return Err(CoreError::Validation("prompt key cannot be empty".into()));
         }
-        if data.name.trim().is_empty() {
+        if data.alias.trim().is_empty() {
             return Err(CoreError::Validation("prompt name cannot be empty".into()));
         }
 
         let id = next_id();
-        insert!(
-            "prompt_modules",
+        let now = now_ts();
+        let active = data.active.unwrap_or(true);
+        let mut qb = insert!(
+            TableName::PROMPT_MODULES,
             ("id", id),
-            ("key", data.key),
-            ("name", data.name),
-            ("description", data.description),
-            ("module_type", data.module_type.to_string()),
-            ("content", data.content),
-            ("active", data.active.unwrap_or(true)),
-            ("data", utils::map_to_str_default(Some(&data.data))?)
-        )
-        .build()
-        .execute(&self.db)
-        .await?;
+            ("key", data.key.clone()),
+            ("name", data.alias.clone()),
+            ("description", data.description.clone()),
+            ("content", data.content.clone()),
+            ("active", active),
+            ("created_at", now)
+        );
+        self.executor.execute(qb.build()).await?;
 
-        Ok(id)
+        Ok(PromptModule {
+            id,
+            key: data.key,
+            alias: data.alias,
+            description: data.description,
+            content: data.content,
+            active,
+            created_at: now,
+        })
     }
 
     pub async fn update(&self, id: i64, data: UpdatePromptModule) -> Result<()> {
         let mut qb = update!(
-            "prompt_modules",
+            TableName::PROMPT_MODULES,
             id,
             ("key", data.key),
-            ("name", data.name),
+            ("name", data.alias),
             ("description", data.description),
-            ("module_type", data.module_type.map(|v| v.to_string())),
             ("content", data.content),
-            ("active", data.active),
-            ("data", utils::map_to_str_optional(data.data.as_ref())?)
+            ("active", data.active)
         );
-        ensure_affected(&qb.build().execute(&self.db).await?)?;
-        Ok(())
+        ensure_affected(self.executor.execute(qb.build()).await?)
     }
 
     pub async fn delete(&self, id: i64) -> Result<()> {
-        let mut qb = delete_by_id!("prompt_modules", id);
-        qb.build().execute(&self.db).await?;
+        let mut qb = delete_by_id!(TableName::PROMPT_MODULES, id);
+        self.executor.execute(qb.build()).await?;
         Ok(())
     }
 
     pub async fn get(&self, id: i64) -> Result<Option<PromptModule>> {
-        let row = get_by_id!("prompt_modules", id)
-            .build_query_as::<PromptModule>()
-            .fetch_optional(&self.db)
+        let row = self
+            .executor
+            .fetch_optional(
+                get_by_id!(TableName::PROMPT_MODULES, id).build_query_as::<PromptModule>(),
+            )
             .await?;
         Ok(row)
     }
 
+    pub async fn batch_get(&self, ids: &[i64]) -> Result<Vec<PromptModule>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut qb = Self::common_select();
+        qb.push(" WHERE id IN (");
+        let mut separated = qb.separated(", ");
+        for id in ids {
+            separated.push_bind(*id);
+        }
+        separated.push_unseparated(") ");
+        let rows = self
+            .executor
+            .fetch_all(qb.build_query_as::<PromptModule>())
+            .await?;
+        Ok(rows)
+    }
+
     pub async fn get_by_key(&self, key: &str) -> Result<Option<PromptModule>> {
-        let row = select_fields!(
-            "prompt_modules",
-            (
-                "id",
-                "key",
-                "name",
-                "description",
-                "module_type",
-                "content",
-                "active",
-                "data",
-                "created_at"
+        let row = self
+            .executor
+            .fetch_optional(
+                Self::common_select()
+                    .push(" WHERE key = ")
+                    .push_bind(key)
+                    .build_query_as::<PromptModule>(),
             )
-        )
-        .push(" WHERE key = ")
-        .push_bind(key)
-        .build_query_as::<PromptModule>()
-        .fetch_optional(&self.db)
-        .await?;
+            .await?;
         Ok(row)
     }
 
     pub async fn list(&self) -> Result<Vec<PromptModule>> {
-        let rows = select_fields!(
-            "prompt_modules",
+        let rows = self
+            .executor
+            .fetch_all(
+                Self::common_select()
+                    .push(" ORDER BY id DESC ")
+                    .build_query_as::<PromptModule>(),
+            )
+            .await?;
+        Ok(rows)
+    }
+
+    fn common_select<'a>() -> QueryBuilder<'a, DbDriver> {
+        select_fields!(
+            TableName::PROMPT_MODULES,
             (
                 "id",
                 "key",
                 "name",
                 "description",
-                "module_type",
                 "content",
                 "active",
-                "data",
                 "created_at"
             )
         )
-        .push(" ORDER BY id DESC ")
-        .build_query_as::<PromptModule>()
-        .fetch_all(&self.db)
-        .await?;
-        Ok(rows)
     }
 }

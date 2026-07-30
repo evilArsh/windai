@@ -1,7 +1,6 @@
-pub mod activity;
 pub mod agent;
 pub mod approval;
-pub mod artifact;
+mod executor;
 pub mod mcp;
 pub mod message;
 pub mod model;
@@ -11,21 +10,23 @@ pub mod topic;
 pub mod utils;
 
 use self::{
-    activity::TopicActivityStorage, agent::AgentStorage, approval::ToolApprovalStorage,
-    artifact::AgentArtifactStorage, mcp::McpStorage, message::MessageStorage, model::ModelStorage,
-    prompt::PromptStorage, provider::ProviderStorage, topic::TopicStorage,
+    agent::AgentStorage, approval::ToolApprovalStorage, mcp::McpStorage, message::MessageStorage,
+    model::ModelStorage, prompt::PromptStorage, provider::ProviderStorage, topic::TopicStorage,
 };
 use super::db::DbPool;
+use crate::error::Result;
+use crate::storage::executor::StorageExecutor;
 use chrono::Utc;
 use ferroid::{
     generator::AtomicSnowflakeGenerator,
     id::SnowflakeTwitterId,
     time::{MonotonicClock, TWITTER_EPOCH},
 };
-use std::sync::OnceLock;
+use std::{future::Future, sync::OnceLock};
 
+#[derive(Clone)]
 pub struct Storage {
-    db: DbPool,
+    executor: StorageExecutor,
     provider: provider::ProviderStorage,
     topic: topic::TopicStorage,
     model: model::ModelStorage,
@@ -34,25 +35,58 @@ pub struct Storage {
     agent: agent::AgentStorage,
     prompt: prompt::PromptStorage,
     approval: approval::ToolApprovalStorage,
-    activity: activity::TopicActivityStorage,
-    artifact: artifact::AgentArtifactStorage,
+}
+
+pub(crate) struct TableName;
+
+impl TableName {
+    pub const TOPICS: &'static str = "topics";
+    pub const CHAT_CONFIGS: &'static str = "chat_configs";
+    pub const PROVIDERS: &'static str = "providers";
+    pub const MODELS: &'static str = "models";
+    pub const MESSAGES: &'static str = "messages";
+    pub const MCP_SERVERS: &'static str = "mcp_servers";
+    pub const TOOL_APPROVAL_REQUESTS: &'static str = "tool_approval_requests";
+    pub const PROMPT_MODULES: &'static str = "prompt_modules";
+    pub const AGENT_DEFINITION: &'static str = "agent_definitions";
+    pub const TOPIC_AGENT_BINDINGS: &'static str = "topic_agent_bindings";
 }
 
 impl Storage {
     pub fn new(db: DbPool) -> Self {
+        Self::from_executor(StorageExecutor::pool(db))
+    }
+
+    fn from_executor(executor: StorageExecutor) -> Self {
         Self {
-            provider: ProviderStorage::new(db.clone()),
-            topic: TopicStorage::new(db.clone()),
-            model: ModelStorage::new(db.clone()),
-            message: MessageStorage::new(db.clone()),
-            mcp: McpStorage::new(db.clone()),
-            agent: AgentStorage::new(db.clone()),
-            prompt: PromptStorage::new(db.clone()),
-            approval: ToolApprovalStorage::new(db.clone()),
-            activity: TopicActivityStorage::new(db.clone()),
-            artifact: AgentArtifactStorage::new(db.clone()),
-            db,
+            provider: ProviderStorage::new(executor.clone()),
+            topic: TopicStorage::new(executor.clone()),
+            model: ModelStorage::new(executor.clone()),
+            message: MessageStorage::new(executor.clone()),
+            mcp: McpStorage::new(executor.clone()),
+            agent: AgentStorage::new(executor.clone()),
+            prompt: PromptStorage::new(executor.clone()),
+            approval: ToolApprovalStorage::new(executor.clone()),
+            executor,
         }
+    }
+
+    pub async fn tx<F, Fut, T>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(Storage) -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
+        self.executor
+            .transaction_required(|executor| f(Self::from_executor(executor)))
+            .await
+    }
+
+    pub async fn begin(&self) -> Result<StorageTx> {
+        Ok(StorageTx {
+            storage: Self::from_executor(
+                StorageExecutor::transaction(self.executor.pool_clone()).await?,
+            ),
+        })
     }
     pub fn provider(&self) -> &ProviderStorage {
         &self.provider
@@ -83,18 +117,29 @@ impl Storage {
         &self.approval
     }
 
-    pub fn activity(&self) -> &TopicActivityStorage {
-        &self.activity
-    }
-
-    pub fn artifact(&self) -> &AgentArtifactStorage {
-        &self.artifact
-    }
-
     pub async fn close(&self) {
-        if !self.db.is_closed() {
-            self.db.close().await;
+        let pool = self.executor.pool_ref();
+        if !pool.is_closed() {
+            pool.close().await;
         }
+    }
+}
+
+pub struct StorageTx {
+    storage: Storage,
+}
+
+impl StorageTx {
+    pub fn storage(&self) -> Storage {
+        self.storage.clone()
+    }
+
+    pub async fn commit(self) -> Result<()> {
+        self.storage.executor.commit().await
+    }
+
+    pub async fn rollback(self) -> Result<()> {
+        self.storage.executor.rollback().await
     }
 }
 
@@ -138,7 +183,7 @@ pub fn next_id() -> i64 {
 /// ```
 #[macro_export]
 macro_rules! update {
-    ($table:literal, $id:expr, $(($col:literal, $val:expr)),+ $(,)?) => {{
+    ($table:expr, $id:expr, $(($col:literal, $val:expr)),+ $(,)?) => {{
         let mut __qb:sqlx::QueryBuilder<'_, $crate::db::DbDriver> = sqlx::QueryBuilder::new("");
         let mut __count = 0usize;
         let mut __need_prefix = true;
@@ -179,7 +224,7 @@ macro_rules! update {
 /// ```
 #[macro_export]
 macro_rules! update_fields {
-    ($table:literal, $(($col:literal, $val:expr)),+ $(,)?) => {{
+    ($table:expr, $(($col:literal, $val:expr)),+ $(,)?) => {{
         let mut __qb:sqlx::QueryBuilder<'_, $crate::db::DbDriver> = sqlx::QueryBuilder::new("");
         let mut __need_prefix = true;
         $(
@@ -206,7 +251,7 @@ macro_rules! update_fields {
 /// ```
 #[macro_export]
 macro_rules! insert_fields {
-    ($table:literal, ($($field:literal),+ $(,)?)) => {{
+    ($table:expr, ($($field:literal),+ $(,)?)) => {{
         let mut __qb:sqlx::QueryBuilder<'_, $crate::db::DbDriver> = sqlx::QueryBuilder::new("");
         __qb.push("INSERT INTO ").push($table).push(" (");
         {
@@ -220,7 +265,7 @@ macro_rules! insert_fields {
     }};
 }
 
-/// 单行 INSERT，自动追加 `created_at`。
+/// 单行 INSERT。
 ///
 /// 用法:
 /// ```ignore
@@ -229,20 +274,18 @@ macro_rules! insert_fields {
 ///     ("type", "stdio"),
 ///     ("url", "http://example.com"),
 /// );
-/// assert_eq!(qb.sql(), "INSERT INTO table_name (name, type, url, created_at) VALUES (?, ?, ?, ?)");
+/// assert_eq!(qb.sql(), "INSERT INTO table_name (name, type, url) VALUES (?, ?, ?)");
 /// ```
 #[macro_export]
 macro_rules! insert {
-    ($table:literal, $(($col:literal, $val:expr)),+ $(,)?) => {{
+    ($table:expr, $(($col:literal, $val:expr)),+ $(,)?) => {{
         let mut __qb:sqlx::QueryBuilder<'_, $crate::db::DbDriver> = sqlx::QueryBuilder::new("");
-        let __ts = $crate::storage::now_ts();
         __qb.push("INSERT INTO ").push($table).push(" (");
         {
             let mut __sep = __qb.separated(", ");
             $(
                 __sep.push($col);
             )+
-            __sep.push("created_at");
         }
         __qb.push(") VALUES (");
         {
@@ -250,7 +293,6 @@ macro_rules! insert {
             $(
                 __sep.push_bind($val);
             )+
-            __sep.push_bind(__ts);
         }
         __qb.push(")");
         __qb
@@ -336,16 +378,13 @@ mod tests {
     #[test]
     fn insert_generates_correct_sql() {
         let qb = insert!("users", ("name", "alice"), ("age", 30),);
-        assert_eq!(
-            qb.sql(),
-            "INSERT INTO users (name, age, created_at) VALUES (?, ?, ?)"
-        );
+        assert_eq!(qb.sql(), "INSERT INTO users (name, age) VALUES (?, ?)");
     }
 
     #[test]
     fn insert_single_column() {
         let qb = insert!("logs", ("msg", "started"),);
-        assert_eq!(qb.sql(), "INSERT INTO logs (msg, created_at) VALUES (?, ?)");
+        assert_eq!(qb.sql(), "INSERT INTO logs (msg) VALUES (?)");
     }
 
     // ==================== update! ====================

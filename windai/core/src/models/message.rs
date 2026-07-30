@@ -6,7 +6,7 @@ use crate::db::DbRow;
 use crate::storage;
 
 /// 消息结构
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Message {
     pub id: i64,
     /// 标识该响应所对应的原始用户消息ID
@@ -21,12 +21,11 @@ pub struct Message {
     pub content: Vec<message::Message>,
     pub model_id: i64,
     pub topic_id: i64,
-    /// 模型生成的消息在会话中的位置序号
-    /// - 会话中的消息按照index排序，并且可以从中间插入消息，但是可插入次数有上限
-    pub index: i64,
     /// 标识当前消息作为聊天上下文分割点
     pub is_boundary: bool,
     /// 被排除的消息不会作为对话上下文
+    ///
+    /// user-assistant消息对必须同时不被排除才能作为上下文
     pub is_excluded: bool,
     /// 用户输入的token数
     pub input_tokens: i32,
@@ -50,7 +49,6 @@ impl<'s> sqlx::FromRow<'s, DbRow> for Message {
             content: parsed_content,
             model_id: row.try_get("model_id")?,
             topic_id: row.try_get("topic_id")?,
-            index: row.try_get("message_index")?,
             is_boundary: row.try_get("is_boundary")?,
             is_excluded: row.try_get("is_excluded")?,
             input_tokens: row.try_get("input_tokens")?,
@@ -61,10 +59,10 @@ impl<'s> sqlx::FromRow<'s, DbRow> for Message {
 }
 
 impl Message {
-    pub fn append_content(&mut self, message: &message::Message) {
+    pub fn append_content(&mut self, message: message::Message) {
         self.input_tokens += message.input_tokens;
         self.output_tokens += message.output_tokens;
-        self.content.push(message.clone());
+        self.content.push(message);
     }
 }
 
@@ -92,6 +90,7 @@ pub struct CreateMessage {
     pub model_id: i64,
     pub topic_id: i64,
     pub is_boundary: bool,
+    pub is_exclude: bool,
     pub input_tokens: i32,
     pub output_tokens: i32,
 }

@@ -1,45 +1,63 @@
 use sqlx::QueryBuilder;
 
-use super::utils::{self, ensure_affected};
+use super::{
+    executor::StorageExecutor,
+    utils::{self, ensure_affected},
+};
 use crate::{
-    db::{DbDriver, DbPool},
+    db::DbDriver,
     delete_by_id,
     error::{CoreError, Result},
     insert,
     models::{CreateMcpServer, McpServerParam, UpdateMcpServer},
     select_fields,
-    storage::next_id,
+    storage::{TableName, next_id},
     update,
 };
+#[derive(Clone)]
 pub struct McpStorage {
-    db: DbPool,
+    executor: StorageExecutor,
 }
 
 impl McpStorage {
-    pub fn new(db: DbPool) -> Self {
-        Self { db }
+    pub(crate) fn new(executor: StorageExecutor) -> Self {
+        Self { executor }
     }
 
-    pub async fn create(&self, data: CreateMcpServer) -> Result<i64> {
+    pub async fn create(&self, data: CreateMcpServer) -> Result<McpServerParam> {
         if data.name.is_empty() {
             return Err(CoreError::Validation(
                 "mcp server name cannot be empty".into(),
             ));
         }
         let id = next_id();
+        let now = crate::storage::now_ts();
+        let args = utils::vec_to_str_default(data.args.as_deref())?;
+        let env = utils::map_to_str_default(data.env.as_ref())?;
         let mut qb = insert!(
-            "mcp_servers",
+            TableName::MCP_SERVERS,
             ("id", id),
             ("type", data.r#type.to_string()),
-            ("name", data.name),
-            ("url", data.url),
-            ("description", data.description),
-            ("command", data.command),
-            ("args", utils::vec_to_str_default(data.args.as_deref())?),
-            ("env", utils::map_to_str_default(data.env.as_ref())?),
+            ("name", data.name.clone()),
+            ("url", data.url.clone()),
+            ("description", data.description.clone()),
+            ("command", data.command.clone()),
+            ("args", args),
+            ("env", env),
+            ("created_at", now),
         );
-        qb.build().execute(&self.db).await?;
-        Ok(id)
+        self.executor.execute(qb.build()).await?;
+        Ok(McpServerParam {
+            id,
+            r#type: data.r#type,
+            name: data.name,
+            url: data.url,
+            description: data.description,
+            command: data.command,
+            args: data.args,
+            env: data.env,
+            created_at: now,
+        })
     }
 
     pub async fn update(&self, id: i64, data: UpdateMcpServer) -> Result<()> {
@@ -49,7 +67,7 @@ impl McpStorage {
             ));
         }
         let mut qb = update!(
-            "mcp_servers",
+            TableName::MCP_SERVERS,
             id,
             ("type", data.r#type.map(|t| t.to_string())),
             ("name", Some(data.name)),
@@ -59,19 +77,17 @@ impl McpStorage {
             ("args", utils::vec_to_str_optional(data.args.as_deref())?),
             ("env", utils::map_to_str_optional(data.env.as_ref())?)
         );
-        ensure_affected(&qb.build().execute(&self.db).await?)?;
-        Ok(())
+        ensure_affected(self.executor.execute(qb.build()).await?)
     }
 
     pub async fn delete(&self, id: i64) -> Result<()> {
-        let mut qb = delete_by_id!("mcp_servers", id);
-        qb.build().execute(&self.db).await?;
-        Ok(())
+        let mut qb = delete_by_id!(TableName::MCP_SERVERS, id);
+        ensure_affected(self.executor.execute(qb.build()).await?)
     }
 
     fn common_select<'a>() -> QueryBuilder<'a, DbDriver> {
         select_fields!(
-            "mcp_servers",
+            TableName::MCP_SERVERS,
             (
                 "id",
                 "type",
@@ -91,10 +107,8 @@ impl McpStorage {
         let row = qb
             .push(" WHERE id = ")
             .push_bind(id)
-            .build_query_as::<McpServerParam>()
-            .fetch_optional(&self.db)
-            .await?;
-
+            .build_query_as::<McpServerParam>();
+        let row = self.executor.fetch_optional(row).await?;
         Ok(row)
     }
 
@@ -104,10 +118,8 @@ impl McpStorage {
         let row = qb
             .push(" WHERE name = ")
             .push_bind(name)
-            .build_query_as::<McpServerParam>()
-            .fetch_optional(&self.db)
-            .await?;
-
+            .build_query_as::<McpServerParam>();
+        let row = self.executor.fetch_optional(row).await?;
         Ok(row)
     }
 
@@ -124,9 +136,9 @@ impl McpStorage {
         }
         separated.push_unseparated(") ");
 
-        let rows = qb
-            .build_query_as::<McpServerParam>() // 使用 build_query_as 触发 FromRow
-            .fetch_all(&self.db)
+        let rows = self
+            .executor
+            .fetch_all(qb.build_query_as::<McpServerParam>())
             .await?;
         Ok(rows)
     }
@@ -145,9 +157,9 @@ impl McpStorage {
         }
         separated.push_unseparated(") ");
 
-        let rows = qb
-            .build_query_as::<McpServerParam>() // 使用 build_query_as 触发 FromRow
-            .fetch_all(&self.db)
+        let rows = self
+            .executor
+            .fetch_all(qb.build_query_as::<McpServerParam>())
             .await?;
         Ok(rows)
     }
@@ -155,9 +167,9 @@ impl McpStorage {
     pub async fn list(&self) -> Result<Vec<McpServerParam>> {
         let mut qb = Self::common_select();
         qb.push(" ORDER BY id ASC ");
-        let rows = qb
-            .build_query_as::<McpServerParam>()
-            .fetch_all(&self.db)
+        let rows = self
+            .executor
+            .fetch_all(qb.build_query_as::<McpServerParam>())
             .await?;
 
         Ok(rows)

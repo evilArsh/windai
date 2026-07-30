@@ -8,7 +8,6 @@ pub mod schema;
 pub mod storage;
 
 use self::storage::Storage;
-use chat::ChatEngine;
 use db::DbPool;
 use error::Result;
 use std::path::Path;
@@ -76,9 +75,6 @@ impl WindCore {
     pub fn storage(&self) -> &Storage {
         &self.storage
     }
-    pub fn chat(&self) -> ChatEngine<'_> {
-        ChatEngine::new(self.mcp.clone(), self.storage())
-    }
     pub fn registry(&self) -> RegistryHandle {
         self.mcp.clone()
     }
@@ -87,5 +83,6 @@ impl WindCore {
     pub async fn shutdown(&self) {
         self.mcp.shutdown().await;
         self.storage.close().await;
+        // TODO: 关闭所有topicruntime
     }
 }

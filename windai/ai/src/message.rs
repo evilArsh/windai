@@ -3,7 +3,6 @@ use chrono::Utc;
 use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::fmt;
 
 #[derive(
     Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Copy, strum::EnumString, strum::Display,
@@ -28,7 +27,7 @@ pub struct AudioContent {
 
 /// 消息内容
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Content {
     Text { data: String },
     Image { data: String },
@@ -61,6 +60,26 @@ impl Content {
             data: FunctionCallOutput {
                 id: call_id,
                 content: value,
+            },
+        }
+    }
+
+    pub fn arr_to_string(data: &[Self]) -> String {
+        data.into_iter()
+            .map(|c| c.to_string())
+            .collect::<Vec<String>>()
+            .join("\n\n")
+    }
+
+    pub fn to_string(&self) -> String {
+        match serde_json::to_string(self) {
+            Ok(str) => str,
+            _ => match self {
+                Content::Text { data } => data.clone(),
+                Content::Image { data } => data.clone(),
+                Content::File { data } => data.clone(),
+                Content::Audio { data } => data.content.clone(),
+                Content::FunctionCall { data } => data.content.to_string(),
             },
         }
     }
@@ -102,25 +121,6 @@ pub struct Message {
     /// - 模型为用户选择的工具调用信息，用户根据返回的信息调用MCP工具
     #[builder(default)]
     pub tool_calls: Option<Vec<FunctionCall>>,
-}
-
-impl fmt::Display for Content {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Content::Text { data } => write!(f, "Text({})", data),
-            Content::Image { data } => write!(f, "Image({})", data),
-            Content::File { data } => write!(f, "File({})", data),
-            Content::Audio { data } => write!(
-                f,
-                "Audio(format={}, len={})",
-                data.format,
-                data.content.len()
-            ),
-            Content::FunctionCall { data } => {
-                write!(f, "FunctionCall(id={}, content={})", data.id, data.content)
-            }
-        }
-    }
 }
 
 impl Message {
@@ -256,31 +256,6 @@ impl Message {
             input_tokens: 0,
             output_tokens: 0,
         }
-    }
-}
-
-impl fmt::Display for Message {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "Message {{")?;
-        writeln!(f, "  role: {}", self.role)?;
-        if !self.content.is_empty() {
-            writeln!(f, "  content: [")?;
-            for c in &self.content {
-                writeln!(f, "    {},", c)?;
-            }
-            write!(f, "  ]")?;
-        }
-        if let Some(reasoning) = &self.reasoning_content {
-            writeln!(f, ",\n  reasoning: {}", reasoning)?;
-        }
-        if let Some(tool_calls) = &self.tool_calls {
-            writeln!(f, ",\n  tool_calls: [")?;
-            for tc in tool_calls {
-                writeln!(f, "    {},", tc)?;
-            }
-            write!(f, "  ]")?;
-        }
-        write!(f, "\n}}")
     }
 }
 

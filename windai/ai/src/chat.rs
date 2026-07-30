@@ -9,7 +9,6 @@ use url::Url;
 use super::{
     ProviderError,
     message::{Message, ReqConfig},
-    model::Model,
     provider::adapter::AdapterError,
     tool::Tools,
 };
@@ -61,21 +60,6 @@ impl ResEvent {
     }
 }
 
-impl Display for ResEvent {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "ResEvent {{")?;
-        writeln!(f, "  status: {}", self.status)?;
-        if let Some(ref error) = self.error {
-            writeln!(f, "  error: {}", error)?;
-        }
-        if let Some(ref data) = self.data {
-            for line in format!("{}", data).lines() {
-                writeln!(f, "  {}", line)?;
-            }
-        }
-        write!(f, "}}")
-    }
-}
 impl From<client::ClientError> for ResEvent {
     fn from(value: client::ClientError) -> Self {
         ResEvent {
@@ -107,12 +91,12 @@ impl From<url::ParseError> for ResEvent {
 /// 生成请求体
 pub fn build_request(
     chat_adapter: &dyn ChatAdapter,
-    model: &Model,
+    model_name: &str,
     config: &ReqConfig,
     contexts: &[Message],
     tools: Option<&[Tools]>,
 ) -> Result<Value, ProviderError> {
-    let req_body = match chat_adapter.build_request(&model.name, config, contexts, tools) {
+    let req_body = match chat_adapter.build_request(model_name, config, contexts, tools) {
         Ok(body) => body,
         Err(e) => return Err(e.into()),
     };

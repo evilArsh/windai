@@ -4,7 +4,7 @@ pub enum CoreError {
     Database(#[from] sqlx::Error),
 
     #[error("row not found: {0}")]
-    NotFound(String),
+    RowNotFound(String),
 
     #[error("validation error: {0}")]
     Validation(String),
