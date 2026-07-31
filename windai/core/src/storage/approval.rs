@@ -2,7 +2,10 @@ use crate::{
     db::DbDriver,
     error::Result,
     insert_fields,
-    models::agent::{CreateToolApprovalRequests, ToolApprovalRequest, ToolApprovalStatus},
+    models::{
+        ApprovalRecord,
+        agent::{CreateToolApprovalRequests, ToolApprovalRequest, ToolApprovalStatus},
+    },
     select_fields,
     storage::{TableName, next_id, now_ts},
     update,
@@ -23,8 +26,10 @@ impl ToolApprovalStorage {
     }
 
     /// 创建新的审批请求，
-    /// 参考batch_create_assistant
-    pub async fn create_requests(&self, input: CreateToolApprovalRequests) -> Result<Vec<i64>> {
+    pub async fn create_requests(
+        &self,
+        input: CreateToolApprovalRequests,
+    ) -> Result<Vec<ToolApprovalRequest>> {
         if input.calls.is_empty() {
             return Ok(Vec::new());
         }
@@ -37,6 +42,7 @@ impl ToolApprovalStorage {
         }
 
         let now = now_ts();
+        let status = ToolApprovalStatus::Pending;
         let mut rows = Vec::with_capacity(input.calls.len());
         for call in input.calls {
             rows.push(PreparedApproval {
@@ -72,13 +78,28 @@ impl ToolApprovalStorage {
             b.push_bind(&item.tool_call_id);
             b.push_bind(&item.tool_name);
             b.push_bind(&item.arguments);
-            b.push_bind(ToolApprovalStatus::Pending.to_string());
+            b.push_bind(status.to_string());
             b.push_bind(now);
             b.push_bind(now);
         });
         self.executor.execute(qb.build()).await?;
 
-        Ok(rows.into_iter().map(|row| row.id).collect())
+        Ok(rows
+            .into_iter()
+            .map(|row| ToolApprovalRequest {
+                id: row.id,
+                binding_id: input.binding_id,
+                topic_id: input.topic_id,
+                parent_topic_id: input.parent_topic_id,
+                message_id: input.message_id,
+                tool_call_id: row.tool_call_id,
+                tool_name: row.tool_name,
+                arguments: serde_json::Value::String(row.arguments),
+                status,
+                created_at: now,
+                updated_at: now,
+            })
+            .collect())
     }
 
     /// 设置审批状态
@@ -88,6 +109,35 @@ impl ToolApprovalStorage {
             id,
             ("status", Some(status.to_string()))
         );
+        ensure_affected(self.executor.execute(qb.build()).await?)
+    }
+
+    /// 批量设置审批状态。
+    pub async fn batch_set_status(&self, records: Vec<ApprovalRecord>) -> Result<()> {
+        if records.is_empty() {
+            return Ok(());
+        }
+
+        let mut qb = sqlx::QueryBuilder::new("");
+        qb.push("UPDATE ")
+            .push(TableName::TOOL_APPROVAL_REQUESTS)
+            .push(" SET status = CASE id ");
+        for r in &records {
+            qb.push("WHEN ")
+                .push_bind(r.id)
+                .push(" THEN ")
+                .push_bind(r.status.to_string())
+                .push(" ");
+        }
+        qb.push("ELSE status END, updated_at = ")
+            .push_bind(now_ts())
+            .push(" WHERE id IN (");
+        let mut sep = qb.separated(", ");
+        for r in &records {
+            sep.push_bind(r.id);
+        }
+        qb.push(")");
+
         ensure_affected(self.executor.execute(qb.build()).await?)
     }
 

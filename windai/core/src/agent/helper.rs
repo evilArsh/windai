@@ -8,7 +8,7 @@ use crate::models::{
     UpdateAgentBinding,
 };
 use crate::storage::Storage;
-use futures::future::{try_join, try_join3, try_join4, try_join5};
+use futures::future::{try_join, try_join5};
 use wind_ai::message::{Content, Message as AiMessage, ReqConfig, Role};
 use wind_ai::tool::{FunctionCall, Tools};
 use wind_mcp::client::Tool;
@@ -54,6 +54,10 @@ pub async fn create_sub_topic(
         .await
 }
 
+pub async fn get_message_contexts(storage: &Storage, topic_id: i64) -> Result<Vec<Message>> {
+    storage.message().list_contexts(topic_id).await
+}
+
 /// 为一次Agent对话创建完整的上下文：User消息、Assistant消息和历史消息列表
 pub async fn create_contexts(
     storage: &Storage,
@@ -63,7 +67,7 @@ pub async fn create_contexts(
     chat_ctx: &ChatContext,
 ) -> Result<(Message, Message, Vec<AiMessage>)> {
     let (raw, prompt) = match try_join(
-        storage.message().list_contexts(agent_topic.id),
+        get_message_contexts(storage, agent_topic.id),
         assemble_prompt(storage, &agent),
     )
     .await
@@ -155,6 +159,14 @@ pub async fn get_binding_by_agent_id(
                 agent_id, topic_id
             ))
         })
+}
+
+pub async fn get_binding_by_id(storage: &Storage, binding_id: i64) -> Result<AgentBinding> {
+    storage
+        .agent()
+        .get_binding(binding_id)
+        .await?
+        .ok_or_else(|| CoreError::RowNotFound(format!("agent binding by id: {}", binding_id)))
 }
 
 /// 通过Agent ID获取Agent定义（会校验active状态）
@@ -258,16 +270,16 @@ pub async fn save_approval_state(
     parent_topic_id: i64,
     assistant: Message,
     calls: Vec<FunctionCall>,
-) -> Result<()> {
+) -> Result<Vec<ToolApprovalRequest>> {
     let message_id = assistant.id;
     let agent_topic_id = assistant.topic_id;
-    storage
+    let ((), requests) = storage
         .tx(|storage| async move {
             storage
                 .message()
                 .update(message_id, assistant.into())
                 .await?;
-            storage
+            let requests = storage
                 .approval()
                 .create_requests(CreateToolApprovalRequests {
                     parent_topic_id,
@@ -284,9 +296,11 @@ pub async fn save_approval_state(
                         .collect(),
                 })
                 .await?;
-            Ok(())
+            Ok(((), requests))
         })
-        .await
+        .await?;
+
+    return Ok(requests);
 }
 
 /// 将Assistant消息持久化到数据库
@@ -315,6 +329,22 @@ fn is_tool_allowed(tool: &Tool, bindings: &[&AgentMcpBinding]) -> bool {
     })
 }
 
+pub fn transfer_contexts(raw: Vec<Message>) -> Result<Vec<AiMessage>> {
+    raw.into_iter()
+        .map(|m| {
+            // 无法找到 is_simple消息,
+            // 该消息未正常结束（用户未授权MCP调用或者模型未正常返回结果）
+            if let Some(c) = m.content.into_iter().rev().find(|c| c.is_simple()) {
+                return Ok(c);
+            } else {
+                return Err(CoreError::Chat(format!(
+                    "Incomplete message found. messageId: {}",
+                    m.id
+                )));
+            }
+        })
+        .collect::<Result<Vec<AiMessage>>>()
+}
 /// 构建历史消息上下文
 ///
 /// 不校验消息上下文合理性，考虑以下情况：
@@ -342,22 +372,7 @@ async fn build_context(raw: Vec<Message>, agent: &AgentDefinition) -> Result<Vec
             })
             .unwrap_or(0);
 
-    let contexts = raw
-        .into_iter()
-        .skip(start)
-        .map(|m| {
-            // 无法找到 is_simple消息,
-            // 该消息未正常结束（用户未授权MCP调用或者模型未正常返回结果）
-            if let Some(c) = m.content.into_iter().rev().find(|c| c.is_simple()) {
-                return Ok(c);
-            } else {
-                return Err(CoreError::Chat(format!(
-                    "Incomplete message found. messageId: {}",
-                    m.id
-                )));
-            }
-        })
-        .collect::<Result<Vec<AiMessage>>>()?;
+    let contexts = transfer_contexts(raw.into_iter().skip(start).collect())?;
 
     Ok(contexts)
 }

@@ -160,12 +160,12 @@ impl AgentHost for SyncHost {
 }
 
 #[derive(Clone)]
-pub struct SyncTaskHandle {
+pub struct SyncTaskHandler {
     pub binding_id: i64,
     cmd_tx: mpsc::Sender<TaskCommand>,
 }
 
-impl SyncTaskHandle {
+impl SyncTaskHandler {
     pub async fn cancel(&self) -> Result<()> {
         if let Err(err) = self.cmd_tx.send(TaskCommand::Cancel).await {
             log::error!(
@@ -206,9 +206,9 @@ impl SyncTask {
         topic_tx: TopicMailbox,
         storage: Storage,
         mcp_registry: RegistryHandle,
-    ) -> SyncTaskHandle {
+    ) -> SyncTaskHandler {
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
-        let handle = SyncTaskHandle { binding_id, cmd_tx };
+        let handle = SyncTaskHandler { binding_id, cmd_tx };
 
         let task = Self {
             cmd_rx,

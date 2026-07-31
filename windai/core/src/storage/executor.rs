@@ -8,8 +8,49 @@ use tokio::sync::Mutex;
 
 use crate::{
     db::{DbDriver, DbPool, DbRow, DbTransaction},
-    error::{CoreError, Result},
+    error::Result,
 };
+
+macro_rules! with_transaction {
+    ($self:expr, $tx:ident, $body:expr) => {
+        match &$self.tx {
+            Some(tx) => {
+                let mut guard = tx.lock().await;
+                match guard.take() {
+                    Some($tx) => $body,
+                    None => Err($crate::error::CoreError::Internal(
+                        "transaction already closed".into(),
+                    )),
+                }
+            }
+            None => Ok(()),
+        }
+    };
+}
+
+macro_rules! with_connection {
+    ($self:expr, $conn:ident, $body:expr) => {
+        match &$self.tx {
+            Some(tx) => {
+                let mut guard = tx.lock().await;
+                match &mut *guard {
+                    Some(t) => {
+                        let $conn = &mut **t;
+                        $body
+                    }
+                    None => Err($crate::error::CoreError::Internal(
+                        "transaction already closed".into(),
+                    )),
+                }
+            }
+            None => {
+                let mut _conn = $self.pool.acquire().await?;
+                let $conn = &mut *_conn;
+                $body
+            }
+        }
+    };
+}
 
 #[derive(Clone)]
 pub(crate) struct StorageExecutor {
@@ -64,31 +105,13 @@ impl StorageExecutor {
             }
         }
     }
-    async fn get_tx(&self) -> Result<Option<DbTransaction>> {
-        match &self.tx {
-            Some(tx) => {
-                let mut guard = tx.lock().await;
-                let tx = guard
-                    .take()
-                    .ok_or_else(|| CoreError::Internal("transaction already closed".into()))?;
-                Ok(Some(tx))
-            }
-            None => Ok(None),
-        }
-    }
 
     pub(crate) async fn commit(&self) -> Result<()> {
-        match self.get_tx().await? {
-            Some(tx) => Ok(tx.commit().await?),
-            None => Ok(()),
-        }
+        with_transaction!(self, tx, { Ok(tx.commit().await?) })
     }
 
     pub(crate) async fn rollback(&self) -> Result<()> {
-        match self.get_tx().await? {
-            Some(tx) => Ok(tx.rollback().await?),
-            None => Ok(()),
-        }
+        with_transaction!(self, tx, { Ok(tx.rollback().await?) })
     }
 
     pub(crate) async fn execute<'q>(
@@ -98,10 +121,7 @@ impl StorageExecutor {
     where
         <DbDriver as Database>::Arguments<'q>: IntoArguments<'q, DbDriver> + Send,
     {
-        match self.get_tx().await? {
-            Some(mut tx) => Ok(query.execute(&mut *tx).await?),
-            None => Ok(query.execute(&self.pool).await?),
-        }
+        with_connection!(self, executor, Ok(query.execute(executor).await?))
     }
 
     pub(crate) async fn fetch_optional<'q, O>(
@@ -112,10 +132,9 @@ impl StorageExecutor {
         O: for<'r> FromRow<'r, DbRow> + Send + Unpin,
         <DbDriver as Database>::Arguments<'q>: IntoArguments<'q, DbDriver> + Send,
     {
-        match self.get_tx().await? {
-            Some(mut tx) => Ok(query.fetch_optional(&mut *tx).await?),
-            None => Ok(query.fetch_optional(&self.pool).await?),
-        }
+        with_connection!(self, executor, {
+            Ok(query.fetch_optional(executor).await?)
+        })
     }
 
     pub(crate) async fn fetch_all<'q, O>(
@@ -126,9 +145,6 @@ impl StorageExecutor {
         O: for<'r> FromRow<'r, DbRow> + Send + Unpin,
         <DbDriver as Database>::Arguments<'q>: IntoArguments<'q, DbDriver> + Send,
     {
-        match self.get_tx().await? {
-            Some(mut tx) => Ok(query.fetch_all(&mut *tx).await?),
-            None => Ok(query.fetch_all(&self.pool).await?),
-        }
+        with_connection!(self, executor, Ok(query.fetch_all(executor).await?))
     }
 }

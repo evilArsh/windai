@@ -292,15 +292,19 @@ impl AgentStorage {
                 agent_definitions.active AS active,
                 agent_definitions.data AS data,
                 agent_definitions.created_at AS created_at
-            FROM agent_definitions
-            INNER JOIN topic_agent_bindings
-                ON agent_definitions.id = topic_agent_bindings.agent_id
-            WHERE 
+            FROM "#,
+        );
+        qb.push(TableName::AGENT_DEFINITION)
+            .push(" INNER JOIN ")
+            .push(TableName::TOPIC_AGENT_BINDINGS)
+            .push(
+                r#" ON agent_definitions.id = topic_agent_bindings.agent_id
+            WHERE
                 topic_agent_bindings.role <> 'main'
                 AND topic_agent_bindings.enabled = 1
                 AND topic_agent_bindings.parent_topic_id =
             "#,
-        );
+            );
         qb.push_bind(topic_id)
             .push(" ORDER BY topic_agent_bindings.id ASC ");
         let rows = self

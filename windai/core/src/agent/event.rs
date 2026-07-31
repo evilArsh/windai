@@ -2,6 +2,7 @@ use crate::error::CoreError;
 use crate::error::Result;
 use crate::models::AgentStatus;
 use crate::models::Message;
+use crate::models::ToolApprovalRequest;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -60,7 +61,7 @@ pub enum TopicEvent {
         topic_id: i64,
         parent_topic_id: i64,
         message_id: i64,
-        calls: Vec<FunctionCall>,
+        requests: Vec<ToolApprovalRequest>,
     },
 }
 
@@ -77,6 +78,12 @@ pub enum TopicCommand {
         reply: oneshot::Sender<Result<()>>,
     },
     Shutdown {
+        reply: oneshot::Sender<Result<()>>,
+    },
+    Approval {
+        binding_id: i64,
+        deny_ids: Vec<i64>,
+        allow_ids: Vec<i64>,
         reply: oneshot::Sender<Result<()>>,
     },
 }

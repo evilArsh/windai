@@ -51,7 +51,7 @@ impl<'s> sqlx::FromRow<'s, DbRow> for ToolApprovalRequest {
 
 /// ToolApprovalRequest 的审批状态。
 #[derive(
-    Debug, Serialize, Deserialize, Clone, PartialEq, Eq, strum::EnumString, strum::Display,
+    Debug, Serialize, Deserialize, Clone, PartialEq, Eq, strum::EnumString, strum::Display, Copy,
 )]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
@@ -62,6 +62,12 @@ pub enum ToolApprovalStatus {
     Approved,
     /// 用户已拒绝。
     Denied,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ApprovalRecord {
+    pub id: i64,
+    pub status: ToolApprovalStatus,
 }
 
 /// 批量创建审批请求的输入。

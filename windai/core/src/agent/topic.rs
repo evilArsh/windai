@@ -2,19 +2,22 @@ use super::event::{TopicCommand, TopicEvent, TopicMailbox};
 use super::helper::{self};
 use super::runtime::AgentRunConfig;
 use super::task::sync::SyncTask;
-use super::task::{PendingChild, SupervisorRequest, TaskNotification, TaskRegistry, TaskSpec};
+use super::task::{
+    PendingChild, SupervisorRequest, TaskEntry, TaskNotification, TaskRegistry, TaskSpec,
+};
 use super::tool::{SpawnAgentRequest, SpawnAgentResponse};
 use crate::agent::event::TopicMsg;
 use crate::chat::loops::ChatContext;
 use crate::error::{CoreError, Result};
 use crate::models::{
-    AgentBinding, AgentDefinition, AgentMode, AgentStatus, Topic, UpdateAgentBinding,
+    AgentBinding, AgentDefinition, AgentMode, AgentStatus, ApprovalRecord, Message,
+    ToolApprovalStatus, UpdateAgentBinding,
 };
 use crate::storage::Storage;
-use futures::future::join_all;
+use futures::future::{join_all, try_join};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
-use wind_ai::message::Content;
+use wind_ai::message::{Content, Message as AiMessage};
 use wind_mcp::client::registry::RegistryHandle;
 
 macro_rules! try_send_log {
@@ -158,6 +161,15 @@ impl TopicRuntime {
                 let result = self.shutdown().await;
                 try_send_log!(reply, result, "Shutdown");
             }
+            TopicCommand::Approval {
+                binding_id,
+                deny_ids,
+                allow_ids,
+                reply,
+            } => {
+                let result = self.apply_approvals(binding_id, deny_ids, allow_ids).await;
+                try_send_log!(reply, result, "Approval");
+            }
         }
     }
 
@@ -195,17 +207,17 @@ impl TopicRuntime {
                     binding_id,
                     self.topic_id,
                     data,
-                    calls.clone(),
+                    calls,
                 )
                 .await
                 {
-                    Ok(_) => {
+                    Ok(requests) => {
                         self.emit(TopicEvent::ApprovalRequired {
                             binding_id,
                             topic_id: agent_topic_id,
                             parent_topic_id: self.topic_id,
                             message_id,
-                            calls,
+                            requests,
                         });
                         self.update_task_status(binding_id, AgentStatus::WaitingApproval)
                             .await;
@@ -297,6 +309,7 @@ impl TopicRuntime {
         }
     }
 
+    //  内部流转指令
     async fn handle_supervisor_request(&mut self, request: SupervisorRequest) {
         match request {
             SupervisorRequest::SpawnAgent {
@@ -323,7 +336,7 @@ impl TopicRuntime {
                     && let Some(entry) = self.registry.get_entry_mut(binding_id)
                     && let Some(child_binding_id) = child_binding_id
                 {
-                    entry.update_status(AgentStatus::WaitingChild);
+                    entry.status = AgentStatus::WaitingChild;
                     self.registry.insert_pending(PendingChild {
                         call_id: call_id.clone(),
                         mode,
@@ -360,7 +373,7 @@ impl TopicRuntime {
         {
             return Err(CoreError::Internal(format!(
                 "Agent is busy, status: {}",
-                entry.get_status()
+                entry.status
             )));
         }
 
@@ -368,59 +381,7 @@ impl TopicRuntime {
             helper::get_base_info(&self.storage, &self.mcp_registry, &binding, &agent).await?;
         let binding_id = binding.id;
 
-        self.start_task(
-            AgentMode::Sync,
-            vec![Content::new_text(request.task)],
-            chat_ctx,
-            agent_topic,
-            agent,
-            binding,
-        )
-        .await
-        .and_then(|_| Ok(binding_id))
-    }
-
-    /// 开始新的对话。
-    /// 加载对话需要的所有上下文，
-    /// 消息发送到Agent并开始对话循环
-    async fn start_main_chat(&mut self, user_input: Vec<Content>) -> Result<()> {
-        // 1. 查询当前是否有主Agent运行
-        // 2. 如果主Agent没有结束，则等待，否则创建一个主Agent开始运行,TODO: Queued状态
-        if let Some(binding) = self.registry.main_binding()
-            && matches!(
-                binding.status,
-                |AgentStatus::Running| AgentStatus::WaitingApproval | AgentStatus::WaitingChild
-            )
-        {
-            return Err(CoreError::Internal("main agent is running".into()));
-        }
-        let agent_topic =
-            helper::create_sub_topic(&self.storage, self.topic_id, format!("#main-agent")).await?;
-        let binding = helper::get_main_binding(&self.storage, self.topic_id).await?;
-        let agent = helper::get_def_by_id(&self.storage, binding.agent_id).await?;
-        let chat_ctx =
-            helper::get_base_info(&self.storage, &self.mcp_registry, &binding, &agent).await?;
-
-        self.start_task(
-            AgentMode::Sync,
-            user_input,
-            chat_ctx,
-            agent_topic,
-            agent,
-            binding,
-        )
-        .await
-    }
-
-    async fn start_task(
-        &mut self,
-        mode: AgentMode,
-        user_input: Vec<Content>,
-        chat_ctx: ChatContext,
-        agent_topic: Topic,
-        agent: AgentDefinition,
-        binding: AgentBinding,
-    ) -> Result<()> {
+        let user_input = vec![Content::new_text(request.task)];
         let (user, assistant, contexts) =
             helper::create_contexts(&self.storage, user_input, &agent_topic, &agent, &chat_ctx)
                 .await?;
@@ -435,6 +396,133 @@ impl TopicRuntime {
             data: assistant.clone(),
         });
 
+        self.start_task(
+            AgentMode::Sync,
+            chat_ctx,
+            assistant,
+            contexts,
+            agent,
+            binding,
+        )
+        .await
+        .and_then(|_| Ok(binding_id))
+    }
+
+    /// 开始新的对话。
+    /// 加载对话需要的所有上下文，
+    /// 消息发送到Agent并开始对话循环
+    async fn start_main_chat(&mut self, user_input: Vec<Content>) -> Result<()> {
+        // 1. 查询当前是否有主Agent运行
+        // 2. 如果主Agent没有结束，则等待，否则创建一个主Agent开始运行,TODO: Queued状态
+        if let Some(entry) = self.registry.main_entry()
+            && entry.is_busy()
+        {
+            return Err(CoreError::Internal("main agent is running".into()));
+        }
+        let agent_topic =
+            helper::create_sub_topic(&self.storage, self.topic_id, format!("#main-agent")).await?;
+        let binding = helper::get_main_binding(&self.storage, self.topic_id).await?;
+        let agent = helper::get_def_by_id(&self.storage, binding.agent_id).await?;
+        let chat_ctx =
+            helper::get_base_info(&self.storage, &self.mcp_registry, &binding, &agent).await?;
+
+        let (user, assistant, contexts) =
+            helper::create_contexts(&self.storage, user_input, &agent_topic, &agent, &chat_ctx)
+                .await?;
+
+        self.emit(TopicEvent::MessageCreated {
+            topic_id: agent_topic.id,
+            data: user,
+        });
+
+        self.emit(TopicEvent::MessageCreated {
+            topic_id: agent_topic.id,
+            data: assistant.clone(),
+        });
+
+        self.start_task(
+            AgentMode::Sync,
+            chat_ctx,
+            assistant,
+            contexts,
+            agent,
+            binding,
+        )
+        .await
+    }
+
+    async fn resume_task(&mut self, binding_id: i64) -> Result<()> {
+        let entry = self.registry.get_entry(binding_id);
+        if let Some(entry) = entry
+            && entry.status != AgentStatus::WaitingApproval
+        {
+            return Err(CoreError::Internal(format!(
+                "Task is not waiting approval, current status: {}",
+                entry.status
+            )));
+        }
+
+        let binding = helper::get_binding_by_id(&self.storage, binding_id).await?;
+        let agent = helper::get_def_by_id(&self.storage, binding.agent_id).await?;
+
+        let (chat_ctx, contexts) = try_join(
+            helper::get_base_info(&self.storage, &self.mcp_registry, &binding, &agent),
+            helper::get_message_contexts(&self.storage, binding.topic_id),
+        )
+        .await?;
+
+        let assistant = contexts.last().cloned().ok_or_else(|| {
+            CoreError::Internal(format!("no assistant in this topic: {}", binding.topic_id))
+        })?;
+        let contexts = helper::transfer_contexts(contexts)?;
+
+        if let Some(entry) = entry {
+            let spec = TaskSpec {
+                binding_id: binding.id,
+                agent,
+                model: chat_ctx.model,
+                provider: chat_ctx.provider,
+                credential: chat_ctx.credential,
+                req_config: chat_ctx.req_config,
+                rule_set: chat_ctx.rule_set,
+                tools: chat_ctx.tools,
+                assistant,
+                contexts,
+            };
+            entry
+                .handler
+                .start(
+                    spec,
+                    AgentRunConfig {
+                        binding_id: binding.id,
+                        topic_id: binding.topic_id,
+                        parent_topic_id: binding.parent_topic_id,
+                        tool_approval_policy: binding.tool_approval_policy,
+                    },
+                )
+                .await
+        } else {
+            self.start_task(
+                binding.mode.unwrap_or(AgentMode::Sync),
+                chat_ctx,
+                assistant,
+                contexts,
+                agent,
+                binding,
+            )
+            .await
+        }
+    }
+
+    async fn start_task(
+        &mut self,
+        mode: AgentMode,
+        chat_ctx: ChatContext,
+        assistant: Message,
+        contexts: Vec<AiMessage>,
+        agent: AgentDefinition,
+        binding: AgentBinding,
+    ) -> Result<()> {
         let spec = TaskSpec {
             binding_id: binding.id,
             agent,
@@ -448,44 +536,44 @@ impl TopicRuntime {
             contexts,
         };
 
-        let binding_id = binding.id;
-        let binding_topic_id = binding.topic_id;
-        let binding_parent_topic_id = binding.parent_topic_id;
-        let policy = binding.tool_approval_policy.clone();
-
         // TODO: 使用mode区分
         let sync_handle = SyncTask::spawn(
             self.ctx.child_token(),
-            binding_id,
+            binding.id,
             binding.topic_id,
             self.mailbox.clone(),
             self.storage.clone(),
             self.mcp_registry.clone(),
         );
 
-        let entry = self.registry.upsert(binding, sync_handle);
-        entry.update_mode(mode);
+        let entry = self.registry.upsert(TaskEntry::new(
+            binding.id,
+            binding.topic_id,
+            binding.role,
+            sync_handle,
+        ));
+        entry.mode = Some(mode);
         entry
-            .get_handle()
+            .handler
             .start(
                 spec,
                 AgentRunConfig {
-                    binding_id,
-                    topic_id: binding_topic_id,
-                    parent_topic_id: binding_parent_topic_id,
-                    tool_approval_policy: policy,
+                    binding_id: binding.id,
+                    topic_id: binding.topic_id,
+                    parent_topic_id: binding.parent_topic_id,
+                    tool_approval_policy: binding.tool_approval_policy,
                 },
             )
             .await?;
 
-        self.update_task_status(binding_id, AgentStatus::Created)
+        self.update_task_status(binding.id, AgentStatus::Created)
             .await;
 
         Ok(())
     }
     async fn cancel_task(&mut self, binding_id: i64) -> Result<()> {
         if let Some(entry) = self.registry.get_entry_mut(binding_id) {
-            entry.get_handle().cancel().await?;
+            entry.handler.cancel().await?;
             Ok(())
         } else {
             Err(CoreError::Internal(format!(
@@ -500,7 +588,7 @@ impl TopicRuntime {
             .registry
             .get_entries()
             .into_iter()
-            .map(|entry| entry.get_handle().clone())
+            .map(|entry| entry.handler.clone())
             .collect();
 
         join_all(handles.into_iter().map(|handle| async move {
@@ -513,6 +601,29 @@ impl TopicRuntime {
         self.ctx.cancel();
 
         Ok(())
+    }
+
+    async fn apply_approvals(
+        &mut self,
+        binding_id: i64,
+        deny_ids: Vec<i64>,
+        allow_ids: Vec<i64>,
+    ) -> Result<()> {
+        let mut records = Vec::with_capacity(deny_ids.len() + allow_ids.len());
+        for id in deny_ids {
+            records.push(ApprovalRecord {
+                id,
+                status: ToolApprovalStatus::Denied,
+            });
+        }
+        for id in allow_ids {
+            records.push(ApprovalRecord {
+                id,
+                status: ToolApprovalStatus::Approved,
+            });
+        }
+        self.storage.approval().batch_set_status(records).await?;
+        self.resume_task(binding_id).await
     }
 
     fn walk_task(
@@ -537,8 +648,9 @@ impl TopicRuntime {
 
     async fn update_task_status(&mut self, binding_id: i64, status: AgentStatus) {
         if let Some(entry) = self.registry.get_entry_mut(binding_id) {
-            let topic_id = entry.get_binding().topic_id;
-            entry.update_status(status);
+            entry.status = status;
+            let mode = entry.mode;
+            let topic_id = entry.topic_id;
             match helper::update_binding(
                 &self.storage,
                 binding_id,
@@ -549,7 +661,7 @@ impl TopicRuntime {
                     chat_config_id: None,
                     enabled: None,
                     status: Some(status),
-                    mode: entry.get_binding().mode,
+                    mode,
                     tool_approval_policy: None,
                 },
             )

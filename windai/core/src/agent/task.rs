@@ -1,15 +1,15 @@
-use self::sync::SyncTaskHandle;
+use self::sync::SyncTaskHandler;
 use super::runtime::AgentRunConfig;
 use super::tool::{SpawnAgentRequest, SpawnAgentResponse};
 use crate::models::{
-    AgentBinding, AgentDefinition, AgentMode, AgentRole, AgentStatus, Credentials, JsonRule,
-    Message, Model, Provider,
+    AgentDefinition, AgentMode, AgentRole, AgentStatus, Credentials, JsonRule, Message, Model,
+    Provider,
 };
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use tokio::sync::oneshot;
+use wind_ai::message::Message as AiMessage;
 use wind_ai::message::ReqConfig;
-use wind_ai::message::{Content, Message as AiMessage};
 use wind_ai::tool::{FunctionCall, Tools};
 
 pub mod background;
@@ -119,37 +119,33 @@ pub struct PendingChild {
 }
 
 pub struct TaskEntry {
-    binding: AgentBinding,
+    binding_id: i64,
+    pub topic_id: i64,
+    pub status: AgentStatus,
+    pub role: AgentRole,
+    pub mode: Option<AgentMode>,
     // TODO: 通用抽象句柄
-    handle: SyncTaskHandle,
+    pub handler: SyncTaskHandler,
 }
 
 impl TaskEntry {
-    pub fn get_handle(&self) -> &SyncTaskHandle {
-        &self.handle
-    }
-    pub fn update_status(&mut self, status: AgentStatus) {
-        self.binding.status = status;
-    }
-
-    pub fn get_binding(&self) -> &AgentBinding {
-        &self.binding
-    }
-
-    pub fn update_mode(&mut self, mode: AgentMode) {
-        self.binding.mode = Some(mode);
+    pub fn new(binding_id: i64, topic_id: i64, role: AgentRole, handler: SyncTaskHandler) -> Self {
+        TaskEntry {
+            binding_id,
+            topic_id,
+            role,
+            status: AgentStatus::Created,
+            mode: None,
+            handler,
+        }
     }
 
     /// 当前任务是否忙
     pub fn is_busy(&self) -> bool {
         matches!(
-            self.binding.status,
+            self.status,
             |AgentStatus::Running| AgentStatus::WaitingApproval | AgentStatus::WaitingChild
         )
-    }
-
-    pub fn get_status(&self) -> &AgentStatus {
-        &self.binding.status
     }
 }
 
@@ -186,23 +182,27 @@ impl TaskRegistry {
             .map(|i| self.pending.remove(i))
     }
 
-    pub fn upsert(&mut self, binding: AgentBinding, handle: SyncTaskHandle) -> &mut TaskEntry {
-        if binding.role == AgentRole::Main {
-            self.main_binding_id = Some(binding.id);
+    pub fn upsert(&mut self, data: TaskEntry) -> &mut TaskEntry {
+        if data.role == AgentRole::Main {
+            self.main_binding_id = Some(data.binding_id);
         }
 
-        match self.binding_map.entry(binding.id) {
+        match self.binding_map.entry(data.binding_id) {
             Entry::Occupied(entry) => {
                 log::debug!(
                     "[upsert task]: task already exists, binding_id: {}",
-                    binding.id
+                    data.binding_id
                 );
                 let entry = entry.into_mut();
-                entry.binding = binding;
-                entry.handle = handle;
+                entry.mode = data.mode;
+                entry.handler = data.handler;
+                entry.role = data.role;
+                entry.status = data.status;
+                entry.topic_id = data.topic_id;
+
                 entry
             }
-            Entry::Vacant(entry) => entry.insert(TaskEntry { binding, handle }),
+            Entry::Vacant(entry) => entry.insert(data),
         }
     }
 
@@ -218,8 +218,7 @@ impl TaskRegistry {
         self.binding_map.values()
     }
 
-    pub fn main_binding(&self) -> Option<&AgentBinding> {
-        self.main_binding_id
-            .and_then(|id| self.get_entry(id).and_then(|en| Some(en.get_binding())))
+    pub fn main_entry(&self) -> Option<&TaskEntry> {
+        self.main_binding_id.and_then(|id| self.get_entry(id))
     }
 }

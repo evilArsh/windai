@@ -232,7 +232,7 @@ impl ChatLoops {
     /// ```text
     /// [ 上一轮的tool_result ]
     /// [ 截断 ]
-    /// [ tool_request 1 ]
+    /// [ tool_request 1 ] // 包含所有的请求数组
     /// [ tool_result  1-1 ]
     /// [ tool_result  1-2 ]
     /// ```
