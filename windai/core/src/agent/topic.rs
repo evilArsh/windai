@@ -333,10 +333,10 @@ impl TopicRuntime {
                     }
                 }
                 if resp.is_none()
-                    && let Some(entry) = self.registry.get_entry_mut(binding_id)
                     && let Some(child_binding_id) = child_binding_id
                 {
-                    entry.status = AgentStatus::WaitingChild;
+                    self.update_task_status(binding_id, AgentStatus::WaitingChild)
+                        .await;
                     self.registry.insert_pending(PendingChild {
                         call_id: call_id.clone(),
                         mode,
@@ -373,7 +373,7 @@ impl TopicRuntime {
         {
             return Err(CoreError::Internal(format!(
                 "Agent is busy, status: {}",
-                entry.status
+                entry.get_status()
             )));
         }
 
@@ -454,11 +454,11 @@ impl TopicRuntime {
     async fn resume_task(&mut self, binding_id: i64) -> Result<()> {
         let entry = self.registry.get_entry(binding_id);
         if let Some(entry) = entry
-            && entry.status != AgentStatus::WaitingApproval
+            && entry.get_status() != AgentStatus::WaitingApproval
         {
             return Err(CoreError::Internal(format!(
                 "Task is not waiting approval, current status: {}",
-                entry.status
+                entry.get_status()
             )));
         }
 
@@ -648,7 +648,7 @@ impl TopicRuntime {
 
     async fn update_task_status(&mut self, binding_id: i64, status: AgentStatus) {
         if let Some(entry) = self.registry.get_entry_mut(binding_id) {
-            entry.status = status;
+            entry.set_status(status);
             let mode = entry.mode;
             let topic_id = entry.topic_id;
             match helper::update_binding(

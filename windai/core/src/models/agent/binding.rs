@@ -3,7 +3,7 @@ use crate::{db::DbRow, models::ToolApprovalPolicy};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
-/// AgentInstance 生命周期状态。WaitingApproval 用于后台 Agent 等待用户审批 MCP。
+/// AgentInstance 生命周期状态
 #[derive(
     Debug, Serialize, Deserialize, Clone, PartialEq, Eq, strum::EnumString, strum::Display, Copy,
 )]

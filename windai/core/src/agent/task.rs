@@ -120,8 +120,8 @@ pub struct PendingChild {
 
 pub struct TaskEntry {
     binding_id: i64,
+    status: AgentStatus,
     pub topic_id: i64,
-    pub status: AgentStatus,
     pub role: AgentRole,
     pub mode: Option<AgentMode>,
     // TODO: 通用抽象句柄
@@ -146,6 +146,13 @@ impl TaskEntry {
             self.status,
             |AgentStatus::Running| AgentStatus::WaitingApproval | AgentStatus::WaitingChild
         )
+    }
+
+    pub fn get_status(&self) -> AgentStatus {
+        self.status
+    }
+    pub fn set_status(&mut self, status: AgentStatus) {
+        self.status = status;
     }
 }
 
