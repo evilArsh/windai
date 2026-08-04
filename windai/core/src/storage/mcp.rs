@@ -150,7 +150,6 @@ impl McpStorage {
         }
         let mut qb = Self::common_select();
         qb.push(" WHERE id IN ( ");
-        // TODO: 使用宏优化
         let mut separated = qb.separated(", ");
         for id in ids {
             separated.push_bind(id);

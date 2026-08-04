@@ -150,7 +150,7 @@ impl TopicRuntime {
     async fn handle_command(&mut self, command: TopicCommand) {
         match command {
             TopicCommand::CreateChat { user_input, reply } => {
-                let result = self.start_main_chat(user_input).await;
+                let result = self.start_main_agent(user_input).await;
                 try_send_log!(reply, result, "CreateChat");
             }
             TopicCommand::CancelTask { binding_id, reply } => {
@@ -321,7 +321,7 @@ impl TopicRuntime {
                 let mode = request.mode;
                 let mut resp = None;
                 let mut child_binding_id = None;
-                match self.spawn_sync(request).await {
+                match self.spawn_agent(request).await {
                     Ok(binding_id) => child_binding_id = Some(binding_id),
                     Err(err) => {
                         resp = Some(SpawnAgentResponse {
@@ -361,10 +361,13 @@ impl TopicRuntime {
     }
 
     /// 启动一个同步任务并且返回任务ID(binding_id)
-    async fn spawn_sync(&mut self, request: SpawnAgentRequest) -> Result<i64> {
-        let agent_topic =
-            helper::create_sub_topic(&self.storage, self.topic_id, format!("#sub-sync-agent"))
-                .await?;
+    async fn spawn_agent(&mut self, request: SpawnAgentRequest) -> Result<i64> {
+        let agent_topic = helper::create_sub_topic(
+            &self.storage,
+            self.topic_id,
+            format!("#sub-{}-agent", request.mode),
+        )
+        .await?;
         let agent = helper::get_def_by_key(&self.storage, &request.agent_key).await?;
         let binding =
             helper::get_binding_by_agent_id(&self.storage, self.topic_id, agent.id).await?;
@@ -377,14 +380,42 @@ impl TopicRuntime {
             )));
         }
 
+        let mode = request.mode;
         let chat_ctx =
             helper::get_base_info(&self.storage, &self.mcp_registry, &binding, &agent).await?;
         let binding_id = binding.id;
 
         let user_input = vec![Content::new_text(request.task)];
-        let (user, assistant, contexts) =
-            helper::create_contexts(&self.storage, user_input, &agent_topic, &agent, &chat_ctx)
-                .await?;
+        let (user, assistant, contexts) = match mode {
+            AgentMode::Fork => match self.registry.main_entry() {
+                Some(entry) => {
+                    helper::create_fork_contexts(
+                        &self.storage,
+                        entry.topic_id,
+                        agent_topic.id,
+                        user_input,
+                        &agent,
+                        &chat_ctx,
+                    )
+                    .await?
+                }
+                None => {
+                    return Err(CoreError::Validation(format!(
+                        "Main task not found, cannot fork"
+                    )));
+                }
+            },
+            AgentMode::Sync | AgentMode::Background => {
+                helper::create_contexts(
+                    &self.storage,
+                    agent_topic.id,
+                    user_input,
+                    &agent,
+                    &chat_ctx,
+                )
+                .await?
+            }
+        };
 
         self.emit(TopicEvent::MessageCreated {
             topic_id: agent_topic.id,
@@ -396,22 +427,15 @@ impl TopicRuntime {
             data: assistant.clone(),
         });
 
-        self.start_task(
-            AgentMode::Sync,
-            chat_ctx,
-            assistant,
-            contexts,
-            agent,
-            binding,
-        )
-        .await
-        .and_then(|_| Ok(binding_id))
+        self.start_task(mode, chat_ctx, assistant, contexts, agent, binding)
+            .await
+            .and_then(|_| Ok(binding_id))
     }
 
     /// 开始新的对话。
     /// 加载对话需要的所有上下文，
     /// 消息发送到Agent并开始对话循环
-    async fn start_main_chat(&mut self, user_input: Vec<Content>) -> Result<()> {
+    async fn start_main_agent(&mut self, user_input: Vec<Content>) -> Result<()> {
         // 1. 查询当前是否有主Agent运行
         // 2. 如果主Agent没有结束，则等待，否则创建一个主Agent开始运行,TODO: Queued状态
         if let Some(entry) = self.registry.main_entry()
@@ -427,7 +451,7 @@ impl TopicRuntime {
             helper::get_base_info(&self.storage, &self.mcp_registry, &binding, &agent).await?;
 
         let (user, assistant, contexts) =
-            helper::create_contexts(&self.storage, user_input, &agent_topic, &agent, &chat_ctx)
+            helper::create_contexts(&self.storage, agent_topic.id, user_input, &agent, &chat_ctx)
                 .await?;
 
         self.emit(TopicEvent::MessageCreated {
@@ -536,40 +560,45 @@ impl TopicRuntime {
             contexts,
         };
 
-        // TODO: 使用mode区分
-        let sync_handle = SyncTask::spawn(
-            self.ctx.child_token(),
-            binding.id,
-            binding.topic_id,
-            self.mailbox.clone(),
-            self.storage.clone(),
-            self.mcp_registry.clone(),
-        );
+        match mode {
+            AgentMode::Sync | AgentMode::Fork => {
+                let sync_handle = SyncTask::spawn(
+                    self.ctx.child_token(),
+                    binding.id,
+                    binding.topic_id,
+                    self.mailbox.clone(),
+                    self.storage.clone(),
+                    self.mcp_registry.clone(),
+                );
 
-        let entry = self.registry.upsert(TaskEntry::new(
-            binding.id,
-            binding.topic_id,
-            binding.role,
-            sync_handle,
-        ));
-        entry.mode = Some(mode);
-        entry
-            .handler
-            .start(
-                spec,
-                AgentRunConfig {
-                    binding_id: binding.id,
-                    topic_id: binding.topic_id,
-                    parent_topic_id: binding.parent_topic_id,
-                    tool_approval_policy: binding.tool_approval_policy,
-                },
-            )
-            .await?;
+                let entry = self.registry.upsert(TaskEntry::new(
+                    binding.id,
+                    binding.topic_id,
+                    binding.role,
+                    sync_handle,
+                ));
+                entry.mode = Some(mode);
+                entry
+                    .handler
+                    .start(
+                        spec,
+                        AgentRunConfig {
+                            binding_id: binding.id,
+                            topic_id: binding.topic_id,
+                            parent_topic_id: binding.parent_topic_id,
+                            tool_approval_policy: binding.tool_approval_policy,
+                        },
+                    )
+                    .await?;
 
-        self.update_task_status(binding.id, AgentStatus::Created)
-            .await;
-
-        Ok(())
+                Ok(())
+            }
+            AgentMode::Background => {
+                return Err(CoreError::Internal(format!(
+                    "background mode is not supported yet"
+                )));
+            }
+        }
     }
     async fn cancel_task(&mut self, binding_id: i64) -> Result<()> {
         if let Some(entry) = self.registry.get_entry_mut(binding_id) {

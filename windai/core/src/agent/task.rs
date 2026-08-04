@@ -13,7 +13,6 @@ use wind_ai::message::ReqConfig;
 use wind_ai::tool::{FunctionCall, Tools};
 
 pub mod background;
-pub mod fork;
 pub mod sync;
 
 #[derive(Debug)]

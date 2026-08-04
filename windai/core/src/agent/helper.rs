@@ -58,17 +58,17 @@ pub async fn get_message_contexts(storage: &Storage, topic_id: i64) -> Result<Ve
     storage.message().list_contexts(topic_id).await
 }
 
-/// 为一次Agent对话创建完整的上下文：User消息、Assistant消息和历史消息列表
-pub async fn create_contexts(
+pub async fn create_fork_contexts(
     storage: &Storage,
+    main_agent_topic_id: i64,
+    agent_topic_id: i64,
     user_input: Vec<Content>,
-    agent_topic: &Topic,
     agent: &AgentDefinition,
     chat_ctx: &ChatContext,
 ) -> Result<(Message, Message, Vec<AiMessage>)> {
-    let (raw, prompt) = match try_join(
-        get_message_contexts(storage, agent_topic.id),
-        assemble_prompt(storage, &agent),
+    let (mut main_raw, mut raw) = match try_join(
+        get_message_contexts(storage, main_agent_topic_id),
+        get_message_contexts(storage, agent_topic_id),
     )
     .await
     {
@@ -77,59 +77,28 @@ pub async fn create_contexts(
             return Err(e);
         }
     };
-    let stream = chat_ctx.req_config.stream.unwrap_or(true);
 
-    let user_content = AiMessage::new_simple(Role::User, user_input, None);
-
-    let content_cloned = user_content.clone();
-    let (user_message, assistant_message) = storage
-        .tx(|storage| async move {
-            let user = storage
-                .message()
-                .create(CreateMessage {
-                    from_id: None,
-                    stream,
-                    content: vec![content_cloned],
-                    model_id: chat_ctx.model.id,
-                    topic_id: agent_topic.id,
-                    is_boundary: false,
-                    is_exclude: false,
-                    input_tokens: 0,
-                    output_tokens: 0,
-                })
-                .await?;
-
-            let assistant = storage
-                .message()
-                .create(CreateMessage {
-                    from_id: Some(user.id),
-                    stream,
-                    content: vec![AiMessage::new_simple(Role::Assistant, vec![], None)],
-                    model_id: chat_ctx.model.id,
-                    topic_id: agent_topic.id,
-                    is_boundary: false,
-                    is_exclude: false,
-                    input_tokens: 0,
-                    output_tokens: 0,
-                })
-                .await?;
-
-            Ok((user, assistant))
-        })
-        .await?;
-
-    let mut contexts = build_context(raw, agent).await?;
-
-    contexts.push(user_content);
-
-    if let Some(system_prompt) = prompt {
-        contexts.insert(
-            0,
-            AiMessage::new_simple(Role::System, vec![Content::new_text(system_prompt)], None),
-        );
-    }
-
-    Ok((user_message, assistant_message, contexts))
+    main_raw.append(&mut raw);
+    create_context_inner(
+        storage,
+        agent_topic_id,
+        user_input,
+        main_raw,
+        agent,
+        chat_ctx,
+    )
+    .await
+}
+/// 为一次Agent对话创建完整的上下文：User消息、Assistant消息和历史消息列表
+pub async fn create_contexts(
+    storage: &Storage,
+    agent_topic_id: i64,
+    user_input: Vec<Content>,
+    agent: &AgentDefinition,
+    chat_ctx: &ChatContext,
+) -> Result<(Message, Message, Vec<AiMessage>)> {
+    let raw = get_message_contexts(storage, agent_topic_id).await?;
+    create_context_inner(storage, agent_topic_id, user_input, raw, agent, chat_ctx).await
 }
 
 /// 获取当前Topic的主Agent绑定
@@ -318,17 +287,6 @@ pub async fn update_binding(
     storage.agent().update_binding(binding_id, data).await
 }
 
-/// 判断MCP工具是否被允许：allowed_tools为空则默认允许，denied_tools中存在则拒绝
-fn is_tool_allowed(tool: &Tool, bindings: &[&AgentMcpBinding]) -> bool {
-    bindings.iter().any(|binding| {
-        // 为空默认允许，denied_tools 列表中存在时视为拒绝
-        let allowed = binding.allowed_tools.is_empty()
-            || binding.allowed_tools.iter().any(|name| name == &tool.name);
-        let denied = binding.denied_tools.iter().any(|name| name == &tool.name);
-        allowed && !denied
-    })
-}
-
 pub fn transfer_contexts(raw: Vec<Message>) -> Result<Vec<AiMessage>> {
     raw.into_iter()
         .map(|m| {
@@ -345,17 +303,96 @@ pub fn transfer_contexts(raw: Vec<Message>) -> Result<Vec<AiMessage>> {
         })
         .collect::<Result<Vec<AiMessage>>>()
 }
+
+async fn create_context_inner(
+    storage: &Storage,
+    agent_topic_id: i64,
+    user_input: Vec<Content>,
+    raw_contexts: Vec<Message>,
+    agent: &AgentDefinition,
+    chat_ctx: &ChatContext,
+) -> Result<(Message, Message, Vec<AiMessage>)> {
+    let prompt = assemble_prompt(storage, &agent).await?;
+    let stream = chat_ctx.req_config.stream.unwrap_or(true);
+
+    let user_content = AiMessage::new_simple(Role::User, user_input, None);
+
+    let content_cloned = user_content.clone();
+    let (user_message, assistant_message) = storage
+        .tx(|storage| async move {
+            let user = storage
+                .message()
+                .create(CreateMessage {
+                    from_id: None,
+                    stream,
+                    content: vec![content_cloned],
+                    model_id: chat_ctx.model.id,
+                    topic_id: agent_topic_id,
+                    is_boundary: false,
+                    is_exclude: false,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                })
+                .await?;
+
+            let assistant = storage
+                .message()
+                .create(CreateMessage {
+                    from_id: Some(user.id),
+                    stream,
+                    content: vec![AiMessage::new_simple(Role::Assistant, vec![], None)],
+                    model_id: chat_ctx.model.id,
+                    topic_id: agent_topic_id,
+                    is_boundary: false,
+                    is_exclude: false,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                })
+                .await?;
+
+            Ok((user, assistant))
+        })
+        .await?;
+
+    let mut contexts = build_context(raw_contexts, agent).await?;
+
+    contexts.push(user_content);
+
+    if let Some(system_prompt) = prompt {
+        contexts.insert(
+            0,
+            AiMessage::new_simple(Role::System, vec![Content::new_text(system_prompt)], None),
+        );
+    }
+
+    Ok((user_message, assistant_message, contexts))
+}
+
+/// 判断MCP工具是否被允许：allowed_tools为空则默认允许，denied_tools中存在则拒绝
+fn is_tool_allowed(tool: &Tool, bindings: &[&AgentMcpBinding]) -> bool {
+    bindings.iter().any(|binding| {
+        // 为空默认允许，denied_tools 列表中存在时视为拒绝
+        let allowed = binding.allowed_tools.is_empty()
+            || binding.allowed_tools.iter().any(|name| name == &tool.name);
+        let denied = binding.denied_tools.iter().any(|name| name == &tool.name);
+        allowed && !denied
+    })
+}
 /// 构建历史消息上下文
 ///
 /// 不校验消息上下文合理性，考虑以下情况：
 /// - (User, Assistant) 消息对缺失。比如User消息被删除后应该标记 Assistant 消息为`is_excluded`
 /// - 忽略MCP调用中间结果。历史消息上下文不会包含实时 MCP 调用产生的中间结果，只包含最终的结果，中间结果只在实时请求中包含
 async fn build_context(raw: Vec<Message>, agent: &AgentDefinition) -> Result<Vec<AiMessage>> {
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
+
     let max_context = agent
         .data
         .context_policy
         .max_context
-        .map(|c| if c < 1 { 1 } else { c as usize })
+        .map(|c| c.max(1) as usize)
         .unwrap_or(1);
 
     // 寻找系统消息和边界消息

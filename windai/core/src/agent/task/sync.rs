@@ -161,7 +161,7 @@ impl AgentHost for SyncHost {
 
 #[derive(Clone)]
 pub struct SyncTaskHandler {
-    pub binding_id: i64,
+    binding_id: i64,
     cmd_tx: mpsc::Sender<TaskCommand>,
 }
 

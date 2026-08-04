@@ -100,8 +100,8 @@ pub enum AgentMode {
     Sync,
     /// 后台执行，立即返回实例句柄。
     Background,
-    /// 长期团队协作模式。
-    Team,
+    // /// 长期团队协作模式。
+    // Team,
     /// fork 上下文分支模式。
     Fork,
 }
