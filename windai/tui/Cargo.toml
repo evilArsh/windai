@@ -1,0 +1,24 @@
+[package]
+name = "wind-tui"
+description = """
+tui application
+"""
+edition.workspace = true
+version.workspace = true
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+
+wind-mcp = { path = "../mcp" }
+wind-ai = { path = "../ai" }
+wind-rule = { path = "../rule" }
+wind-core = { path = "../core" }
+
+tokio.workspace = true
+thiserror.workspace = true
+
+crossterm = "0.29"
+ratatui = { version = "0.30" }
+[dev-dependencies]

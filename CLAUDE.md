@@ -22,6 +22,7 @@ wind-core  ──depends-on──>  wind-ai, wind-mcp, wind-rule
 wind-mcp   ──depends-on──>  rmcp
 wind-ai    ──depends-on──>  reqwest
 wind-rule  ──depends-on──>  evalexpr
+wind-tui   ──depends-on──>  wind-core, wind-ai, wind-mcp, wind-rule, ratatui, crossterm
 ```
 
 ### `wind-core` — Central orchestration
@@ -29,9 +30,13 @@ wind-rule  ──depends-on──>  evalexpr
 `WindCore` (`lib.rs`) owns a `SqlitePool` and a `RegistryHandle`. It exposes:
 
 ```rust
-WindCore::init()                                            // Standard init (creates its own Registry)
-WindCore::init_with_pool(pool)                              // Init with external pool (creates its own Registry)
-WindCore::init_with_pool_and_registry(pool, registry)       // Init with external pool + shared Registry (used in tests)
+WindCore::init_memory()                                          // In-memory SQLite (tests/ephemeral)
+WindCore::init_local(Some("/path/to/windai.db"))                 // File-backed SQLite (None = default path)
+WindCore::init_with_pool(pool)                                   // Init with external pool (creates its own Registry)
+WindCore::init_with_pool_and_registry(pool, registry)            // Init with external pool + shared Registry (used in tests)
+```
+
+`WindCore::init()` (private) is the internal constructor used by all public init methods.
 
 core.storage()              // &Storage — all CRUD access
 core.storage().provider()   // &ProviderStorage
@@ -39,13 +44,17 @@ core.storage().model()      // &ModelStorage
 core.storage().topic()      // &TopicStorage
 core.storage().message()    // &MessageStorage
 core.storage().mcp()        // &McpStorage
-core.chat()                 // ChatEngine — conversation loop
+core.storage().agent()      // &AgentStorage
+core.storage().prompt()     // &PromptStorage
+core.storage().approval()   // &ToolApprovalStorage
 core.registry()             // RegistryHandle — MCP client registry
 ```
 
-The `Storage` struct (`storage.rs`) wraps `ProviderStorage`, `ModelStorage`, `TopicStorage`, `MessageStorage`, `McpStorage`. All `create()` methods return `i64` (the new ID), not the full object — use `get()` to retrieve the record.
+The `Storage` struct (`storage.rs`) wraps `ProviderStorage`, `ModelStorage`, `TopicStorage`, `MessageStorage`, `McpStorage`, `AgentStorage`, `PromptStorage`, `ToolApprovalStorage`. All `create()` methods return `i64` (the new ID), not the full object — use `get()` to retrieve the record.
 
-**`init_id_generator(machine_id)`** must be called before any `create()` operation. `WindCore::init()` does this automatically; standalone tests using `XxxStorage` directly must call it in setup.
+**Transactions**: `storage.tx(|inner| async { ... }).await` provides transactional execution. For multi-step transactions, use `storage.begin().await` → `StorageTx` with `.commit()` / `.rollback()`.
+
+**`init_id_generator(machine_id)`** must be called before any `create()` operation. `WindCore::init_*()` methods do this automatically; standalone tests using `XxxStorage` directly must call it in setup. IDs are Snowflake-based via `ferroid`.
 
 **SQL macros** (`storage.rs`): `insert!`, `update!`, `update_fields!`, `insert_fields!`, `delete_by_id!`, `select_fields!`, `get_by_id!`. Values must be `Option`-wrapped; `None` fields are skipped. `update!` appends `updated_at` and `WHERE id = ?` automatically.
 
@@ -59,23 +68,104 @@ The `Storage` struct (`storage.rs`) wraps `ProviderStorage`, `ModelStorage`, `To
 ("content", data.content.as_ref().map(|c| utils::vec_to_str(Some(c)).unwrap()))
 ```
 
-**`ChatEngine`** (`chat/engine.rs`) — the core loop:
+**Entity IDs**: Use Snowflake IDs via `storage::next_id()`. Do NOT rely on SQLite auto-increment.
 
-1. `load_info()`: Fetch topic, model, provider, credentials, chat config, MCP tools from DB
-2. `build_chat_context()`: Build message history context (respects `is_boundary`, `max_context`). Messages after `user_message_id` are excluded — assistant content is added separately via `resume_tool_approval()`
-3. `start_prepare()`: Load the assistant message; check `.content.last()` to determine state:
-   - `None` → new chat → `start_chat()`
-   - `is_simple()` → already completed → error
-   - `is_tool_request()` or `is_tool_result()` → call `resume_tool_approval()`, which may return `Some(ChatEvent::AwaitToolCall)` (more tools need manual approval → yield event, save state, return) or `None` (all resolved → proceed to `start_chat()`)
-4. `start_chat()`: Build request via adaptor, apply JSON rules, send. Loop on tool calls.
+### Agent System
 
-**Chat events**: `Created → Partial × N → (AwaitToolCall → [resume])? → Finish`
+The agent system replaces the old direct `ChatEngine` approach with a hierarchical, multi-agent architecture. Each `Topic` gets a `TopicRuntime` that manages a tree of agent tasks.
 
-**Return type**: `start()` returns `Pin<Box<dyn Stream<Item = ChatEvent> + '_>>`. All stream return paths in `start_prepare()` must be wrapped in `Box::pin()`.
+#### Core concepts
+
+| Component | Role |
+|-----------|------|
+| `TopicRuntime` | Actor spawned per topic — owns the `TaskRegistry`, processes commands/notifications, coordinates parent-child agent relationships |
+| `TopicRuntimeHandle` | Cloneable handle to a running `TopicRuntime` — `create_chat()`, `cancel_task()`, `subscribe()` |
+| `TaskRegistry` | In-memory map of `binding_id → TaskEntry` tracking all running agents in a topic |
+| `SyncTask` | A task actor (one per agent instance) that wraps `AgentRuntime` — handles start/cancel commands |
+| `SyncTaskHandler` | Cloneable handle to `SyncTask` — `start()`, `cancel()` |
+| `AgentRuntime` | The actual LLM interaction loop — runs `ChatLoops`, handles tool calls including agent tools |
+| `AgentHost` | Trait (`async_trait`) — abstract interface for `AgentRuntime` to interact with the outside world (emit events, execute MCP tools, spawn sub-agents, list agents, list approvals) |
+| `SyncHost` | The `AgentHost` impl used by `SyncTask` — bridges `AgentRuntime` back to `TopicRuntime` via `TopicMailbox` |
+
+#### Agent lifecycle flow
+
+```
+User calls TopicRuntimeHandle::create_chat(user_input)
+  → TopicRuntime receives CreateChat command
+    → start_main_agent():
+      1. Checks registry — only one main agent at a time
+      2. Creates sub-topic for agent isolation
+      3. Loads AgentBinding, AgentDefinition, ChatContext (model/provider/credentials/rules/tools)
+      4. Creates user + assistant messages, emits MessageCreated events
+      5. Calls start_task() → creates SyncTask, registers in TaskRegistry
+      6. SyncTaskHandler::start(spec, config) → spawns AgentRuntime
+    → AgentRuntime::run():
+      Loop:
+        ChatLoops::run() → stream of ChatEvent
+        For each event:
+          Partial → emit MessageDelta
+          AwaitToolCall → make_tool_plan() → partition into:
+            - exec_mcp: execute via AgentHost::execute_tool_calls()
+            - exec_agent: parse agent calls, execute via AgentHost::spawn_agent()/list_agents()
+            - denied: inject "tool call denied" errors
+            - waiting: emit ApprovalRequired → pause until user approves
+          Finish → emit Completed or Failed
+```
+
+#### Agent modes
+
+| Mode | Behavior |
+|------|----------|
+| `Sync` | Runs synchronously; parent waits for completion before continuing |
+| `Fork` | Runs with a copy of the parent agent's message context (forked from main task) |
+| `Background` | Not yet implemented — designed for fire-and-forget sub-tasks |
+
+#### Agent tools (virtual tools injected for LLM)
+
+Agent tools use the `agent.` prefix (constant `AGENT_TOOL_PREFIX`). These are NOT MCP tools — they are intercepted by `AgentRuntime` and handled in-process.
+
+| Tool | Purpose |
+|------|---------|
+| `agent.list_agents` | List available agent bindings in the current topic (key, alias, description) |
+| `agent.spawn_agent` | Create a sub-agent with `agent_key`, `mode` (sync/background/fork), and `task` description |
+
+Multiple `list_agents` calls in a single tool-request batch are coalesced into one query via `parse_agent_action()`.
+
+#### Task mailbox protocol
+
+`TopicMailbox` carries three message types:
+
+- **`TopicCommand`** — external commands: `CreateChat`, `CancelTask`, `Approval`, `Shutdown`
+- **`TaskNotification`** — upward events from `SyncTask`: `Started`, `Message`, `WaitingApproval`, `Completed`, `Failed`, `Cancelled`
+- **`SupervisorRequest`** — internal requests between tasks: `SpawnAgent` (parent spawns child)
+
+#### TaskRegistry pending children
+
+When `AgentRuntime` processes a `spawn_agent` call, `TopicRuntime` inserts a `PendingChild` into the registry linking the parent and child `binding_id`s. When the child completes/fails, `walk_task()` resolves the pending entry and sends the `SpawnAgentResponse` back to the parent's waiting `oneshot` channel. This keeps the parent's AgentRuntime in a `WaitingChild` state until children finish.
+
+#### Topic events (broadcast)
+
+`TopicEvent` enum — external consumers subscribe via `TopicRuntimeHandle::subscribe()`:
+
+- `Error` — binding/topic/parent ids + error string
+- `Snapshot` — full message list for a topic
+- `MessageCreated` — new message persisted
+- `Message` — streaming delta chunk
+- `MessageFinished` — message complete
+- `TaskStatusChanged` — agent status transition
+- `ApprovalRequired` — tool calls need user review
+
+### Chat loops (low-level LLM interaction)
+
+`ChatLoops` (`chat/loops.rs`) is the internal engine that replaced the old public `ChatEngine`. It is used by `AgentRuntime`, not called directly by external code.
+
+**`ChatContext`**: Holds `Model`, `Provider`, `Credentials`, `ReqConfig`, `Option<JsonRule>`, `Option<Vec<Tools>>` — the resolved runtime config for an agent instance.
+
+**`ChatLoops::run()`**: Takes `ChatContext`, an `assistant` message, and `contexts` (message history). Returns a `Stream<Item = ChatEvent>`. Handles the tool-call loop internally: when `AwaitToolCall` events occur, `AgentRuntime` processes them (partition, execute MCP tools, execute agent tools, handle approvals) and resumes `ChatLoops::run()` with updated assistant + contexts.
 
 ### Tool Approval Flow
 
-Tool approval is governed by `ToolApprovalPolicy` on the `Topic`:
+Tool approval is governed by `ToolApprovalPolicy` on the `Topic` (or `AgentBinding`):
 
 ```rust
 pub enum ToolApprovalPolicy {
@@ -85,30 +175,20 @@ pub enum ToolApprovalPolicy {
 }
 ```
 
+**Agent-level override**: `AgentBinding.tool_approval_policy` overrides the topic-level policy for that agent instance.
+
 When the model requests tool calls:
 
-1. Engine appends `tool_request` to `assistant.content`
-2. `partition_tool_calls_by_policy()` splits tools into auto-approved and manual-review groups
-3. Auto-approved tools execute immediately and append results
-4. If manual-review tools remain → `assistant` saved to DB via `assistant.into()` → `UpdateMessage`, yield `AwaitToolCall`
-5. Caller sets `tools_allowed` (approve by call ID) or `tools_denied` (reject) via `message().update()`
-6. Caller re-invokes `engine.start()` — `start_prepare()` sees `is_tool_request()`, calls `resume_tool_approval()`
-7. `resume_tool_approval()` (`chat/function_call.rs`):
-   - `find_pending_calls()`: Reverse-scan `assistant.content` for unexecuted tool calls
-   - `contexts.extend(assistant.content.iter().cloned())` — restores previous context
-   - `partition_tool_calls_by_policy()` again: any policy-allowed tools execute immediately
-   - `allowed_set` vs `denied_set`: approved tools execute, denied tools get `{"error": "User denied this tool call"}`
-   - Unreviewed tools (not in `tools_allowed` or `tools_denied`) → return `Some(ChatEvent::AwaitToolCall)` for another approval round
-   - Clears `tools_allowed` and `tools_denied` to `Some(vec![])` after processing
-   - Returns error if no tools were approved/denied (prevents infinite loop)
-   - Append `tool_result` to both `assistant.content` and `contexts`
-8. Returning `Some(event)` → engine saves assistant state and yields the event; returning `None` → engine proceeds to `start_chat()`
+1. `AgentRuntime` calls `make_tool_plan()` which first checks `ToolApprovalStorage` for existing approval records on the current message
+2. Calls that have `Approved`/`Denied` status are resolved accordingly
+3. Unhandled calls are partitioned via `partition_tool_calls_by_policy()`
+4. Approved calls split into MCP tools (executed via `AgentHost::execute_tool_calls()`) and agent tools (parsed by `parse_agent_action()` and executed via `AgentHost::spawn_agent()`/`list_agents()`)
+5. Waiting calls trigger `ApprovalRequired` — `SyncHost` bubbles this up via `TaskNotification::WaitingApproval`
+6. `TopicRuntime::handle_task_notification` calls `helper::save_approval_state()` which persists `ToolApprovalRequest` rows in the DB AND persists the assistant message state
+7. External caller sends `Approval` command with `allow_ids`/`deny_ids`
+8. `TopicRuntime::apply_approvals()` calls `ToolApprovalStorage::batch_set_status()` then `resume_task()` which re-loads the agent state and calls `AgentRuntime::run()` again
 
-**`From<Message> for UpdateMessage`** (`models.rs`) preserves `tools_allowed` and `tools_denied` from the source message. Do NOT set them to `None` — that would clear the approval state on save.
-
-**Rejection markers**: Denied tools get `FunctionCallOutput` with `content: {"error": "User denied this tool call"}`. Tests assert these markers are absent in the approve path.
-
-**`resume_tool_approval()` returns `Option<ChatEvent>`**: `None` means all pending tools are resolved; `Some(AwaitToolCall)` means unreviewed tools remain and need another approval round. This supports batch-partitioned approval where the user may approve only a subset of tools per round.
+**Rejection markers**: Denied tools get `{"error": "tool call denied", "tool": "..."}` in their `FunctionCallOutput`.
 
 ### `wind-ai` — Provider abstraction
 
@@ -147,9 +227,27 @@ Rules stored in `json_rule` table keyed by `(provider_id, adaptor)`. Applied to 
 | `compute` | Evaluate `evalexpr` over `$value` + `$ctx.*` → replace field |
 | `when` | Conditional: `cond` (eq/neq/gt/lt/contains/and/or/not/in) with `then`/`else` sub-rules |
 
+### `wind-tui` — Terminal UI
+
+Skeleton TUI application using `ratatui` + `crossterm`. Depends on all other crates. Currently renders a placeholder — the app loop + event handling structure is in place for further development.
+
 ### Database tables (SQLite, `schema.rs`)
 
-`providers`, `models`, `credentials`, `topics` (with `tool_approval_policy` JSON column), `messages`, `chat_configs`, `mcp_servers`, `topic_mcp_servers`, `json_rule`.
+`providers`, `models`, `credentials`, `topics`, `messages`, `chat_configs`, `mcp_servers`, `json_rule`, `prompt_modules`, `agent_definitions`, `topic_agent_bindings`, `tool_approval_requests`.
+
+**Key constraints**: `topic_agent_bindings` has a partial unique index ensuring at most one enabled `main` role binding per `parent_topic_id`.
+
+### Agent data model
+
+**`AgentDefinition`** — what an agent *can do* (key, name, description, scope, prompt_modules, mcp_servers, context_policy, permission_policy, runtime_limits). Scopes: `Global` (reusable) or `TopicLocal` (topic-specific clone).
+
+**`AgentBinding`** (`topic_agent_bindings`) — an agent *instance* in a topic (agent_id, role: `Main`/`Child`, mode: `Sync`/`Fork`/`Background`, status, model_id, chat_config_id, tool_approval_policy).
+
+**`AgentStatus`**: `Created → Running → (WaitingApproval | WaitingChild) → Finished | Failed | Cancelled`
+
+**`PromptModule`** — reusable prompt fragments assembled into an agent's system prompt. Referenced by `AgentDefinitionData.prompt_modules`.
+
+**`ToolApprovalRequest`** — persisted per-tool-call approval record (binding_id, topic_id, message_id, tool_call_id, tool_name, arguments, status: `Pending`/`Approved`/`Denied`).
 
 ### Test organization
 
@@ -189,8 +287,28 @@ Rules stored in `json_rule` table keyed by `(provider_id, adaptor)`. Applied to 
 
 **MCP tool flow:** Topic → `topic_mcp_servers` → Registry acquire → tools discovered → prefixed names → `tool_calls` in response → `partition_tool_calls_by_policy()` splits by `Topic.tool_approval_policy` → auto-approved execute immediately, manual-review yield `AwaitToolCall` → `resume_tool_approval()` on resume → results as context → loop.
 
-**`ToolApprovalPolicy`**: Per-topic enum controlling tool execution: `AllowAll` (default — all auto-execute), `AllowList(Vec<String>)` (listed tool names auto-execute), `Manual` (all require approval). Stored as JSON in the `topics.tool_approval_policy` column. Replaces the old `auto_approves: Option<Vec<String>>` field. MCP-server-level `auto_approves` has been removed entirely — approval policy is now topic-scoped only.
+**Agent tool flow:** LLM calls `agent.list_agents` or `agent.spawn_agent` → `AgentRuntime.handle_await_tool_call()` identifies agent-prefixed calls → `parse_agent_action()` coalesces duplicate `list_agents` → `AgentHost::spawn_agent()` sends `SupervisorRequest::SpawnAgent` to `TopicRuntime` → `TopicRuntime` spawns child `SyncTask` → when child completes, `walk_task()` resolves the pending entry and sends response back.
+
+**`ToolApprovalPolicy`**: Per-topic OR per-agent-binding enum controlling tool execution: `AllowAll` (default — all auto-execute), `AllowList(Vec<String>)` (listed tool names auto-execute), `Manual` (all require approval). Stored as JSON in the `topics.tool_approval_policy` / `topic_agent_bindings.tool_approval_policy` column. Agent-binding-level policy overrides topic-level.
 
 **`create()` returns `i64`:** Call `get(id)` to retrieve the full record. This allows batch operations to allocate IDs without re-fetching.
 
-**`build_chat_context()`** (`chat/context.rs`): Builds context from `raw_messages` up to `user_message_id` (messages after it are split off). For each message, pops the last content item — must be `is_simple()`. Assistant content (tool call frames) is added separately by `resume_tool_approval()` via `contexts.extend(assistant.content.iter().cloned())`.
+**Agent topic isolation**: Each agent instance gets its own sub-topic (created via `helper::create_sub_topic()`). Messages from agent interactions are isolated to that sub-topic. The `parent_topic_id` on `AgentBinding` tracks the root topic that owns the agent hierarchy.
+
+**`From<Message> for UpdateMessage`** (`models.rs`) preserves fields from the source message. Do NOT set optional fields to `None` unless you intend to clear them.
+
+**Fork mode context**: When spawning an agent in `Fork` mode, `helper::create_fork_contexts()` copies the main agent's message history as the child's starting context — enabling the child to have full visibility of the parent's conversation.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues on `evilArsh/windai` — use the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-label vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout — one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
