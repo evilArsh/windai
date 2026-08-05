@@ -8,7 +8,6 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use wind_ai::message::Content;
 use wind_ai::message::Message as AiMessage;
-use wind_ai::tool::FunctionCall;
 
 use super::task::SupervisorRequest;
 use super::task::TaskNotification;

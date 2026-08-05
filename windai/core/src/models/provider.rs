@@ -4,7 +4,7 @@ use sqlx::Row;
 use crate::db::DbRow;
 
 /// 提供商账号
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Credentials {
     pub id: i64,
     pub provider_id: i64,
@@ -22,6 +22,31 @@ impl<'s> sqlx::FromRow<'s, DbRow> for Credentials {
             key: row.get("key"),
             created_at: row.get("created_at"),
         })
+    }
+}
+impl std::fmt::Display for Credentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Credentials {{ id: {}, provider_id: {}, key: {}, created_at: {}, active: {} }}",
+            self.id,
+            self.provider_id,
+            "*".repeat(self.key.len()),
+            self.created_at,
+            self.active
+        )
+    }
+}
+
+impl std::fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Credentials")
+            .field("id", &self.id)
+            .field("provider_id", &self.provider_id)
+            .field("key", &"*".repeat(self.key.len())) // 脱敏
+            .field("created_at", &self.created_at)
+            .field("active", &self.active)
+            .finish()
     }
 }
 

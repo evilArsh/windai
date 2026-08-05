@@ -163,7 +163,6 @@ impl AgentStorage {
             TableName::TOPIC_AGENT_BINDINGS,
             ("id", id),
             ("parent_topic_id", data.parent_topic_id),
-            ("topic_id", data.topic_id),
             ("agent_id", data.agent_id),
             ("role", data.role.to_string()),
             ("model_id", data.model_id),
@@ -177,7 +176,6 @@ impl AgentStorage {
 
         Ok(AgentBinding {
             id,
-            topic_id: data.topic_id,
             parent_topic_id: data.parent_topic_id,
             agent_id: data.agent_id,
             mode: None,
@@ -364,7 +362,6 @@ impl AgentStorage {
             (
                 "id",
                 "parent_topic_id",
-                "topic_id",
                 "agent_id",
                 "role",
                 "model_id",

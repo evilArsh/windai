@@ -44,11 +44,13 @@ impl TopicStorage {
     pub async fn create(&self, data: CreateTopic) -> Result<Topic> {
         let id = next_id();
         let parent_id = data.parent_id;
+        let binding_id = data.binding_id;
         let now = now_ts();
         let mut qb = insert!(
             TableName::TOPICS,
             ("id", id),
             ("parent_id", parent_id),
+            ("binding_id", binding_id),
             ("label", data.label.clone()),
             ("icon", data.icon.clone()),
             ("created_at", now),
@@ -58,6 +60,7 @@ impl TopicStorage {
         Ok(Topic {
             id,
             parent_id,
+            binding_id,
             label: data.label,
             icon: data.icon,
             created_at: now,
@@ -91,6 +94,22 @@ impl TopicStorage {
     pub async fn get_topic(&self, id: i64) -> Result<Option<Topic>> {
         let mut qb = Self::select_topic();
         qb.push(" WHERE id = ").push_bind(id);
+        let row = self
+            .executor
+            .fetch_optional(qb.build_query_as::<Topic>())
+            .await?;
+
+        Ok(row)
+    }
+
+    pub async fn get_topic_by_binding_id(
+        &self,
+        parent_topic: i64,
+        binding_id: i64,
+    ) -> Result<Option<Topic>> {
+        let mut qb = Self::select_topic();
+        qb.push(" WHERE binding_id = ").push_bind(binding_id);
+        qb.push(" AND parent_id = ").push_bind(parent_topic);
         let row = self
             .executor
             .fetch_optional(qb.build_query_as::<Topic>())

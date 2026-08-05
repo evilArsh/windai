@@ -14,7 +14,7 @@ use crate::models::{
     ToolApprovalStatus, UpdateAgentBinding,
 };
 use crate::storage::Storage;
-use futures::future::{join_all, try_join};
+use futures::future::try_join;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use wind_ai::message::{Content, Message as AiMessage};
@@ -28,6 +28,7 @@ macro_rules! try_send_log {
     };
 }
 
+#[derive(Clone)]
 pub struct TopicRuntimeHandle {
     mailbox: TopicMailbox,
     events: broadcast::Sender<TopicEvent>,
@@ -90,6 +91,7 @@ pub struct TopicRuntime {
 impl TopicRuntime {
     /// 创建顶层Topic运行时
     pub fn spawn(
+        ctx: CancellationToken,
         topic_id: i64,
         mcp_registry: RegistryHandle,
         storage: Storage,
@@ -97,9 +99,8 @@ impl TopicRuntime {
         let (tx, rx) = mpsc::channel(256);
         let mailbox = TopicMailbox::new(tx);
         let (events, _) = broadcast::channel(1024);
-        let root_ctx = CancellationToken::new();
         let runtime = Self {
-            ctx: root_ctx.clone(),
+            ctx,
             topic_id,
             mailbox: mailbox.clone(),
             mailbox_rx: rx,
@@ -115,7 +116,32 @@ impl TopicRuntime {
     }
 
     fn emit(&self, event: TopicEvent) {
-        let _ = self.app_rx.send(event);
+        log::debug!("[TopicEvent] {:?}", event);
+        let mut is_main_finished = false;
+        match event {
+            TopicEvent::Error { binding_id, .. } => {
+                if self.registry.is_main_task(binding_id) {
+                    is_main_finished = true
+                }
+            }
+            TopicEvent::ApprovalRequired { binding_id, .. } => {
+                if self.registry.is_main_task(binding_id) {
+                    is_main_finished = true
+                }
+            }
+            TopicEvent::MessageFinished { binding_id, .. } => {
+                if self.registry.is_main_task(binding_id) {
+                    is_main_finished = true
+                }
+            }
+            _ => {}
+        }
+        if let Err(err) = self.app_rx.send(event) {
+            log::error!("emit error: {}", err.to_string())
+        }
+        if is_main_finished {
+            self.ctx.cancel();
+        }
     }
 
     async fn run(mut self) {
@@ -124,7 +150,7 @@ impl TopicRuntime {
                 biased;
 
                 _ = self.ctx.cancelled() => {
-                    // TODO: more
+                    let _ = self.shutdown().await;
                     break;
                 }
 
@@ -134,6 +160,7 @@ impl TopicRuntime {
                             self.handle_command(command).await;
                         }
                         TopicMsg::Task(notification) => {
+                            log::debug!("[TaskNotification] {:#?}", notification);
                             self.handle_task_notification(notification).await;
                         }
                         TopicMsg::Supervisor(request) => {
@@ -148,6 +175,7 @@ impl TopicRuntime {
         }
     }
     async fn handle_command(&mut self, command: TopicCommand) {
+        log::debug!("[TopicCommand] {:?}", command);
         match command {
             TopicCommand::CreateChat { user_input, reply } => {
                 let result = self.start_main_agent(user_input).await;
@@ -158,8 +186,8 @@ impl TopicRuntime {
                 try_send_log!(reply, result, "CancelTask");
             }
             TopicCommand::Shutdown { reply } => {
-                let result = self.shutdown().await;
-                try_send_log!(reply, result, "Shutdown");
+                let result = self.ctx.cancel();
+                try_send_log!(reply, Ok(result), "Shutdown");
             }
             TopicCommand::Approval {
                 binding_id,
@@ -383,6 +411,7 @@ impl TopicRuntime {
         let agent_topic = helper::create_sub_topic(
             &tx.storage(),
             self.topic_id,
+            binding.id,
             format!("#sub-{}-agent", request.mode),
         )
         .await?;
@@ -449,17 +478,31 @@ impl TopicRuntime {
         }
 
         let binding = helper::get_main_binding(&self.storage, self.topic_id).await?;
+        log::debug!("[start_main_agent] get binding: {:#?}", binding);
         let agent = helper::get_def_by_id(&self.storage, binding.agent_id).await?;
+        log::debug!("[start_main_agent] get agent: {:#?}", agent);
         let chat_ctx =
             helper::get_base_info(&self.storage, &self.mcp_registry, &binding, &agent).await?;
+        log::debug!("[start_main_agent] get chat_ctx: {:#?}", chat_ctx);
 
         let tx = self.storage.begin().await?;
-        let agent_topic =
-            helper::create_sub_topic(&tx.storage(), self.topic_id, format!("#main-agent")).await?;
+        let agent_topic = helper::create_sub_topic(
+            &tx.storage(),
+            self.topic_id,
+            binding.id,
+            format!("#main-agent"),
+        )
+        .await?;
+        log::debug!("[start_main_agent] create agent_topic: {:#?}", agent_topic);
         let (user, assistant, contexts) =
             helper::create_contexts(&tx.storage(), agent_topic.id, user_input, &agent, &chat_ctx)
                 .await?;
 
+        log::debug!("[start_main_agent] create user_message: {:#?}", user);
+        log::debug!(
+            "[start_main_agent] create assistant_message: {:#?}",
+            assistant
+        );
         tx.commit().await?;
 
         self.emit(TopicEvent::MessageCreated {
@@ -496,15 +539,17 @@ impl TopicRuntime {
 
         let binding = helper::get_binding_by_id(&self.storage, binding_id).await?;
         let agent = helper::get_def_by_id(&self.storage, binding.agent_id).await?;
+        let agent_topic =
+            helper::get_topic_by_binding_id(&self.storage, self.topic_id, binding_id).await?;
 
         let (chat_ctx, contexts) = try_join(
             helper::get_base_info(&self.storage, &self.mcp_registry, &binding, &agent),
-            helper::get_message_contexts(&self.storage, binding.topic_id),
+            helper::get_message_contexts(&self.storage, agent_topic.id),
         )
         .await?;
 
         let assistant = contexts.last().cloned().ok_or_else(|| {
-            CoreError::Internal(format!("no assistant in this topic: {}", binding.topic_id))
+            CoreError::Internal(format!("no assistant in this topic: {}", agent_topic.id))
         })?;
         let contexts = helper::transfer_contexts(contexts)?;
 
@@ -527,7 +572,7 @@ impl TopicRuntime {
                     spec,
                     AgentRunConfig {
                         binding_id: binding.id,
-                        topic_id: binding.topic_id,
+                        topic_id: agent_topic.id,
                         parent_topic_id: binding.parent_topic_id,
                         tool_approval_policy: binding.tool_approval_policy,
                     },
@@ -555,6 +600,8 @@ impl TopicRuntime {
         agent: AgentDefinition,
         binding: AgentBinding,
     ) -> Result<()> {
+        let topic_id = assistant.topic_id;
+
         let spec = TaskSpec {
             binding_id: binding.id,
             agent,
@@ -573,7 +620,7 @@ impl TopicRuntime {
                 let sync_handle = SyncTask::spawn(
                     self.ctx.child_token(),
                     binding.id,
-                    binding.topic_id,
+                    topic_id,
                     self.mailbox.clone(),
                     self.storage.clone(),
                     self.mcp_registry.clone(),
@@ -581,7 +628,7 @@ impl TopicRuntime {
 
                 let entry = self.registry.upsert(TaskEntry::new(
                     binding.id,
-                    binding.topic_id,
+                    topic_id,
                     binding.role,
                     sync_handle,
                 ));
@@ -592,7 +639,7 @@ impl TopicRuntime {
                         spec,
                         AgentRunConfig {
                             binding_id: binding.id,
-                            topic_id: binding.topic_id,
+                            topic_id,
                             parent_topic_id: binding.parent_topic_id,
                             tool_approval_policy: binding.tool_approval_policy,
                         },
@@ -621,22 +668,7 @@ impl TopicRuntime {
     }
 
     async fn shutdown(&mut self) -> Result<()> {
-        let handles: Vec<_> = self
-            .registry
-            .get_entries()
-            .into_iter()
-            .map(|entry| entry.handler.clone())
-            .collect();
-
-        join_all(handles.into_iter().map(|handle| async move {
-            if let Err(e) = handle.cancel().await {
-                log::error!("shutdown cancel error: {}", e);
-            }
-        }))
-        .await;
-
-        self.ctx.cancel();
-
+        self.registry.close().await;
         Ok(())
     }
 
@@ -726,5 +758,11 @@ impl TopicRuntime {
         } else {
             log::warn!("task not found, binding_id: {}", binding_id);
         }
+    }
+}
+
+impl Drop for TopicRuntime {
+    fn drop(&mut self) {
+        self.ctx.cancel();
     }
 }

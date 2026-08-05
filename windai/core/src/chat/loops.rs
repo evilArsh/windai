@@ -21,7 +21,7 @@ use wind_ai::{
 };
 use wind_rule::RuleSet;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ChatContext {
     pub model: Model,
     pub provider: Provider,

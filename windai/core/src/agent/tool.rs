@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 use wind_ai::message::Content;
 use wind_ai::tool::{FunctionCall, FunctionTool, Tools};
 
-pub const AGENT_TOOL_PREFIX: &str = "agent.";
-const LIST_AGENTS_NAME: &str = "agent.list_agents";
-const SPAWN_AGENT_NAME: &str = "agent.spawn_agent";
+pub const AGENT_TOOL_PREFIX: &str = "agent_";
+const LIST_AGENTS_NAME: &str = "agent_list_agents";
+const SPAWN_AGENT_NAME: &str = "agent_spawn_agent";
 
 /// list_agents 的响应。
 #[derive(Debug, Serialize, Deserialize, Clone)]

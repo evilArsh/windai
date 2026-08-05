@@ -7,6 +7,7 @@ use sqlx::Row;
 pub struct Topic {
     pub id: i64,
     pub parent_id: Option<i64>,
+    pub binding_id: Option<i64>,
     /// 话题标签
     pub label: String,
     pub icon: Option<String>,
@@ -17,6 +18,7 @@ impl<'s> sqlx::FromRow<'s, DbRow> for Topic {
     fn from_row(row: &'s DbRow) -> Result<Self, sqlx::Error> {
         Ok(Topic {
             id: row.get("id"),
+            binding_id: row.get("binding_id"),
             icon: row.get("icon"),
             created_at: row.get("created_at"),
             parent_id: row.get("parent_id"),
@@ -42,6 +44,7 @@ impl Default for ToolApprovalPolicy {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CreateTopic {
     pub parent_id: Option<i64>,
+    pub binding_id: Option<i64>,
     pub label: String,
     pub icon: Option<String>,
 }

@@ -59,15 +59,19 @@ pub fn load_env() -> Env {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(AdapterType::OpenAICompletion),
-        test_endpoint: var("TEST_ENDPOINT").ok(),
+        test_endpoint: var("TEST_ENDPOINT").ok().filter(|s| !s.is_empty()),
         test_mcp_completion_key: var("TEST_MCP_COMPLETION_KEY").unwrap_or_default(),
         test_mcp_completion_model: var("TEST_MCP_COMPLETION_MODEL").unwrap_or_default(),
         test_mcp_completion_base_url: var("TEST_MCP_COMPLETION_BASE_URL").unwrap_or_default(),
-        test_mcp_completion_endpoint: var("TEST_MCP_COMPLETION_ENDPOINT").ok(),
+        test_mcp_completion_endpoint: var("TEST_MCP_COMPLETION_ENDPOINT")
+            .ok()
+            .filter(|s| !s.is_empty()),
         test_mcp_responses_key: var("TEST_MCP_RESPONSES_KEY").unwrap_or_default(),
         test_mcp_responses_model: var("TEST_MCP_RESPONSES_MODEL").unwrap_or_default(),
         test_mcp_responses_base_url: var("TEST_MCP_RESPONSES_BASE_URL").unwrap_or_default(),
-        test_mcp_responses_endpoint: var("TEST_MCP_RESPONSES_ENDPOINT").ok(),
+        test_mcp_responses_endpoint: var("TEST_MCP_RESPONSES_ENDPOINT")
+            .ok()
+            .filter(|s| !s.is_empty()),
     };
     // log::info!("env: {:#?}", &env);
     env

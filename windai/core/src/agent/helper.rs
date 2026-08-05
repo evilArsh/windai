@@ -42,6 +42,7 @@ pub async fn list_approval_requests(
 pub async fn create_sub_topic(
     storage: &Storage,
     parent_topic_id: i64,
+    binding_id: i64,
     title: String,
 ) -> Result<Topic> {
     storage
@@ -49,6 +50,7 @@ pub async fn create_sub_topic(
         .create(CreateTopic {
             label: title,
             parent_id: Some(parent_topic_id),
+            binding_id: Some(binding_id),
             icon: None,
         })
         .await
@@ -137,7 +139,17 @@ pub async fn get_binding_by_id(storage: &Storage, binding_id: i64) -> Result<Age
         .await?
         .ok_or_else(|| CoreError::RowNotFound(format!("agent binding by id: {}", binding_id)))
 }
-
+pub async fn get_topic_by_binding_id(
+    storage: &Storage,
+    parent_topic_id: i64,
+    binding_id: i64,
+) -> Result<Topic> {
+    storage
+        .topic()
+        .get_topic_by_binding_id(parent_topic_id, binding_id)
+        .await?
+        .ok_or_else(|| CoreError::RowNotFound(format!("topic by binding_id: {}", binding_id)))
+}
 /// 通过Agent ID获取Agent定义（会校验active状态）
 pub async fn get_def_by_id(storage: &Storage, agent_id: i64) -> Result<AgentDefinition> {
     let agent = storage
@@ -340,7 +352,8 @@ async fn create_context_inner(
                 .create(CreateMessage {
                     from_id: Some(user.id),
                     stream,
-                    content: vec![AiMessage::new_simple(Role::Assistant, vec![], None)],
+                    // content: vec![AiMessage::new_simple(Role::Assistant, vec![], None)],
+                    content: vec![],
                     model_id: chat_ctx.model.id,
                     topic_id: agent_topic_id,
                     is_boundary: false,

@@ -91,6 +91,7 @@ pub enum TaskNotification {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct TaskSpec {
     pub binding_id: i64,
     /// Agent 能力定义
@@ -109,6 +110,7 @@ pub struct TaskSpec {
     pub contexts: Vec<AiMessage>,
 }
 
+#[allow(dead_code)]
 pub struct PendingChild {
     pub parent_binding_id: i64,
     pub binding_id: i64,
@@ -220,11 +222,30 @@ impl TaskRegistry {
         self.binding_map.get(&binding_id)
     }
 
-    pub fn get_entries(&self) -> impl Iterator<Item = &TaskEntry> {
-        self.binding_map.values()
-    }
-
     pub fn main_entry(&self) -> Option<&TaskEntry> {
         self.main_binding_id.and_then(|id| self.get_entry(id))
+    }
+
+    pub fn is_main_task(&self, binding_id: i64) -> bool {
+        self.main_binding_id
+            .map(|id| id == binding_id)
+            .unwrap_or(false)
+    }
+
+    /// 并发批量取消所有运行中的任务并清空注册表
+    pub async fn close(&mut self) {
+        let cancels = self
+            .binding_map
+            .values_mut()
+            .map(|entry| async move {
+                if let Err(e) = entry.handler.cancel().await {
+                    log::error!("shutdown cancel error: {}", e);
+                }
+            })
+            .collect::<Vec<_>>();
+        futures::future::join_all(cancels).await;
+        // self.binding_map.clear();
+        self.pending.clear();
+        self.main_binding_id = None;
     }
 }

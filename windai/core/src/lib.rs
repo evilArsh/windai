@@ -7,15 +7,23 @@ pub mod models;
 pub mod schema;
 pub mod storage;
 
+use crate::agent::topic::{TopicRuntime, TopicRuntimeHandle};
+
 use self::storage::Storage;
 use db::DbPool;
 use error::Result;
-use std::path::Path;
+use std::{
+    collections::{HashMap, hash_map::Entry},
+    path::Path,
+};
+use tokio_util::sync::CancellationToken;
 use wind_mcp::client::registry::{Registry, RegistryHandle};
 
 pub struct WindCore {
+    ctx: CancellationToken,
     mcp: RegistryHandle,
     storage: Storage,
+    topic_handler: HashMap<i64, TopicRuntimeHandle>,
 }
 
 impl WindCore {
@@ -68,21 +76,46 @@ impl WindCore {
         schema::init_schema(&pool).await?;
         storage::init_id_generator(0);
         Ok(Self {
+            ctx: CancellationToken::new(),
             mcp,
             storage: Storage::new(pool),
+            topic_handler: HashMap::new(),
         })
     }
     pub fn storage(&self) -> &Storage {
         &self.storage
     }
-    pub fn registry(&self) -> RegistryHandle {
-        self.mcp.clone()
+    pub fn registry(&self) -> &RegistryHandle {
+        &self.mcp
+    }
+
+    /// 获取一个 topic 的运行时句柄
+    ///
+    /// # Panic
+    /// 如果 core 已经被关闭，将会 panic
+    pub fn fetch_topic(&mut self, topic_id: i64) -> &TopicRuntimeHandle {
+        if self.ctx.is_cancelled() {
+            panic!("core is shutdown")
+        }
+
+        match self.topic_handler.entry(topic_id) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                let handler = TopicRuntime::spawn(
+                    self.ctx.child_token(),
+                    topic_id,
+                    self.mcp.clone(),
+                    self.storage.clone(),
+                );
+                entry.insert(handler)
+            }
+        }
     }
     /// 关闭所有服务
     /// - 关闭所有 MCP 客户端
     pub async fn shutdown(&self) {
+        self.ctx.cancel();
         self.mcp.shutdown().await;
         self.storage.close().await;
-        // TODO: 关闭所有topicruntime
     }
 }

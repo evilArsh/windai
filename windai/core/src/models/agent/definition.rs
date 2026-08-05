@@ -120,7 +120,7 @@ pub struct CreateAgentDefinition {
     pub description: String,
     /// Agent 作用域。
     pub scope: AgentScope,
-    /// Topic 专属 Agent 的所属 Topic id。
+    /// 当 scope 为 topic_local 时，表示该 Agent 专属的 Topic id。
     pub owner_topic_id: Option<i64>,
     /// 复制来源 Agent id。
     pub cloned_from_agent_id: Option<i64>,
