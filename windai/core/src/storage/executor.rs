@@ -59,31 +59,28 @@ pub(crate) struct StorageExecutor {
 }
 
 impl StorageExecutor {
-    pub(crate) fn pool(pool: DbPool) -> Self {
+    /// 创建一个普通执行器
+    pub(crate) fn new(pool: DbPool) -> Self {
         Self { pool, tx: None }
     }
 
     /// 创建一个新的事务执行器
-    pub(crate) async fn transaction(pool: DbPool) -> Result<Self> {
+    pub(crate) async fn new_transaction(pool: DbPool) -> Result<Self> {
         Ok(Self {
             tx: Some(Arc::new(Mutex::new(Some(pool.begin().await?)))),
             pool,
         })
     }
 
-    pub(crate) fn pool_ref(&self) -> &DbPool {
+    pub(crate) fn pool(&self) -> &DbPool {
         &self.pool
-    }
-
-    pub(crate) fn pool_clone(&self) -> DbPool {
-        self.pool.clone()
     }
 
     pub(crate) fn is_transaction(&self) -> bool {
         self.tx.is_some()
     }
 
-    pub(crate) async fn transaction_required<F, Fut, T>(&self, f: F) -> Result<T>
+    pub(crate) async fn with_tx<F, Fut, T>(&self, f: F) -> Result<T>
     where
         F: FnOnce(Self) -> Fut,
         Fut: Future<Output = Result<T>>,
@@ -92,7 +89,7 @@ impl StorageExecutor {
             return f(self.clone()).await;
         }
 
-        let tx_executor = Self::transaction(self.pool_clone()).await?;
+        let tx_executor = Self::new_transaction(self.pool().clone()).await?;
         let result = f(tx_executor.clone()).await;
         match result {
             Ok(value) => {

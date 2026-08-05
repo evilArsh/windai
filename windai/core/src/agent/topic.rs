@@ -362,12 +362,6 @@ impl TopicRuntime {
 
     /// 启动一个同步任务并且返回任务ID(binding_id)
     async fn spawn_agent(&mut self, request: SpawnAgentRequest) -> Result<i64> {
-        let agent_topic = helper::create_sub_topic(
-            &self.storage,
-            self.topic_id,
-            format!("#sub-{}-agent", request.mode),
-        )
-        .await?;
         let agent = helper::get_def_by_key(&self.storage, &request.agent_key).await?;
         let binding =
             helper::get_binding_by_agent_id(&self.storage, self.topic_id, agent.id).await?;
@@ -385,12 +379,20 @@ impl TopicRuntime {
             helper::get_base_info(&self.storage, &self.mcp_registry, &binding, &agent).await?;
         let binding_id = binding.id;
 
+        let tx = self.storage.begin().await?;
+        let agent_topic = helper::create_sub_topic(
+            &tx.storage(),
+            self.topic_id,
+            format!("#sub-{}-agent", request.mode),
+        )
+        .await?;
+
         let user_input = vec![Content::new_text(request.task)];
         let (user, assistant, contexts) = match mode {
             AgentMode::Fork => match self.registry.main_entry() {
                 Some(entry) => {
                     helper::create_fork_contexts(
-                        &self.storage,
+                        &tx.storage(),
                         entry.topic_id,
                         agent_topic.id,
                         user_input,
@@ -407,7 +409,7 @@ impl TopicRuntime {
             },
             AgentMode::Sync | AgentMode::Background => {
                 helper::create_contexts(
-                    &self.storage,
+                    &tx.storage(),
                     agent_topic.id,
                     user_input,
                     &agent,
@@ -416,6 +418,8 @@ impl TopicRuntime {
                 .await?
             }
         };
+
+        tx.commit().await?;
 
         self.emit(TopicEvent::MessageCreated {
             topic_id: agent_topic.id,
@@ -443,16 +447,20 @@ impl TopicRuntime {
         {
             return Err(CoreError::Internal("main agent is running".into()));
         }
-        let agent_topic =
-            helper::create_sub_topic(&self.storage, self.topic_id, format!("#main-agent")).await?;
+
         let binding = helper::get_main_binding(&self.storage, self.topic_id).await?;
         let agent = helper::get_def_by_id(&self.storage, binding.agent_id).await?;
         let chat_ctx =
             helper::get_base_info(&self.storage, &self.mcp_registry, &binding, &agent).await?;
 
+        let tx = self.storage.begin().await?;
+        let agent_topic =
+            helper::create_sub_topic(&tx.storage(), self.topic_id, format!("#main-agent")).await?;
         let (user, assistant, contexts) =
-            helper::create_contexts(&self.storage, agent_topic.id, user_input, &agent, &chat_ctx)
+            helper::create_contexts(&tx.storage(), agent_topic.id, user_input, &agent, &chat_ctx)
                 .await?;
+
+        tx.commit().await?;
 
         self.emit(TopicEvent::MessageCreated {
             topic_id: agent_topic.id,

@@ -70,9 +70,7 @@ impl ProviderStorage {
     /// 创建提供商，提供商名称必须唯一
     pub async fn create(&self, data: CreateProvider) -> Result<Provider> {
         self.executor
-            .transaction_required(
-                |executor| async move { Self::new(executor).create_inner(data).await },
-            )
+            .with_tx(|executor| async move { Self::new(executor).create_inner(data).await })
             .await
     }
 
@@ -114,9 +112,7 @@ impl ProviderStorage {
 
     pub async fn update(&self, id: i64, data: UpdateProvider) -> Result<()> {
         self.executor
-            .transaction_required(|executor| async move {
-                Self::new(executor).update_inner(id, data).await
-            })
+            .with_tx(|executor| async move { Self::new(executor).update_inner(id, data).await })
             .await
     }
 
@@ -148,7 +144,7 @@ impl ProviderStorage {
 
     pub async fn delete(&self, id: i64) -> Result<()> {
         self.executor
-            .transaction_required(|executor| async move {
+            .with_tx(|executor| async move {
                 Self::delete_by_column(&executor, TableName::PROVIDERS, "id", id).await?;
                 Self::delete_by_column(&executor, "credentials", "provider_id", id).await?;
                 Self::delete_by_column(&executor, "json_rule", "provider_id", id).await?;

@@ -54,7 +54,7 @@ impl TableName {
 
 impl Storage {
     pub fn new(db: DbPool) -> Self {
-        Self::from_executor(StorageExecutor::pool(db))
+        Self::from_executor(StorageExecutor::new(db))
     }
 
     fn from_executor(executor: StorageExecutor) -> Self {
@@ -71,20 +71,20 @@ impl Storage {
         }
     }
 
-    pub async fn tx<F, Fut, T>(&self, f: F) -> Result<T>
+    pub async fn with_tx<F, Fut, T>(&self, f: F) -> Result<T>
     where
         F: FnOnce(Storage) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
         self.executor
-            .transaction_required(|executor| f(Self::from_executor(executor)))
+            .with_tx(|executor| f(Self::from_executor(executor)))
             .await
     }
 
     pub async fn begin(&self) -> Result<StorageTx> {
         Ok(StorageTx {
             storage: Self::from_executor(
-                StorageExecutor::transaction(self.executor.pool_clone()).await?,
+                StorageExecutor::new_transaction(self.executor.pool().clone()).await?,
             ),
         })
     }
@@ -118,7 +118,7 @@ impl Storage {
     }
 
     pub async fn close(&self) {
-        let pool = self.executor.pool_ref();
+        let pool = self.executor.pool();
         if !pool.is_closed() {
             pool.close().await;
         }

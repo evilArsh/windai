@@ -101,7 +101,7 @@ impl TopicStorage {
 
     pub async fn delete_topics(&self, ids: &[i64]) -> Result<()> {
         self.executor
-            .transaction_required(|executor| async move {
+            .with_tx(|executor| async move {
                 Self::batch_delete_by_ids(&executor, TableName::CHAT_CONFIGS, "topic_id", ids)
                     .await?;
                 Self::batch_delete_by_ids(&executor, TableName::MESSAGES, "topic_id", ids).await?;

@@ -243,7 +243,7 @@ pub async fn save_approval_state(
     let message_id = assistant.id;
     let agent_topic_id = assistant.topic_id;
     let ((), requests) = storage
-        .tx(|storage| async move {
+        .with_tx(|storage| async move {
             storage
                 .message()
                 .update(message_id, assistant.into())
@@ -319,7 +319,7 @@ async fn create_context_inner(
 
     let content_cloned = user_content.clone();
     let (user_message, assistant_message) = storage
-        .tx(|storage| async move {
+        .with_tx(|storage| async move {
             let user = storage
                 .message()
                 .create(CreateMessage {
