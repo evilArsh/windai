@@ -3,7 +3,6 @@ use futures::stream::Stream;
 use log;
 use reqwest::Method;
 use serde_json::Value;
-use std::fmt::Display;
 use url::Url;
 
 use super::{

@@ -352,7 +352,6 @@ async fn create_context_inner(
                 .create(CreateMessage {
                     from_id: Some(user.id),
                     stream,
-                    // content: vec![AiMessage::new_simple(Role::Assistant, vec![], None)],
                     content: vec![],
                     model_id: chat_ctx.model.id,
                     topic_id: agent_topic_id,

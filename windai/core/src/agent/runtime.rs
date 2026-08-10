@@ -5,7 +5,7 @@ use crate::agent::task::AgentOutput;
 use crate::chat::loops::ChatContext;
 use crate::chat::{ChatEvent, ChatLoops};
 use crate::error::{CoreError, Result};
-use crate::models::{Message, ToolApprovalPolicy, ToolApprovalStatus};
+use crate::models::{AgentMode, Message, ToolApprovalPolicy, ToolApprovalStatus};
 use futures::stream::StreamExt;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -25,16 +25,19 @@ macro_rules! try_or_finish {
     ($expr:expr, $msg:expr) => {
         match $expr {
             Ok(v) => v,
-            Err(e) => return Outoput::Agent(Self::build_finish_error($msg, e)),
+            Err(e) => return Output::Agent(Self::build_finish_error($msg, e)),
         }
     };
 }
 
+#[derive(Debug, Clone)]
 pub struct AgentRunConfig {
     pub binding_id: i64,
     pub topic_id: i64,
     pub parent_topic_id: i64,
     pub tool_approval_policy: Option<ToolApprovalPolicy>,
+    /// 本次运行的 Agent 模式
+    pub mode: AgentMode,
 }
 
 enum Action {
@@ -46,7 +49,7 @@ enum Action {
     Stop,
 }
 
-enum Outoput {
+enum Output {
     Agent(AgentOutput),
     Resume {
         data: Message,
@@ -147,7 +150,7 @@ impl AgentRuntime {
         mut message: Message,
         mut contexts: Vec<AiMessage>,
         tools: Vec<FunctionCall>,
-    ) -> Outoput {
+    ) -> Output {
         let plan = try_or_finish!(self.make_tool_plan(message.id, tools).await, message);
         // MCP 工具执行
         if !plan.exec_mcp.is_empty() {
@@ -209,13 +212,13 @@ impl AgentRuntime {
 
         // 通知用户审批
         if !plan.waiting.is_empty() {
-            Outoput::Agent(AgentOutput::ApprovalRequired {
+            Output::Agent(AgentOutput::ApprovalRequired {
                 data: message,
                 contexts: contexts,
                 calls: plan.waiting,
             })
         } else {
-            Outoput::Resume {
+            Output::Resume {
                 data: message,
                 contexts: contexts,
             }
@@ -243,11 +246,11 @@ impl AgentRuntime {
                 contexts,
                 tools,
             } => match self.handle_await_tool_call(message, contexts, tools).await {
-                Outoput::Resume { data, contexts } => Action::Resume {
+                Output::Resume { data, contexts } => Action::Resume {
                     assistant: data,
                     contexts,
                 },
-                Outoput::Agent(output) => {
+                Output::Agent(output) => {
                     self.send_event(output).await;
                     Action::Stop
                 }

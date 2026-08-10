@@ -10,7 +10,6 @@ use crate::storage;
 pub struct Message {
     pub id: i64,
     /// 标识该响应所对应的原始用户消息ID
-    /// - 当多个模型同时响应同一条用户消息时，用于关联回复与原始消息
     /// - 当为None时，该消息是用户消息
     pub from_id: Option<i64>,
     pub stream: bool,

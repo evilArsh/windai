@@ -7,7 +7,6 @@ use wind_ai::{message::Message as AiMessage, tool::FunctionCall};
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ChatEvent {
     /// 流式消息分块内容
-    /// FIXME(修改之后重新评估): - 在非流式请求中，也会返回多轮工具调用结果
     Partial {
         index: i32,
         message_id: i64,

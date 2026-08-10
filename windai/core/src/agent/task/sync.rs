@@ -168,23 +168,25 @@ pub struct SyncTaskHandler {
 impl SyncTaskHandler {
     pub async fn cancel(&self) -> Result<()> {
         if let Err(err) = self.cmd_tx.send(TaskCommand::Cancel).await {
+            let err = err.to_string();
             log::error!(
-                "error when cancel task: {:?}. (binding_id = {})",
+                "error when cancel task: {}. (binding_id = {})",
                 err,
                 self.binding_id
             );
-            return Err(CoreError::Internal(err.to_string()));
+            return Err(CoreError::Internal(err));
         }
         Ok(())
     }
     pub async fn start(&self, task: TaskSpec, config: AgentRunConfig) -> Result<()> {
         if let Err(err) = self.cmd_tx.send(TaskCommand::Start { task, config }).await {
+            let err = err.to_string();
             log::error!(
-                "error when start task: {:?}. (binding_id = {})",
+                "error when start task: {}. (binding_id = {})",
                 err,
                 self.binding_id
             );
-            return Err(CoreError::Internal(err.to_string()));
+            return Err(CoreError::Internal(err));
         }
         Ok(())
     }

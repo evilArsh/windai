@@ -4,8 +4,7 @@ use crate::models::AgentStatus;
 use crate::models::Message;
 use crate::models::ToolApprovalRequest;
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
-use tokio::sync::oneshot;
+use tokio::sync::{broadcast, mpsc, oneshot};
 use wind_ai::message::Content;
 use wind_ai::message::Message as AiMessage;
 
@@ -85,6 +84,80 @@ pub enum TopicCommand {
         allow_ids: Vec<i64>,
         reply: oneshot::Sender<Result<()>>,
     },
+    /// 订阅当前对话的事件流（actor 独占 sender，经 mailbox 取 receiver）。
+    Subscribe {
+        reply: oneshot::Sender<broadcast::Receiver<TopicEvent>>,
+    },
+}
+
+impl std::fmt::Display for TopicEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // 无对应字段的变体（如 MessageCreated 无 binding_id）置空
+        let (name, topic_id, binding_id) = match self {
+            TopicEvent::Error {
+                binding_id,
+                topic_id,
+                ..
+            } => ("Error", topic_id.to_string(), binding_id.to_string()),
+            TopicEvent::Snapshot {
+                binding_id,
+                topic_id,
+                ..
+            } => ("Snapshot", topic_id.to_string(), binding_id.to_string()),
+            TopicEvent::MessageCreated { topic_id, .. } => {
+                ("MessageCreated", topic_id.to_string(), String::new())
+            }
+            TopicEvent::Message {
+                binding_id,
+                topic_id,
+                ..
+            } => ("Message", topic_id.to_string(), binding_id.to_string()),
+            TopicEvent::MessageFinished {
+                binding_id,
+                topic_id,
+                ..
+            } => (
+                "MessageFinished",
+                topic_id.to_string(),
+                binding_id.to_string(),
+            ),
+            TopicEvent::TaskStatusChanged {
+                binding_id,
+                topic_id,
+                ..
+            } => (
+                "TaskStatusChanged",
+                topic_id.to_string(),
+                binding_id.to_string(),
+            ),
+            TopicEvent::ApprovalRequired {
+                binding_id,
+                topic_id,
+                ..
+            } => (
+                "ApprovalRequired",
+                topic_id.to_string(),
+                binding_id.to_string(),
+            ),
+        };
+        write!(
+            f,
+            "[TopicEvent {name}] (topic_id = {topic_id} , binding_id = {binding_id})"
+        )
+    }
+}
+
+impl std::fmt::Display for TopicCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            TopicCommand::CreateChat { .. } => "CreateChat",
+            TopicCommand::CancelTask { .. } => "CancelTask",
+            TopicCommand::Shutdown { .. } => "Shutdown",
+            TopicCommand::Approval { .. } => "Approval",
+            TopicCommand::Subscribe { .. } => "Subscribe",
+        };
+        write!(f, "[TopicCommand {name}]")
+    }
 }
 
 pub enum TopicMsg {

@@ -1,7 +1,6 @@
 use std::sync::OnceLock;
 use wind_ai::message::{Content, ReqConfig};
 use wind_core::WindCore;
-use wind_core::agent::event::TopicEvent;
 use wind_core::models::*;
 use wind_mcp::client::registry::{Registry, RegistryHandle};
 
@@ -173,28 +172,12 @@ async fn test_agent_chat() {
         .unwrap();
 
     let engine = wc.fetch_topic(ctx.topic.id);
-    let mut event_rx = engine.subscribe();
+    let mut event_rx = engine.subscribe().await.unwrap();
     let hdl = tokio::spawn(async move {
         loop {
-            tokio::select! {
-                result = event_rx.recv() => {
-                    match result {
-                        Ok(msg) => {
-                            log::debug!("[event]\n{:?}", msg);
-                            if let TopicEvent::TaskStatusChanged { status, .. } = &msg {
-                                if matches!(
-                                    status,
-                                    AgentStatus::Finished
-                                        | AgentStatus::Failed
-                                        | AgentStatus::Cancelled|AgentStatus::WaitingApproval
-                                ) {
-                                    break;
-                                }
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
+            match event_rx.recv().await {
+                Ok(msg) => log::debug!("[event]\n{:?}", msg),
+                _ => break,
             }
         }
     });

@@ -42,14 +42,6 @@ impl MessageStorage {
             )
         )
     }
-    // async fn update_is_excluded_inner(
-    //     executor: &StorageExecutor,
-    //     id: i64,
-    //     is_excluded: bool,
-    // ) -> Result<()> {
-    //     let mut qb = update!(TableName::MESSAGES, id, ("is_excluded", Some(is_excluded)));
-    //     ensure_affected(executor.execute(qb.build()).await?)
-    // }
 
     /// 保存一条消息。
     pub async fn create(&self, data: CreateMessage) -> Result<Message> {
@@ -115,10 +107,61 @@ impl MessageStorage {
         Ok(row)
     }
 
+    /// 查询 from_id 为该 id 的助手消息
+    pub async fn get_from_msg(&self, id: i64) -> Result<Option<Message>> {
+        let row = self
+            .executor
+            .fetch_optional(
+                Self::select_common()
+                    .push(" WHERE from_id = ")
+                    .push_bind(id)
+                    .build_query_as::<Message>(),
+            )
+            .await?;
+        Ok(row)
+    }
+
     pub async fn delete(&self, id: i64) -> Result<()> {
-        let mut qb = delete_by_id!(TableName::MESSAGES, id);
-        // TODO: 将用户消息或者助手消息is_excluded 设置为 1
-        ensure_affected(self.executor.execute(qb.build()).await?)
+        self.executor
+            .with_tx(|executor| async move {
+                let current = Self::new(executor.clone());
+                let mut exclude_qb = None;
+                match current.get(id).await? {
+                    Some(m) => {
+                        match m.from_id {
+                            Some(from_id) => {
+                                // 设置用户消息
+                                exclude_qb = Some(update!(
+                                    TableName::MESSAGES,
+                                    from_id,
+                                    ("is_excluded", Some(true))
+                                ))
+                            }
+                            _ => match current.get_from_msg(id).await? {
+                                Some(user) => {
+                                    // 设置助手消息
+                                    exclude_qb = Some(update!(
+                                        TableName::MESSAGES,
+                                        user.id,
+                                        ("is_excluded", Some(true))
+                                    ));
+                                }
+                                None => {}
+                            },
+                        }
+                        if let Some(mut qb) = exclude_qb {
+                            executor.execute(qb.build()).await?;
+                        }
+                        executor
+                            .execute(delete_by_id!(TableName::MESSAGES, id).build())
+                            .await?;
+                    }
+                    _ => {}
+                }
+
+                Ok(())
+            })
+            .await
     }
     /// 查询 topic_id 下所有的消息
     pub async fn list_by_topic(&self, topic_id: i64) -> Result<Vec<Message>> {

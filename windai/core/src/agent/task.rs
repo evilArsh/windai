@@ -2,8 +2,7 @@ use self::sync::SyncTaskHandler;
 use super::runtime::AgentRunConfig;
 use super::tool::{SpawnAgentRequest, SpawnAgentResponse};
 use crate::models::{
-    AgentDefinition, AgentMode, AgentRole, AgentStatus, Credentials, JsonRule, Message, Model,
-    Provider,
+    AgentDefinition, AgentMode, AgentRole, Credentials, JsonRule, Message, Model, Provider,
 };
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -90,6 +89,29 @@ pub enum TaskNotification {
     },
 }
 
+impl std::fmt::Display for TaskNotification {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (name, binding_id) = match self {
+            TaskNotification::Started { binding_id } => ("Started", binding_id),
+            TaskNotification::Message { binding_id, .. } => ("Message", binding_id),
+            TaskNotification::WaitingApproval { binding_id, .. } => ("WaitingApproval", binding_id),
+            TaskNotification::Completed { binding_id, .. } => ("Completed", binding_id),
+            TaskNotification::Failed { binding_id, .. } => ("Failed", binding_id),
+            TaskNotification::Cancelled { binding_id } => ("Cancelled", binding_id),
+        };
+        write!(f, "[TaskNotification {name}] (binding_id = {binding_id})")
+    }
+}
+
+impl std::fmt::Display for SupervisorRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let binding_id = match self {
+            SupervisorRequest::SpawnAgent { binding_id, .. } => binding_id,
+        };
+        write!(f, "[SupervisorRequest] (binding_id = {binding_id})")
+    }
+}
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct TaskSpec {
@@ -119,9 +141,9 @@ pub struct PendingChild {
     pub reply: oneshot::Sender<SpawnAgentResponse>,
 }
 
+/// 任务的运行时元数据旁表。
 pub struct TaskEntry {
     binding_id: i64,
-    status: AgentStatus,
     pub topic_id: i64,
     pub role: AgentRole,
     pub mode: Option<AgentMode>,
@@ -135,25 +157,9 @@ impl TaskEntry {
             binding_id,
             topic_id,
             role,
-            status: AgentStatus::Created,
             mode: None,
             handler,
         }
-    }
-
-    /// 当前任务是否忙
-    pub fn is_busy(&self) -> bool {
-        matches!(
-            self.status,
-            |AgentStatus::Running| AgentStatus::WaitingApproval | AgentStatus::WaitingChild
-        )
-    }
-
-    pub fn get_status(&self) -> AgentStatus {
-        self.status
-    }
-    pub fn set_status(&mut self, status: AgentStatus) {
-        self.status = status;
     }
 }
 
@@ -205,17 +211,12 @@ impl TaskRegistry {
                 entry.mode = data.mode;
                 entry.handler = data.handler;
                 entry.role = data.role;
-                entry.status = data.status;
                 entry.topic_id = data.topic_id;
 
                 entry
             }
             Entry::Vacant(entry) => entry.insert(data),
         }
-    }
-
-    pub fn get_entry_mut(&mut self, binding_id: i64) -> Option<&mut TaskEntry> {
-        self.binding_map.get_mut(&binding_id)
     }
 
     pub fn get_entry(&self, binding_id: i64) -> Option<&TaskEntry> {
@@ -226,10 +227,11 @@ impl TaskRegistry {
         self.main_binding_id.and_then(|id| self.get_entry(id))
     }
 
-    pub fn is_main_task(&self, binding_id: i64) -> bool {
-        self.main_binding_id
-            .map(|id| id == binding_id)
-            .unwrap_or(false)
+    /// 该父任务是否仍有未完成的 pending 子任务。
+    pub fn has_pending_for(&self, parent_binding_id: i64) -> bool {
+        self.pending
+            .iter()
+            .any(|p| p.parent_binding_id == parent_binding_id)
     }
 
     /// 并发批量取消所有运行中的任务并清空注册表
