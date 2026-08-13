@@ -171,7 +171,6 @@ impl TopicRuntime {
     }
 
     fn emit(&self, event: TopicEvent) {
-        log::debug!("[emit] {}", event);
         if let Some(tx) = self.app_rx.as_ref() {
             if let Err(err) = tx.send(event) {
                 log::error!("[emit] error: {err}");
@@ -242,6 +241,7 @@ impl TopicRuntime {
 
     /// 执行副作用seam
     async fn execute(&mut self, effect: Effect) -> Result<Option<Vec<FsmEvent>>> {
+        log::debug!("{}", effect);
         match effect {
             Effect::PersistStatus { binding_id, status } => {
                 self.persist_status(binding_id, status.into()).await?;
@@ -503,11 +503,17 @@ impl TopicRuntime {
     /// 启动一个 Agent 任务
     async fn spawn_agent(
         &mut self,
+        parent_binding_id: i64,
         request: SpawnAgentRequest,
     ) -> Result<(i64, TaskSpec, AgentRunConfig)> {
         let agent = helper::get_def_by_key(&self.storage, &request.agent_key).await?;
         let binding =
             helper::get_binding_by_agent_id(&self.storage, self.topic_id, agent.id).await?;
+        log::debug!(
+            "[spawn agent] parent_binding_id = {}, binding_id = {}",
+            parent_binding_id,
+            binding.id
+        );
         if self.fsm.is_task_busy(binding.id) {
             return Err(CoreError::Internal(format!(
                 "Agent is busy, binding_id: {}",
@@ -617,7 +623,6 @@ impl TopicRuntime {
             format!("#main-agent"),
         )
         .await?;
-        log::debug!("[start_main_agent] create agent_topic: {:#?}", agent_topic);
         let (user, assistant, contexts) =
             helper::create_contexts(&tx.storage(), agent_topic.id, user_input, &agent, &chat_ctx)
                 .await?;
@@ -713,6 +718,7 @@ impl TopicRuntime {
         let sync_handle = SyncTask::spawn(
             self.ctx.child_token(),
             spec.binding_id,
+            self.topic_id,
             topic_id,
             self.mailbox.clone(),
             self.storage.clone(),
@@ -823,7 +829,7 @@ impl TopicRuntime {
         reply: oneshot::Sender<SpawnAgentResponse>,
     ) -> Result<Vec<FsmEvent>> {
         let mode = request.mode;
-        match self.spawn_agent(request).await {
+        match self.spawn_agent(parent_binding_id, request).await {
             Ok((child_binding_id, spec, config)) => {
                 self.registry.insert_pending(PendingChild {
                     call_id: call_id.clone(),

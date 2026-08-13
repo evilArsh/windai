@@ -3,9 +3,9 @@ use super::tool::{self, AgentBindingView, ListAgentsResponse};
 use crate::chat::loops::ChatContext;
 use crate::error::{CoreError, Result};
 use crate::models::{
-    AgentBinding, AgentDefinition, AgentMcpBinding, CreateMessage, CreateToolApprovalCall,
-    CreateToolApprovalRequests, CreateTopic, Message, ToolApprovalRequest, Topic,
-    UpdateAgentBinding,
+    AgentBinding, AgentDefinition, AgentMcpBinding, AgentRole, CreateMessage,
+    CreateToolApprovalCall, CreateToolApprovalRequests, CreateTopic, Message, ToolApprovalRequest,
+    Topic, UpdateAgentBinding,
 };
 use crate::storage::Storage;
 use futures::future::{try_join, try_join5};
@@ -117,17 +117,17 @@ pub async fn get_main_binding(storage: &Storage, topic_id: i64) -> Result<AgentB
 /// 通过Agent ID查找当前Topic下的绑定关系
 pub async fn get_binding_by_agent_id(
     storage: &Storage,
-    topic_id: i64,
+    parent_topic_id: i64,
     agent_id: i64,
 ) -> Result<AgentBinding> {
     storage
         .agent()
-        .get_binding_by_agent_id(topic_id, agent_id)
+        .get_binding_by_agent_id(parent_topic_id, agent_id)
         .await?
         .ok_or_else(|| {
             CoreError::RowNotFound(format!(
                 "agent binding by agent_id: {}, topic: {}",
-                agent_id, topic_id
+                agent_id, parent_topic_id
             ))
         })
 }
@@ -139,6 +139,8 @@ pub async fn get_binding_by_id(storage: &Storage, binding_id: i64) -> Result<Age
         .await?
         .ok_or_else(|| CoreError::RowNotFound(format!("agent binding by id: {}", binding_id)))
 }
+
+/// 查询子 Agent 绑定的 Topic
 pub async fn get_topic_by_binding_id(
     storage: &Storage,
     parent_topic_id: i64,
@@ -225,7 +227,7 @@ pub async fn get_base_info(
                 Ok(ReqConfig::default())
             }
         },
-        build_agent_tools(storage, mcp_registry, &agent.data.mcp_servers),
+        build_agent_tools(storage, mcp_registry, &binding, &agent),
     )
     .await?;
 
@@ -430,11 +432,19 @@ async fn build_context(raw: Vec<Message>, agent: &AgentDefinition) -> Result<Vec
 async fn build_agent_tools(
     storage: &Storage,
     mcp_registry: &RegistryHandle,
-    bindings: &[AgentMcpBinding],
+    binding: &AgentBinding,
+    agent: &AgentDefinition,
 ) -> Result<Option<Vec<Tools>>> {
     // 加载内建MCP工具，用于 Agent 调度
-    let mut tools = tool::list_catalogs();
-    let enabled = bindings
+    // FIXME: 避免递归创建Agent，仅主任务使用内建工具
+    let mut tools = match binding.role {
+        AgentRole::Main => tool::list_catalogs(),
+        AgentRole::Child => vec![],
+    };
+
+    let enabled = agent
+        .data
+        .mcp_servers
         .iter()
         .filter(|binding| binding.enabled)
         .collect::<Vec<_>>();

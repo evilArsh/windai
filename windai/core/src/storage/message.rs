@@ -189,6 +189,8 @@ impl MessageStorage {
                 Self::select_common()
                     .push(" WHERE topic_id = ")
                     .push_bind(topic_id)
+                    .push(" AND is_excluded = ")
+                    .push_bind(0)
                     .push(" AND id > COALESCE((SELECT MAX(id) FROM ")
                     .push(TableName::MESSAGES)
                     .push(" WHERE is_boundary = 1 AND topic_id = ")

@@ -121,29 +121,48 @@ impl TopicStorage {
     pub async fn delete_topics(&self, ids: &[i64]) -> Result<()> {
         self.executor
             .with_tx(|executor| async move {
-                Self::batch_delete_by_ids(&executor, TableName::CHAT_CONFIGS, "topic_id", ids)
-                    .await?;
                 Self::batch_delete_by_ids(&executor, TableName::MESSAGES, "topic_id", ids).await?;
+
+                if !ids.is_empty() {
+                    let mut qb = QueryBuilder::new("DELETE FROM ");
+                    qb.push(TableName::CHAT_CONFIGS)
+                        .push(" WHERE id IN (SELECT chat_config_id FROM ")
+                        .push(TableName::TOPIC_AGENT_BINDINGS)
+                        .push(" WHERE parent_topic_id IN (");
+                    let mut separated = qb.separated(", ");
+                    for id in ids {
+                        separated.push_bind(*id);
+                    }
+                    separated.push_unseparated(")) ");
+                    executor.execute(qb.build()).await?;
+                }
+
                 Self::batch_delete_by_ids(
                     &executor,
                     TableName::TOPIC_AGENT_BINDINGS,
-                    "topic_id",
+                    "parent_topic_id",
                     ids,
                 )
                 .await?;
                 Self::batch_delete_by_ids(&executor, TableName::TOPICS, "id", ids).await?;
+                Self::batch_delete_by_ids(
+                    &executor,
+                    TableName::TOOL_APPROVAL_REQUESTS,
+                    "topic_id",
+                    ids,
+                )
+                .await?;
                 Ok(())
             })
             .await
     }
 
-    pub async fn create_chat_config(&self, topic_id: i64, config: ReqConfig) -> Result<ChatConfig> {
+    pub async fn create_chat_config(&self, config: ReqConfig) -> Result<ChatConfig> {
         let id = next_id();
         let now = now_ts();
         let mut qb = insert!(
             TableName::CHAT_CONFIGS,
             ("id", id),
-            ("topic_id", topic_id),
             ("temperature", config.temperature),
             ("top_p", config.top_p),
             ("max_tokens", config.max_tokens),
@@ -158,13 +177,12 @@ impl TopicStorage {
 
         Ok(ChatConfig {
             id,
-            topic_id,
             data: config,
             created_at: now,
         })
     }
 
-    pub async fn update_chat_config(&self, topic_id: i64, config: ReqConfig) -> Result<()> {
+    pub async fn update_chat_config(&self, id: i64, config: ReqConfig) -> Result<()> {
         ensure_affected(
             self.executor
                 .execute(
@@ -180,8 +198,8 @@ impl TopicStorage {
                         ("reasoning", config.reasoning),
                         ("updated_at", Some(now_ts()))
                     )
-                    .push(" WHERE topic_id =  ")
-                    .push_bind(topic_id)
+                    .push(" WHERE id =  ")
+                    .push_bind(id)
                     .build(),
                 )
                 .await?,
@@ -196,7 +214,6 @@ impl TopicStorage {
                     TableName::CHAT_CONFIGS,
                     (
                         "id",
-                        "topic_id",
                         "temperature",
                         "top_p",
                         "max_tokens",

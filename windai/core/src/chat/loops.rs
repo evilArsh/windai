@@ -114,7 +114,6 @@ impl ChatLoops {
                             Ok((is_finished, value)) => {
                                 if is_finished {
                                     msg = Some(value);
-                                    log::debug!("[llm_loop] finished, msg:\n{:#?}", msg);
                                 } else {
                                     yield ChatEvent::Partial {
                                         index: iter_index,
@@ -178,6 +177,11 @@ impl ChatLoops {
         rule: Option<&RuleSet>,
     ) -> impl Stream<Item = Result<(bool, AiMessage)>> {
         try_stream! {
+            log::debug!(
+                "[request body]\n[user_input]\n{},\n\n[config]\n{:#?}",
+                contexts.last().and_then(|c|Some(Content::arr_to_string(&c.content))).unwrap_or(String::new()),
+                ctx
+            );
             let mut req_body = build_request(
                 chat_adapter,
                 &ctx.model.name,

@@ -92,7 +92,6 @@ pub enum TopicCommand {
 
 impl std::fmt::Display for TopicEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // 无对应字段的变体（如 MessageCreated 无 binding_id）置空
         let (name, topic_id, binding_id) = match self {
             TopicEvent::Error {
                 binding_id,
@@ -142,7 +141,7 @@ impl std::fmt::Display for TopicEvent {
         };
         write!(
             f,
-            "[TopicEvent {name}] (topic_id = {topic_id} , binding_id = {binding_id})"
+            "[TopicEvent {name}]\n(topic_id = {topic_id} , binding_id = {binding_id})"
         )
     }
 }

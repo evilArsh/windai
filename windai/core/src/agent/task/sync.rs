@@ -25,6 +25,7 @@ use wind_mcp::client::registry::RegistryHandle;
 
 struct SyncHost {
     binding_id: i64,
+    parent_topic_id: i64,
     topic_id: i64,
     topic_tx: TopicMailbox,
     storage: Storage,
@@ -33,6 +34,7 @@ struct SyncHost {
 impl SyncHost {
     pub fn new(
         binding_id: i64,
+        parent_topic_id: i64,
         topic_id: i64,
         topic_tx: TopicMailbox,
         storage: Storage,
@@ -40,6 +42,7 @@ impl SyncHost {
     ) -> Self {
         Self {
             binding_id,
+            parent_topic_id,
             topic_id,
             topic_tx,
             storage,
@@ -110,7 +113,7 @@ impl AgentHost for SyncHost {
     }
 
     async fn list_agents(&self) -> Result<ListAgentsResponse> {
-        helper::list_agents(&self.storage, self.topic_id).await
+        helper::list_agents(&self.storage, self.parent_topic_id).await
     }
 
     async fn list_approvals(&self, message_id: i64) -> Result<Vec<ToolApprovalRequest>> {
@@ -204,6 +207,7 @@ impl SyncTask {
     pub fn spawn(
         ctx: CancellationToken,
         binding_id: i64,
+        parent_topic_id: i64,
         topic_id: i64,
         topic_tx: TopicMailbox,
         storage: Storage,
@@ -219,6 +223,7 @@ impl SyncTask {
             topic_tx: topic_tx.clone(),
             host: Arc::new(SyncHost::new(
                 binding_id,
+                parent_topic_id,
                 topic_id,
                 topic_tx,
                 storage,

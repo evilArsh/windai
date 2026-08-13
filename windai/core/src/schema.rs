@@ -59,7 +59,6 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE TABLE IF NOT EXISTS chat_configs (
     id              BIGINT  PRIMARY KEY,
-    topic_id        BIGINT NOT NULL UNIQUE,
     temperature     REAL,
     top_p           REAL,
     max_tokens      BIGINT,
@@ -152,8 +151,6 @@ CREATE INDEX IF NOT EXISTS idx_models_provider ON models(provider_id);
 CREATE INDEX IF NOT EXISTS idx_credentials_provider ON credentials(provider_id);
 
 CREATE INDEX IF NOT EXISTS idx_messages_topic ON messages(topic_id, id);
-
-CREATE INDEX IF NOT EXISTS idx_chat_configs_topic_id ON chat_configs(topic_id);
 
 CREATE INDEX IF NOT EXISTS idx_mcp_servers_name ON mcp_servers(name);
 

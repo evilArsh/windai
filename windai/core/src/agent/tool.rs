@@ -36,7 +36,15 @@ pub struct SpawnAgentRequest {
     /// 分配给子 Agent 的任务描述。
     pub task: String,
 }
-
+impl std::fmt::Display for SpawnAgentRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "[SpawnAgentRequest] (agent_key = {}, mode = {}, task = {})",
+            self.agent_key, self.mode, self.task
+        )
+    }
+}
 /// 创建子 Agent 的响应。
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -84,7 +92,7 @@ pub fn list_catalogs() -> Vec<Tools> {
                     },
                     "mode": {
                         "type": "string",
-                        "enum": ["sync", "background", "team", "fork"],
+                        "enum": ["sync", "background", "fork"],
                         "description": "Operating mode after agent creation"
                     },
                     "task": {

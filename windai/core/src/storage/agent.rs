@@ -1,3 +1,5 @@
+use sqlx::QueryBuilder;
+
 use crate::{
     db::DbDriver,
     delete_by_id,
@@ -210,8 +212,31 @@ impl AgentStorage {
     }
 
     pub async fn delete_binding(&self, id: i64) -> Result<()> {
-        let mut qb = delete_by_id!(TableName::TOPIC_AGENT_BINDINGS, id);
-        ensure_affected(self.executor.execute(qb.build()).await?)
+        self.executor
+            .with_tx(|executor| async move {
+                let binding = executor
+                    .fetch_optional(
+                        get_by_id!(TableName::TOPIC_AGENT_BINDINGS, id)
+                            .build_query_as::<AgentBinding>(),
+                    )
+                    .await?;
+
+                executor
+                    .execute(delete_by_id!(TableName::TOPIC_AGENT_BINDINGS, id).build())
+                    .await?;
+
+                if let Some(config_id) = binding.and_then(|b| b.chat_config_id) {
+                    let mut qb = QueryBuilder::new("");
+                    qb.push("DELETE FROM ")
+                        .push(TableName::CHAT_CONFIGS)
+                        .push(" WHERE id = ")
+                        .push_bind(config_id);
+                    executor.execute(qb.build()).await?;
+                }
+
+                Ok(())
+            })
+            .await
     }
 
     pub async fn get_binding(&self, id: i64) -> Result<Option<AgentBinding>> {
@@ -226,7 +251,7 @@ impl AgentStorage {
 
     pub async fn get_binding_by_agent_id(
         &self,
-        topic_id: i64,
+        parent_topic_id: i64,
         agent_id: i64,
     ) -> Result<Option<AgentBinding>> {
         let row = self
@@ -236,7 +261,7 @@ impl AgentStorage {
                     .push(" WHERE agent_id = ")
                     .push_bind(agent_id)
                     .push(" AND parent_topic_id = ")
-                    .push_bind(topic_id)
+                    .push_bind(parent_topic_id)
                     .push(" AND enabled = ")
                     .push_bind(true)
                     .build_query_as::<AgentBinding>(),
@@ -262,13 +287,13 @@ impl AgentStorage {
         Ok(row)
     }
 
-    pub async fn list_bindings_by_topic(&self, topic_id: i64) -> Result<Vec<AgentBinding>> {
+    pub async fn list_bindings_by_topic(&self, parent_topic_id: i64) -> Result<Vec<AgentBinding>> {
         let rows = self
             .executor
             .fetch_all(
                 Self::select_bindings()
                     .push(" WHERE parent_topic_id = ")
-                    .push_bind(topic_id)
+                    .push_bind(parent_topic_id)
                     .push(" ORDER BY id ASC ")
                     .build_query_as::<AgentBinding>(),
             )
@@ -276,7 +301,10 @@ impl AgentStorage {
         Ok(rows)
     }
 
-    pub async fn list_definitions_by_topic(&self, topic_id: i64) -> Result<Vec<AgentDefinition>> {
+    pub async fn list_definitions_by_topic(
+        &self,
+        parent_topic_id: i64,
+    ) -> Result<Vec<AgentDefinition>> {
         let mut qb = sqlx::QueryBuilder::new(
             r#"
             SELECT
@@ -303,7 +331,7 @@ impl AgentStorage {
                 AND topic_agent_bindings.parent_topic_id =
             "#,
             );
-        qb.push_bind(topic_id)
+        qb.push_bind(parent_topic_id)
             .push(" ORDER BY topic_agent_bindings.id ASC ");
         let rows = self
             .executor

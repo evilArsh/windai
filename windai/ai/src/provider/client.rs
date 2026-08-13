@@ -117,10 +117,7 @@ where
 /// 获取一次http响应body数据并返回bytes
 pub async fn handle_response(response: Response) -> Result<Bytes, ClientError> {
     match response.bytes().await {
-        Ok(json_bytes) => {
-            log::debug!("response:\n{}", String::from_utf8_lossy(&json_bytes));
-            Ok(json_bytes)
-        }
+        Ok(json_bytes) => Ok(json_bytes),
         Err(err) => Err(err.into()),
     }
 }

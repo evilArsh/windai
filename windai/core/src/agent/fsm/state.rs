@@ -1,7 +1,7 @@
 use crate::models::AgentStatus;
 
 /// 任务级状态状态
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display)]
 pub enum TaskState {
     /// 空闲
     Idle,

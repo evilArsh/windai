@@ -111,7 +111,7 @@ impl TaskFsm {
             self.topic_id,
             from,
             to,
-            &new_event,
+            new_event,
         )
     }
 
@@ -121,7 +121,7 @@ impl TaskFsm {
         topic_id: i64,
         from: TaskState,
         to: TaskState,
-        event: &TaskEvent,
+        event: TaskEvent,
     ) -> Vec<Effect> {
         use TaskEvent as E;
         use TaskState as S;
@@ -131,8 +131,8 @@ impl TaskFsm {
                 E::Start { spec, config } => vec![
                     Effect::StartAgent {
                         binding_id,
-                        spec: spec.clone(),
-                        config: config.clone(),
+                        spec,
+                        config,
                     },
                     Effect::PersistStatus {
                         binding_id,
@@ -155,7 +155,7 @@ impl TaskFsm {
                             topic_id: agent_topic_id,
                             parent_topic_id,
                             message_id,
-                            requests: requests.clone(),
+                            requests,
                         }),
                     ]
                 }
@@ -185,7 +185,7 @@ impl TaskFsm {
                         Effect::SendChildResponse {
                             binding_id,
                             status: S::Finished,
-                            output: Self::finished_output(data),
+                            output: Self::finished_output(&data),
                         },
                     ]
                 }
@@ -201,7 +201,7 @@ impl TaskFsm {
                         binding_id,
                         topic_id,
                         parent_topic_id,
-                        message_id: *message_id,
+                        message_id,
                         error: error.clone(),
                     }),
                     Effect::SendChildResponse {

@@ -86,7 +86,6 @@ impl AgentRuntime {
         }
         let mut auto_resume_count = 0usize;
         const MAX_AUTO_RESUME: usize = 32;
-
         loop {
             let mut stream = self.chat.run(&chat_ctx, assistant, contexts).await;
             self.send_event(AgentOutput::Started).await;

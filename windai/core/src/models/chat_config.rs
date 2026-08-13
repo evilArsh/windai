@@ -8,7 +8,6 @@ use crate::db::DbRow;
 #[derive(Debug, Serialize, Clone)]
 pub struct ChatConfig {
     pub id: i64,
-    pub topic_id: i64,
     #[serde(flatten)]
     pub data: message::ReqConfig,
     pub created_at: i64,
@@ -18,7 +17,6 @@ impl<'s> sqlx::FromRow<'s, DbRow> for ChatConfig {
     fn from_row(row: &'s DbRow) -> Result<Self, sqlx::Error> {
         Ok(Self {
             id: row.get("id"),
-            topic_id: row.get("topic_id"),
             data: message::ReqConfig {
                 temperature: row.get("temperature"),
                 top_p: row.get("top_p"),

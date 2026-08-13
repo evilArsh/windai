@@ -42,6 +42,54 @@ async fn test_core() -> WindCore {
     init_test_core_with_registry(shared_chat_registry()).await
 }
 
+fn test_agent_group1() -> Vec<CreateAgentDefinition> {
+    vec![
+        CreateAgentDefinition {
+            name: "test-main-agent".into(),
+            key: "test-main-agent".into(),
+            description: "专业的项目/产品经理，善于将用户需求拆分并将任务分配给团队".into(),
+            scope: AgentScope::Global,
+            owner_topic_id: None,
+            cloned_from_agent_id: None,
+            active: Some(true),
+            data: AgentDefinitionData::default(),
+        },
+        CreateAgentDefinition {
+            name: "test-frontend-agent".into(),
+            key: "test-frontend-agent".into(),
+            description:
+                "一个专业的前端vue/react开发工程师,擅长前端开发和架构设计，以及各种疑难杂症解决"
+                    .into(),
+            scope: AgentScope::Global,
+            owner_topic_id: None,
+            cloned_from_agent_id: None,
+            active: Some(true),
+            data: AgentDefinitionData::default(),
+        },
+        CreateAgentDefinition {
+            name: "test-law-agent".into(),
+            key: "test-law-agent".into(),
+            description: "专业的计算机领域的律师，善于分析并规避项目中法律有关的问题".into(),
+            scope: AgentScope::Global,
+            owner_topic_id: None,
+            cloned_from_agent_id: None,
+            active: Some(true),
+            data: AgentDefinitionData::default(),
+        },
+        CreateAgentDefinition {
+            name: "test-backend-agent".into(),
+            key: "test-backend-agent".into(),
+            description:
+                "一个专业的rust后端开发工程师,擅长后端开发和架构设计，以及解决各种疑难杂症".into(),
+            scope: AgentScope::Global,
+            owner_topic_id: None,
+            cloned_from_agent_id: None,
+            active: Some(true),
+            data: AgentDefinitionData::default(),
+        },
+    ]
+}
+
 struct TestContext {
     provider: Provider,
     model: Model,
@@ -127,49 +175,51 @@ async fn test_agent_chat() {
     let mut wc = test_core().await;
     let ctx = seed_chat_data(&wc, "agent-chat").await;
     let user_input = vec![Content::new_text(
-        "Hello! Reply in one short sentence.Response in Chinese".into(),
+        "我要设计一个基于Rust的IM实时聊天项目，并且利用网络开源工具，以及UI设计元素和网络LOGO;利用你的专业团队，为我推荐后端和前端框架和技术选型以及要规避的法律风险".into(),
     )];
 
-    let agent_def = wc
+    let mut agents = vec![];
+    for a in test_agent_group1() {
+        let agent_def = wc.storage().agent().create_definition(a).await.unwrap();
+        agents.push(agent_def);
+    }
+
+    let conf = wc
+        .storage()
+        .topic()
+        .create_chat_config(ReqConfig {
+            stream: Some(false),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    for (i, agent) in agents.iter().enumerate() {
+        wc.storage()
+            .agent()
+            .create_binding(CreateAgentBinding {
+                parent_topic_id: ctx.topic.id,
+                agent_id: agent.id,
+                role: match i {
+                    0 => AgentRole::Main,
+                    _ => AgentRole::Child,
+                },
+                model_id: Some(ctx.model.id),
+                chat_config_id: Some(conf.id),
+                enabled: Some(true),
+            })
+            .await
+            .unwrap();
+    }
+
+    let defs = wc
         .storage()
         .agent()
-        .create_definition(CreateAgentDefinition {
-            name: "test-agent-chat".into(),
-            key: "text-main-agent".into(),
-            description: "A simple agent that responds to user queries.".into(),
-            scope: AgentScope::Global,
-            owner_topic_id: None,
-            cloned_from_agent_id: None,
-            active: Some(true),
-            data: AgentDefinitionData::default(),
-        })
+        .list_definitions_by_topic(ctx.topic.id)
         .await
         .unwrap();
-
-    wc.storage()
-        .agent()
-        .create_binding(CreateAgentBinding {
-            parent_topic_id: ctx.topic.id,
-            agent_id: agent_def.id,
-            role: AgentRole::Main,
-            model_id: Some(ctx.model.id),
-            chat_config_id: None,
-            enabled: Some(true),
-        })
-        .await
-        .unwrap();
-
-    wc.storage()
-        .topic()
-        .create_chat_config(
-            ctx.topic.id,
-            ReqConfig {
-                stream: Some(false),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
+    // 除开主agent
+    assert!(defs.len() == agents.len() - 1);
 
     let engine = wc.fetch_topic(ctx.topic.id);
     let mut event_rx = engine.subscribe().await.unwrap();
