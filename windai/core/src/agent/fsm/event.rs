@@ -1,16 +1,14 @@
-use crate::{
-    agent::{
-        runtime::AgentRunConfig,
-        task::TaskSpec,
-        tool::{SpawnAgentRequest, SpawnAgentResponse},
-    },
-    models::{Message, ToolApprovalRequest},
+use super::task_fsm::TaskEvent;
+use crate::agent::{
+    runtime::AgentRunConfig,
+    task::TaskSpec,
+    tool::{SpawnAgentRequest, SpawnAgentResponse},
 };
 use tokio::sync::oneshot;
 
 pub enum FsmEvent {
     UserRequest(UserRequest),
-    Signal(TaskSignal),
+    Signal { binding_id: i64, event: TaskEvent },
     Supervisor(SupervisorEvent),
 }
 
@@ -37,25 +35,6 @@ pub enum UserRequest {
         binding_id: i64,
     },
     Shutdown,
-}
-
-pub enum TaskSignal {
-    /// 模型请求工具审批
-    AwaitApproval {
-        binding_id: i64,
-        data: Message,
-        requests: Vec<ToolApprovalRequest>,
-    },
-    /// 正常完成。
-    Completed { binding_id: i64, data: Message },
-    /// 失败。
-    Failed {
-        binding_id: i64,
-        error: String,
-        message_id: Option<i64>,
-    },
-    /// 已取消。
-    Cancelled { binding_id: i64 },
 }
 
 /// 内部流转指令

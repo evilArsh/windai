@@ -65,7 +65,10 @@ impl TopicFsm {
         let mut effects = vec![];
         match event {
             FsmEvent::UserRequest(req) => self.reduce_user_request(req, &mut effects),
-            FsmEvent::Signal(sig) => self.reduce_signal(sig, &mut effects),
+            FsmEvent::Signal { binding_id, event } => {
+                self.task_apply(binding_id, event, &mut effects);
+                self.sync_topic_state(&mut effects);
+            }
             FsmEvent::Supervisor(sup) => self.reduce_supervisor(sup, &mut effects),
         }
         effects
@@ -122,36 +125,6 @@ impl TopicFsm {
                     self.state = TopicState::Stopped;
                     effects.push(Effect::StopRuntime);
                 }
-            }
-        }
-        self.sync_topic_state(effects);
-    }
-
-    fn reduce_signal(&mut self, sig: TaskSignal, effects: &mut Vec<Effect>) {
-        match sig {
-            TaskSignal::AwaitApproval {
-                binding_id,
-                data,
-                requests,
-            } => {
-                self.task_apply(
-                    binding_id,
-                    TaskEvent::AwaitApproval { data, requests },
-                    effects,
-                );
-            }
-            TaskSignal::Completed { binding_id, data } => {
-                self.task_apply(binding_id, TaskEvent::Completed { data }, effects);
-            }
-            TaskSignal::Failed {
-                binding_id,
-                error,
-                message_id,
-            } => {
-                self.task_apply(binding_id, TaskEvent::Failed { error, message_id }, effects);
-            }
-            TaskSignal::Cancelled { binding_id } => {
-                self.task_apply(binding_id, TaskEvent::Cancelled, effects);
             }
         }
         self.sync_topic_state(effects);
@@ -383,10 +356,12 @@ mod tests {
     }
 
     fn completed(binding_id: i64) -> FsmEvent {
-        FsmEvent::Signal(TaskSignal::Completed {
+        FsmEvent::Signal {
             binding_id,
-            data: sample_message(),
-        })
+            event: TaskEvent::Completed {
+                data: sample_message(),
+            },
+        }
     }
 
     #[test]

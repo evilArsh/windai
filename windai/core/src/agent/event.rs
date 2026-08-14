@@ -84,7 +84,6 @@ pub enum TopicCommand {
         allow_ids: Vec<i64>,
         reply: oneshot::Sender<Result<()>>,
     },
-    /// 订阅当前对话的事件流（actor 独占 sender，经 mailbox 取 receiver）。
     Subscribe {
         reply: oneshot::Sender<broadcast::Receiver<TopicEvent>>,
     },

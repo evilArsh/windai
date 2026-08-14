@@ -1,5 +1,5 @@
 use super::event::{TopicCommand, TopicEvent, TopicMailbox};
-use super::fsm::{Effect, FsmEvent, SupervisorEvent, TaskSignal, TopicFsm, UserRequest};
+use super::fsm::{Effect, FsmEvent, SupervisorEvent, TaskEvent, TopicFsm, UserRequest};
 use super::helper::{self};
 use super::runtime::AgentRunConfig;
 use super::task::sync::SyncTask;
@@ -263,11 +263,13 @@ impl TopicRuntime {
                     if self.fsm.is_main_binding(binding_id) {
                         return Err(err);
                     }
-                    return Ok(Some(vec![FsmEvent::Signal(TaskSignal::Failed {
+                    return Ok(Some(vec![FsmEvent::Signal {
                         binding_id,
-                        error: msg,
-                        message_id: None,
-                    })]));
+                        event: TaskEvent::Failed {
+                            error: msg,
+                            message_id: None,
+                        },
+                    }]));
                 }
                 Ok(None)
             }
@@ -408,11 +410,10 @@ impl TopicRuntime {
                 {
                     Ok(requests) => {
                         let _ = self
-                            .apply(FsmEvent::Signal(TaskSignal::AwaitApproval {
+                            .apply(FsmEvent::Signal {
                                 binding_id,
-                                data,
-                                requests,
-                            }))
+                                event: TaskEvent::AwaitApproval { data, requests },
+                            })
                             .await;
                     }
                     Err(err) => {
@@ -422,35 +423,45 @@ impl TopicRuntime {
                             self.topic_id
                         );
                         let _ = self
-                            .apply(FsmEvent::Signal(TaskSignal::Failed {
+                            .apply(FsmEvent::Signal {
                                 binding_id,
-                                error: err.to_string(),
-                                message_id: Some(data.id),
-                            }))
+                                event: TaskEvent::Failed {
+                                    error: err.to_string(),
+                                    message_id: Some(data.id),
+                                },
+                            })
                             .await;
                     }
                 }
             }
             TaskNotification::Cancelled { binding_id } => {
                 let _ = self
-                    .apply(FsmEvent::Signal(TaskSignal::Cancelled { binding_id }))
+                    .apply(FsmEvent::Signal {
+                        binding_id,
+                        event: TaskEvent::Cancelled,
+                    })
                     .await;
             }
             TaskNotification::Completed { binding_id, data } => {
                 match helper::save_message(&self.storage, data.clone()).await {
                     Ok(()) => {
                         let _ = self
-                            .apply(FsmEvent::Signal(TaskSignal::Completed { binding_id, data }))
+                            .apply(FsmEvent::Signal {
+                                binding_id,
+                                event: TaskEvent::Completed { data },
+                            })
                             .await;
                     }
                     Err(err) => {
                         log::error!("[Completed] save message error: {}", err);
                         let _ = self
-                            .apply(FsmEvent::Signal(TaskSignal::Failed {
+                            .apply(FsmEvent::Signal {
                                 binding_id,
-                                error: err.to_string(),
-                                message_id: Some(data.id),
-                            }))
+                                event: TaskEvent::Failed {
+                                    error: err.to_string(),
+                                    message_id: Some(data.id),
+                                },
+                            })
                             .await;
                     }
                 }
@@ -469,11 +480,13 @@ impl TopicRuntime {
                     }
                 };
                 let _ = self
-                    .apply(FsmEvent::Signal(TaskSignal::Failed {
+                    .apply(FsmEvent::Signal {
                         binding_id,
-                        error,
-                        message_id: Some(message_id),
-                    }))
+                        event: TaskEvent::Failed {
+                            error,
+                            message_id: Some(message_id),
+                        },
+                    })
                     .await;
             }
         }
