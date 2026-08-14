@@ -158,7 +158,7 @@ impl AgentStorage {
     pub async fn create_binding(&self, data: CreateAgentBinding) -> Result<AgentBinding> {
         let id = next_id();
         let now = now_ts();
-        let status = AgentStatus::Created;
+        let status = AgentStatus::Idle;
         let policy = ToolApprovalPolicy::default();
         let enabled = data.enabled.unwrap_or(true);
         let mut qb = insert!(

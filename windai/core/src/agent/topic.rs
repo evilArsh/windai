@@ -1,7 +1,5 @@
-use std::collections::VecDeque;
-
 use super::event::{TopicCommand, TopicEvent, TopicMailbox};
-use super::fsm::{Effect, FsmEvent, SupervisorEvent, TaskSignal, TaskState, TopicFsm, UserRequest};
+use super::fsm::{Effect, FsmEvent, SupervisorEvent, TaskSignal, TopicFsm, UserRequest};
 use super::helper::{self};
 use super::runtime::AgentRunConfig;
 use super::task::sync::SyncTask;
@@ -16,6 +14,7 @@ use crate::models::{
 };
 use crate::storage::Storage;
 use futures::future::try_join;
+use std::collections::VecDeque;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use wind_ai::message::Content;
@@ -24,7 +23,7 @@ use wind_mcp::client::registry::RegistryHandle;
 macro_rules! try_send_log {
     ($sender:expr, $value:expr, $prefix:expr $(,)?) => {
         if $sender.send($value).is_err() {
-            log::error!("[{}] reply dropped", $prefix);
+            log::error!("{} reply dropped", $prefix);
         }
     };
 }
@@ -317,10 +316,11 @@ impl TopicRuntime {
     }
 
     async fn handle_command(&mut self, command: TopicCommand) {
+        let name = command.to_string();
         match command {
             TopicCommand::CreateChat { user_input, reply } => {
                 let result = self.start_main_agent(user_input).await;
-                try_send_log!(reply, result, "CreateChat");
+                try_send_log!(reply, result, name);
             }
             TopicCommand::CancelTask { binding_id, reply } => {
                 let result = if self.fsm.task_state(binding_id).is_some() {
@@ -334,13 +334,13 @@ impl TopicRuntime {
                         binding_id
                     )))
                 };
-                try_send_log!(reply, result, "CancelTask");
+                try_send_log!(reply, result, name);
             }
             TopicCommand::Shutdown { reply } => {
                 let result = self
                     .apply(FsmEvent::UserRequest(UserRequest::Shutdown))
                     .await;
-                try_send_log!(reply, result, "Shutdown");
+                try_send_log!(reply, result, name);
             }
             TopicCommand::Approval {
                 binding_id,
@@ -348,27 +348,27 @@ impl TopicRuntime {
                 allow_ids,
                 reply,
             } => {
-                let result = if self.fsm.task_state(binding_id) == Some(TaskState::WaitingApproval)
-                {
-                    self.apply(FsmEvent::UserRequest(UserRequest::Approval {
-                        binding_id,
-                        allow_ids,
-                        deny_ids,
-                    }))
-                    .await
-                } else {
-                    Err(CoreError::Internal(format!(
-                        "Task is not waiting approval, current status: {:?}",
-                        self.fsm.task_state(binding_id)
-                    )))
-                };
-                try_send_log!(reply, result, "Approval");
+                let result =
+                    if self.fsm.task_state(binding_id) == Some(AgentStatus::WaitingApproval) {
+                        self.apply(FsmEvent::UserRequest(UserRequest::Approval {
+                            binding_id,
+                            allow_ids,
+                            deny_ids,
+                        }))
+                        .await
+                    } else {
+                        Err(CoreError::Internal(format!(
+                            "Task is not waiting approval, current status: {:?}",
+                            self.fsm.task_state(binding_id)
+                        )))
+                    };
+                try_send_log!(reply, result, name);
             }
             TopicCommand::Subscribe { reply } => {
                 let sender = self
                     .app_rx
                     .get_or_insert_with(|| broadcast::channel(1024).0);
-                try_send_log!(reply, sender.subscribe(), "Subscribe");
+                try_send_log!(reply, sender.subscribe(), name);
             }
         }
     }

@@ -1,9 +1,11 @@
-use super::state::TaskState;
-use crate::agent::{
-    event::TopicEvent,
-    runtime::AgentRunConfig,
-    task::TaskSpec,
-    tool::{SpawnAgentRequest, SpawnAgentResponse},
+use crate::{
+    agent::{
+        event::TopicEvent,
+        runtime::AgentRunConfig,
+        task::TaskSpec,
+        tool::{SpawnAgentRequest, SpawnAgentResponse},
+    },
+    models::AgentStatus,
 };
 use tokio::sync::oneshot;
 use wind_ai::message::Content;
@@ -11,7 +13,10 @@ use wind_ai::message::Content;
 #[derive(Debug)]
 pub enum Effect {
     /// 写 DB 状态
-    PersistStatus { binding_id: i64, status: TaskState },
+    PersistStatus {
+        binding_id: i64,
+        status: AgentStatus,
+    },
     /// 广播业务事件
     Emit(TopicEvent),
     /// 启动 AgentRuntime
@@ -27,7 +32,7 @@ pub enum Effect {
     /// 解析 pending 子任务并回复父任务。
     SendChildResponse {
         binding_id: i64,
-        status: TaskState,
+        status: AgentStatus,
         output: Vec<Content>,
     },
     /// 创建子 Agent

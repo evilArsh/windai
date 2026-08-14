@@ -1,9 +1,8 @@
 use super::effect::Effect;
-use super::state::TaskState;
 use crate::agent::event::TopicEvent;
 use crate::agent::runtime::AgentRunConfig;
 use crate::agent::task::TaskSpec;
-use crate::models::{Message, ToolApprovalRequest};
+use crate::models::{AgentStatus, Message, ToolApprovalRequest};
 use wind_ai::message::Content;
 
 /// Agent 任务事件
@@ -43,7 +42,7 @@ pub struct TaskFsm {
     binding_id: i64,
     parent_topic_id: i64,
     topic_id: i64,
-    state: TaskState,
+    state: AgentStatus,
 }
 
 impl TaskFsm {
@@ -52,7 +51,7 @@ impl TaskFsm {
             binding_id,
             parent_topic_id,
             topic_id,
-            state: TaskState::Idle,
+            state: AgentStatus::Idle,
         }
     }
 
@@ -60,15 +59,15 @@ impl TaskFsm {
         self.binding_id
     }
 
-    pub fn state(&self) -> TaskState {
+    pub fn state(&self) -> AgentStatus {
         self.state
     }
 
     /// 状态转移
     /// 返回合法转移的目标状态，非法转移返回 `None`。
-    pub fn target(from_state: TaskState, new_event: &TaskEvent) -> Option<TaskState> {
+    pub fn target(from_state: AgentStatus, new_event: &TaskEvent) -> Option<AgentStatus> {
+        use AgentStatus as S;
         use TaskEvent as E;
-        use TaskState as S;
         Some(match (from_state, new_event) {
             // 首次启动（Idle）或终态重启都进入 Running。
             (S::Idle | S::Finished | S::Failed | S::Cancelled, E::Start { .. }) => S::Running,
@@ -119,12 +118,12 @@ impl TaskFsm {
         binding_id: i64,
         parent_topic_id: i64,
         topic_id: i64,
-        from: TaskState,
-        to: TaskState,
+        from: AgentStatus,
+        to: AgentStatus,
         event: TaskEvent,
     ) -> Vec<Effect> {
+        use AgentStatus as S;
         use TaskEvent as E;
-        use TaskState as S;
         match (from, to) {
             // 启动（含终态重启）：先 StartAgent（actor 会注册 registry 条目），再持久化状态。
             (S::Idle | S::Finished | S::Failed | S::Cancelled, S::Running) => match event {
@@ -300,13 +299,13 @@ mod tests {
     fn start_transition_order() {
         let mut f = TaskFsm::new(1, 100, 200);
         let effects = f.reduce(start());
-        assert_eq!(f.state(), TaskState::Running);
+        assert_eq!(f.state(), AgentStatus::Running);
         // 先 StartAgent（注册 registry），再持久化状态
         assert_eq!(effect_names(&effects), vec!["StartAgent", "PersistStatus"]);
         assert!(matches!(
             effects[1],
             Effect::PersistStatus {
-                status: TaskState::Running,
+                status: AgentStatus::Running,
                 ..
             }
         ));
@@ -318,9 +317,9 @@ mod tests {
         let mut f = TaskFsm::new(1, 100, 200);
         f.reduce(start());
         f.reduce(completed());
-        assert_eq!(f.state(), TaskState::Finished);
+        assert_eq!(f.state(), AgentStatus::Finished);
         let effects = f.reduce(start());
-        assert_eq!(f.state(), TaskState::Running);
+        assert_eq!(f.state(), AgentStatus::Running);
         assert_eq!(effect_names(&effects), vec!["StartAgent", "PersistStatus"]);
     }
 
@@ -330,7 +329,7 @@ mod tests {
         f.reduce(start());
 
         let effects = f.reduce(awaiting());
-        assert_eq!(f.state(), TaskState::WaitingApproval);
+        assert_eq!(f.state(), AgentStatus::WaitingApproval);
         assert_eq!(effect_names(&effects), vec!["PersistStatus", "Emit"]);
         assert!(matches!(
             effects[1],
@@ -338,7 +337,7 @@ mod tests {
         ));
 
         let effects = f.reduce(TaskEvent::ApprovalResolved);
-        assert_eq!(f.state(), TaskState::Running);
+        assert_eq!(f.state(), AgentStatus::Running);
         assert_eq!(effect_names(&effects), vec!["PersistStatus", "ResumeAgent"]);
     }
 
@@ -348,7 +347,7 @@ mod tests {
         f.reduce(start());
 
         let effects = f.reduce(completed());
-        assert_eq!(f.state(), TaskState::Finished);
+        assert_eq!(f.state(), AgentStatus::Finished);
         // 持久化 → 广播 MessageFinished → 解析 pending 子任务
         assert_eq!(
             effect_names(&effects),
@@ -366,7 +365,7 @@ mod tests {
         f.reduce(start());
 
         let effects = f.reduce(failed());
-        assert_eq!(f.state(), TaskState::Failed);
+        assert_eq!(f.state(), AgentStatus::Failed);
         assert!(
             effects
                 .iter()
@@ -380,7 +379,7 @@ mod tests {
         f.reduce(start());
 
         let effects = f.reduce(TaskEvent::Cancel);
-        assert_eq!(f.state(), TaskState::Cancelled);
+        assert_eq!(f.state(), AgentStatus::Cancelled);
         assert_eq!(
             effect_names(&effects),
             vec!["PersistStatus", "CancelAgent", "SendChildResponse"]
@@ -397,7 +396,7 @@ mod tests {
 
         // 父任务生成子任务
         let effects = f.reduce(TaskEvent::ChildSpawned);
-        assert_eq!(f.state(), TaskState::WaitingChild);
+        assert_eq!(f.state(), AgentStatus::WaitingChild);
         assert_eq!(effect_names(&effects), vec!["PersistStatus"]);
 
         // 同一父任务连续生成子任务：保持 WaitingChild，幂等
@@ -405,7 +404,7 @@ mod tests {
 
         // 子任务完成 → 恢复 Running
         let effects = f.reduce(TaskEvent::ChildResolved);
-        assert_eq!(f.state(), TaskState::Running);
+        assert_eq!(f.state(), AgentStatus::Running);
         assert_eq!(effect_names(&effects), vec!["PersistStatus"]);
     }
 
@@ -417,7 +416,7 @@ mod tests {
         assert!(f.reduce(failed()).is_empty());
         assert!(f.reduce(awaiting()).is_empty());
         assert!(f.reduce(TaskEvent::Cancel).is_empty());
-        assert_eq!(f.state(), TaskState::Idle);
+        assert_eq!(f.state(), AgentStatus::Idle);
 
         // 终态之后不能收到生命周期信号
         f.reduce(start());
@@ -425,7 +424,7 @@ mod tests {
         assert!(f.reduce(awaiting()).is_empty());
         assert!(f.reduce(TaskEvent::ChildResolved).is_empty());
         assert!(f.reduce(TaskEvent::ApprovalResolved).is_empty());
-        assert_eq!(f.state(), TaskState::Finished);
+        assert_eq!(f.state(), AgentStatus::Finished);
     }
 
     #[test]
@@ -434,7 +433,7 @@ mod tests {
         // Running 状态下不能直接 ApprovalResolved
         f.reduce(start());
         assert!(f.reduce(TaskEvent::ApprovalResolved).is_empty());
-        assert_eq!(f.state(), TaskState::Running);
+        assert_eq!(f.state(), AgentStatus::Running);
     }
 
     #[test]

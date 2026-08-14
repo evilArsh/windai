@@ -11,7 +11,7 @@ use sqlx::Row;
 #[strum(serialize_all = "snake_case")]
 pub enum AgentStatus {
     /// 已创建。
-    Created,
+    Idle,
     /// 正在运行。
     Running,
     /// 正在等待用户审批。

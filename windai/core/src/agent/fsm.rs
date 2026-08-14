@@ -10,6 +10,8 @@ pub use task_fsm::*;
 
 use std::collections::HashMap;
 
+use crate::models::AgentStatus;
+
 pub struct TopicFsm {
     topic_id: i64,
     state: TopicState,
@@ -39,7 +41,7 @@ impl TopicFsm {
         self.main_binding_id.is_some() && self.main_binding_id == Some(binding_id)
     }
 
-    pub fn task_state(&self, binding_id: i64) -> Option<TaskState> {
+    pub fn task_state(&self, binding_id: i64) -> Option<AgentStatus> {
         self.tasks.get(&binding_id).map(|t| t.state())
     }
 
@@ -47,7 +49,7 @@ impl TopicFsm {
     pub fn is_task_busy(&self, binding_id: i64) -> bool {
         matches!(
             self.task_state(binding_id),
-            Some(TaskState::Running | TaskState::WaitingApproval | TaskState::WaitingChild)
+            Some(AgentStatus::Running | AgentStatus::WaitingApproval | AgentStatus::WaitingChild)
         )
     }
 
@@ -102,7 +104,7 @@ impl TopicFsm {
                 deny_ids,
             } => {
                 // 只有 WaitingApproval 的任务才允许提交审批。
-                if self.task_state(binding_id) != Some(TaskState::WaitingApproval) {
+                if self.task_state(binding_id) != Some(AgentStatus::WaitingApproval) {
                     log::warn!("[TopicFsm] approval rejected, task not waiting: {binding_id}");
                     return;
                 }
@@ -198,8 +200,8 @@ impl TopicFsm {
             return;
         };
         let next = match self.task_state(main) {
-            Some(TaskState::Finished | TaskState::Failed) => TopicState::Idle,
-            Some(TaskState::Cancelled) => TopicState::Stopped,
+            Some(AgentStatus::Finished | AgentStatus::Failed) => TopicState::Idle,
+            Some(AgentStatus::Cancelled) => TopicState::Stopped,
             _ => return,
         };
         if prev != next {
@@ -397,7 +399,7 @@ mod tests {
         assert_eq!(f.topic_state(), TopicState::Running);
         assert_eq!(f.main_binding_id(), Some(1));
         assert!(f.is_main_busy());
-        assert_eq!(f.task_state(1), Some(TaskState::Running));
+        assert_eq!(f.task_state(1), Some(AgentStatus::Running));
         assert_eq!(effect_names(&effects), vec!["StartAgent", "PersistStatus"]);
     }
 
@@ -491,7 +493,7 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, Effect::SpawnChild { .. }))
         );
-        assert_eq!(f.task_state(1), Some(TaskState::Running));
+        assert_eq!(f.task_state(1), Some(AgentStatus::Running));
 
         // 子任务创建成功：父 → WaitingChild，子 → Running
         let effects = f.reduce(FsmEvent::Supervisor(SupervisorEvent::ChildStarted {
@@ -499,8 +501,8 @@ mod tests {
             spec: sample_spec_with_binding(2),
             config: sample_config(),
         }));
-        assert_eq!(f.task_state(1), Some(TaskState::WaitingChild));
-        assert_eq!(f.task_state(2), Some(TaskState::Running));
+        assert_eq!(f.task_state(1), Some(AgentStatus::WaitingChild));
+        assert_eq!(f.task_state(2), Some(AgentStatus::Running));
         assert!(
             effects
                 .iter()
@@ -509,11 +511,11 @@ mod tests {
 
         // 子任务完成：解析 pending 前父任务先恢复 Running（由 actor 在 SendChildResponse 后注入）
         f.reduce(completed(2));
-        assert_eq!(f.task_state(2), Some(TaskState::Finished));
+        assert_eq!(f.task_state(2), Some(AgentStatus::Finished));
         f.reduce(FsmEvent::Supervisor(SupervisorEvent::ChildResolved {
             parent_binding_id: 1,
         }));
-        assert_eq!(f.task_state(1), Some(TaskState::Running));
+        assert_eq!(f.task_state(1), Some(AgentStatus::Running));
     }
 
     #[test]
