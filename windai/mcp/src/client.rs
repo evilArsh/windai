@@ -296,7 +296,7 @@ pub struct Resource {
     /// 此大小是在 base64 编码或任何分词处理之前计算的。
     /// 主机（Hosts）可以使用此信息来显示文件大小并估算上下文窗口的使用情况。
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub size: Option<u32>,
+    pub size: Option<u64>,
 }
 impl From<rmcp::model::Resource> for Resource {
     fn from(r: rmcp::model::Resource) -> Self {

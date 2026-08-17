@@ -1,7 +1,12 @@
 use super::McpError;
 use super::cmd_normalizer;
 use super::{ServerParams, StdioParams};
-use rmcp::model::{CallToolRequestParams, CallToolResult, Prompt, Resource, Tool};
+use rmcp::ServiceError;
+use rmcp::model::ContentBlock;
+use rmcp::model::TextContent;
+use rmcp::model::{
+    CallToolRequestParams, CallToolResponse, CallToolResult, Prompt, Resource, Tool,
+};
 use rmcp::service::RunningService;
 use rmcp::transport::{ConfigureCommandExt, StreamableHttpClientTransport, TokioChildProcess};
 use rmcp::{RoleClient, ServiceExt, service::DynService};
@@ -54,6 +59,7 @@ impl ServerHandle {
                     }
                 });
                 let transport = TokioChildProcess::new(cmd)?;
+                // TODO: MRTR
                 ().into_dyn().serve(transport).await?
             }
             ServerParams::Streamable(params) => {
@@ -132,10 +138,23 @@ impl ServerHandle {
         } else {
             params
         };
-        self.service
-            .call_tool(params)
-            .await
-            .map_err(McpError::Service)
+        // https://modelcontextprotocol.io/seps/2322-MRTR
+        // 迁移日志 https://github.com/modelcontextprotocol/rust-sdk/discussions/969
+        match self.service.call_tool_once(params).await? {
+            CallToolResponse::Complete(result) => Ok(result),
+            // TODO: MRTR
+            CallToolResponse::InputRequired(res) => {
+                let res_str = match serde_json::to_string(&res) {
+                    Ok(json) => json,
+                    Err(_) => String::from("{}"),
+                };
+                Ok(CallToolResult::success(vec![ContentBlock::Text(
+                    TextContent::new(res_str),
+                )]))
+            }
+            CallToolResponse::Task(_) => Err(McpError::Service(ServiceError::UnexpectedResponse)),
+            _ => Err(McpError::Service(ServiceError::UnexpectedResponse)),
+        }
     }
 
     pub async fn list_tools(&self) -> Result<Vec<Tool>, McpError> {
