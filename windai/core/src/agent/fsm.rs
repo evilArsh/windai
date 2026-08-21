@@ -191,11 +191,13 @@ impl TopicFsm {
                 deny_ids,
                 allow_ids,
             } => {
-                // // 只有 WaitingApproval 的任务才允许提交审批。
-                // if self.task_state(binding_id) != Some(AgentStatus::WaitingApproval) {
-                //     log::warn!("[TopicFsm] approval rejected, task not waiting: {binding_id}");
-                //     return;
-                // }
+                // 只有 WaitingApproval 的任务才允许提交审批。
+                if self.task_state(binding_id) != Some(AgentStatus::WaitingApproval) {
+                    log::warn!(
+                        "[TopicCommand::Approval] approval rejected, task not waiting: {binding_id}"
+                    );
+                    return;
+                }
                 effects.push(Effect::Approval {
                     binding_id,
                     allow_ids,
