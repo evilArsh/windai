@@ -18,7 +18,7 @@ pub mod sync;
 pub enum AgentOutput {
     Started,
     /// 流式分片消息
-    MessageDelta {
+    Message {
         message_id: i64,
         index: i32,
         delta: AiMessage,
@@ -57,7 +57,7 @@ pub enum TaskCommand {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, strum::AsRefStr)]
 /// 任务消息通知
 pub enum TaskNotification {
     Started {
@@ -70,12 +70,12 @@ pub enum TaskNotification {
         index: i32,
         delta: AiMessage,
     },
-    WaitingApproval {
+    ApprovalRequired {
         binding_id: i64,
         data: Message,
         calls: Vec<FunctionCall>,
     },
-    Completed {
+    Finish {
         binding_id: i64,
         data: Message,
     },
@@ -91,13 +91,14 @@ pub enum TaskNotification {
 
 impl std::fmt::Display for TaskNotification {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let (name, binding_id) = match self {
-            TaskNotification::Started { binding_id } => ("Started", binding_id),
-            TaskNotification::Message { binding_id, .. } => ("Message", binding_id),
-            TaskNotification::WaitingApproval { binding_id, .. } => ("WaitingApproval", binding_id),
-            TaskNotification::Completed { binding_id, .. } => ("Completed", binding_id),
-            TaskNotification::Failed { binding_id, .. } => ("Failed", binding_id),
-            TaskNotification::Cancelled { binding_id } => ("Cancelled", binding_id),
+        let name = self.as_ref();
+        let binding_id = match self {
+            TaskNotification::Started { binding_id } => binding_id,
+            TaskNotification::Message { binding_id, .. } => binding_id,
+            TaskNotification::ApprovalRequired { binding_id, .. } => binding_id,
+            TaskNotification::Finish { binding_id, .. } => binding_id,
+            TaskNotification::Failed { binding_id, .. } => binding_id,
+            TaskNotification::Cancelled { binding_id } => binding_id,
         };
         write!(f, "[TaskNotification {name}] (binding_id = {binding_id})")
     }

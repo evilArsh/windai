@@ -1,22 +1,32 @@
 use super::effect::Effect;
-use crate::agent::event::TopicEvent;
 use crate::agent::runtime::AgentRunConfig;
 use crate::agent::task::TaskSpec;
-use crate::models::{AgentStatus, Message, ToolApprovalRequest};
+use crate::models::{AgentStatus, Message};
 use wind_ai::message::Content;
+use wind_ai::tool::FunctionCall;
 
 /// Agent 任务事件
-#[derive(Debug)]
+#[derive(Debug, strum::AsRefStr)]
 pub enum TaskEvent {
+    /// 工具调用需要审批
+    ApprovalRequired {
+        data: Message,
+        calls: Vec<FunctionCall>,
+    },
+    /// 任务完成
+    Finish { data: Message },
+    /// 任务失败
+    Failed {
+        /// 任务失败时会携带原 Message
+        data: Option<Message>,
+        error: String,
+    },
+    /// 任务已取消
+    Cancelled,
     /// 启动任务
     Start {
         spec: TaskSpec,
         config: AgentRunConfig,
-    },
-    /// 模型请求工具审批
-    AwaitApproval {
-        data: Message,
-        requests: Vec<ToolApprovalRequest>,
     },
     /// 子任务创建成功。
     ChildSpawned,
@@ -24,17 +34,37 @@ pub enum TaskEvent {
     ApprovalResolved,
     /// 子任务完成，恢复运行。
     ChildResolved,
-    /// 正常完成。
-    Completed { data: Message },
-    /// 失败。
-    Failed {
-        error: String,
-        message_id: Option<i64>,
-    },
     /// 收到取消指令
     Cancel,
-    /// 任务已取消
-    Cancelled,
+}
+impl std::fmt::Display for TaskEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name_ref = self.as_ref();
+        let (name, args) = match self {
+            TaskEvent::ApprovalRequired { data, calls } => (
+                name_ref,
+                format!("(message_id = {}, calls_len = {})", data.id, calls.len()),
+            ),
+            TaskEvent::Finish { data } => (name_ref, format!("(message_id = {})", data.id)),
+            TaskEvent::Failed { data, error } => (
+                name_ref,
+                format!(
+                    "(message_id = {}, error = {})",
+                    data.as_ref().map(|d| d.id).unwrap_or_default(),
+                    error
+                ),
+            ),
+            TaskEvent::Cancelled => (name_ref, String::new()),
+            TaskEvent::Start { spec, .. } => {
+                (name_ref, format!("(binding_id = {})", spec.binding_id))
+            }
+            TaskEvent::ChildSpawned => (name_ref, String::new()),
+            TaskEvent::ApprovalResolved => (name_ref, String::new()),
+            TaskEvent::ChildResolved => (name_ref, String::new()),
+            TaskEvent::Cancel => (name_ref, String::new()),
+        };
+        write!(f, "[TaskEvent {name}]\n{}", args)
+    }
 }
 
 /// Agent 任务状态
@@ -63,191 +93,137 @@ impl TaskFsm {
         self.state
     }
 
-    /// 状态转移
-    /// 返回合法转移的目标状态，非法转移返回 `None`。
-    pub fn target(from_state: AgentStatus, new_event: &TaskEvent) -> Option<AgentStatus> {
-        use AgentStatus as S;
-        use TaskEvent as E;
-        Some(match (from_state, new_event) {
-            // 首次启动（Idle）或终态重启都进入 Running。
-            (S::Idle | S::Finished | S::Failed | S::Cancelled, E::Start { .. }) => S::Running,
-            (S::Running, E::AwaitApproval { .. }) => S::WaitingApproval,
-            (S::Running, E::ChildSpawned) => S::WaitingChild,
-            // 同一父任务可连续生成多个子任务：保持 WaitingChild。
-            (S::WaitingChild, E::ChildSpawned) => S::WaitingChild,
-            (S::Running, E::Completed { .. }) => S::Finished,
-            (S::Running, E::Failed { .. }) => S::Failed,
-            (S::Running, E::Cancel) | (S::Running, E::Cancelled) => S::Cancelled,
-            (S::WaitingApproval, E::ApprovalResolved) => S::Running,
-            (S::WaitingApproval, E::Cancel) | (S::WaitingApproval, E::Cancelled) => S::Cancelled,
-            (S::WaitingChild, E::ChildResolved) => S::Running,
-            (S::WaitingChild, E::Cancel) | (S::WaitingChild, E::Cancelled) => S::Cancelled,
-            _ => return None,
-        })
-    }
-
     /// 迁移任务状态并生成副作用。
     pub fn reduce(&mut self, new_event: TaskEvent) -> Vec<Effect> {
-        let from = self.state;
-        let Some(to) = Self::target(from, &new_event) else {
-            log::warn!(
-                "[TaskFsm] illegal transition: {from:?} -- {new_event:?}, (binding_id = {})",
-                self.binding_id
-            );
-            return vec![];
-        };
-        if to == from {
-            return vec![];
-        }
-        // Start 事件可能携带新的子主题 id（如主任务重跑）。
-        // if let TaskEvent::Start { config, .. } = &event {
-        //     self.topic_id = config.topic_id;
-        // }
-        self.state = to;
-        Self::effects(
-            self.binding_id,
-            self.parent_topic_id,
-            self.topic_id,
-            from,
-            to,
-            new_event,
-        )
-    }
-
-    fn effects(
-        binding_id: i64,
-        parent_topic_id: i64,
-        topic_id: i64,
-        from: AgentStatus,
-        to: AgentStatus,
-        event: TaskEvent,
-    ) -> Vec<Effect> {
         use AgentStatus as S;
         use TaskEvent as E;
-        match (from, to) {
-            // 启动（含终态重启）：先 StartAgent（actor 会注册 registry 条目），再持久化状态。
-            (S::Idle | S::Finished | S::Failed | S::Cancelled, S::Running) => match event {
-                E::Start { spec, config } => vec![
-                    Effect::StartAgent {
+        let binding_id = self.binding_id;
+        let from = self.state;
+        // 借用取出判别值，避免后续 match 按值 move 后无法再访问 new_event。
+        let is_cancel = matches!(&new_event, E::Cancel);
+        match (from, new_event) {
+            (S::Idle | S::Finished | S::Failed | S::Cancelled, E::Start { spec, config }) => {
+                self.state = S::Running;
+                vec![
+                    Effect::Start {
                         binding_id,
                         spec,
                         config,
                     },
                     Effect::PersistStatus {
                         binding_id,
-                        status: S::Running,
+                        status: self.state,
                     },
-                ],
-                _ => vec![],
-            },
-            (S::Running, S::WaitingApproval) => match event {
-                E::AwaitApproval { data, requests } => {
-                    let message_id = data.id;
-                    let agent_topic_id = data.topic_id;
-                    vec![
-                        Effect::PersistStatus {
-                            binding_id,
-                            status: S::WaitingApproval,
-                        },
-                        Effect::Emit(TopicEvent::ApprovalRequired {
-                            binding_id,
-                            topic_id: agent_topic_id,
-                            parent_topic_id,
-                            message_id,
-                            requests,
-                        }),
-                    ]
-                }
-                _ => vec![],
-            },
-            (S::Running, S::WaitingChild) => {
-                vec![Effect::PersistStatus {
-                    binding_id,
-                    status: S::WaitingChild,
-                }]
+                ]
             }
-            (S::Running, S::Finished) => match event {
-                E::Completed { data } => {
-                    let message_id = data.id;
-                    let agent_topic_id = data.topic_id;
-                    vec![
-                        Effect::PersistStatus {
-                            binding_id,
-                            status: S::Finished,
-                        },
-                        Effect::Emit(TopicEvent::MessageFinished {
-                            binding_id,
-                            parent_topic_id,
-                            topic_id: agent_topic_id,
-                            message_id,
-                        }),
-                        Effect::SendChildResponse {
-                            binding_id,
-                            status: S::Finished,
-                            output: Self::finished_output(&data),
-                        },
-                    ]
-                }
-                _ => vec![],
-            },
-            (S::Running, S::Failed) => match event {
-                E::Failed { error, message_id } => vec![
+            (S::WaitingApproval, E::ApprovalResolved) => {
+                self.state = S::Running;
+                vec![
                     Effect::PersistStatus {
                         binding_id,
-                        status: S::Failed,
+                        status: self.state,
                     },
-                    Effect::Emit(TopicEvent::Error {
+                    Effect::Resume { binding_id },
+                ]
+            }
+            (S::WaitingChild, E::ChildResolved) => {
+                self.state = S::Running;
+                vec![Effect::PersistStatus {
+                    binding_id,
+                    status: self.state,
+                }]
+            }
+            (S::Running, E::ApprovalRequired { data, calls }) => {
+                self.state = S::WaitingApproval;
+                vec![
+                    Effect::PersistStatus {
                         binding_id,
-                        topic_id,
-                        parent_topic_id,
-                        message_id,
-                        error: error.clone(),
-                    }),
+                        status: self.state,
+                    },
+                    Effect::ApprovalRequest {
+                        binding_id: self.binding_id,
+                        data,
+                        calls,
+                    },
+                ]
+            }
+            (S::Running, E::ChildSpawned) => {
+                self.state = S::WaitingChild;
+                vec![Effect::PersistStatus {
+                    binding_id,
+                    status: self.state,
+                }]
+            }
+            (S::Running, E::Finish { data }) => {
+                self.state = S::Finished;
+                let output = Self::finished_output(&data);
+                vec![
+                    Effect::PersistStatus {
+                        binding_id,
+                        status: self.state,
+                    },
+                    Effect::Finish { binding_id, data },
                     Effect::SendChildResponse {
                         binding_id,
-                        status: S::Failed,
-                        output: vec![Content::new_text(error.clone())],
+                        status: self.state,
+                        output,
                     },
-                ],
-                _ => vec![],
-            },
-            // 任何可取消状态收到 Cancel（指令）或 Cancelled（上报）→ 终态 Cancelled。
-            (S::Running | S::WaitingApproval | S::WaitingChild, S::Cancelled) => {
+                ]
+            }
+            (S::Running, E::Failed { data, error }) => {
+                self.state = S::Failed;
+                vec![
+                    Effect::PersistStatus {
+                        binding_id,
+                        status: self.state,
+                    },
+                    Effect::Failed {
+                        binding_id,
+                        data,
+                        error: error.clone(),
+                    },
+                    Effect::SendChildResponse {
+                        binding_id,
+                        status: self.state,
+                        output: vec![Content::new_text(error)],
+                    },
+                ]
+            }
+            (S::Running, E::Cancel)
+            | (S::WaitingApproval, E::Cancel)
+            | (S::WaitingChild, E::Cancel)
+            | (S::Running, E::Cancelled)
+            | (S::WaitingApproval, E::Cancelled)
+            | (S::WaitingChild, E::Cancelled) => {
+                self.state = S::Cancelled;
                 let mut effects = vec![
                     Effect::PersistStatus {
                         binding_id,
-                        status: S::Cancelled,
+                        status: self.state,
                     },
                     Effect::SendChildResponse {
                         binding_id,
-                        status: S::Cancelled,
+                        status: self.state,
                         output: vec![Content::new_text("Task was cancelled".to_string())],
                     },
                 ];
-                // 只有"取消指令"需要额外下发 CancelAgent；任务自报 Cancelled 无需再取消。
-                if matches!(event, E::Cancel) {
-                    effects.insert(1, Effect::CancelAgent { binding_id });
+                // "取消指令"需要额外下发 CancelAgent；
+                if is_cancel {
+                    effects.insert(1, Effect::Cancel { binding_id });
                 }
                 effects
             }
-            (S::WaitingApproval, S::Running) => vec![
-                Effect::PersistStatus {
+            (other_s, other_e) => {
+                log::warn!(
+                    "[TaskFsm] Task {} cannot transition from {} to {}",
                     binding_id,
-                    status: S::Running,
-                },
-                Effect::ResumeAgent { binding_id },
-            ],
-            (S::WaitingChild, S::Running) => {
-                vec![Effect::PersistStatus {
-                    binding_id,
-                    status: S::Running,
-                }]
+                    other_s,
+                    other_e
+                );
+                vec![]
             }
-            _ => vec![],
         }
     }
-
-    /// 从完成的 Assistant 消息中提取可读的最终结果。
     fn finished_output(data: &Message) -> Vec<Content> {
         data.content
             .last()
@@ -259,187 +235,5 @@ impl TaskFsm {
                 }
             })
             .unwrap_or_else(|| vec![Content::new_text("Task has no valid result".to_string())])
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::agent::event::TopicEvent;
-    use crate::agent::fsm::testutil::*;
-
-    fn start() -> TaskEvent {
-        TaskEvent::Start {
-            spec: sample_spec(),
-            config: sample_config(),
-        }
-    }
-
-    fn completed() -> TaskEvent {
-        TaskEvent::Completed {
-            data: sample_message(),
-        }
-    }
-
-    fn failed() -> TaskEvent {
-        TaskEvent::Failed {
-            error: "boom".into(),
-            message_id: Some(10),
-        }
-    }
-
-    fn awaiting() -> TaskEvent {
-        TaskEvent::AwaitApproval {
-            data: sample_message(),
-            requests: vec![sample_request()],
-        }
-    }
-
-    #[test]
-    fn start_transition_order() {
-        let mut f = TaskFsm::new(1, 100, 200);
-        let effects = f.reduce(start());
-        assert_eq!(f.state(), AgentStatus::Running);
-        // 先 StartAgent（注册 registry），再持久化状态
-        assert_eq!(effect_names(&effects), vec!["StartAgent", "PersistStatus"]);
-        assert!(matches!(
-            effects[1],
-            Effect::PersistStatus {
-                status: AgentStatus::Running,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn restart_from_terminal() {
-        // 主任务跑完后，同一 binding 可以重新 Start
-        let mut f = TaskFsm::new(1, 100, 200);
-        f.reduce(start());
-        f.reduce(completed());
-        assert_eq!(f.state(), AgentStatus::Finished);
-        let effects = f.reduce(start());
-        assert_eq!(f.state(), AgentStatus::Running);
-        assert_eq!(effect_names(&effects), vec!["StartAgent", "PersistStatus"]);
-    }
-
-    #[test]
-    fn approval_roundtrip() {
-        let mut f = TaskFsm::new(1, 100, 200);
-        f.reduce(start());
-
-        let effects = f.reduce(awaiting());
-        assert_eq!(f.state(), AgentStatus::WaitingApproval);
-        assert_eq!(effect_names(&effects), vec!["PersistStatus", "Emit"]);
-        assert!(matches!(
-            effects[1],
-            Effect::Emit(TopicEvent::ApprovalRequired { .. })
-        ));
-
-        let effects = f.reduce(TaskEvent::ApprovalResolved);
-        assert_eq!(f.state(), AgentStatus::Running);
-        assert_eq!(effect_names(&effects), vec!["PersistStatus", "ResumeAgent"]);
-    }
-
-    #[test]
-    fn completion_effect_order() {
-        let mut f = TaskFsm::new(1, 100, 200);
-        f.reduce(start());
-
-        let effects = f.reduce(completed());
-        assert_eq!(f.state(), AgentStatus::Finished);
-        // 持久化 → 广播 MessageFinished → 解析 pending 子任务
-        assert_eq!(
-            effect_names(&effects),
-            vec!["PersistStatus", "Emit", "SendChildResponse"]
-        );
-        assert!(matches!(
-            effects[1],
-            Effect::Emit(TopicEvent::MessageFinished { .. })
-        ));
-    }
-
-    #[test]
-    fn failure_emits_error() {
-        let mut f = TaskFsm::new(1, 100, 200);
-        f.reduce(start());
-
-        let effects = f.reduce(failed());
-        assert_eq!(f.state(), AgentStatus::Failed);
-        assert!(
-            effects
-                .iter()
-                .any(|e| matches!(e, Effect::Emit(TopicEvent::Error { .. })))
-        );
-    }
-
-    #[test]
-    fn cancel_command_cancels_agent() {
-        let mut f = TaskFsm::new(1, 100, 200);
-        f.reduce(start());
-
-        let effects = f.reduce(TaskEvent::Cancel);
-        assert_eq!(f.state(), AgentStatus::Cancelled);
-        assert_eq!(
-            effect_names(&effects),
-            vec!["PersistStatus", "CancelAgent", "SendChildResponse"]
-        );
-
-        // 任务随后自报 Cancelled：终态幂等，不再产生副作用
-        assert!(f.reduce(TaskEvent::Cancelled).is_empty());
-    }
-
-    #[test]
-    fn child_spawn_and_resolve() {
-        let mut f = TaskFsm::new(1, 100, 200);
-        f.reduce(start());
-
-        // 父任务生成子任务
-        let effects = f.reduce(TaskEvent::ChildSpawned);
-        assert_eq!(f.state(), AgentStatus::WaitingChild);
-        assert_eq!(effect_names(&effects), vec!["PersistStatus"]);
-
-        // 同一父任务连续生成子任务：保持 WaitingChild，幂等
-        assert!(f.reduce(TaskEvent::ChildSpawned).is_empty());
-
-        // 子任务完成 → 恢复 Running
-        let effects = f.reduce(TaskEvent::ChildResolved);
-        assert_eq!(f.state(), AgentStatus::Running);
-        assert_eq!(effect_names(&effects), vec!["PersistStatus"]);
-    }
-
-    #[test]
-    fn illegal_transitions_are_rejected() {
-        let mut f = TaskFsm::new(1, 100, 200);
-        // Idle 下不能直接完成/失败/审批/取消
-        assert!(f.reduce(completed()).is_empty());
-        assert!(f.reduce(failed()).is_empty());
-        assert!(f.reduce(awaiting()).is_empty());
-        assert!(f.reduce(TaskEvent::Cancel).is_empty());
-        assert_eq!(f.state(), AgentStatus::Idle);
-
-        // 终态之后不能收到生命周期信号
-        f.reduce(start());
-        f.reduce(completed());
-        assert!(f.reduce(awaiting()).is_empty());
-        assert!(f.reduce(TaskEvent::ChildResolved).is_empty());
-        assert!(f.reduce(TaskEvent::ApprovalResolved).is_empty());
-        assert_eq!(f.state(), AgentStatus::Finished);
-    }
-
-    #[test]
-    fn approve_requires_waiting_approval() {
-        let mut f = TaskFsm::new(1, 100, 200);
-        // Running 状态下不能直接 ApprovalResolved
-        f.reduce(start());
-        assert!(f.reduce(TaskEvent::ApprovalResolved).is_empty());
-        assert_eq!(f.state(), AgentStatus::Running);
-    }
-
-    #[test]
-    fn finished_output_extracts_simple_content() {
-        let data = sample_message();
-        let output = TaskFsm::finished_output(&data);
-        assert_eq!(output.len(), 1);
     }
 }

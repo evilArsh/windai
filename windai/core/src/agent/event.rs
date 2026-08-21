@@ -17,8 +17,8 @@ use super::task::TaskNotification;
 pub enum TopicEvent {
     /// 错误消息
     Error {
-        binding_id: i64,
-        topic_id: i64,
+        binding_id: Option<i64>,
+        topic_id: Option<i64>,
         parent_topic_id: i64,
         message_id: Option<i64>,
         error: String,
@@ -64,25 +64,20 @@ pub enum TopicEvent {
 }
 
 /// 外部调用命令
-#[derive(Debug)]
+#[derive(Debug, strum::AsRefStr)]
 pub enum TopicCommand {
     /// 启动一个对话
-    CreateChat {
+    Start {
         user_input: Vec<Content>,
-        reply: oneshot::Sender<Result<()>>,
     },
-    CancelTask {
+    Cancel {
         binding_id: i64,
-        reply: oneshot::Sender<Result<()>>,
     },
-    Shutdown {
-        reply: oneshot::Sender<Result<()>>,
-    },
+    Shutdown,
     Approval {
         binding_id: i64,
         deny_ids: Vec<i64>,
         allow_ids: Vec<i64>,
-        reply: oneshot::Sender<Result<()>>,
     },
     Subscribe {
         reply: oneshot::Sender<broadcast::Receiver<TopicEvent>>,
@@ -96,7 +91,11 @@ impl std::fmt::Display for TopicEvent {
                 binding_id,
                 topic_id,
                 ..
-            } => ("Error", topic_id.to_string(), binding_id.to_string()),
+            } => (
+                "Error",
+                topic_id.map(|t| t.to_string()).unwrap_or_default(),
+                binding_id.map(|t| t.to_string()).unwrap_or_default(),
+            ),
             TopicEvent::Snapshot {
                 binding_id,
                 topic_id,
@@ -147,13 +146,7 @@ impl std::fmt::Display for TopicEvent {
 
 impl std::fmt::Display for TopicCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let name = match self {
-            TopicCommand::CreateChat { .. } => "CreateChat",
-            TopicCommand::CancelTask { .. } => "CancelTask",
-            TopicCommand::Shutdown { .. } => "Shutdown",
-            TopicCommand::Approval { .. } => "Approval",
-            TopicCommand::Subscribe { .. } => "Subscribe",
-        };
+        let name = self.as_ref();
         write!(f, "[TopicCommand {name}]")
     }
 }
@@ -163,7 +156,15 @@ pub enum TopicMsg {
     Task(TaskNotification),
     Supervisor(SupervisorRequest),
 }
-
+impl std::fmt::Display for TopicMsg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TopicMsg::Command(topic_command) => write!(f, "{}", topic_command),
+            TopicMsg::Task(task_notification) => write!(f, "{}", task_notification),
+            TopicMsg::Supervisor(supervisor_request) => write!(f, "{}", supervisor_request),
+        }
+    }
+}
 #[derive(Clone)]
 pub struct TopicMailbox {
     tx: mpsc::Sender<TopicMsg>,

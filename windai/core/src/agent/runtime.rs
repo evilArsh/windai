@@ -230,7 +230,7 @@ impl AgentRuntime {
                 message_id,
                 delta,
             } => {
-                self.send_event(AgentOutput::MessageDelta {
+                self.send_event(AgentOutput::Message {
                     message_id,
                     index,
                     delta,

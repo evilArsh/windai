@@ -66,7 +66,7 @@ impl AgentHost for SyncHost {
                 })
                 .await;
             }
-            AgentOutput::MessageDelta {
+            AgentOutput::Message {
                 message_id,
                 index,
                 delta,
@@ -90,7 +90,7 @@ impl AgentHost for SyncHost {
                     .await;
                 }
                 None => {
-                    self.notify_task(TaskNotification::Completed {
+                    self.notify_task(TaskNotification::Finish {
                         binding_id: self.binding_id,
                         data,
                     })
@@ -102,7 +102,7 @@ impl AgentHost for SyncHost {
                 contexts: _,
                 calls,
             } => {
-                self.notify_task(TaskNotification::WaitingApproval {
+                self.notify_task(TaskNotification::ApprovalRequired {
                     binding_id: self.binding_id,
                     data,
                     calls,
