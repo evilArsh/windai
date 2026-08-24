@@ -236,18 +236,8 @@ impl TaskRegistry {
     }
 
     /// 并发批量取消所有运行中的任务并清空注册表
-    pub async fn close(&mut self) {
-        let cancels = self
-            .binding_map
-            .values_mut()
-            .map(|entry| async move {
-                if let Err(e) = entry.handler.cancel().await {
-                    log::error!("shutdown cancel error: {}", e);
-                }
-            })
-            .collect::<Vec<_>>();
-        futures::future::join_all(cancels).await;
-        // self.binding_map.clear();
+    pub fn clear(&mut self) {
+        self.binding_map.clear();
         self.pending.clear();
         self.main_binding_id = None;
     }

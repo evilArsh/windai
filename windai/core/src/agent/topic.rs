@@ -552,8 +552,8 @@ impl TopicRuntime {
     }
 
     async fn shutdown(&mut self) -> Result<()> {
-        self.registry.close().await;
         self.app_rx = None;
+        self.registry.clear();
         Ok(())
     }
 
