@@ -1,11 +1,11 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use wind_ai::message;
 
 use crate::db::DbRow;
 
 /// 对话消息请求配置
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatConfig {
     pub id: i64,
     #[serde(flatten)]

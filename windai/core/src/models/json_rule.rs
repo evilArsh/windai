@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use wind_ai::model::AdapterType;
 
@@ -6,7 +6,7 @@ use crate::db::DbRow;
 use crate::storage::utils;
 
 /// JSON 规则，用于用户手动处理模型请求配置
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct JsonRule {
     pub id: i64,
     pub provider_id: i64,
@@ -31,14 +31,14 @@ impl<'s> sqlx::FromRow<'s, DbRow> for JsonRule {
     }
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CreateJsonRule {
     pub provider_id: i64,
     pub adapter: AdapterType,
     pub json_rule: String,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct UpdateJsonRule {
     pub provider_id: Option<i64>,
     pub adapter: Option<AdapterType>,

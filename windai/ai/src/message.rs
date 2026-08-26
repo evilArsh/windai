@@ -274,7 +274,7 @@ impl Default for Message {
 }
 
 /// 对话请求参数
-#[derive(Debug, Serialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ReqConfig {
     /// 采样温度，范围 0~2。较高值使输出更随机，较低值使输出更聚焦。
     /// 通常建议只调 temperature 或 top_p 之一。

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use wind_mcp::client::TransportType;
 
@@ -8,7 +8,7 @@ use crate::db::DbRow;
 use crate::storage;
 
 /// MCP 服务配置，(Stdio, Streamable-HTTP)
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct McpServerParam {
     pub id: i64,
     pub r#type: TransportType,
@@ -51,7 +51,7 @@ impl<'s> sqlx::FromRow<'s, DbRow> for McpServerParam {
     }
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CreateMcpServer {
     pub r#type: TransportType,
     pub name: String,
@@ -62,7 +62,7 @@ pub struct CreateMcpServer {
     pub env: Option<HashMap<String, String>>,
 }
 
-#[derive(Debug, Serialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct UpdateMcpServer {
     pub r#type: Option<TransportType>,
     pub name: String,

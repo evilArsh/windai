@@ -15,6 +15,7 @@ use error::Result;
 use std::{
     collections::{HashMap, hash_map::Entry},
     path::Path,
+    sync::Mutex,
 };
 use tokio_util::sync::CancellationToken;
 use wind_mcp::client::registry::{Registry, RegistryHandle};
@@ -23,7 +24,7 @@ pub struct WindCore {
     ctx: CancellationToken,
     mcp: RegistryHandle,
     storage: Storage,
-    topic_handler: HashMap<i64, TopicRuntimeHandle>,
+    topic_handler: Mutex<HashMap<i64, TopicRuntimeHandle>>,
 }
 
 impl WindCore {
@@ -79,7 +80,7 @@ impl WindCore {
             ctx: CancellationToken::new(),
             mcp,
             storage: Storage::new(pool),
-            topic_handler: HashMap::new(),
+            topic_handler: Mutex::new(HashMap::new()),
         })
     }
     pub fn storage(&self) -> &Storage {
@@ -93,13 +94,14 @@ impl WindCore {
     ///
     /// # Panic
     /// 如果 core 已经被关闭，将会 panic
-    pub fn fetch_topic(&mut self, topic_id: i64) -> &TopicRuntimeHandle {
+    pub fn fetch_topic(&self, topic_id: i64) -> TopicRuntimeHandle {
         if self.ctx.is_cancelled() {
             panic!("core is shutdown")
         }
 
-        match self.topic_handler.entry(topic_id) {
-            Entry::Occupied(entry) => entry.into_mut(),
+        let mut map = self.topic_handler.lock().unwrap();
+        match map.entry(topic_id) {
+            Entry::Occupied(entry) => entry.get().clone(),
             Entry::Vacant(entry) => {
                 let handler = TopicRuntime::spawn(
                     self.ctx.child_token(),
@@ -107,7 +109,9 @@ impl WindCore {
                     self.mcp.clone(),
                     self.storage.clone(),
                 );
-                entry.insert(handler)
+                let cloned = handler.clone();
+                entry.insert(handler);
+                cloned
             }
         }
     }

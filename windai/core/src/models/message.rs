@@ -94,6 +94,7 @@ pub struct CreateMessage {
     pub output_tokens: i32,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct UpdateMessage {
     pub content: Option<Vec<message::Message>>,
     pub model_id: Option<i64>,
