@@ -6,10 +6,13 @@ use sqlx::Row;
 /// 需要用户审批的 tool call 请求。
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ToolApprovalRequest {
+    /// 唯一id
     pub id: i64,
+    /// agent binding id
     pub binding_id: i64,
     /// 实际产生 tool request 的 Topic id。
     pub topic_id: i64,
+    /// 父Topic id
     pub parent_topic_id: i64,
     /// 包含 tool request 的 assistant message id。
     pub message_id: i64,

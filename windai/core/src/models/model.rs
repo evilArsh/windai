@@ -8,19 +8,26 @@ use crate::storage::utils;
 /// 模态类型, 用于UI展示
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, strum::EnumString, strum::Display)]
 pub enum ModelType {
+    /// 聊天模型
     Chat,
+    /// 嵌入模型
     Embedding,
+    /// 重排序模型
     Reranker,
+    /// 音频模型
     Audio,
+    /// 视频模型
     Video,
 }
 
 /// 模型结构
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Model {
+    /// 唯一id
     pub id: i64,
     /// 提供商提供的模型名称
     pub name: String,
+    /// 提供商id
     pub provider_id: i64,
     /// 自定义模型别名
     pub alias: Option<String>,
@@ -39,6 +46,7 @@ pub struct Model {
     pub endpoint: Option<String>,
     /// 模型使用次数统计
     pub frequency: Option<i32>,
+    /// 创建时间
     pub created_at: i64,
 }
 
@@ -64,27 +72,45 @@ impl<'s> sqlx::FromRow<'s, DbRow> for Model {
     }
 }
 
+/// 创建模型参数
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CreateModel {
+    /// 模型名称
     pub name: String,
+    /// 提供商id
     pub provider_id: i64,
+    /// 自定义模型别名
     pub alias: Option<String>,
+    /// 模型适配器类型
     pub adapter: AdapterType,
+    /// 模型支持的模态类型
     pub modalities: Option<Vec<ModelType>>,
+    /// 模型是否启用
     pub active: Option<bool>,
+    /// 模型图标
     pub icon: Option<String>,
+    /// 模型专属端点地址
     pub endpoint: Option<String>,
 }
 
+/// 更新模型参数
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct UpdateModel {
+    /// 模型名称
     pub name: Option<String>,
+    /// 自定义模型别名
     pub alias: Option<String>,
+    /// 模型适配器类型
     pub adapter: Option<AdapterType>,
+    /// 模型支持的模态类型
     pub modalities: Option<Vec<ModelType>>,
+    /// 模型是否启用
     pub active: Option<bool>,
+    /// 模型图标
     pub icon: Option<String>,
+    /// 模型专属端点地址
     pub endpoint: Option<String>,
+    /// 模型使用次数统计
     pub frequency: Option<i32>,
 }
 

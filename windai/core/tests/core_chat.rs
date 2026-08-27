@@ -172,7 +172,7 @@ async fn seed_chat_data(core: &WindCore, label: &str) -> TestContext {
 #[tokio::test]
 #[ignore = "need to complete .env config file"]
 async fn test_agent_chat() {
-    let mut wc = test_core().await;
+    let wc = test_core().await;
     let ctx = seed_chat_data(&wc, "agent-chat").await;
     let user_input = vec![Content::new_text(
         "我要设计一个基于Rust的IM实时聊天项目，并且利用网络开源工具，以及UI设计元素和网络LOGO;利用你的专业团队，为我推荐后端和前端框架和技术选型以及要规避的法律风险".into(),

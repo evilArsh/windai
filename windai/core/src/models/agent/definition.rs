@@ -8,6 +8,7 @@ use sqlx::Row;
 /// Agent 可被多个 Topic 复用，也可以复制为某个 Topic 的专属 Agent。
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AgentDefinition {
+    /// 唯一id
     pub id: i64,
     /// Agent 唯一短标识
     pub key: String,
@@ -114,7 +115,7 @@ pub struct AgentMcpBinding {
 pub struct CreateAgentDefinition {
     /// 用户可读名称。
     pub name: String,
-    // Agent 唯一短标识
+    /// Agent 唯一短标识
     pub key: String,
     /// Agent 能力说明。
     pub description: String,

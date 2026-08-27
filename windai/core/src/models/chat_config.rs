@@ -7,9 +7,12 @@ use crate::db::DbRow;
 /// 对话消息请求配置
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatConfig {
+    /// 唯一id
     pub id: i64,
+    /// 详细配置数据
     #[serde(flatten)]
     pub data: message::ReqConfig,
+    /// 创建时间
     pub created_at: i64,
 }
 

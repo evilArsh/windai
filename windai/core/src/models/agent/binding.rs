@@ -119,6 +119,7 @@ pub enum AgentRole {
 /// 创建 TopicAgentBinding 的 DTO。
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CreateAgentBinding {
+    /// 该binding的父Topic id。
     pub parent_topic_id: i64,
     /// 被绑定的 AgentDefinition id。
     pub agent_id: i64,
@@ -145,7 +146,10 @@ pub struct UpdateAgentBinding {
     pub chat_config_id: Option<i64>,
     /// 新的启用状态。
     pub enabled: Option<bool>,
+    /// 绑定实例生命周期状态。
     pub status: Option<AgentStatus>,
+    /// 运行模式。
     pub mode: Option<AgentMode>,
+    /// 工具审批策略。
     pub tool_approval_policy: Option<ToolApprovalPolicy>,
 }

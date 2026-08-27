@@ -5,12 +5,17 @@ use sqlx::Row;
 /// 对话话题
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Topic {
+    /// 唯一id
     pub id: i64,
+    /// 父话题id
     pub parent_id: Option<i64>,
+    /// agent binding id
     pub binding_id: Option<i64>,
     /// 话题标签
     pub label: String,
+    /// 话题图标
     pub icon: Option<String>,
+    /// 创建时间
     pub created_at: i64,
 }
 
@@ -27,11 +32,16 @@ impl<'s> sqlx::FromRow<'s, DbRow> for Topic {
     }
 }
 
+
+/// 工具审批策略
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(tag = "type", content = "tools", rename_all = "snake_case")]
 pub enum ToolApprovalPolicy {
+    /// 手动审批
     Manual,
+    /// 允许名单
     AllowList(Vec<String>),
+    /// 允许全部
     AllowAll,
 }
 
@@ -41,18 +51,27 @@ impl Default for ToolApprovalPolicy {
     }
 }
 
+/// 新增话题
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CreateTopic {
+    /// 父话题id
     pub parent_id: Option<i64>,
+    /// agent binding id
     pub binding_id: Option<i64>,
+    /// 话题标签
     pub label: String,
+    /// 话题图标
     pub icon: Option<String>,
 }
 
+/// 更新话题
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct UpdateTopic {
+    /// 父话题id
     pub parent_id: Option<i64>,
+    /// 话题标签
     pub label: Option<String>,
+    /// 话题图标
     pub icon: Option<String>,
 }
 

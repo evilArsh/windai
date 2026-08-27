@@ -8,17 +8,21 @@ use crate::storage;
 /// 消息结构
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Message {
+    /// 唯一id
     pub id: i64,
     /// 标识该响应所对应的原始用户消息ID
     /// - 当为None时，该消息是用户消息
     pub from_id: Option<i64>,
+    /// 是否为流式消息
     pub stream: bool,
     /// 消息内容。
     /// - 在单次对话中，如果存在多轮工具调用，该字段按顺序记录所有的调用结果；
     /// 包含模型选择的工具列表，用户工具调用结果，以及模型自然语言回复
     /// - 用户消息不存在多轮MCP对话，只有一个结果
     pub content: Vec<message::Message>,
+    /// 模型ID
     pub model_id: i64,
+    /// 消息所在的会话主题id
     pub topic_id: i64,
     /// 标识当前消息作为聊天上下文分割点
     pub is_boundary: bool,
@@ -30,6 +34,7 @@ pub struct Message {
     pub input_tokens: i32,
     /// 模型输出的token数
     pub output_tokens: i32,
+    /// 创建时间
     pub created_at: i64,
 }
 
@@ -94,11 +99,16 @@ pub struct CreateMessage {
     pub output_tokens: i32,
 }
 
+/// 更新消息
 #[derive(Serialize, Deserialize)]
 pub struct UpdateMessage {
+    /// 消息内容
     pub content: Option<Vec<message::Message>>,
+    /// 模型ID
     pub model_id: Option<i64>,
+    /// 用户输入的token数
     pub input_tokens: Option<i32>,
+    /// 模型输出的token数
     pub output_tokens: Option<i32>,
 }
 

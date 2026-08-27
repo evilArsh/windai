@@ -237,7 +237,14 @@ impl TopicStorage {
     fn select_topic<'a>() -> sqlx::QueryBuilder<'a, DbDriver> {
         select_fields!(
             TableName::TOPICS,
-            ("id", "parent_id", "label", "icon", "created_at")
+            (
+                "id",
+                "parent_id",
+                "binding_id",
+                "label",
+                "icon",
+                "created_at"
+            )
         )
     }
 }

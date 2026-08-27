@@ -4,15 +4,21 @@ use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// 角色
 #[derive(
     Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Copy, strum::EnumString, strum::Display,
 )]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
+    /// 系统角色
     System,
+    /// 用户角色
     User,
+    /// 助手角色
     Assistant,
+    /// 工具角色
     Tool,
+    /// 开发者角色
     Developer,
 }
 
@@ -29,10 +35,15 @@ pub struct AudioContent {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Content {
+    /// 文本消息
     Text { data: String },
+    /// 图片消息
     Image { data: String },
+    /// 文件消息
     File { data: String },
+    /// 音频消息
     Audio { data: AudioContent },
+    /// 函数调用结果
     FunctionCall { data: FunctionCallOutput },
 }
 impl Content {
@@ -89,6 +100,7 @@ impl Content {
 #[derive(Debug, Serialize, Deserialize, Clone, Builder)]
 #[builder(setter(strip_option, into))]
 pub struct Message {
+    /// 产生该消息的角色
     #[builder(default = "Role::Assistant")]
     pub role: Role,
     /// 响应和请求消息，涵盖以下类型：

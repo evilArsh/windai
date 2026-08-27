@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// 统一工具类型
 #[derive(Debug, Serialize, Clone)]
 #[serde(untagged)]
 pub enum Tools {
+    /// 函数调用
     Function(FunctionTool),
 }
 

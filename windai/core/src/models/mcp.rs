@@ -10,7 +10,9 @@ use crate::storage;
 /// MCP 服务配置，(Stdio, Streamable-HTTP)
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct McpServerParam {
+    /// 唯一id
     pub id: i64,
+    /// 传输类型
     pub r#type: TransportType,
     /// 服务名称
     pub name: String,
@@ -24,6 +26,7 @@ pub struct McpServerParam {
     pub args: Option<Vec<String>>,
     /// 环境变量
     pub env: Option<HashMap<String, String>>,
+    /// 创建时间
     pub created_at: i64,
 }
 
@@ -51,24 +54,40 @@ impl<'s> sqlx::FromRow<'s, DbRow> for McpServerParam {
     }
 }
 
+/// 创建 MCP 服务
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CreateMcpServer {
+    /// 传输类型
     pub r#type: TransportType,
+    /// 服务名称
     pub name: String,
+    /// Streamable-HTTP 服务地址
     pub url: Option<String>,
+    /// 描述
     pub description: Option<String>,
+    /// Stdio 类型服务启动命令
     pub command: Option<String>,
+    /// Stdio 类型服务启动参数
     pub args: Option<Vec<String>>,
+    /// Stdio 类型服务环境变量
     pub env: Option<HashMap<String, String>>,
 }
 
+/// 更新 MCP 服务
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct UpdateMcpServer {
+    /// 传输类型
     pub r#type: Option<TransportType>,
+    /// 服务名称
     pub name: String,
+    /// Streamable-HTTP 服务地址
     pub url: Option<String>,
+    /// 描述
     pub description: Option<String>,
+    /// Stdio 类型服务启动命令
     pub command: Option<String>,
+    /// Stdio 类型服务启动参数
     pub args: Option<Vec<String>>,
+    /// Stdio 类型服务环境变量
     pub env: Option<HashMap<String, String>>,
 }

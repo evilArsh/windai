@@ -6,10 +6,15 @@ use crate::db::DbRow;
 /// 提供商账号
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Credentials {
+    /// 唯一id
     pub id: i64,
+    /// 提供商id
     pub provider_id: i64,
+    /// 密钥
     pub key: String,
+    /// 创建时间
     pub created_at: i64,
+    /// 账号是否启用
     pub active: bool,
 }
 
@@ -53,6 +58,7 @@ impl std::fmt::Debug for Credentials {
 /// 提供商
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Provider {
+    /// 唯一id
     pub id: i64,
     /// 唯一的提供商名字
     pub name: String,
@@ -64,7 +70,9 @@ pub struct Provider {
     pub doc: Option<String>,
     /// 提供商别名
     pub alias: Option<String>,
+    /// 账号是否启用
     pub active: bool,
+    /// 创建时间
     pub created_at: i64,
 }
 
@@ -83,22 +91,35 @@ impl<'s> sqlx::FromRow<'s, DbRow> for Provider {
     }
 }
 
+/// 新建提供商
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CreateProvider {
+    /// 提供商名字
     pub name: String,
+    /// 提供商描述
     pub description: Option<String>,
+    /// 提供商 base api 地址
     pub base_url: String,
+    /// 提供商官方文档地址
     pub doc: Option<String>,
+    /// 提供商别名
     pub alias: Option<String>,
 }
 
+/// 更新提供商
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct UpdateProvider {
+    /// 提供商名字
     pub name: Option<String>,
+    /// 提供商描述
     pub description: Option<String>,
+    /// 提供商 base api 地址
     pub base_url: Option<String>,
+    /// 提供商官方文档地址
     pub doc: Option<String>,
+    /// 提供商别名
     pub alias: Option<String>,
+    /// 账号是否启用
     pub active: Option<bool>,
 }
 
@@ -115,8 +136,11 @@ impl Default for UpdateProvider {
     }
 }
 
+/// 新建凭证
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CreateCredentials {
+    /// 提供商id
     pub provider_id: i64,
+    /// 凭证密钥
     pub key: String,
 }

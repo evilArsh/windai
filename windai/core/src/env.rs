@@ -33,8 +33,6 @@ impl AppDirs {
         let db = root.join(DB_FILENAME);
         std::fs::create_dir_all(&root)
             .unwrap_or_else(|e| panic!("failed to create directory '{}': {e}", root.display()));
-        std::fs::create_dir_all(&db)
-            .unwrap_or_else(|e| panic!("failed to create directory '{}': {e}", db.display()));
         Self { root, db }
     }
 }
@@ -71,8 +69,18 @@ mod tests {
     #[test]
     fn test_dirs_initialization() {
         let d = dirs();
-        assert!(d.root.exists());
-        assert!(d.db.exists());
+        assert!(d.root.is_dir());
+        assert!(d.db.parent().unwrap().is_dir());
+    }
+
+    #[test]
+    fn test_db_path_is_not_directory() {
+        let d = dirs();
+        assert!(
+            !d.db.is_dir(),
+            "db path must not be a pre-created directory: {}",
+            d.db.display()
+        );
     }
 
     #[test]
