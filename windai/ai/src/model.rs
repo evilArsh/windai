@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// 对于复杂的标准API变体，用户可以使用 wind-rule 模块进行适配和拓展
 #[derive(
+    utoipa::ToSchema,
     Debug,
     Serialize,
     Deserialize,

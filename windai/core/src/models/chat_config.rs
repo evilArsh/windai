@@ -5,7 +5,7 @@ use wind_ai::message;
 use crate::db::DbRow;
 
 /// 对话消息请求配置
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct ChatConfig {
     /// 唯一id
     pub id: i64,

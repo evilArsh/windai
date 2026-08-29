@@ -6,7 +6,7 @@ use crate::db::DbRow;
 use crate::storage::utils;
 
 /// JSON 规则，用于用户手动处理模型请求配置
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct JsonRule {
     /// 唯一ID
     pub id: i64,
@@ -38,7 +38,7 @@ impl<'s> sqlx::FromRow<'s, DbRow> for JsonRule {
 }
 
 /// 创建 JSON 规则
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct CreateJsonRule {
     /// 提供商ID
     pub provider_id: i64,
@@ -49,7 +49,7 @@ pub struct CreateJsonRule {
 }
 
 /// 更新 JSON 配置
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct UpdateJsonRule {
     /// 唯一ID
     pub provider_id: Option<i64>,

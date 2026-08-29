@@ -6,7 +6,16 @@ use crate::db::DbRow;
 use crate::storage::utils;
 
 /// 模态类型, 用于UI展示
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, strum::EnumString, strum::Display)]
+#[derive(
+    utoipa::ToSchema,
+    Debug,
+    Serialize,
+    Deserialize,
+    Clone,
+    PartialEq,
+    strum::EnumString,
+    strum::Display,
+)]
 pub enum ModelType {
     /// 聊天模型
     Chat,
@@ -21,7 +30,7 @@ pub enum ModelType {
 }
 
 /// 模型结构
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct Model {
     /// 唯一id
     pub id: i64,
@@ -73,7 +82,7 @@ impl<'s> sqlx::FromRow<'s, DbRow> for Model {
 }
 
 /// 创建模型参数
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(utoipa::ToSchema, Serialize, Deserialize, Debug, Clone)]
 pub struct CreateModel {
     /// 模型名称
     pub name: String,
@@ -94,7 +103,7 @@ pub struct CreateModel {
 }
 
 /// 更新模型参数
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(utoipa::ToSchema, Serialize, Deserialize, Debug, Clone)]
 pub struct UpdateModel {
     /// 模型名称
     pub name: Option<String>,

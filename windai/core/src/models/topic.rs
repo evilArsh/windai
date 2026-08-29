@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
 /// 对话话题
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct Topic {
     /// 唯一id
     pub id: i64,
@@ -32,9 +32,8 @@ impl<'s> sqlx::FromRow<'s, DbRow> for Topic {
     }
 }
 
-
 /// 工具审批策略
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(tag = "type", content = "tools", rename_all = "snake_case")]
 pub enum ToolApprovalPolicy {
     /// 手动审批
@@ -52,7 +51,7 @@ impl Default for ToolApprovalPolicy {
 }
 
 /// 新增话题
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(utoipa::ToSchema, Serialize, Deserialize, Debug, Clone)]
 pub struct CreateTopic {
     /// 父话题id
     pub parent_id: Option<i64>,
@@ -65,7 +64,7 @@ pub struct CreateTopic {
 }
 
 /// 更新话题
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(utoipa::ToSchema, Serialize, Deserialize, Debug, Clone)]
 pub struct UpdateTopic {
     /// 父话题id
     pub parent_id: Option<i64>,

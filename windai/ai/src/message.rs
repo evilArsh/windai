@@ -6,7 +6,16 @@ use serde_json::Value;
 
 /// 角色
 #[derive(
-    Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Copy, strum::EnumString, strum::Display,
+    utoipa::ToSchema,
+    Debug,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    Clone,
+    Copy,
+    strum::EnumString,
+    strum::Display,
 )]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
@@ -23,7 +32,7 @@ pub enum Role {
 }
 
 /// 音频消息内容
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct AudioContent {
     /// 编码, eg: mp3, wav
     pub format: String,
@@ -32,7 +41,7 @@ pub struct AudioContent {
 }
 
 /// 消息内容
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Content {
     /// 文本消息
@@ -97,7 +106,10 @@ impl Content {
 }
 
 /// 模型请求或响应信息
-#[derive(Debug, Serialize, Deserialize, Clone, Builder)]
+///
+/// OpenAPI 中命名为 `AiMessage`，避免与 `wind_core::models::Message` 同名冲突。
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone, Builder)]
+#[schema(as = AiMessage)]
 #[builder(setter(strip_option, into))]
 pub struct Message {
     /// 产生该消息的角色
@@ -286,7 +298,7 @@ impl Default for Message {
 }
 
 /// 对话请求参数
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ReqConfig {
     /// 采样温度，范围 0~2。较高值使输出更随机，较低值使输出更聚焦。
     /// 通常建议只调 temperature 或 top_p 之一。

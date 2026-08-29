@@ -8,7 +8,7 @@ use crate::db::DbRow;
 use crate::storage;
 
 /// MCP 服务配置，(Stdio, Streamable-HTTP)
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct McpServerParam {
     /// 唯一id
     pub id: i64,
@@ -55,7 +55,7 @@ impl<'s> sqlx::FromRow<'s, DbRow> for McpServerParam {
 }
 
 /// 创建 MCP 服务
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct CreateMcpServer {
     /// 传输类型
     pub r#type: TransportType,
@@ -74,7 +74,7 @@ pub struct CreateMcpServer {
 }
 
 /// 更新 MCP 服务
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone, Default)]
 pub struct UpdateMcpServer {
     /// 传输类型
     pub r#type: Option<TransportType>,

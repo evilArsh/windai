@@ -4,7 +4,7 @@ use sqlx::Row;
 use crate::db::DbRow;
 
 /// 提供商账号
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(utoipa::ToSchema, Serialize, Deserialize, Clone)]
 pub struct Credentials {
     /// 唯一id
     pub id: i64,
@@ -56,7 +56,7 @@ impl std::fmt::Debug for Credentials {
 }
 
 /// 提供商
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(utoipa::ToSchema, Serialize, Deserialize, Debug, Clone)]
 pub struct Provider {
     /// 唯一id
     pub id: i64,
@@ -92,7 +92,7 @@ impl<'s> sqlx::FromRow<'s, DbRow> for Provider {
 }
 
 /// 新建提供商
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(utoipa::ToSchema, Serialize, Deserialize, Debug, Clone)]
 pub struct CreateProvider {
     /// 提供商名字
     pub name: String,
@@ -107,7 +107,7 @@ pub struct CreateProvider {
 }
 
 /// 更新提供商
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(utoipa::ToSchema, Serialize, Deserialize, Debug, Clone)]
 pub struct UpdateProvider {
     /// 提供商名字
     pub name: Option<String>,
@@ -137,7 +137,7 @@ impl Default for UpdateProvider {
 }
 
 /// 新建凭证
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(utoipa::ToSchema, Serialize, Deserialize, Debug, Clone)]
 pub struct CreateCredentials {
     /// 提供商id
     pub provider_id: i64,

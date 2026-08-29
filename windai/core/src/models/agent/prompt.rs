@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
 /// 可复用 prompt 模块。Agent 的 system prompt 由多个 PromptModule 按顺序组装。
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct PromptModule {
     /// PromptModule 主键。
     pub id: i64,
@@ -36,7 +36,7 @@ impl<'s> sqlx::FromRow<'s, DbRow> for PromptModule {
 }
 
 /// AgentDefinition 对 PromptModule 的引用配置。
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct PromptModuleBinding {
     /// 被引用的 PromptModule id。
     pub prompt_module_id: i64,
@@ -47,7 +47,7 @@ pub struct PromptModuleBinding {
 }
 
 /// 创建 PromptModule 的 DTO。
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct CreatePromptModule {
     /// 稳定短标识。
     pub key: String,
@@ -62,7 +62,7 @@ pub struct CreatePromptModule {
 }
 
 /// 更新 PromptModule 的 DTO。
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone, Default)]
 pub struct UpdatePromptModule {
     /// 新的稳定短标识。
     pub key: Option<String>,

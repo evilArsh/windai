@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
 /// 需要用户审批的 tool call 请求。
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct ToolApprovalRequest {
     /// 唯一id
     pub id: i64,
@@ -54,7 +54,16 @@ impl<'s> sqlx::FromRow<'s, DbRow> for ToolApprovalRequest {
 
 /// ToolApprovalRequest 的审批状态。
 #[derive(
-    Debug, Serialize, Deserialize, Clone, PartialEq, Eq, strum::EnumString, strum::Display, Copy,
+    utoipa::ToSchema,
+    Debug,
+    Serialize,
+    Deserialize,
+    Clone,
+    PartialEq,
+    Eq,
+    strum::EnumString,
+    strum::Display,
+    Copy,
 )]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]

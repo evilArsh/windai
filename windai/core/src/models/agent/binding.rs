@@ -5,7 +5,16 @@ use sqlx::Row;
 
 /// AgentInstance 生命周期状态
 #[derive(
-    Debug, Serialize, Deserialize, Clone, PartialEq, Eq, strum::EnumString, strum::Display, Copy,
+    utoipa::ToSchema,
+    Debug,
+    Serialize,
+    Deserialize,
+    Clone,
+    PartialEq,
+    Eq,
+    strum::EnumString,
+    strum::Display,
+    Copy,
 )]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
@@ -27,7 +36,7 @@ pub enum AgentStatus {
 }
 
 /// Topic 对某个 Agent 的使用绑定。Topic 通过它单向依赖 Agent。
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct AgentBinding {
     pub id: i64,
     /// 该binding的父Topic id。
@@ -88,7 +97,16 @@ impl<'s> sqlx::FromRow<'s, DbRow> for AgentBinding {
 
 /// 用于展示当前Agent运行模式
 #[derive(
-    Debug, Serialize, Deserialize, Clone, PartialEq, Eq, strum::EnumString, strum::Display, Copy,
+    utoipa::ToSchema,
+    Debug,
+    Serialize,
+    Deserialize,
+    Clone,
+    PartialEq,
+    Eq,
+    strum::EnumString,
+    strum::Display,
+    Copy,
 )]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
@@ -105,7 +123,16 @@ pub enum AgentMode {
 
 /// Agent 在当前 Topic 中的角色。每个 Topic 只能有一个 Main。
 #[derive(
-    Debug, Serialize, Deserialize, Clone, PartialEq, Eq, strum::EnumString, strum::Display, Copy,
+    utoipa::ToSchema,
+    Debug,
+    Serialize,
+    Deserialize,
+    Clone,
+    PartialEq,
+    Eq,
+    strum::EnumString,
+    strum::Display,
+    Copy,
 )]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
@@ -117,7 +144,7 @@ pub enum AgentRole {
 }
 
 /// 创建 TopicAgentBinding 的 DTO。
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct CreateAgentBinding {
     /// 该binding的父Topic id。
     pub parent_topic_id: i64,
@@ -134,7 +161,7 @@ pub struct CreateAgentBinding {
 }
 
 /// 更新 TopicAgentBinding 的 DTO。
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone, Default)]
 pub struct UpdateAgentBinding {
     /// 新的 AgentDefinition id。
     pub agent_id: Option<i64>,

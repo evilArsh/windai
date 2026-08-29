@@ -6,7 +6,7 @@ use crate::db::DbRow;
 use crate::storage;
 
 /// 消息结构
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct Message {
     /// 唯一id
     pub id: i64,
@@ -100,7 +100,7 @@ pub struct CreateMessage {
 }
 
 /// 更新消息
-#[derive(Serialize, Deserialize)]
+#[derive(utoipa::ToSchema, Serialize, Deserialize)]
 pub struct UpdateMessage {
     /// 消息内容
     pub content: Option<Vec<message::Message>>,

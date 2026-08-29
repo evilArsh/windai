@@ -6,7 +6,7 @@ use sqlx::Row;
 
 /// Agent 能力定义。
 /// Agent 可被多个 Topic 复用，也可以复制为某个 Topic 的专属 Agent。
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct AgentDefinition {
     /// 唯一id
     pub id: i64,
@@ -53,7 +53,15 @@ impl<'s> sqlx::FromRow<'s, DbRow> for AgentDefinition {
 
 /// Agent 作用域。
 #[derive(
-    Debug, Serialize, Deserialize, Clone, PartialEq, Eq, strum::EnumString, strum::Display,
+    utoipa::ToSchema,
+    Debug,
+    Serialize,
+    Deserialize,
+    Clone,
+    PartialEq,
+    Eq,
+    strum::EnumString,
+    strum::Display,
 )]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
@@ -65,7 +73,7 @@ pub enum AgentScope {
 }
 
 /// Agent 的能力配置。LLM 请求参数不在这里，运行参数来自 Topic 或 TopicAgentBinding 的 ChatConfig。
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct AgentDefinitionData {
     /// 该 Agent 绑定的 PromptModule 列表。
     pub prompt_modules: Vec<PromptModuleBinding>,
@@ -92,7 +100,7 @@ impl Default for AgentDefinitionData {
 }
 
 /// Agent 默认拥有的 MCP server 与工具级约束。
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct AgentMcpBinding {
     /// MCP server id。
     pub mcp_server_id: i64,
@@ -111,7 +119,7 @@ pub struct AgentMcpBinding {
 }
 
 /// 创建 AgentDefinition 的 DTO。
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct CreateAgentDefinition {
     /// 用户可读名称。
     pub name: String,
@@ -132,7 +140,7 @@ pub struct CreateAgentDefinition {
 }
 
 /// 更新 AgentDefinition 的 DTO。
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone, Default)]
 pub struct UpdateAgentDefinition {
     /// 新的用户可读名称。
     pub name: Option<String>,
@@ -151,7 +159,7 @@ pub struct UpdateAgentDefinition {
 }
 
 /// Agent 调度权限边界。
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct PermissionPolicy {
     /// 当前 Agent 是否允许创建其它 Agent。
     pub can_spawn_agents: bool,
@@ -184,7 +192,7 @@ impl Default for PermissionPolicy {
 }
 
 /// 子 Agent 创建时的上下文继承策略。
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct ContextPolicy {
     /// 当前 Agent 上下文最多包含的消息数量
     pub max_context: Option<i32>,
@@ -197,7 +205,7 @@ impl Default for ContextPolicy {
 }
 
 /// Agent 运行资源限制。
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct RuntimeLimits {
     /// 单个 Agent 实例最大运行时间，单位秒。
     /// None 表示不限制。

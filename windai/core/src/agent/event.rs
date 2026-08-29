@@ -12,53 +12,88 @@ use super::task::SupervisorRequest;
 use super::task::TaskNotification;
 
 /// 外部通知事件
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum TopicEvent {
     /// 错误消息
     Error {
+        /// agent binding id
         binding_id: Option<i64>,
+        /// 产生该事件的话题id
         topic_id: Option<i64>,
+        /// 父话题id
         parent_topic_id: i64,
+        /// 消息id
         message_id: Option<i64>,
+        /// 错误信息
         error: String,
     },
     /// 全量快照消息
     Snapshot {
+        /// agent binding id
         binding_id: i64,
+        /// 产生该事件的话题id
         topic_id: i64,
+        /// 父话题id
         parent_topic_id: i64,
+        /// 全量消息
         messages: Vec<Message>,
     },
     /// 消息已创建
-    MessageCreated { topic_id: i64, data: Message },
+    MessageCreated {
+        /// 产生该事件的话题id
+        topic_id: i64,
+        /// 初始化消息
+        data: Message,
+    },
     /// 流式分片消息
     Message {
+        /// agent binding id
         binding_id: i64,
+        /// 产生该事件的话题id
         topic_id: i64,
+        /// 父话题id
         parent_topic_id: i64,
+        /// 消息id
         message_id: i64,
+        /// 消息索引，用于标识消息顺序
         index: i32,
+        /// 消息内容
         data: AiMessage,
     },
     /// 消息完成
     MessageFinished {
+        /// agent binding id
         binding_id: i64,
+        /// 父话题id
         parent_topic_id: i64,
+        /// 产生该事件的话题id
         topic_id: i64,
+        // 消息id
         message_id: i64,
     },
+    /// 任务状态变更
     TaskStatusChanged {
+        /// agent binding id
         binding_id: i64,
+        /// 产生该事件的话题id
         topic_id: i64,
+        /// 父话题id
         parent_topic_id: i64,
+        /// 任务状态
         status: AgentStatus,
     },
+    /// 需要用户审批
     ApprovalRequired {
+        /// agent binding id
         binding_id: i64,
+        /// 产生该事件的话题id
         topic_id: i64,
+        /// 父话题id
         parent_topic_id: i64,
+        /// 消息id
         message_id: i64,
+        /// 审批请求
         requests: Vec<ToolApprovalRequest>,
     },
 }

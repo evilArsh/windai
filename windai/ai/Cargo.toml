@@ -23,6 +23,7 @@ async-stream.workspace = true
 log.workspace = true
 url.workspace = true
 tokio.workspace = true
+utoipa.workspace = true
 
 [dev-dependencies]
 env_logger.workspace = true

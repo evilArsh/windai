@@ -25,12 +25,24 @@ pub enum ClientStatus {
     Disconnected,
 }
 
+/// MCP 传输类型
 #[derive(
-    Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Copy, strum::EnumString, strum::Display,
+    utoipa::ToSchema,
+    Debug,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    Clone,
+    Copy,
+    strum::EnumString,
+    strum::Display,
 )]
 #[serde(rename_all = "lowercase")]
 pub enum TransportType {
+    /// 本地 stdio 服务
     Stdio,
+    /// 远程 HTTP 服务
     Streamable,
 }
 

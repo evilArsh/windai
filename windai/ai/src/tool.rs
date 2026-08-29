@@ -27,7 +27,7 @@ pub struct FunctionTool {
 }
 
 /// 模型返回的函数调用信息
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct FunctionCall {
     /// 函数调用ID，由模型生成
     pub id: String,
@@ -38,7 +38,7 @@ pub struct FunctionCall {
 }
 
 /// 函数调用结果
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct FunctionCallOutput {
     /// 函数调用ID，由模型生成
     pub id: String,
