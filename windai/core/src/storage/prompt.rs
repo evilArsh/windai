@@ -23,9 +23,6 @@ impl PromptStorage {
     }
 
     pub async fn create(&self, data: CreatePromptModule) -> Result<PromptModule> {
-        if data.key.trim().is_empty() {
-            return Err(CoreError::Validation("prompt key cannot be empty".into()));
-        }
         if data.alias.trim().is_empty() {
             return Err(CoreError::Validation("prompt name cannot be empty".into()));
         }
@@ -36,7 +33,6 @@ impl PromptStorage {
         let mut qb = insert!(
             TableName::PROMPT_MODULES,
             ("id", id),
-            ("key", data.key.clone()),
             ("name", data.alias.clone()),
             ("description", data.description.clone()),
             ("content", data.content.clone()),
@@ -47,7 +43,6 @@ impl PromptStorage {
 
         Ok(PromptModule {
             id,
-            key: data.key,
             alias: data.alias,
             description: data.description,
             content: data.content,
@@ -60,7 +55,6 @@ impl PromptStorage {
         let mut qb = update!(
             TableName::PROMPT_MODULES,
             id,
-            ("key", data.key),
             ("name", data.alias),
             ("description", data.description),
             ("content", data.content),
@@ -103,19 +97,6 @@ impl PromptStorage {
         Ok(rows)
     }
 
-    pub async fn get_by_key(&self, key: &str) -> Result<Option<PromptModule>> {
-        let row = self
-            .executor
-            .fetch_optional(
-                Self::common_select()
-                    .push(" WHERE key = ")
-                    .push_bind(key)
-                    .build_query_as::<PromptModule>(),
-            )
-            .await?;
-        Ok(row)
-    }
-
     pub async fn list(&self) -> Result<Vec<PromptModule>> {
         let rows = self
             .executor
@@ -133,7 +114,6 @@ impl PromptStorage {
             TableName::PROMPT_MODULES,
             (
                 "id",
-                "key",
                 "name",
                 "description",
                 "content",

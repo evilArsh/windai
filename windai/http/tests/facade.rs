@@ -175,7 +175,6 @@ async fn prompt_crud_roundtrips() {
     let f = PromptStorageFacade::new(core);
     let created = f
         .create_prompt_module(CreatePromptModule {
-            key: "sys".into(),
             alias: "System".into(),
             description: "base".into(),
             content: "you are helpful".into(),
@@ -187,11 +186,6 @@ async fn prompt_crud_roundtrips() {
 
     let got = f.get_prompt_module(id).await;
     assert_eq!(got.code, 200);
-    assert_eq!(got.data.unwrap().key, "sys");
-
-    let by_key = f.get_prompt_module_by_key("sys".into()).await;
-    assert_eq!(by_key.code, 200);
-    assert_eq!(by_key.data.unwrap().id, id);
 }
 
 #[tokio::test]

@@ -61,11 +61,4 @@ impl PromptStorageFacade {
         }
     }
 
-    pub async fn get_prompt_module_by_key(&self, key: String) -> ApiResponse<PromptModule> {
-        match self.core.storage().prompt().get_by_key(&key).await {
-            Ok(Some(p)) => ApiResponse::ok(p),
-            Ok(None) => ApiResponse::not_found("prompt module not found"),
-            Err(e) => map_core_error(e),
-        }
-    }
 }

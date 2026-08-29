@@ -74,7 +74,6 @@ use crate::dto::message::{CreateChatRequest, SubmitChatResponse};
         crate::routes::prompt::get_prompt_module,
         crate::routes::prompt::update_prompt_module,
         crate::routes::prompt::delete_prompt_module,
-        crate::routes::prompt::get_prompt_module_by_key,
         // agent
         crate::routes::agent::list_definitions,
         crate::routes::agent::create_definition,

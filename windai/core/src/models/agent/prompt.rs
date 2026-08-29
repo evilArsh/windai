@@ -7,8 +7,6 @@ use sqlx::Row;
 pub struct PromptModule {
     /// PromptModule 主键。
     pub id: i64,
-    /// 唯一短标识
-    pub key: String,
     /// 用户可读名称。
     pub alias: String,
     /// 模块用途说明。
@@ -25,7 +23,6 @@ impl<'s> sqlx::FromRow<'s, DbRow> for PromptModule {
     fn from_row(row: &'s DbRow) -> Result<Self, sqlx::Error> {
         Ok(Self {
             id: row.get("id"),
-            key: row.get("key"),
             alias: row.get("name"),
             description: row.get("description"),
             content: row.get("content"),
@@ -49,8 +46,6 @@ pub struct PromptModuleBinding {
 /// 创建 PromptModule 的 DTO。
 #[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct CreatePromptModule {
-    /// 稳定短标识。
-    pub key: String,
     /// 用户可读名称。
     pub alias: String,
     /// 模块用途说明。
@@ -64,8 +59,6 @@ pub struct CreatePromptModule {
 /// 更新 PromptModule 的 DTO。
 #[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone, Default)]
 pub struct UpdatePromptModule {
-    /// 新的稳定短标识。
-    pub key: Option<String>,
     /// 新的用户可读名称。
     pub alias: Option<String>,
     /// 新的模块用途说明。

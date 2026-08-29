@@ -93,7 +93,6 @@ CREATE TABLE IF NOT EXISTS json_rule (
 );
 CREATE TABLE IF NOT EXISTS prompt_modules (
     id              BIGINT  PRIMARY KEY,
-    key             TEXT    NOT NULL UNIQUE,
     name            TEXT    NOT NULL,
     description     TEXT    NOT NULL,
     content         TEXT    NOT NULL,
@@ -155,8 +154,6 @@ CREATE INDEX IF NOT EXISTS idx_messages_topic ON messages(topic_id, id);
 CREATE INDEX IF NOT EXISTS idx_mcp_servers_name ON mcp_servers(name);
 
 CREATE INDEX IF NOT EXISTS idx_provider_adapter ON json_rule(provider_id,adapter);
-
-CREATE INDEX IF NOT EXISTS idx_prompt_modules_key ON prompt_modules(key);
 
 CREATE INDEX IF NOT EXISTS idx_agent_definitions_key ON agent_definitions(key);
 CREATE INDEX IF NOT EXISTS idx_agent_definitions_scope ON agent_definitions(scope);

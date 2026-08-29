@@ -19,10 +19,6 @@ pub fn router() -> Router<AppState> {
             get(list_prompt_modules).post(create_prompt_module),
         )
         .route(
-            "/api/v1/prompt-modules/by-key/{key}",
-            get(get_prompt_module_by_key),
-        )
-        .route(
             "/api/v1/prompt-modules/{prompt_module_id}",
             get(get_prompt_module)
                 .put(update_prompt_module)
@@ -121,21 +117,3 @@ pub(crate) async fn delete_prompt_module(
     )
 }
 
-#[utoipa::path(
-    get,
-    summary = "按 key 获取 Prompt 模块",
-    path = "/api/v1/prompt-modules/by-key/{key}",
-    responses(
-        (status = 200, description = "按 key 获取 Prompt 模块", body = ApiResponse<PromptModule>)
-    )
-)]
-pub(crate) async fn get_prompt_module_by_key(
-    State(core): State<Arc<WindCore>>,
-    ApiPath(key): ApiPath<String>,
-) -> Json<ApiResponse<PromptModule>> {
-    Json(
-        PromptStorageFacade::new(core)
-            .get_prompt_module_by_key(key)
-            .await,
-    )
-}
