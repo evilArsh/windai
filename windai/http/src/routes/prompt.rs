@@ -1,12 +1,13 @@
 use serde_json::Value;
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::routing::get;
 use axum::{Json, Router};
 use wind_core::WindCore;
 
 use crate::dto::envelope::ApiResponse;
+use crate::extractor::{ApiJson, ApiPath};
 use crate::facade::storage::prompt::PromptStorageFacade;
 use crate::state::AppState;
 use wind_core::models::{CreatePromptModule, PromptModule, UpdatePromptModule};
@@ -53,7 +54,7 @@ pub(crate) async fn list_prompt_modules(
 )]
 pub(crate) async fn create_prompt_module(
     State(core): State<Arc<WindCore>>,
-    Json(input): Json<CreatePromptModule>,
+    ApiJson(input): ApiJson<CreatePromptModule>,
 ) -> Json<ApiResponse<PromptModule>> {
     Json(
         PromptStorageFacade::new(core)
@@ -72,7 +73,7 @@ pub(crate) async fn create_prompt_module(
 )]
 pub(crate) async fn get_prompt_module(
     State(core): State<Arc<WindCore>>,
-    Path(prompt_module_id): Path<i64>,
+    ApiPath(prompt_module_id): ApiPath<i64>,
 ) -> Json<ApiResponse<PromptModule>> {
     Json(
         PromptStorageFacade::new(core)
@@ -91,8 +92,8 @@ pub(crate) async fn get_prompt_module(
 )]
 pub(crate) async fn update_prompt_module(
     State(core): State<Arc<WindCore>>,
-    Path(prompt_module_id): Path<i64>,
-    Json(input): Json<UpdatePromptModule>,
+    ApiPath(prompt_module_id): ApiPath<i64>,
+    ApiJson(input): ApiJson<UpdatePromptModule>,
 ) -> Json<ApiResponse<PromptModule>> {
     Json(
         PromptStorageFacade::new(core)
@@ -111,7 +112,7 @@ pub(crate) async fn update_prompt_module(
 )]
 pub(crate) async fn delete_prompt_module(
     State(core): State<Arc<WindCore>>,
-    Path(prompt_module_id): Path<i64>,
+    ApiPath(prompt_module_id): ApiPath<i64>,
 ) -> Json<ApiResponse<()>> {
     Json(
         PromptStorageFacade::new(core)
@@ -130,7 +131,7 @@ pub(crate) async fn delete_prompt_module(
 )]
 pub(crate) async fn get_prompt_module_by_key(
     State(core): State<Arc<WindCore>>,
-    Path(key): Path<String>,
+    ApiPath(key): ApiPath<String>,
 ) -> Json<ApiResponse<PromptModule>> {
     Json(
         PromptStorageFacade::new(core)

@@ -1,4 +1,4 @@
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -6,6 +6,7 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use crate::dto::envelope::ApiResponse;
+use crate::extractor::{ApiJson, ApiPath, ApiQuery};
 use crate::facade::topic::TopicFacade;
 use crate::state::AppState;
 use wind_core::WindCore;
@@ -48,7 +49,7 @@ pub(crate) async fn list_topics(
 )]
 pub(crate) async fn create_topic(
     State(core): State<Arc<WindCore>>,
-    Json(input): Json<CreateTopic>,
+    ApiJson(input): ApiJson<CreateTopic>,
 ) -> Json<ApiResponse<Topic>> {
     Json(TopicFacade::new(core).create_topic(input).await)
 }
@@ -63,7 +64,7 @@ pub(crate) async fn create_topic(
 )]
 pub(crate) async fn get_topic(
     State(core): State<Arc<WindCore>>,
-    Path(topic_id): Path<i64>,
+    ApiPath(topic_id): ApiPath<i64>,
 ) -> Json<ApiResponse<Topic>> {
     Json(TopicFacade::new(core).get_topic(topic_id).await)
 }
@@ -78,8 +79,8 @@ pub(crate) async fn get_topic(
 )]
 pub(crate) async fn update_topic(
     State(core): State<Arc<WindCore>>,
-    Path(topic_id): Path<i64>,
-    Json(input): Json<UpdateTopic>,
+    ApiPath(topic_id): ApiPath<i64>,
+    ApiJson(input): ApiJson<UpdateTopic>,
 ) -> Json<ApiResponse<Topic>> {
     Json(TopicFacade::new(core).update_topic(topic_id, input).await)
 }
@@ -94,7 +95,7 @@ pub(crate) async fn update_topic(
 )]
 pub(crate) async fn delete_topic(
     State(core): State<Arc<WindCore>>,
-    Path(topic_id): Path<i64>,
+    ApiPath(topic_id): ApiPath<i64>,
 ) -> Json<ApiResponse<()>> {
     Json(TopicFacade::new(core).delete_topic(topic_id).await)
 }
@@ -116,8 +117,8 @@ pub(crate) struct ByBindingQuery {
 )]
 pub(crate) async fn get_topic_by_binding(
     State(core): State<Arc<WindCore>>,
-    Path(binding_id): Path<i64>,
-    Query(q): Query<ByBindingQuery>,
+    ApiPath(binding_id): ApiPath<i64>,
+    ApiQuery(q): ApiQuery<ByBindingQuery>,
 ) -> Json<ApiResponse<Topic>> {
     Json(
         TopicFacade::new(core)

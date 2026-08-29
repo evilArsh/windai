@@ -1,12 +1,13 @@
 use serde_json::Value;
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::routing::get;
 use axum::{Json, Router};
 use wind_core::WindCore;
 
 use crate::dto::envelope::ApiResponse;
+use crate::extractor::{ApiJson, ApiPath};
 use crate::facade::storage::model::ModelStorageFacade;
 use crate::state::AppState;
 use wind_core::models::{CreateModel, Model, UpdateModel};
@@ -44,7 +45,7 @@ pub(crate) async fn list_models(
 )]
 pub(crate) async fn create_model(
     State(core): State<Arc<WindCore>>,
-    Json(input): Json<CreateModel>,
+    ApiJson(input): ApiJson<CreateModel>,
 ) -> Json<ApiResponse<Model>> {
     Json(ModelStorageFacade::new(core).create_model(input).await)
 }
@@ -59,7 +60,7 @@ pub(crate) async fn create_model(
 )]
 pub(crate) async fn get_model(
     State(core): State<Arc<WindCore>>,
-    Path(model_id): Path<i64>,
+    ApiPath(model_id): ApiPath<i64>,
 ) -> Json<ApiResponse<Model>> {
     Json(ModelStorageFacade::new(core).get_model(model_id).await)
 }
@@ -74,8 +75,8 @@ pub(crate) async fn get_model(
 )]
 pub(crate) async fn update_model(
     State(core): State<Arc<WindCore>>,
-    Path(model_id): Path<i64>,
-    Json(input): Json<UpdateModel>,
+    ApiPath(model_id): ApiPath<i64>,
+    ApiJson(input): ApiJson<UpdateModel>,
 ) -> Json<ApiResponse<Model>> {
     Json(
         ModelStorageFacade::new(core)
@@ -94,7 +95,7 @@ pub(crate) async fn update_model(
 )]
 pub(crate) async fn delete_model(
     State(core): State<Arc<WindCore>>,
-    Path(model_id): Path<i64>,
+    ApiPath(model_id): ApiPath<i64>,
 ) -> Json<ApiResponse<()>> {
     Json(ModelStorageFacade::new(core).delete_model(model_id).await)
 }

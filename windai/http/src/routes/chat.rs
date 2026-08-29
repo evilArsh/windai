@@ -1,4 +1,4 @@
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -18,6 +18,7 @@ use wind_core::agent::event::TopicEvent;
 use crate::dto::approval::ApproveToolCallsRequest;
 use crate::dto::envelope::{ApiResponse, map_core_error};
 use crate::dto::message::{CreateChatRequest, SubmitChatResponse};
+use crate::extractor::{ApiJson, ApiPath};
 use crate::facade::topic::TopicFacade;
 use crate::state::AppState;
 use wind_core::models::{Message, UpdateMessage};
@@ -65,7 +66,7 @@ pub fn sse_router() -> Router<AppState> {
 )]
 pub(crate) async fn list_messages(
     State(core): State<Arc<WindCore>>,
-    Path(topic_id): Path<i64>,
+    ApiPath(topic_id): ApiPath<i64>,
 ) -> Json<ApiResponse<Vec<Message>>> {
     Json(TopicFacade::new(core).list_topic_messages(topic_id).await)
 }
@@ -80,8 +81,8 @@ pub(crate) async fn list_messages(
 )]
 pub(crate) async fn create_chat(
     State(core): State<Arc<WindCore>>,
-    Path(topic_id): Path<i64>,
-    Json(input): Json<CreateChatRequest>,
+    ApiPath(topic_id): ApiPath<i64>,
+    ApiJson(input): ApiJson<CreateChatRequest>,
 ) -> Json<ApiResponse<SubmitChatResponse>> {
     Json(TopicFacade::new(core).create_chat(topic_id, input).await)
 }
@@ -96,7 +97,7 @@ pub(crate) async fn create_chat(
 )]
 pub(crate) async fn list_context(
     State(core): State<Arc<WindCore>>,
-    Path(topic_id): Path<i64>,
+    ApiPath(topic_id): ApiPath<i64>,
 ) -> Json<ApiResponse<Vec<Message>>> {
     Json(TopicFacade::new(core).list_message_context(topic_id).await)
 }
@@ -111,7 +112,7 @@ pub(crate) async fn list_context(
 )]
 pub(crate) async fn get_message(
     State(core): State<Arc<WindCore>>,
-    Path(message_id): Path<i64>,
+    ApiPath(message_id): ApiPath<i64>,
 ) -> Json<ApiResponse<Message>> {
     Json(TopicFacade::new(core).get_message(message_id).await)
 }
@@ -126,8 +127,8 @@ pub(crate) async fn get_message(
 )]
 pub(crate) async fn update_message(
     State(core): State<Arc<WindCore>>,
-    Path(message_id): Path<i64>,
-    Json(input): Json<UpdateMessage>,
+    ApiPath(message_id): ApiPath<i64>,
+    ApiJson(input): ApiJson<UpdateMessage>,
 ) -> Json<ApiResponse<Message>> {
     Json(
         TopicFacade::new(core)
@@ -146,7 +147,7 @@ pub(crate) async fn update_message(
 )]
 pub(crate) async fn get_message_from_message(
     State(core): State<Arc<WindCore>>,
-    Path(message_id): Path<i64>,
+    ApiPath(message_id): ApiPath<i64>,
 ) -> Json<ApiResponse<Message>> {
     Json(
         TopicFacade::new(core)
@@ -165,7 +166,7 @@ pub(crate) async fn get_message_from_message(
 )]
 pub(crate) async fn cancel_task(
     State(core): State<Arc<WindCore>>,
-    Path((topic_id, binding_id)): Path<(i64, i64)>,
+    ApiPath((topic_id, binding_id)): ApiPath<(i64, i64)>,
 ) -> Json<ApiResponse<()>> {
     Json(
         TopicFacade::new(core)
@@ -184,8 +185,8 @@ pub(crate) async fn cancel_task(
 )]
 pub(crate) async fn approve_tool_calls(
     State(core): State<Arc<WindCore>>,
-    Path((topic_id, message_id)): Path<(i64, i64)>,
-    Json(input): Json<ApproveToolCallsRequest>,
+    ApiPath((topic_id, message_id)): ApiPath<(i64, i64)>,
+    ApiJson(input): ApiJson<ApproveToolCallsRequest>,
 ) -> Json<ApiResponse<()>> {
     Json(
         TopicFacade::new(core)
@@ -209,7 +210,7 @@ pub(crate) async fn approve_tool_calls(
 )]
 pub(crate) async fn subscribe_events(
     State(core): State<Arc<WindCore>>,
-    Path(topic_id): Path<i64>,
+    ApiPath(topic_id): ApiPath<i64>,
 ) -> impl IntoResponse {
     // 先确认 topic 存在，避免对不存在的 topic get-or-create 产生悬挂连接。
     match core.storage().topic().get_topic(topic_id).await {

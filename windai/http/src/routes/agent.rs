@@ -1,7 +1,7 @@
 use serde_json::Value;
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -9,6 +9,7 @@ use wind_core::WindCore;
 
 use crate::dto::agent::CloneAgentDefinitionRequest;
 use crate::dto::envelope::ApiResponse;
+use crate::extractor::{ApiJson, ApiPath, ApiQuery};
 use crate::facade::storage::agent::AgentStorageFacade;
 use crate::facade::storage::approval::ToolApprovalFacade;
 use crate::facade::topic::TopicFacade;
@@ -106,7 +107,7 @@ pub(crate) async fn list_definitions(
 )]
 pub(crate) async fn create_definition(
     State(core): State<Arc<WindCore>>,
-    Json(input): Json<CreateAgentDefinition>,
+    ApiJson(input): ApiJson<CreateAgentDefinition>,
 ) -> Json<ApiResponse<AgentDefinition>> {
     Json(
         AgentStorageFacade::new(core)
@@ -125,7 +126,7 @@ pub(crate) async fn create_definition(
 )]
 pub(crate) async fn get_definition(
     State(core): State<Arc<WindCore>>,
-    Path(agent_definition_id): Path<i64>,
+    ApiPath(agent_definition_id): ApiPath<i64>,
 ) -> Json<ApiResponse<AgentDefinition>> {
     Json(
         AgentStorageFacade::new(core)
@@ -144,8 +145,8 @@ pub(crate) async fn get_definition(
 )]
 pub(crate) async fn update_definition(
     State(core): State<Arc<WindCore>>,
-    Path(agent_definition_id): Path<i64>,
-    Json(input): Json<UpdateAgentDefinition>,
+    ApiPath(agent_definition_id): ApiPath<i64>,
+    ApiJson(input): ApiJson<UpdateAgentDefinition>,
 ) -> Json<ApiResponse<AgentDefinition>> {
     Json(
         AgentStorageFacade::new(core)
@@ -164,7 +165,7 @@ pub(crate) async fn update_definition(
 )]
 pub(crate) async fn delete_definition(
     State(core): State<Arc<WindCore>>,
-    Path(agent_definition_id): Path<i64>,
+    ApiPath(agent_definition_id): ApiPath<i64>,
 ) -> Json<ApiResponse<()>> {
     Json(
         AgentStorageFacade::new(core)
@@ -183,7 +184,7 @@ pub(crate) async fn delete_definition(
 )]
 pub(crate) async fn get_definition_by_key(
     State(core): State<Arc<WindCore>>,
-    Path(key): Path<String>,
+    ApiPath(key): ApiPath<String>,
 ) -> Json<ApiResponse<AgentDefinition>> {
     Json(
         AgentStorageFacade::new(core)
@@ -202,7 +203,7 @@ pub(crate) async fn get_definition_by_key(
 )]
 pub(crate) async fn list_definitions_by_topic(
     State(core): State<Arc<WindCore>>,
-    Path(topic_id): Path<i64>,
+    ApiPath(topic_id): ApiPath<i64>,
 ) -> Json<ApiResponse<Vec<AgentDefinition>>> {
     Json(
         AgentStorageFacade::new(core)
@@ -221,8 +222,8 @@ pub(crate) async fn list_definitions_by_topic(
 )]
 pub(crate) async fn clone_definition(
     State(core): State<Arc<WindCore>>,
-    Path(topic_id): Path<i64>,
-    Json(input): Json<CloneAgentDefinitionRequest>,
+    ApiPath(topic_id): ApiPath<i64>,
+    ApiJson(input): ApiJson<CloneAgentDefinitionRequest>,
 ) -> Json<ApiResponse<AgentDefinition>> {
     Json(
         AgentStorageFacade::new(core)
@@ -243,7 +244,7 @@ pub(crate) async fn clone_definition(
 )]
 pub(crate) async fn create_binding(
     State(core): State<Arc<WindCore>>,
-    Json(input): Json<CreateAgentBinding>,
+    ApiJson(input): ApiJson<CreateAgentBinding>,
 ) -> Json<ApiResponse<AgentBinding>> {
     Json(
         AgentStorageFacade::new(core)
@@ -262,7 +263,7 @@ pub(crate) async fn create_binding(
 )]
 pub(crate) async fn get_binding(
     State(core): State<Arc<WindCore>>,
-    Path(binding_id): Path<i64>,
+    ApiPath(binding_id): ApiPath<i64>,
 ) -> Json<ApiResponse<AgentBinding>> {
     Json(
         AgentStorageFacade::new(core)
@@ -281,8 +282,8 @@ pub(crate) async fn get_binding(
 )]
 pub(crate) async fn update_binding(
     State(core): State<Arc<WindCore>>,
-    Path(binding_id): Path<i64>,
-    Json(input): Json<UpdateAgentBinding>,
+    ApiPath(binding_id): ApiPath<i64>,
+    ApiJson(input): ApiJson<UpdateAgentBinding>,
 ) -> Json<ApiResponse<AgentBinding>> {
     Json(
         AgentStorageFacade::new(core)
@@ -301,7 +302,7 @@ pub(crate) async fn update_binding(
 )]
 pub(crate) async fn delete_binding(
     State(core): State<Arc<WindCore>>,
-    Path(binding_id): Path<i64>,
+    ApiPath(binding_id): ApiPath<i64>,
 ) -> Json<ApiResponse<()>> {
     Json(
         AgentStorageFacade::new(core)
@@ -327,8 +328,8 @@ pub(crate) struct ByAgentQuery {
 )]
 pub(crate) async fn get_binding_by_agent(
     State(core): State<Arc<WindCore>>,
-    Path(agent_id): Path<i64>,
-    Query(q): Query<ByAgentQuery>,
+    ApiPath(agent_id): ApiPath<i64>,
+    ApiQuery(q): ApiQuery<ByAgentQuery>,
 ) -> Json<ApiResponse<AgentBinding>> {
     Json(
         AgentStorageFacade::new(core)
@@ -347,7 +348,7 @@ pub(crate) async fn get_binding_by_agent(
 )]
 pub(crate) async fn list_bindings_by_topic(
     State(core): State<Arc<WindCore>>,
-    Path(topic_id): Path<i64>,
+    ApiPath(topic_id): ApiPath<i64>,
 ) -> Json<ApiResponse<Vec<AgentBinding>>> {
     Json(
         AgentStorageFacade::new(core)
@@ -366,7 +367,7 @@ pub(crate) async fn list_bindings_by_topic(
 )]
 pub(crate) async fn get_main_binding(
     State(core): State<Arc<WindCore>>,
-    Path(topic_id): Path<i64>,
+    ApiPath(topic_id): ApiPath<i64>,
 ) -> Json<ApiResponse<AgentBinding>> {
     Json(
         AgentStorageFacade::new(core)
@@ -387,7 +388,7 @@ pub(crate) async fn get_main_binding(
 )]
 pub(crate) async fn get_chat_config(
     State(core): State<Arc<WindCore>>,
-    Path(binding_id): Path<i64>,
+    ApiPath(binding_id): ApiPath<i64>,
 ) -> Json<ApiResponse<ChatConfig>> {
     Json(TopicFacade::new(core).get_chat_config(binding_id).await)
 }
@@ -402,8 +403,8 @@ pub(crate) async fn get_chat_config(
 )]
 pub(crate) async fn create_chat_config(
     State(core): State<Arc<WindCore>>,
-    Path(binding_id): Path<i64>,
-    Json(input): Json<ReqConfig>,
+    ApiPath(binding_id): ApiPath<i64>,
+    ApiJson(input): ApiJson<ReqConfig>,
 ) -> Json<ApiResponse<ChatConfig>> {
     Json(
         TopicFacade::new(core)
@@ -422,8 +423,8 @@ pub(crate) async fn create_chat_config(
 )]
 pub(crate) async fn update_chat_config(
     State(core): State<Arc<WindCore>>,
-    Path(binding_id): Path<i64>,
-    Json(input): Json<ReqConfig>,
+    ApiPath(binding_id): ApiPath<i64>,
+    ApiJson(input): ApiJson<ReqConfig>,
 ) -> Json<ApiResponse<ChatConfig>> {
     Json(
         TopicFacade::new(core)
@@ -444,7 +445,7 @@ pub(crate) async fn update_chat_config(
 )]
 pub(crate) async fn list_approvals_by_message(
     State(core): State<Arc<WindCore>>,
-    Path(message_id): Path<i64>,
+    ApiPath(message_id): ApiPath<i64>,
 ) -> Json<ApiResponse<Vec<ToolApprovalRequest>>> {
     Json(
         ToolApprovalFacade::new(core)
@@ -463,7 +464,7 @@ pub(crate) async fn list_approvals_by_message(
 )]
 pub(crate) async fn list_pending_by_topic(
     State(core): State<Arc<WindCore>>,
-    Path(topic_id): Path<i64>,
+    ApiPath(topic_id): ApiPath<i64>,
 ) -> Json<ApiResponse<Vec<ToolApprovalRequest>>> {
     Json(
         ToolApprovalFacade::new(core)
@@ -482,7 +483,7 @@ pub(crate) async fn list_pending_by_topic(
 )]
 pub(crate) async fn list_pending_by_binding(
     State(core): State<Arc<WindCore>>,
-    Path(binding_id): Path<i64>,
+    ApiPath(binding_id): ApiPath<i64>,
 ) -> Json<ApiResponse<Vec<ToolApprovalRequest>>> {
     Json(
         ToolApprovalFacade::new(core)

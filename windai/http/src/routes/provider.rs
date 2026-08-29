@@ -1,7 +1,7 @@
 use serde_json::Value;
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::routing::{delete, get};
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -13,6 +13,7 @@ use wind_core::models::{
 };
 
 use crate::dto::envelope::ApiResponse;
+use crate::extractor::{ApiJson, ApiPath, ApiQuery};
 use crate::facade::storage::provider::ProviderStorageFacade;
 use crate::state::AppState;
 
@@ -94,7 +95,7 @@ pub(crate) async fn list_providers(
 )]
 pub(crate) async fn create_provider(
     State(core): State<Arc<WindCore>>,
-    Json(input): Json<CreateProvider>,
+    ApiJson(input): ApiJson<CreateProvider>,
 ) -> Json<ApiResponse<Provider>> {
     Json(
         ProviderStorageFacade::new(core)
@@ -113,7 +114,7 @@ pub(crate) async fn create_provider(
 )]
 pub(crate) async fn get_provider(
     State(core): State<Arc<WindCore>>,
-    Path(provider_id): Path<i64>,
+    ApiPath(provider_id): ApiPath<i64>,
 ) -> Json<ApiResponse<Provider>> {
     Json(
         ProviderStorageFacade::new(core)
@@ -132,8 +133,8 @@ pub(crate) async fn get_provider(
 )]
 pub(crate) async fn update_provider(
     State(core): State<Arc<WindCore>>,
-    Path(provider_id): Path<i64>,
-    Json(input): Json<UpdateProvider>,
+    ApiPath(provider_id): ApiPath<i64>,
+    ApiJson(input): ApiJson<UpdateProvider>,
 ) -> Json<ApiResponse<Provider>> {
     Json(
         ProviderStorageFacade::new(core)
@@ -152,7 +153,7 @@ pub(crate) async fn update_provider(
 )]
 pub(crate) async fn delete_provider(
     State(core): State<Arc<WindCore>>,
-    Path(provider_id): Path<i64>,
+    ApiPath(provider_id): ApiPath<i64>,
 ) -> Json<ApiResponse<()>> {
     Json(
         ProviderStorageFacade::new(core)
@@ -171,7 +172,7 @@ pub(crate) async fn delete_provider(
 )]
 pub(crate) async fn get_provider_by_name(
     State(core): State<Arc<WindCore>>,
-    Path(name): Path<String>,
+    ApiPath(name): ApiPath<String>,
 ) -> Json<ApiResponse<Provider>> {
     Json(
         ProviderStorageFacade::new(core)
@@ -191,7 +192,7 @@ pub(crate) async fn get_provider_by_name(
 )]
 pub(crate) async fn list_credentials(
     State(core): State<Arc<WindCore>>,
-    Query(q): Query<ProviderIdQuery>,
+    ApiQuery(q): ApiQuery<ProviderIdQuery>,
 ) -> Json<ApiResponse<Vec<Credentials>>> {
     Json(
         ProviderStorageFacade::new(core)
@@ -210,7 +211,7 @@ pub(crate) async fn list_credentials(
 )]
 pub(crate) async fn create_credentials(
     State(core): State<Arc<WindCore>>,
-    Json(input): Json<CreateCredentials>,
+    ApiJson(input): ApiJson<CreateCredentials>,
 ) -> Json<ApiResponse<Credentials>> {
     Json(
         ProviderStorageFacade::new(core)
@@ -229,7 +230,7 @@ pub(crate) async fn create_credentials(
 )]
 pub(crate) async fn delete_credentials(
     State(core): State<Arc<WindCore>>,
-    Path(credential_id): Path<i64>,
+    ApiPath(credential_id): ApiPath<i64>,
 ) -> Json<ApiResponse<()>> {
     Json(
         ProviderStorageFacade::new(core)
@@ -249,7 +250,7 @@ pub(crate) async fn delete_credentials(
 )]
 pub(crate) async fn list_json_rules(
     State(core): State<Arc<WindCore>>,
-    Query(q): Query<ProviderIdQuery>,
+    ApiQuery(q): ApiQuery<ProviderIdQuery>,
 ) -> Json<ApiResponse<Vec<JsonRule>>> {
     Json(
         ProviderStorageFacade::new(core)
@@ -268,7 +269,7 @@ pub(crate) async fn list_json_rules(
 )]
 pub(crate) async fn create_json_rule(
     State(core): State<Arc<WindCore>>,
-    Json(input): Json<CreateJsonRule>,
+    ApiJson(input): ApiJson<CreateJsonRule>,
 ) -> Json<ApiResponse<JsonRule>> {
     Json(
         ProviderStorageFacade::new(core)
@@ -287,7 +288,7 @@ pub(crate) async fn create_json_rule(
 )]
 pub(crate) async fn get_json_rule(
     State(core): State<Arc<WindCore>>,
-    Path(json_rule_id): Path<i64>,
+    ApiPath(json_rule_id): ApiPath<i64>,
 ) -> Json<ApiResponse<JsonRule>> {
     Json(
         ProviderStorageFacade::new(core)
@@ -306,8 +307,8 @@ pub(crate) async fn get_json_rule(
 )]
 pub(crate) async fn update_json_rule(
     State(core): State<Arc<WindCore>>,
-    Path(json_rule_id): Path<i64>,
-    Json(input): Json<UpdateJsonRule>,
+    ApiPath(json_rule_id): ApiPath<i64>,
+    ApiJson(input): ApiJson<UpdateJsonRule>,
 ) -> Json<ApiResponse<JsonRule>> {
     Json(
         ProviderStorageFacade::new(core)
@@ -326,7 +327,7 @@ pub(crate) async fn update_json_rule(
 )]
 pub(crate) async fn delete_json_rule(
     State(core): State<Arc<WindCore>>,
-    Path(json_rule_id): Path<i64>,
+    ApiPath(json_rule_id): ApiPath<i64>,
 ) -> Json<ApiResponse<()>> {
     Json(
         ProviderStorageFacade::new(core)
@@ -346,7 +347,7 @@ pub(crate) async fn delete_json_rule(
 )]
 pub(crate) async fn get_json_rule_by_adapter(
     State(core): State<Arc<WindCore>>,
-    Query(q): Query<ByAdapterQuery>,
+    ApiQuery(q): ApiQuery<ByAdapterQuery>,
 ) -> Json<ApiResponse<JsonRule>> {
     Json(
         ProviderStorageFacade::new(core)

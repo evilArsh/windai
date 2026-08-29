@@ -1,12 +1,13 @@
 use serde_json::Value;
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::routing::get;
 use axum::{Json, Router};
 use wind_core::WindCore;
 
 use crate::dto::envelope::ApiResponse;
+use crate::extractor::{ApiJson, ApiPath};
 use crate::facade::storage::mcp::McpStorageFacade;
 use crate::state::AppState;
 use wind_core::models::{CreateMcpServer, McpServerParam, UpdateMcpServer};
@@ -53,7 +54,7 @@ pub(crate) async fn list_mcp_servers(
 )]
 pub(crate) async fn create_mcp_server(
     State(core): State<Arc<WindCore>>,
-    Json(input): Json<CreateMcpServer>,
+    ApiJson(input): ApiJson<CreateMcpServer>,
 ) -> Json<ApiResponse<McpServerParam>> {
     Json(McpStorageFacade::new(core).create_mcp_server(input).await)
 }
@@ -68,7 +69,7 @@ pub(crate) async fn create_mcp_server(
 )]
 pub(crate) async fn get_mcp_server(
     State(core): State<Arc<WindCore>>,
-    Path(mcp_server_id): Path<i64>,
+    ApiPath(mcp_server_id): ApiPath<i64>,
 ) -> Json<ApiResponse<McpServerParam>> {
     Json(
         McpStorageFacade::new(core)
@@ -87,8 +88,8 @@ pub(crate) async fn get_mcp_server(
 )]
 pub(crate) async fn update_mcp_server(
     State(core): State<Arc<WindCore>>,
-    Path(mcp_server_id): Path<i64>,
-    Json(input): Json<UpdateMcpServer>,
+    ApiPath(mcp_server_id): ApiPath<i64>,
+    ApiJson(input): ApiJson<UpdateMcpServer>,
 ) -> Json<ApiResponse<McpServerParam>> {
     Json(
         McpStorageFacade::new(core)
@@ -107,7 +108,7 @@ pub(crate) async fn update_mcp_server(
 )]
 pub(crate) async fn delete_mcp_server(
     State(core): State<Arc<WindCore>>,
-    Path(mcp_server_id): Path<i64>,
+    ApiPath(mcp_server_id): ApiPath<i64>,
 ) -> Json<ApiResponse<()>> {
     Json(
         McpStorageFacade::new(core)
@@ -126,7 +127,7 @@ pub(crate) async fn delete_mcp_server(
 )]
 pub(crate) async fn get_mcp_server_by_name(
     State(core): State<Arc<WindCore>>,
-    Path(name): Path<String>,
+    ApiPath(name): ApiPath<String>,
 ) -> Json<ApiResponse<McpServerParam>> {
     Json(
         McpStorageFacade::new(core)
