@@ -2,6 +2,7 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use axum::extract::State;
+use axum::extract::rejection::JsonRejection;
 use axum::routing::{delete, get};
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -13,7 +14,7 @@ use wind_core::models::{
 };
 
 use crate::dto::envelope::ApiResponse;
-use crate::extractor::{ApiJson, ApiPath, ApiQuery};
+use crate::extractor::{ApiPath, ApiQuery, json_body};
 use crate::facade::storage::provider::ProviderStorageFacade;
 use crate::state::AppState;
 
@@ -58,12 +59,14 @@ pub fn router() -> Router<AppState> {
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub(crate) struct ProviderIdQuery {
     /// 提供商 id（必填）
     provider_id: i64,
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub(crate) struct ByAdapterQuery {
     /// 提供商 id（必填）
     provider_id: i64,
@@ -95,19 +98,23 @@ pub(crate) async fn list_providers(
 )]
 pub(crate) async fn create_provider(
     State(core): State<Arc<WindCore>>,
-    ApiJson(input): ApiJson<CreateProvider>,
-) -> Json<ApiResponse<Provider>> {
-    Json(
+    body: Result<Json<CreateProvider>, JsonRejection>,
+) -> Result<Json<ApiResponse<Provider>>, Json<ApiResponse<()>>> {
+    let input = json_body(body)?;
+    Ok(Json(
         ProviderStorageFacade::new(core)
             .create_provider(input)
             .await,
-    )
+    ))
 }
 
 #[utoipa::path(
     get,
     summary = "获取提供商",
     path = "/api/v1/providers/{provider_id}",
+    params(
+        ("provider_id", Path, description = "提供商 ID"),
+    ),
     responses(
         (status = 200, description = "获取提供商", body = ApiResponse<Provider>)
     )
@@ -127,6 +134,9 @@ pub(crate) async fn get_provider(
     put,
     summary = "更新提供商",
     path = "/api/v1/providers/{provider_id}",
+    params(
+        ("provider_id", Path, description = "提供商 ID"),
+    ),
     responses(
         (status = 200, description = "更新提供商", body = ApiResponse<Provider>)
     )
@@ -134,19 +144,23 @@ pub(crate) async fn get_provider(
 pub(crate) async fn update_provider(
     State(core): State<Arc<WindCore>>,
     ApiPath(provider_id): ApiPath<i64>,
-    ApiJson(input): ApiJson<UpdateProvider>,
-) -> Json<ApiResponse<Provider>> {
-    Json(
+    body: Result<Json<UpdateProvider>, JsonRejection>,
+) -> Result<Json<ApiResponse<Provider>>, Json<ApiResponse<()>>> {
+    let input = json_body(body)?;
+    Ok(Json(
         ProviderStorageFacade::new(core)
             .update_provider(provider_id, input)
             .await,
-    )
+    ))
 }
 
 #[utoipa::path(
     delete,
     summary = "删除提供商",
     path = "/api/v1/providers/{provider_id}",
+    params(
+        ("provider_id", Path, description = "提供商 ID"),
+    ),
     responses(
         (status = 200, description = "删除提供商", body = ApiResponse<Value>)
     )
@@ -166,6 +180,9 @@ pub(crate) async fn delete_provider(
     get,
     summary = "按名称获取提供商",
     path = "/api/v1/providers/by-name/{name}",
+    params(
+        ("name", Path, description = "提供商名称"),
+    ),
     responses(
         (status = 200, description = "按名称获取提供商", body = ApiResponse<Provider>)
     )
@@ -211,19 +228,23 @@ pub(crate) async fn list_credentials(
 )]
 pub(crate) async fn create_credentials(
     State(core): State<Arc<WindCore>>,
-    ApiJson(input): ApiJson<CreateCredentials>,
-) -> Json<ApiResponse<Credentials>> {
-    Json(
+    body: Result<Json<CreateCredentials>, JsonRejection>,
+) -> Result<Json<ApiResponse<Credentials>>, Json<ApiResponse<()>>> {
+    let input = json_body(body)?;
+    Ok(Json(
         ProviderStorageFacade::new(core)
             .create_credentials(input)
             .await,
-    )
+    ))
 }
 
 #[utoipa::path(
     delete,
     summary = "删除凭证",
     path = "/api/v1/credentials/{credential_id}",
+    params(
+        ("credential_id", Path, description = "凭证 ID"),
+    ),
     responses(
         (status = 200, description = "删除凭证", body = ApiResponse<Value>)
     )
@@ -269,19 +290,23 @@ pub(crate) async fn list_json_rules(
 )]
 pub(crate) async fn create_json_rule(
     State(core): State<Arc<WindCore>>,
-    ApiJson(input): ApiJson<CreateJsonRule>,
-) -> Json<ApiResponse<JsonRule>> {
-    Json(
+    body: Result<Json<CreateJsonRule>, JsonRejection>,
+) -> Result<Json<ApiResponse<JsonRule>>, Json<ApiResponse<()>>> {
+    let input = json_body(body)?;
+    Ok(Json(
         ProviderStorageFacade::new(core)
             .create_json_rule(input)
             .await,
-    )
+    ))
 }
 
 #[utoipa::path(
     get,
     summary = "获取 JSON 规则",
     path = "/api/v1/json-rules/{json_rule_id}",
+    params(
+        ("json_rule_id", Path, description = "JSON 规则 ID"),
+    ),
     responses(
         (status = 200, description = "获取 JSON 规则", body = ApiResponse<JsonRule>)
     )
@@ -301,6 +326,9 @@ pub(crate) async fn get_json_rule(
     put,
     summary = "更新 JSON 规则",
     path = "/api/v1/json-rules/{json_rule_id}",
+    params(
+        ("json_rule_id", Path, description = "JSON 规则 ID"),
+    ),
     responses(
         (status = 200, description = "更新 JSON 规则", body = ApiResponse<JsonRule>)
     )
@@ -308,19 +336,23 @@ pub(crate) async fn get_json_rule(
 pub(crate) async fn update_json_rule(
     State(core): State<Arc<WindCore>>,
     ApiPath(json_rule_id): ApiPath<i64>,
-    ApiJson(input): ApiJson<UpdateJsonRule>,
-) -> Json<ApiResponse<JsonRule>> {
-    Json(
+    body: Result<Json<UpdateJsonRule>, JsonRejection>,
+) -> Result<Json<ApiResponse<JsonRule>>, Json<ApiResponse<()>>> {
+    let input = json_body(body)?;
+    Ok(Json(
         ProviderStorageFacade::new(core)
             .update_json_rule(json_rule_id, input)
             .await,
-    )
+    ))
 }
 
 #[utoipa::path(
     delete,
     summary = "删除 JSON 规则",
     path = "/api/v1/json-rules/{json_rule_id}",
+    params(
+        ("json_rule_id", Path, description = "JSON 规则 ID"),
+    ),
     responses(
         (status = 200, description = "删除 JSON 规则", body = ApiResponse<Value>)
     )

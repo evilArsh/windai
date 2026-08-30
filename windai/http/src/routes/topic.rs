@@ -1,4 +1,5 @@
 use axum::extract::State;
+use axum::extract::rejection::JsonRejection;
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -6,7 +7,7 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use crate::dto::envelope::ApiResponse;
-use crate::extractor::{ApiJson, ApiPath, ApiQuery};
+use crate::extractor::{ApiPath, ApiQuery, json_body};
 use crate::facade::topic::TopicFacade;
 use crate::state::AppState;
 use wind_core::WindCore;
@@ -49,15 +50,19 @@ pub(crate) async fn list_topics(
 )]
 pub(crate) async fn create_topic(
     State(core): State<Arc<WindCore>>,
-    ApiJson(input): ApiJson<CreateTopic>,
-) -> Json<ApiResponse<Topic>> {
-    Json(TopicFacade::new(core).create_topic(input).await)
+    body: Result<Json<CreateTopic>, JsonRejection>,
+) -> Result<Json<ApiResponse<Topic>>, Json<ApiResponse<()>>> {
+    let input = json_body(body)?;
+    Ok(Json(TopicFacade::new(core).create_topic(input).await))
 }
 
 #[utoipa::path(
     get,
     summary = "获取话题",
     path = "/api/v1/topics/{topic_id}",
+    params(
+        ("topic_id", Path, description = "话题 ID"),
+    ),
     responses(
         (status = 200, description = "获取话题", body = ApiResponse<Topic>)
     )
@@ -73,6 +78,9 @@ pub(crate) async fn get_topic(
     put,
     summary = "更新话题",
     path = "/api/v1/topics/{topic_id}",
+    params(
+        ("topic_id", Path, description = "话题 ID"),
+    ),
     responses(
         (status = 200, description = "更新话题", body = ApiResponse<Topic>)
     )
@@ -80,15 +88,21 @@ pub(crate) async fn get_topic(
 pub(crate) async fn update_topic(
     State(core): State<Arc<WindCore>>,
     ApiPath(topic_id): ApiPath<i64>,
-    ApiJson(input): ApiJson<UpdateTopic>,
-) -> Json<ApiResponse<Topic>> {
-    Json(TopicFacade::new(core).update_topic(topic_id, input).await)
+    body: Result<Json<UpdateTopic>, JsonRejection>,
+) -> Result<Json<ApiResponse<Topic>>, Json<ApiResponse<()>>> {
+    let input = json_body(body)?;
+    Ok(Json(
+        TopicFacade::new(core).update_topic(topic_id, input).await,
+    ))
 }
 
 #[utoipa::path(
     delete,
     summary = "删除话题",
     path = "/api/v1/topics/{topic_id}",
+    params(
+        ("topic_id", Path, description = "话题 ID"),
+    ),
     responses(
         (status = 200, description = "删除话题", body = ApiResponse<Value>)
     )
@@ -101,6 +115,7 @@ pub(crate) async fn delete_topic(
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub(crate) struct ByBindingQuery {
     /// 父 Topic id（必填，用于定位 binding 所属话题）
     parent_topic_id: i64,
@@ -110,7 +125,10 @@ pub(crate) struct ByBindingQuery {
     get,
     summary = "按 binding 获取话题",
     path = "/api/v1/topics/by-binding/{binding_id}",
-    params(ByBindingQuery),
+    params(
+        ("binding_id", Path, description = "Agent 绑定 ID"),
+        ByBindingQuery,
+    ),
     responses(
         (status = 200, description = "按 binding 获取话题", body = ApiResponse<Topic>)
     )

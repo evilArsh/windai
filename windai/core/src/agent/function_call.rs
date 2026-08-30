@@ -6,19 +6,18 @@ use wind_ai::tool::{FunctionCall, FunctionCallOutput, FunctionTool, Tools};
 use wind_mcp::client::registry::RegistryHandle;
 use wind_mcp::client::{CallToolParam, Tool as McpTool};
 
-fn mcp_tool_to_function_tool(mcp_tool: &McpTool) -> FunctionTool {
-    FunctionTool {
-        name: mcp_tool.name.clone(),
-        description: mcp_tool.description.clone(),
-        parameters: Some(Value::Object((*mcp_tool.input_schema).clone())),
-        strict: None,
-    }
-}
 /// [wind_mcp::client::Tool] 转换为 [wind_ai::tool::Tools]
-pub fn build_tools_from_mcp(mcp_tools: &[McpTool]) -> Vec<Tools> {
+pub fn build_tools_from_mcp(mcp_tools: Vec<McpTool>) -> Vec<Tools> {
     mcp_tools
-        .iter()
-        .map(|t| Tools::Function(mcp_tool_to_function_tool(t)))
+        .into_iter()
+        .map(|tool| {
+            Tools::Function(FunctionTool {
+                name: tool.name,
+                description: tool.description,
+                parameters: Some(Value::Object((*tool.input_schema).clone())),
+                strict: None,
+            })
+        })
         .collect()
 }
 /// 并发执行函数调用。

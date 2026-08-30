@@ -7,6 +7,34 @@ fn doc_json() -> Value {
 }
 
 #[test]
+fn openapi_documents_request_bodies() {
+    let json = doc_json();
+    for path in ["/api/v1/agent-definitions", "/api/v1/topics"] {
+        let post = &json["paths"][path]["post"];
+        assert!(
+            post.get("requestBody").is_some(),
+            "POST {path} must document requestBody, got: {post}"
+        );
+    }
+}
+
+#[test]
+fn openapi_query_params_are_query() {
+    let json = doc_json();
+    // 路径模板占位符必须是 path;`IntoParams` 结构体字段必须是 query。
+    let params = json["paths"]["/api/v1/agent-bindings/by-agent/{agent_id}"]["get"]["parameters"]
+        .as_array()
+        .unwrap();
+    let agent_id = params.iter().find(|p| p["name"] == "agent_id").unwrap();
+    assert_eq!(agent_id["in"], "path", "agent_id 应为 path");
+    let parent = params
+        .iter()
+        .find(|p| p["name"] == "parent_topic_id")
+        .unwrap();
+    assert_eq!(parent["in"], "query", "parent_topic_id 应为 query");
+}
+
+#[test]
 fn openapi_generates_without_panic() {
     let doc = ApiDoc::openapi();
     let json = doc.to_pretty_json().unwrap();

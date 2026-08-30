@@ -2,12 +2,13 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use axum::extract::State;
+use axum::extract::rejection::JsonRejection;
 use axum::routing::get;
 use axum::{Json, Router};
 use wind_core::WindCore;
 
 use crate::dto::envelope::ApiResponse;
-use crate::extractor::{ApiJson, ApiPath};
+use crate::extractor::{ApiPath, json_body};
 use crate::facade::storage::mcp::McpStorageFacade;
 use crate::state::AppState;
 use wind_core::models::{CreateMcpServer, McpServerParam, UpdateMcpServer};
@@ -54,15 +55,21 @@ pub(crate) async fn list_mcp_servers(
 )]
 pub(crate) async fn create_mcp_server(
     State(core): State<Arc<WindCore>>,
-    ApiJson(input): ApiJson<CreateMcpServer>,
-) -> Json<ApiResponse<McpServerParam>> {
-    Json(McpStorageFacade::new(core).create_mcp_server(input).await)
+    body: Result<Json<CreateMcpServer>, JsonRejection>,
+) -> Result<Json<ApiResponse<McpServerParam>>, Json<ApiResponse<()>>> {
+    let input = json_body(body)?;
+    Ok(Json(
+        McpStorageFacade::new(core).create_mcp_server(input).await,
+    ))
 }
 
 #[utoipa::path(
     get,
     summary = "获取 MCP 服务",
     path = "/api/v1/mcp-servers/{mcp_server_id}",
+    params(
+        ("mcp_server_id", Path, description = "MCP 服务 ID"),
+    ),
     responses(
         (status = 200, description = "获取 MCP 服务", body = ApiResponse<McpServerParam>)
     )
@@ -82,6 +89,9 @@ pub(crate) async fn get_mcp_server(
     put,
     summary = "更新 MCP 服务",
     path = "/api/v1/mcp-servers/{mcp_server_id}",
+    params(
+        ("mcp_server_id", Path, description = "MCP 服务 ID"),
+    ),
     responses(
         (status = 200, description = "更新 MCP 服务", body = ApiResponse<McpServerParam>)
     )
@@ -89,19 +99,23 @@ pub(crate) async fn get_mcp_server(
 pub(crate) async fn update_mcp_server(
     State(core): State<Arc<WindCore>>,
     ApiPath(mcp_server_id): ApiPath<i64>,
-    ApiJson(input): ApiJson<UpdateMcpServer>,
-) -> Json<ApiResponse<McpServerParam>> {
-    Json(
+    body: Result<Json<UpdateMcpServer>, JsonRejection>,
+) -> Result<Json<ApiResponse<McpServerParam>>, Json<ApiResponse<()>>> {
+    let input = json_body(body)?;
+    Ok(Json(
         McpStorageFacade::new(core)
             .update_mcp_server(mcp_server_id, input)
             .await,
-    )
+    ))
 }
 
 #[utoipa::path(
     delete,
     summary = "删除 MCP 服务",
     path = "/api/v1/mcp-servers/{mcp_server_id}",
+    params(
+        ("mcp_server_id", Path, description = "MCP 服务 ID"),
+    ),
     responses(
         (status = 200, description = "删除 MCP 服务", body = ApiResponse<Value>)
     )
@@ -121,6 +135,9 @@ pub(crate) async fn delete_mcp_server(
     get,
     summary = "按名称获取 MCP 服务",
     path = "/api/v1/mcp-servers/by-name/{name}",
+    params(
+        ("name", Path, description = "MCP 服务名称"),
+    ),
     responses(
         (status = 200, description = "按名称获取 MCP 服务", body = ApiResponse<McpServerParam>)
     )

@@ -60,5 +60,4 @@ impl PromptStorageFacade {
             Err(e) => map_core_error(e),
         }
     }
-
 }

@@ -462,16 +462,18 @@ async fn build_agent_tools(
         .map(|server| server.name)
         .collect::<Vec<_>>();
     if server_names.is_empty() {
+        log::debug!("No MCP server found for agent: {}", agent.id);
         return Ok(Some(tools));
     }
 
+    log::debug!("MCP server found for agent: {}", server_names.join(","));
     // 拼接出的 MCP 函数名包含了 server name
     let mcp_tools = mcp_registry.list_tools_by_names(&server_names).await?;
     let filtered = mcp_tools
         .into_iter()
         .filter(|tool| is_tool_allowed(tool, &enabled))
         .collect::<Vec<_>>();
-    tools.extend(build_tools_from_mcp(&filtered));
+    tools.extend(build_tools_from_mcp(filtered));
     Ok(Some(tools))
 }
 

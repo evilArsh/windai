@@ -1,4 +1,5 @@
 use axum::extract::State;
+use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -18,7 +19,7 @@ use wind_core::agent::event::TopicEvent;
 use crate::dto::approval::ApproveToolCallsRequest;
 use crate::dto::envelope::{ApiResponse, map_core_error};
 use crate::dto::message::{CreateChatRequest, SubmitChatResponse};
-use crate::extractor::{ApiJson, ApiPath};
+use crate::extractor::{ApiPath, json_body};
 use crate::facade::topic::TopicFacade;
 use crate::state::AppState;
 use wind_core::models::{Message, UpdateMessage};
@@ -60,6 +61,9 @@ pub fn sse_router() -> Router<AppState> {
     get,
     summary = "获取话题消息列表",
     path = "/api/v1/topics/{topic_id}/messages",
+    params(
+        ("topic_id", Path, description = "话题 ID"),
+    ),
     responses(
         (status = 200, description = "获取话题消息列表", body = ApiResponse<Vec<Message>>)
     )
@@ -75,6 +79,9 @@ pub(crate) async fn list_messages(
     post,
     summary = "提交对话消息",
     path = "/api/v1/topics/{topic_id}/messages",
+    params(
+        ("topic_id", Path, description = "话题 ID"),
+    ),
     responses(
         (status = 200, description = "提交对话消息", body = ApiResponse<SubmitChatResponse>)
     )
@@ -82,15 +89,21 @@ pub(crate) async fn list_messages(
 pub(crate) async fn create_chat(
     State(core): State<Arc<WindCore>>,
     ApiPath(topic_id): ApiPath<i64>,
-    ApiJson(input): ApiJson<CreateChatRequest>,
-) -> Json<ApiResponse<SubmitChatResponse>> {
-    Json(TopicFacade::new(core).create_chat(topic_id, input).await)
+    body: Result<Json<CreateChatRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<SubmitChatResponse>>, Json<ApiResponse<()>>> {
+    let input = json_body(body)?;
+    Ok(Json(
+        TopicFacade::new(core).create_chat(topic_id, input).await,
+    ))
 }
 
 #[utoipa::path(
     get,
     summary = "获取消息上下文",
     path = "/api/v1/topics/{topic_id}/messages/context",
+    params(
+        ("topic_id", Path, description = "话题 ID"),
+    ),
     responses(
         (status = 200, description = "获取消息上下文", body = ApiResponse<Vec<Message>>)
     )
@@ -106,6 +119,9 @@ pub(crate) async fn list_context(
     get,
     summary = "获取消息",
     path = "/api/v1/messages/{message_id}",
+    params(
+        ("message_id", Path, description = "消息 ID"),
+    ),
     responses(
         (status = 200, description = "获取消息", body = ApiResponse<Message>)
     )
@@ -121,6 +137,9 @@ pub(crate) async fn get_message(
     put,
     summary = "更新消息",
     path = "/api/v1/messages/{message_id}",
+    params(
+        ("message_id", Path, description = "消息 ID"),
+    ),
     responses(
         (status = 200, description = "更新消息", body = ApiResponse<Message>)
     )
@@ -128,19 +147,23 @@ pub(crate) async fn get_message(
 pub(crate) async fn update_message(
     State(core): State<Arc<WindCore>>,
     ApiPath(message_id): ApiPath<i64>,
-    ApiJson(input): ApiJson<UpdateMessage>,
-) -> Json<ApiResponse<Message>> {
-    Json(
+    body: Result<Json<UpdateMessage>, JsonRejection>,
+) -> Result<Json<ApiResponse<Message>>, Json<ApiResponse<()>>> {
+    let input = json_body(body)?;
+    Ok(Json(
         TopicFacade::new(core)
             .update_message(message_id, input)
             .await,
-    )
+    ))
 }
 
 #[utoipa::path(
     get,
     summary = "获取消息对应的源消息",
     path = "/api/v1/messages/{message_id}/from-message",
+    params(
+        ("message_id", Path, description = "消息 ID"),
+    ),
     responses(
         (status = 200, description = "获取消息对应的源消息", body = ApiResponse<Message>)
     )
@@ -160,6 +183,10 @@ pub(crate) async fn get_message_from_message(
     post,
     summary = "取消 Agent 任务",
     path = "/api/v1/topics/{topic_id}/bindings/{binding_id}/cancel",
+    params(
+        ("topic_id", Path, description = "话题 ID"),
+        ("binding_id", Path, description = "Agent 绑定 ID"),
+    ),
     responses(
         (status = 200, description = "取消 Agent 任务", body = ApiResponse<Value>)
     )
@@ -179,6 +206,10 @@ pub(crate) async fn cancel_task(
     post,
     summary = "审批工具调用",
     path = "/api/v1/topics/{topic_id}/tool-approvals/{message_id}/approve",
+    params(
+        ("topic_id", Path, description = "话题 ID"),
+        ("message_id", Path, description = "消息 ID"),
+    ),
     responses(
         (status = 200, description = "审批工具调用", body = ApiResponse<Value>)
     )
@@ -186,19 +217,23 @@ pub(crate) async fn cancel_task(
 pub(crate) async fn approve_tool_calls(
     State(core): State<Arc<WindCore>>,
     ApiPath((topic_id, message_id)): ApiPath<(i64, i64)>,
-    ApiJson(input): ApiJson<ApproveToolCallsRequest>,
-) -> Json<ApiResponse<()>> {
-    Json(
+    body: Result<Json<ApproveToolCallsRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<()>>, Json<ApiResponse<()>>> {
+    let input = json_body(body)?;
+    Ok(Json(
         TopicFacade::new(core)
             .approve_tool_calls(topic_id, message_id, input)
             .await,
-    )
+    ))
 }
 
 #[utoipa::path(
     get,
     summary = "订阅话题事件流（SSE）",
     path = "/api/v1/topics/{topic_id}/events",
+    params(
+        ("topic_id", Path, description = "话题 ID"),
+    ),
     responses(
         (status = 200, description = "订阅话题事件流（SSE）：每条事件帧格式为 `event: <变体名>` / `id: <递增序号>` / `data: <TopicEvent JSON>`，帧间空行分隔。`data` 字段即 TopicEvent 结构", content(
             (TopicEvent = "text/event-stream"),

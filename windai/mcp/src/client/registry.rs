@@ -254,9 +254,6 @@ impl Registry {
     const CMD_CHANNEL_SIZE: usize = 64;
     const EVENT_CHANNEL_SIZE: usize = 256;
 
-    // pub fn global() -> &'static RegistryHandle {
-    //     REGISTRY.get_or_init(|| Registry::new())
-    // }
     pub fn new() -> RegistryHandle {
         let (tx, rx) = mpsc::channel(Self::CMD_CHANNEL_SIZE);
         let (event_tx, _) = broadcast::channel(Self::EVENT_CHANNEL_SIZE);
