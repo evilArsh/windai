@@ -1,15 +1,17 @@
 # windai
 
-An AI engine core library providing database-driven multi-turn chat, tool calling with approval flow, multi-provider adaptors, and declarative request transformation.
+An AI engine core library providing database-driven multi-turn chat, hierarchical agent orchestration, tool calling with approval flow, multi-provider adapters, and declarative request transformation. Ships an HTTP service (`wind-http`) exposing the core over REST + SSE.
 
 ## Quick Start
 
 ```bash
 cargo build
-cargo test                   # unit + storage tests; ignored integration tests need .env
+cargo test                   # unit + storage tests; .env-gated tests are #[ignore]d
+cargo test -p wind-http      # HTTP route/facade/mirror tests (no .env needed)
 cargo test -p wind-core --test core_chat -- --include-ignored --test-threads=1
-cargo test -p wind-core --test core_chat_mcp -- --include-ignored --test-threads=1
 ```
+
+Copy `.env.example` to `.env` and fill in `TEST_*` values before running the `.env`-gated tests.
 
 ```toml
 [dependencies]
@@ -36,127 +38,127 @@ let core = WindCore::init_with_pool(pool).await?;
 let core = WindCore::init_with_pool_and_registry(pool, registry).await?;
 ```
 
+`WindCore` is a process-level runtime root: one instance per process, owns the DB pool + MCP registry, and manages one `TopicRuntime` actor per topic.
+
 ### Register Provider & Model
 
 ```rust
 use wind_core::models::{CreateProvider, CreateCredentials, CreateModel, ModelType};
-use wind_ai::model::AdaptorType;
+use wind_ai::model::AdapterType;
 
 let storage = core.storage();
 
-let pid = storage.provider().create(CreateProvider {
+let provider = storage.provider().create(CreateProvider {
     name: "deepseek".into(),
     base_url: "https://api.deepseek.com".into(),
     description: None,
     doc: None,
     alias: None,
 }).await?;
+let pid = provider.id;
 
 storage.provider().create_credentials(CreateCredentials {
     provider_id: pid,
     key: "sk-xxx".into(),
 }).await?;
 
-let mid = storage.model().create(CreateModel {
+let model = storage.model().create(CreateModel {
     name: "deepseek-chat".into(),
     provider_id: pid,
-    adaptor: AdaptorType::OpenAICompletion,
+    adapter: AdapterType::OpenAICompletion,
     alias: None,
     modalities: Some(vec![ModelType::Chat]),
     active: Some(true),
     icon: None,
     endpoint: None,
 }).await?;
+let mid = model.id;
 ```
 
-### Create Topic & Start Chat
+### Create a Topic & Start a Chat
+
+Chats run through the **agent system**: a `Topic` owns a `TopicRuntime`; an `AgentBinding` (with role `Main`) says which agent the topic uses. The runtime streams progress as `TopicEvent`s over a `broadcast` channel.
 
 ```rust
-use wind_core::models::{CreateTopic, CreateMessage};
-use wind_ai::message::{Message, Content, Role, ReqConfig};
-use futures::StreamExt;
-use wind_core::chat::ChatEvent;
+use wind_core::agent::event::TopicEvent;
+use wind_core::models::{
+    AgentRole, AgentScope, AgentDefinitionData,
+    CreateAgentBinding, CreateAgentDefinition, CreateTopic,
+};
+use wind_ai::message::Content;
 
-let tid = storage.topic().create(CreateTopic {
+let storage = core.storage();
+
+// 1. Create a topic
+let topic = storage.topic().create(CreateTopic {
     parent_id: None,
-    chat_config_id: 0,
+    binding_id: None,
     label: "My Chat".into(),
     icon: None,
-    max_context: Some(50),
-    mcp_server_ids: None,
+}).await?;
+let tid = topic.id;
+
+// 2. Define a reusable agent (what the agent *can* do)
+let agent_def = storage.agent().create_definition(CreateAgentDefinition {
+    name: "assistant".into(),
+    key: "assistant".into(),
+    description: "Default assistant".into(),
+    scope: AgentScope::Global,
+    owner_topic_id: None,
+    cloned_from_agent_id: None,
+    active: Some(true),
+    data: AgentDefinitionData::default(),
 }).await?;
 
-storage.topic().create_chat_config(tid, ReqConfig {
-    temperature: Some(0.7),
-    stream: Some(true),
-    ..Default::default()
+// 3. Bind it as the topic's main agent (an agent *instance*)
+let binding = storage.agent().create_binding(CreateAgentBinding {
+    parent_topic_id: tid,
+    agent_id: agent_def.id,
+    role: AgentRole::Main,
+    model_id: Some(mid),
+    chat_config_id: None,
+    enabled: Some(true),
 }).await?;
 
-// Create user message
-let uid = storage.message().create(CreateMessage {
-    from_id: None,
-    stream: false,
-    is_boundary: false,
-    content: vec![Message::new_simple(Role::User, vec![
-        Content::new_text("Hello!".into())
-    ], None)],
-    topic_id: tid,
-    model_id: mid,
-    input_tokens: 0,
-    output_tokens: 0,
-    tools_allowed: None,
-    tools_denied: None,
-}).await?;
+// 4. Submit user input, then consume the event stream
+let handle = core.fetch_topic(tid);
+let mut events = handle.subscribe().await?;
+handle.create_chat(vec![Content::new_text("Hello!".into())]).await?;
 
-// Create assistant message placeholder
-let aid = storage.message().create(CreateMessage {
-    from_id: Some(uid),
-    stream: false,
-    is_boundary: false,
-    content: vec![],
-    topic_id: tid,
-    model_id: mid,
-    input_tokens: 0,
-    output_tokens: 0,
-    tools_allowed: None,
-    tools_denied: None,
-}).await?;
-
-// Start streaming chat
-let mut stream = core.chat().start(tid, uid, aid);
-while let Some(event) = stream.next().await {
+while let Ok(event) = events.recv().await {
     match event {
-        ChatEvent::Created { .. } => {}
-        ChatEvent::Partial { delta, .. } => {
-            for c in &delta.content {
-                match c {
-                    Content::Text { data } => print!("{data}"),
-                    _ => {}
+        TopicEvent::Message { data, .. } => {
+            for c in &data.content {
+                if let Content::Text { data } = c {
+                    print!("{data}");
                 }
             }
         }
-        ChatEvent::AwaitToolCall { message_id, tools } => {
-            println!("Waiting for approval: {} tools", tools.len());
-            // See Tool Approval section below
+        TopicEvent::MessageFinished { .. } => break,
+        TopicEvent::Error { error, .. } => {
+            eprintln!("Error: {error}");
+            break;
         }
-        ChatEvent::Finish { error, .. } => {
-            if let Some(e) = error {
-                eprintln!("Error: {e}");
-            }
-        }
+        _ => {}
     }
 }
 ```
 
+**Key points:**
+- `create_chat` submits `Vec<Content>` (the full `wind_ai::message::Content` protocol) and returns immediately — the runtime accepts it asynchronously. You do **not** hand-build `Message` records; the engine creates sub-topics, user/assistant messages, and tool results internally.
+- Each agent instance runs in its own sub-topic (`parent_topic_id` on the binding tracks the owning topic). The event stream channel closes when the main task goes idle — re-subscribe per conversation.
+- `TopicEvent` variants: `Error`, `Snapshot`, `MessageCreated`, `Message` (streaming delta), `MessageFinished`, `TaskStatusChanged`, `ApprovalRequired`.
+
 ### MCP Tool Calling
 
-Register MCP servers and attach them to topics. The engine auto-discovers tools, sends them with each request, and executes approved calls.
+Register MCP servers, then attach them to an agent definition. The engine discovers tools, filters them per agent, sends them with each request, and executes approved calls.
 
 ```rust
-use wind_core::models::CreateMcpServer;
+use wind_core::models::agent::{AgentDefinitionData, AgentMcpBinding};
+use wind_core::models::{CreateMcpServer, CreateAgentDefinition, AgentScope};
 use wind_mcp::client::TransportType;
 
-let sid = storage.mcp().create(CreateMcpServer {
+let mcp = storage.mcp().create(CreateMcpServer {
     r#type: TransportType::Stdio,
     name: "everything".into(),
     command: Some("npx".into()),
@@ -168,23 +170,41 @@ let sid = storage.mcp().create(CreateMcpServer {
     description: None,
     env: None,
 }).await?;
+let sid = mcp.id;
 
-// Attach server to topic — tools become available on next chat request
-storage.topic().create(CreateTopic {
-    // ...
-    mcp_server_ids: Some(vec![sid]),
-    // ...
+// Give the agent access to that MCP server
+storage.agent().create_definition(CreateAgentDefinition {
+    name: "tool-user".into(),
+    key: "tool-user".into(),
+    description: "Assistant with MCP tools".into(),
+    scope: AgentScope::Global,
+    owner_topic_id: None,
+    cloned_from_agent_id: None,
+    active: Some(true),
+    data: AgentDefinitionData {
+        mcp_servers: vec![AgentMcpBinding {
+            mcp_server_id: sid,
+            alias: None,
+            allowed_tools: vec![],
+            denied_tools: vec![],
+            enabled: true,
+        }],
+        ..Default::default()
+    },
 }).await?;
 ```
 
+Agent definition data also carries `prompt_modules`, `context_policy`, `permission_policy`, and `runtime_limits` — see the `AgentDefinitionData` type for the full surface.
+
 ### Tool Approval Flow
 
-Tool execution is controlled by `Topic.tool_approval_policy`.
+Tool execution is controlled by `AgentBinding.tool_approval_policy`.
 
 ```rust
-use wind_core::models::{ToolApprovalPolicy, UpdateMessage, UpdateTopic};
+use wind_core::models::{ToolApprovalPolicy, UpdateAgentBinding};
 
-storage.topic().update(tid, UpdateTopic {
+// Require manual approval for every tool call of this binding
+storage.agent().update_binding(binding.id, UpdateAgentBinding {
     tool_approval_policy: Some(ToolApprovalPolicy::Manual),
     ..Default::default()
 }).await?;
@@ -196,42 +216,21 @@ Policies:
 | ------------------------ | ------------------------------------------------------------ |
 | `AllowAll`               | Default. Execute all requested MCP tools automatically.      |
 | `AllowList(Vec<String>)` | Execute listed tool names automatically; pause for the rest. |
-| `Manual`                 | Pause for every tool call and emit `AwaitToolCall`.          |
+| `Manual`                 | Pause for every tool call and emit `TopicEvent::ApprovalRequired`. |
 
-When manual review is required, the engine emits `AwaitToolCall` and saves the assistant message state. The caller must explicitly approve or reject each pending tool call before resuming.
-
-```rust
-// After receiving AwaitToolCall:
-// Approve specific tool call IDs
-storage.message().update(
-    message_id,
-    UpdateMessage {
-        tools_allowed: Some(vec!["call_abc123".into()]),
-        ..Default::default()
-    },
-).await?;
-
-// Resume — the engine re-loads state and executes approved tools
-let mut stream = core.chat().start(topic_id, user_msg_id, message_id);
-```
-
-**Approve:** Set `tools_allowed` with the tool call IDs to execute. Approved tools run, results are fed back as context, and the model continues.
-
-**Reject:** Set `tools_denied` with the tool call IDs to reject.
+When manual review is required, the runtime persists `ToolApprovalRequest` rows (status `Pending`) and emits `ApprovalRequired` (carrying the request ids). Reply through the handle — do not write approval state directly:
 
 ```rust
-storage.message().update(
-    message_id,
-    UpdateMessage {
-        tools_denied: Some(vec!["call_abc123".into()]),
-        ..Default::default()
-    },
-).await?;
+use wind_core::agent::event::TopicEvent;
+
+// In your event loop:
+TopicEvent::ApprovalRequired { binding_id, requests, .. } => {
+    let allow: Vec<i64> = requests.iter().map(|r| r.id).collect();
+    handle.approve(binding_id, allow, vec![]).await?;  // or deny via the third arg
+}
 ```
 
-Rejected tools receive `{"error": "User denied this tool call"}` as their result, and the model continues with those rejection markers in context.
-
-**Explicit review required:** Resuming a manual tool request without either `tools_allowed` or `tools_denied` returns an approval error instead of implicitly rejecting calls. After a reviewed batch is processed, approval fields are cleared on the persisted assistant message.
+`approve(binding_id, allow_ids, deny_ids)` sets the rows' status and resumes the agent, which re-loads its state and continues. Denied tools receive `{"error": "tool call denied", "tool": "..."}` as their result and the model continues with those markers in context.
 
 ### JSON Rule Engine
 
@@ -239,10 +238,11 @@ Define declarative request transformations stored in the database. Rules are app
 
 ```rust
 use wind_core::models::CreateJsonRule;
+use wind_ai::model::AdapterType;
 
 storage.provider().create_json_rule(CreateJsonRule {
     provider_id: pid,
-    adaptor: AdaptorType::OpenAICompletion,
+    adapter: AdapterType::OpenAICompletion,
     json_rule: r#"{
         "rules": [{
             "type": "map_value",
@@ -262,7 +262,7 @@ storage.provider().create_json_rule(CreateJsonRule {
 
 **Conditions:** `eq`, `neq`, `gt`, `lt`, `contains`, `and`, `or`, `not`, `in`.
 
-**Context variables** (`$ctx.*`) auto-injected: `$ctx.provider`, `$ctx.model`, `$ctx.adaptor`, `$ctx.endpoint`.
+**Context variables** (`$ctx.*`) auto-injected: `$ctx.provider`, `$ctx.model`, `$ctx.adapter`, `$ctx.endpoint`.
 
 ### Entity Management
 
@@ -281,47 +281,58 @@ s.provider().delete(pid).await?;  // cascades credentials + json_rules
 
 // MCP
 s.mcp().get_by_name("everything").await?;
-s.mcp().list_all().await?;
+s.mcp().list().await?;
 
-// Graceful shutdown
+// Graceful shutdown (cancels topic runtimes + MCP clients)
 core.shutdown().await;
 ```
 
 ## Crate Map
 
-| Crate       | Responsibility                                                                       |
-| ----------- | ------------------------------------------------------------------------------------ |
-| `wind-core` | Orchestration — SQLite storage, chat engine, MCP coordination, rule application      |
-| `wind-ai`   | Provider abstraction — streaming/non-streaming, adaptor pattern, SSE parsing         |
-| `wind-mcp`  | MCP client — actor-based registry, stdio/HTTP transports, tool discovery & execution |
-| `wind-rule` | JSON rule engine — declarative request transformation, expression evaluation         |
+| Crate        | Responsibility                                                                             |
+| ------------ | ------------------------------------------------------------------------------------------ |
+| `wind-core`  | Orchestration — SQLite storage, agent/FSM runtime, MCP coordination, rule application      |
+| `wind-ai`    | Provider abstraction — streaming/non-streaming, adapter pattern (`ChatAdapter`), SSE parsing |
+| `wind-mcp`   | MCP client — actor-based registry, stdio/HTTP transports, tool discovery & execution       |
+| `wind-rule`  | JSON rule engine — declarative request transformation, expression evaluation               |
+| `wind-http`  | HTTP service — axum REST + SSE over the core, facade layer, OpenAPI (`/swagger-ui`)        |
+| `wind-tui`   | Terminal UI (skeleton) — ratatui + crossterm                                               |
 
-## Chat Events
+## Topic Events
 
-| Event           | When                                                    |
-| --------------- | ------------------------------------------------------- |
-| `Created`       | Chat round started                                      |
-| `Partial`       | Streaming content chunk or intermediate tool-call frame |
-| `AwaitToolCall` | Tool calls require manual approval before execution     |
-| `Finish`        | Chat round ended (may carry final message or error)     |
+The public event contract is `TopicEvent`, consumed via `TopicRuntimeHandle::subscribe()`:
 
-A typical tool-call flow: `Created → Partial(tool_request) → AwaitToolCall → [user approves] → Partial(tool_result) → Partial(text) → Finish`.
+| Event              | When                                                    |
+| ------------------ | ------------------------------------------------------- |
+| `MessageCreated`   | A user or assistant message was persisted                |
+| `Message`          | Streaming content delta                                  |
+| `ApprovalRequired` | Tool calls require manual approval before execution      |
+| `MessageFinished`  | A message is complete                                    |
+| `TaskStatusChanged`| An agent task changed status (`Idle`/`Running`/`Finished`/…) |
+| `Error`            | A task or the runtime failed                             |
+| `Snapshot`         | Full message list for a topic                            |
+
+A typical tool-call flow: `MessageCreated → Message (streaming) → ApprovalRequired → [approve] → Message (tool results + text) → MessageFinished`. The low-level `ChatEvent` (`Partial`/`AwaitToolCall`/`Finish`) is an internal detail of `AgentRuntime` — external code consumes `TopicEvent`.
 
 ## Test Organization
 
-| File                                 | Content                                                                 |
-| ------------------------------------ | ----------------------------------------------------------------------- |
-| `windai/core/tests/storage.rs`       | Storage CRUD, validation, cascades, batch operations                    |
-| `windai/core/tests/core_chat.rs`     | Non-MCP chat flows: streaming, history, errors, JSON rules, persistence |
-| `windai/core/tests/core_chat_mcp.rs` | MCP approval, rejection, and explicit-review resume behavior            |
-| `windai/core/tests/common/lib.rs`    | Shared `.env`, SQLite, provider, and MCP test helpers                   |
+| File                                 | Content                                                                  |
+| ------------------------------------ | ------------------------------------------------------------------------ |
+| `windai/core/tests/storage.rs`       | Storage CRUD, validation, cascades, batch operations (no `.env` needed)  |
+| `windai/core/tests/core_chat.rs`     | Non-MCP chat flows: streaming, history, errors, JSON rules, persistence  |
+| `windai/core/tests/chat.rs`          | AI adapter tests (needs `.env`)                                          |
+| `windai/core/tests/core_chat_mcp.rs` | MCP approval tests — currently **commented out**                         |
+| `windai/http/tests/*`                | HTTP router/facade/mirror tests via `tower::ServiceExt::oneshot`         |
 
 ## Environment Variables
 
 | Variable          | Purpose                                      |
 | ----------------- | -------------------------------------------- |
-| `WINDAI_ROOT_DIR` | Data directory (default `~/.windai/`)        |
+| `WINDAI_ROOT_DIR` | Core data directory (default `~/.windai/`)   |
 | `RUST_LOG`        | Log level (`debug`, `info`, `warn`, `error`) |
+| `WIND_HTTP_HOST`  | `wind-http` bind host (default `127.0.0.1`)  |
+| `WIND_HTTP_PORT`  | `wind-http` bind port (default `7324`)       |
+| `WINDAI_DB_PATH`  | `wind-http` SQLite file path                 |
 
 ## License
 
