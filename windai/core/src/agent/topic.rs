@@ -169,18 +169,35 @@ impl TopicRuntime {
 
     /// 归约 FSM 事件并执行副作用。
     ///
-    /// 副作用执行过程中可能产生新的 FSM 事件
+    /// 副作用执行过程中可能产生新的 FSM 事件。
+    ///
+    /// 采用深度优先策略：一个 effect 执行后产生的 follow_up 事件会立即归约
+    /// 执行，直到其副作用链全部完成，才继续处理下一个同级 effect。这保证每个
+    /// effect 的完整副作用（含广播事件）都在后续 effect（如 CloseEventStream）
+    /// 生效前全部发出。
     async fn apply(&mut self, event: FsmEvent) {
         let mut queue = VecDeque::new();
         queue.push_back(event);
+        let mut stack: Vec<Effect> = vec![];
 
-        while let Some(ev) = queue.pop_front() {
-            let effects = self.fsm.reduce(ev);
-            for effect in effects {
+        loop {
+            if let Some(effect) = stack.pop() {
                 match self.execute(effect).await {
                     None => {}
-                    Some(follow_ups) => queue.extend(follow_ups),
+                    Some(follow_ups) => {
+                        for fu in follow_ups.into_iter().rev() {
+                            for e in self.fsm.reduce(fu).into_iter().rev() {
+                                stack.push(e);
+                            }
+                        }
+                    }
                 }
+            } else if let Some(ev) = queue.pop_front() {
+                for e in self.fsm.reduce(ev).into_iter().rev() {
+                    stack.push(e);
+                }
+            } else {
+                break;
             }
         }
     }
