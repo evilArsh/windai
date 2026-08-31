@@ -1,6 +1,6 @@
 pub mod events;
-pub mod loops;
 pub(crate) mod rule;
+pub mod runner;
 
 pub use events::ChatEvent;
-pub use loops::ChatLoops;
+pub use runner::ChatRunner;

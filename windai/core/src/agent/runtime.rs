@@ -2,8 +2,8 @@ use super::function_call::partition_tool_calls_by_policy;
 use super::host::AgentHost;
 use super::tool::{self, AGENT_TOOL_PREFIX, SpawnAgentResponse};
 use crate::agent::task::AgentOutput;
-use crate::chat::loops::ChatContext;
-use crate::chat::{ChatEvent, ChatLoops};
+use crate::chat::runner::ChatContext;
+use crate::chat::{ChatEvent, ChatRunner};
 use crate::error::{CoreError, Result};
 use crate::models::{AgentMode, Message, ToolApprovalPolicy, ToolApprovalStatus};
 use futures::stream::StreamExt;
@@ -58,7 +58,7 @@ enum Output {
 }
 
 pub struct AgentRuntime {
-    chat: ChatLoops,
+    chat: ChatRunner,
     host: Arc<dyn AgentHost>,
     config: AgentRunConfig,
 }
@@ -66,7 +66,7 @@ pub struct AgentRuntime {
 impl AgentRuntime {
     pub fn new(host: Arc<dyn AgentHost>, config: AgentRunConfig) -> Self {
         Self {
-            chat: ChatLoops::new(),
+            chat: ChatRunner::new(),
             host,
             config,
         }
@@ -86,19 +86,19 @@ impl AgentRuntime {
         }
         let mut auto_resume_count = 0usize;
         const MAX_AUTO_RESUME: usize = 32;
+        let mut iter_index = -1;
         loop {
-            let mut stream = self.chat.run(&chat_ctx, assistant, contexts).await;
+            let mut stream = self.chat.run(&chat_ctx, assistant, contexts);
             self.send_event(AgentOutput::Started).await;
+            iter_index += 1;
             loop {
                 tokio::select! {
                     biased;
-
                     _ = ctx.cancelled() => {
                         return;
                     }
-
                     Some(event) = stream.next() => {
-                        match self.handle_chat_event(event).await {
+                        match self.handle_chat_event(iter_index,event).await {
                             Action::Continue => {}
                             Action::Stop => return,
                             Action::Resume { assistant: next_assistant, contexts: next_contexts } => {
@@ -223,16 +223,12 @@ impl AgentRuntime {
             }
         }
     }
-    async fn handle_chat_event(&self, event: ChatEvent) -> Action {
+    async fn handle_chat_event(&self, iter_index: i32, event: ChatEvent) -> Action {
         match event {
-            ChatEvent::Partial {
-                index,
-                message_id,
-                delta,
-            } => {
+            ChatEvent::Partial { message_id, delta } => {
                 self.send_event(AgentOutput::Message {
                     message_id,
-                    index,
+                    index: iter_index,
                     delta,
                 })
                 .await;

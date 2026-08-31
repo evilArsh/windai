@@ -6,12 +6,8 @@ use wind_ai::{message::Message as AiMessage, tool::FunctionCall};
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ChatEvent {
-    /// 流式消息分块内容
-    Partial {
-        index: i32,
-        message_id: i64,
-        delta: AiMessage,
-    },
+    /// 分块内容
+    Partial { message_id: i64, delta: AiMessage },
     /// 终止该轮对话，并通知上层需要审批和调用 tool_call
     AwaitToolCall {
         message: Message,
@@ -29,12 +25,8 @@ pub enum ChatEvent {
 
 impl ChatEvent {
     #[inline]
-    pub fn partial(index: i32, message_id: i64, delta: AiMessage) -> Self {
-        Self::Partial {
-            index,
-            message_id,
-            delta,
-        }
+    pub fn partial(message_id: i64, delta: AiMessage) -> Self {
+        Self::Partial { message_id, delta }
     }
 
     #[inline]

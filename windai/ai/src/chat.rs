@@ -42,10 +42,10 @@ impl ResEvent {
         }
     }
     #[inline]
-    pub fn new_finish(data: Message) -> Self {
+    pub fn new_finish() -> Self {
         Self {
             status: ResEventStatus::Finish,
-            data: Some(data),
+            data: None,
             error: None,
         }
     }
@@ -162,7 +162,6 @@ pub fn handle_chat(
                     }
                 };
                 let stream = client::handle_stream(response);
-                let mut msg = Message::default();
                 for await result in stream {
                     match result {
                         Ok(bytes) => {
@@ -175,9 +174,7 @@ pub fn handle_chat(
                                 }
                             };
                             for chunk in chunks {
-                                // log::debug!("[chunk]\n{}", &chunk);
-                                msg.append_chunk(chunk);
-                                yield ResEvent::new_partial(msg.clone());
+                                yield ResEvent::new_partial(chunk);
                             }
                         }
                         Err(err) => {
@@ -185,7 +182,7 @@ pub fn handle_chat(
                         }
                     };
                 }
-                yield ResEvent::new_finish(msg);
+                yield ResEvent::new_finish();
             }
             _ => {
                 let response = match client::request(api_url.as_str(), Method::POST, |req| {
@@ -216,7 +213,8 @@ pub fn handle_chat(
                         return;
                     }
                 };
-                yield ResEvent::new_finish(response);
+                yield ResEvent::new_partial(response);
+                yield ResEvent::new_finish();
             }
         }
     }

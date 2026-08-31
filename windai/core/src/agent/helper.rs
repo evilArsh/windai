@@ -1,6 +1,6 @@
 use super::function_call::build_tools_from_mcp;
 use super::tool::{self, AgentBindingView, ListAgentsResponse};
-use crate::chat::loops::ChatContext;
+use crate::chat::runner::ChatContext;
 use crate::error::{CoreError, Result};
 use crate::models::{
     AgentBinding, AgentDefinition, AgentMcpBinding, AgentRole, CreateMessage,

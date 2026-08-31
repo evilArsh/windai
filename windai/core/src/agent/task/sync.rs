@@ -8,7 +8,7 @@ use crate::{
         runtime::{AgentRunConfig, AgentRuntime},
         tool::{ListAgentsResponse, SpawnAgentRequest, SpawnAgentResponse},
     },
-    chat::loops::ChatContext,
+    chat::runner::ChatContext,
     error::{CoreError, Result},
     models::ToolApprovalRequest,
     storage::Storage,

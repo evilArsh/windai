@@ -30,14 +30,14 @@ pub struct ChatContext {
     pub rule_set: Option<JsonRule>,
     pub tools: Option<Vec<Tools>>,
 }
-pub struct ChatLoops {}
+pub struct ChatRunner {}
 
-impl ChatLoops {
+impl ChatRunner {
     pub fn new() -> Self {
         Self {}
     }
 
-    pub async fn run<'a>(
+    pub fn run<'a>(
         &self,
         ctx: &'a ChatContext,
         assistant: CoreMessage,
@@ -84,77 +84,45 @@ impl ChatLoops {
             }
         };
 
-        self.start_chat(ctx, rule, assistant, contexts).await
+        self.start_chat(ctx, rule, assistant, contexts)
     }
 
-    async fn start_chat<'a>(
+    fn start_chat<'a>(
         &self,
         ctx: &'a ChatContext,
         rule: Option<RuleSet>,
         mut assistant: CoreMessage,
         mut contexts: Vec<AiMessage>,
     ) -> Pin<Box<dyn Stream<Item = ChatEvent> + Send + 'a>> {
-        let assistant_id = assistant.id;
-        let chat_adapter = get_chat_adapter(ctx.model.adapter);
-
-        let mut iter_index = 0;
-        let mut error_obj: Option<CoreError> = None;
-        let mut msg: Option<AiMessage> = None;
-        let stream = stream! {
-            loop {
-                {
-                    let forward = pin!(Self::forward_stream(
-                        chat_adapter.as_ref(),
-                        ctx,
-                        contexts.as_slice(),
-                        rule.as_ref(),
-                    ));
-                    for await value in forward {
-                        match value {
-                            Ok((is_finished, value)) => {
-                                if is_finished {
-                                    msg = Some(value);
-                                } else {
-                                    yield ChatEvent::Partial {
-                                        index: iter_index,
-                                        message_id: assistant_id,
-                                        delta: value,
-                                    };
-                                }
-                            }
-                            Err(err) => {
-                                error_obj = Some(err);
-                                log::debug!("[llm_loop] error:\n{:#?}", &error_obj);
-                            }
+        Box::pin(stream! {
+            let assistant_id = assistant.id;
+            let chat_adapter = get_chat_adapter(ctx.model.adapter);
+            let mut error_obj: Option<CoreError> = None;
+            let mut msg = AiMessage::default();
+            {
+                let forward = pin!(Self::forward_stream(
+                    chat_adapter.as_ref(),
+                    ctx,
+                    contexts.as_slice(),
+                    rule.as_ref(),
+                ));
+                for await value in forward {
+                    match value {
+                        Ok(Some(value)) => {
+                            msg.append_chunk(value.clone());
+                            yield ChatEvent::Partial {
+                                message_id: assistant_id,
+                                delta: value,
+                            };
+                        }
+                        Ok(None) => {}
+                        Err(err) => {
+                            error_obj = Some(err);
+                            log::debug!("[llm_loop] error:\n{:#?}", &error_obj);
                         }
                     }
                 }
-                if let Some(msg) = msg {
-                    let tools = match msg.tool_calls {
-                        Some(tools) => tools,
-                        _ => {
-                            contexts.push(msg.clone());
-                            assistant.append_content(msg);
-                            break;
-                        }
-                    };
-                    if !tools.is_empty() {
-                        let tool_request =
-                            AiMessage::new_tool_request(tools.clone(), msg.reasoning_content);
-                        contexts.push(tool_request.clone());
-                        assistant.append_content(tool_request.clone());
-                        iter_index += 1;
-                        yield ChatEvent::partial(iter_index, assistant_id, tool_request);
-                        yield ChatEvent::await_tool_calls(assistant, contexts, tools);
-                        return;
-                    }
-                } else {
-                    break;
-                }
-                iter_index += 1;
-                msg = None;
             }
-
             if let Some(error) = &error_obj {
                 let msg = AiMessage::new_simple(
                     Role::Assistant,
@@ -163,11 +131,25 @@ impl ChatLoops {
                 );
                 contexts.push(msg.clone());
                 assistant.append_content(msg);
-            };
-            yield ChatEvent::finish(assistant, contexts, error_obj);
-        };
-
-        Box::pin(stream)
+                yield ChatEvent::finish(assistant, contexts, error_obj);
+            } else {
+                match msg.tool_calls {
+                    Some(tools) if !tools.is_empty() => {
+                        let tool_request =
+                            AiMessage::new_tool_request(tools.clone(), msg.reasoning_content);
+                        contexts.push(tool_request.clone());
+                        assistant.append_content(tool_request.clone());
+                        yield ChatEvent::partial(assistant_id, tool_request);
+                        yield ChatEvent::await_tool_calls(assistant, contexts, tools);
+                    }
+                    _ => {
+                        contexts.push(msg.clone());
+                        assistant.append_content(msg);
+                        yield ChatEvent::finish(assistant, contexts, None);
+                    }
+                };
+            }
+        })
     }
 
     fn forward_stream(
@@ -175,7 +157,7 @@ impl ChatLoops {
         ctx: &ChatContext,
         contexts: &[AiMessage],
         rule: Option<&RuleSet>,
-    ) -> impl Stream<Item = Result<(bool, AiMessage)>> {
+    ) -> impl Stream<Item = Result<Option<AiMessage>>> {
         try_stream! {
             log::debug!(
                 "[request body]\n[user_input]\n{},\n\n[config]\n{:#?}",
@@ -207,17 +189,23 @@ impl ChatLoops {
                 ctx.model.endpoint.as_deref(),
             );
             let mut stream = std::pin::pin!(stream);
+            // let mut msg = AiMessage::default();
             while let Some(res_event) = stream.next().await {
                 match res_event.status {
                     ResEventStatus::Partial => {
-                        if let Some(msg) = res_event.data {
-                            yield (false, msg);
-                        }
+                        // if let Some(partial_msg) = res_event.data {
+                        //     msg.append_chunk(partial_msg);
+                        //     yield (false, Some(msg));
+                        // }
+                        // yield (false, res_event.data);
+                        yield res_event.data;
                     }
                     ResEventStatus::Finish => {
-                        if let Some(msg_finish) = res_event.data {
-                            yield (true, msg_finish);
-                        }
+                        // if let Some(msg_finish) = res_event.data {
+                        //     yield (true, msg_finish);
+                        // }
+                        // yield (true, None);
+                        yield None;
                         break;
                     }
                     ResEventStatus::Error => {
