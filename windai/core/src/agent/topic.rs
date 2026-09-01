@@ -441,13 +441,24 @@ impl TopicRuntime {
         log::debug!("[start_main_agent] get chat_ctx: {:#?}", chat_ctx);
 
         let tx = self.storage.begin().await?;
-        let agent_topic = helper::create_sub_topic(
-            &tx.storage(),
+        let agent_topic = match helper::get_topic_by_binding_id(
+            &self.storage,
             self.topic_id,
             binding.id,
-            format!("#main-agent"),
         )
-        .await?;
+        .await?
+        {
+            Some(topic) => topic,
+            None => {
+                helper::create_sub_topic(
+                    &tx.storage(),
+                    self.topic_id,
+                    binding.id,
+                    format!("#main-agent"),
+                )
+                .await?
+            }
+        };
         let (user, assistant, contexts) =
             helper::create_contexts(&tx.storage(), agent_topic.id, user_input, &agent, &chat_ctx)
                 .await?;
@@ -489,8 +500,21 @@ impl TopicRuntime {
     async fn resume_task(&mut self, binding_id: i64) -> Result<()> {
         let binding = helper::get_binding_by_id(&self.storage, binding_id).await?;
         let agent = helper::get_def_by_id(&self.storage, binding.agent_id).await?;
-        let agent_topic =
-            helper::get_topic_by_binding_id(&self.storage, self.topic_id, binding_id).await?;
+        let agent_topic = match helper::get_topic_by_binding_id(
+            &self.storage,
+            self.topic_id,
+            binding_id,
+        )
+        .await?
+        {
+            Some(topic) => topic,
+            None => {
+                return Err(CoreError::RowNotFound(format!(
+                    "topic by binding_id: {}",
+                    binding_id
+                )));
+            }
+        };
 
         let (chat_ctx, contexts) = try_join(
             helper::get_base_info(&self.storage, &self.mcp_registry, &binding, &agent),

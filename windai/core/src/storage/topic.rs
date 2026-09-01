@@ -81,6 +81,7 @@ impl TopicStorage {
     /// 获取所有 topic
     pub async fn list_topics(&self) -> Result<Vec<Topic>> {
         let mut qb = Self::select_topic();
+        qb.push(" WHERE binding_id IS NULL ");
         qb.push(" ORDER BY id ASC ");
         let rows = self
             .executor

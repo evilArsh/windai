@@ -14,7 +14,17 @@ pub type JsonObject<F = Value> = serde_json::Map<String, F>;
 
 const MCP_TOOL_IDENTIFIER: &str = "0m0";
 
-#[derive(Debug, Serialize, PartialEq, Eq, Clone, Copy, strum::EnumString, strum::Display)]
+#[derive(
+    utoipa::ToSchema,
+    Debug,
+    Serialize,
+    PartialEq,
+    Eq,
+    Clone,
+    Copy,
+    strum::EnumString,
+    strum::Display,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum ClientStatus {
     #[strum(serialize = "connecting")]
@@ -115,7 +125,7 @@ pub struct StreamableParams {
 }
 
 /// 客户端状态快照
-#[derive(Debug, Clone, Serialize)]
+#[derive(utoipa::ToSchema, Debug, Clone, Serialize)]
 pub struct ClientSnapshot {
     /// 服务名
     pub name: String,
@@ -125,13 +135,26 @@ pub struct ClientSnapshot {
 }
 
 /// mcp 服务广播的事件
-#[derive(Debug, Clone, Serialize)]
+#[derive(utoipa::ToSchema, Debug, Clone, Serialize, strum::AsRefStr)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
 pub enum ClientEvent {
-    Connecting { name: String },
-    Connected { name: String },
-    Disconnected { name: String, reason: String },
-    Error { name: String, error: String },
+    Connecting {
+        name: String,
+        ref_sessions: Vec<String>,
+    },
+    Connected {
+        name: String,
+        ref_sessions: Vec<String>,
+    },
+    Disconnected {
+        name: String,
+        reason: String,
+    },
+    Error {
+        name: String,
+        error: String,
+    },
 }
 
 #[derive(thiserror::Error, Debug)]

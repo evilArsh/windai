@@ -61,16 +61,10 @@ impl McpStorage {
     }
 
     pub async fn update(&self, id: i64, data: UpdateMcpServer) -> Result<()> {
-        if data.name.is_empty() {
-            return Err(CoreError::Validation(
-                "mcp server name cannot be empty".into(),
-            ));
-        }
         let mut qb = update!(
             TableName::MCP_SERVERS,
             id,
             ("type", data.r#type.map(|t| t.to_string())),
-            ("name", Some(data.name)),
             ("url", data.url),
             ("description", data.description),
             ("command", data.command),

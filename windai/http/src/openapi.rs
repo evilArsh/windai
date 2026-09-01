@@ -14,7 +14,9 @@ use wind_core::models::{
 use crate::dto::agent::CloneAgentDefinitionRequest;
 use crate::dto::approval::ApproveToolCallsRequest;
 use crate::dto::envelope::ApiResponse;
+use crate::dto::mcp::{McpServerStatusDto, StartMcpServerResult};
 use crate::dto::message::{CreateChatRequest, SubmitChatResponse};
+use wind_mcp::client::{ClientEvent, ClientSnapshot, ClientStatus};
 
 /// 聚合 wind-http 全部公开路由与 schema 的 OpenAPI 文档。
 #[derive(OpenApi)]
@@ -68,6 +70,10 @@ use crate::dto::message::{CreateChatRequest, SubmitChatResponse};
         crate::routes::mcp::update_mcp_server,
         crate::routes::mcp::delete_mcp_server,
         crate::routes::mcp::get_mcp_server_by_name,
+        crate::routes::mcp::start_mcp_server,
+        crate::routes::mcp::stop_mcp_server,
+        crate::routes::mcp::get_mcp_server_status,
+        crate::routes::mcp::subscribe_mcp_events,
         // prompt
         crate::routes::prompt::list_prompt_modules,
         crate::routes::prompt::create_prompt_module,
@@ -127,6 +133,11 @@ use crate::dto::message::{CreateChatRequest, SubmitChatResponse};
         McpServerParam,
         CreateMcpServer,
         UpdateMcpServer,
+        StartMcpServerResult,
+        McpServerStatusDto,
+        ClientStatus,
+        ClientSnapshot,
+        ClientEvent,
         // prompt
         PromptModule,
         CreatePromptModule,

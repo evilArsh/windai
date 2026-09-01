@@ -145,12 +145,11 @@ pub async fn get_topic_by_binding_id(
     storage: &Storage,
     parent_topic_id: i64,
     binding_id: i64,
-) -> Result<Topic> {
+) -> Result<Option<Topic>> {
     storage
         .topic()
         .get_topic_by_binding_id(parent_topic_id, binding_id)
-        .await?
-        .ok_or_else(|| CoreError::RowNotFound(format!("topic by binding_id: {}", binding_id)))
+        .await
 }
 /// 通过Agent ID获取Agent定义（会校验active状态）
 pub async fn get_def_by_id(storage: &Storage, agent_id: i64) -> Result<AgentDefinition> {

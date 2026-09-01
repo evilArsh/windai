@@ -37,11 +37,20 @@ impl<T> ApiResponse<T> {
             msg: msg.into(),
         }
     }
+
+    pub fn bad_request(msg: impl Into<String>) -> Self {
+        Self {
+            code: 400,
+            data: None,
+            msg: msg.into(),
+        }
+    }
 }
 
 pub fn map_core_error<T>(e: CoreError) -> ApiResponse<T> {
     match e {
         CoreError::RowNotFound(_) => ApiResponse::not_found("not found"),
+        CoreError::Validation(msg) => ApiResponse::bad_request(msg),
         other => {
             log::error!("core error: {other:?}");
             ApiResponse::internal("internal error")

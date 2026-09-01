@@ -8,7 +8,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-// static REGISTRY: OnceLock<RegistryHandle> = OnceLock::new();
 enum ServerState {
     Connecting { waiter: Arc<ConnectingWaiter> },
     Connected,
@@ -364,20 +363,43 @@ impl Registry {
         session_id: &str,
         params: ServerParams,
     ) -> Result<ClientSnapshot, McpError> {
-        let name = params.get_name().into_owned();
-        if let Some(entry) = self.servers.get_mut(&name) {
-            match &entry.state {
+        let name = params.get_name();
+        if let Some(entry) = self.servers.get_mut(name.as_ref()) {
+            let (snapshot, event) = match &entry.state {
                 ServerState::Connected => {
                     entry.ref_sessions.insert(session_id.to_string());
-                    return Ok(entry.snapshot());
+                    let snapshot = entry.snapshot();
+                    let ref_sessions = snapshot.ref_sessions.iter().cloned().collect();
+                    (
+                        Some(snapshot),
+                        Some(ClientEvent::Connected {
+                            name: name.to_string(),
+                            ref_sessions,
+                        }),
+                    )
                 }
                 ServerState::Connecting { waiter } => {
                     let waiter = waiter.clone();
-                    return self.wait_for_connecting(waiter).await;
+                    let snapshot = self.wait_for_connecting(waiter.clone()).await?;
+                    let ref_sessions = snapshot.ref_sessions.iter().cloned().collect();
+                    (
+                        Some(snapshot),
+                        Some(ClientEvent::Connecting {
+                            name: name.to_string(),
+                            ref_sessions,
+                        }),
+                    )
                 }
                 ServerState::Disconnecting => {
-                    self.servers.remove(&name);
+                    self.servers.remove(name.as_ref());
+                    (None, None)
                 }
+            };
+            if let Some(e) = event {
+                self.broadcast(e);
+            }
+            if let Some(s) = snapshot {
+                return Ok(s);
             }
         }
 
@@ -387,7 +409,7 @@ impl Registry {
         });
 
         self.servers.insert(
-            name.clone(),
+            name.to_string(),
             ServerEntry {
                 state: ServerState::Connecting { waiter },
                 ref_sessions: HashSet::from([session_id.to_string()]),
@@ -396,18 +418,23 @@ impl Registry {
             },
         );
 
-        self.broadcast(ClientEvent::Connecting { name: name.clone() });
+        self.broadcast(ClientEvent::Connecting {
+            name: name.to_string(),
+            ref_sessions: vec![session_id.to_string()],
+        });
 
         let connect_result = ServerHandle::connect(&params).await;
 
-        let entry = match self.servers.get_mut(&name) {
+        let entry = match self.servers.get_mut(name.as_ref()) {
             Some(entry) => entry,
             None => {
-                log::error!("Error after connection, server not found,  name: {}", &name);
-                return Err(McpError::ServerNotFound(name));
+                log::error!(
+                    "Error after connection, server not found,  name: {}",
+                    name.as_ref()
+                );
+                return Err(McpError::ServerNotFound(name.into_owned()));
             }
         };
-        let name = entry.params.get_name().into_owned();
         match connect_result {
             Ok(handle) => {
                 entry.handle = Some(handle);
@@ -418,12 +445,15 @@ impl Registry {
                     *w.result.lock().unwrap() = Some(WaiterResult::Connected(snapshot.clone()));
                     w.notify.notify_waiters();
 
-                    self.broadcast(ClientEvent::Connected { name });
+                    self.broadcast(ClientEvent::Connected {
+                        name: name.to_string(),
+                        ref_sessions: snapshot.ref_sessions.iter().cloned().collect(),
+                    });
                     return Ok(snapshot);
                 } else {
                     log::warn!(
                         "server's previous state was not 'Connecting' after connected, name: {}",
-                        &name
+                        name.as_ref()
                     );
                 }
                 Ok(entry.snapshot())
@@ -440,10 +470,10 @@ impl Registry {
                     w.notify.notify_waiters();
                 }
 
-                self.servers.remove(&name);
+                self.servers.remove(name.as_ref());
 
                 self.broadcast(ClientEvent::Error {
-                    name,
+                    name: name.into_owned(),
                     error: error_msg.clone(),
                 });
 
@@ -473,6 +503,11 @@ impl Registry {
     async fn release(&mut self, session_id: &str, name: &str) -> Result<ClientSnapshot, McpError> {
         let entry = self.get_entry_mut(name)?;
         entry.ref_sessions.remove(session_id);
+        log::info!(
+            "[RegistryRequest::Release] session_id {} removed, left: {}",
+            session_id,
+            entry.ref_sessions.len()
+        );
         if !entry.ref_sessions.is_empty() {
             return Ok(entry.snapshot());
         }

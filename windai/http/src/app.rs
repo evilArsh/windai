@@ -45,6 +45,7 @@ pub fn build_router() -> Router<AppState> {
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .merge(health::router())
         .merge(chat::sse_router()) // SSE 不套 timeout
+        .merge(mcp::sse_router()) // MCP 状态 SSE
         .merge(api)
         .fallback(fallback_404)
 }
