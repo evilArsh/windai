@@ -21,6 +21,19 @@ struct ToolPlan {
     waiting: Vec<FunctionCall>,
 }
 
+impl std::fmt::Display for ToolPlan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "[ToolPlan]\n(exec_mcp = {}, exec_agent = {}, denied = {} waiting = {})",
+            self.exec_mcp.len(),
+            self.exec_agent.len(),
+            self.denied.len(),
+            self.waiting.len()
+        )
+    }
+}
+
 macro_rules! try_or_finish {
     ($expr:expr, $msg:expr) => {
         match $expr {
@@ -40,6 +53,7 @@ pub struct AgentRunConfig {
     pub mode: AgentMode,
 }
 
+#[derive(strum::AsRefStr)]
 enum Action {
     Continue,
     Resume {
@@ -47,6 +61,28 @@ enum Action {
         contexts: Vec<AiMessage>,
     },
     Stop,
+}
+
+impl std::fmt::Display for Action {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name_ref = self.as_ref();
+        let (name, args) = match self {
+            Action::Continue => (name_ref, String::new()),
+            Action::Resume {
+                assistant,
+                contexts,
+            } => (
+                name_ref,
+                format!(
+                    "(message_id = {}, contexts_len = {})",
+                    assistant.id,
+                    contexts.len(),
+                ),
+            ),
+            Action::Stop => (name_ref, String::new()),
+        };
+        write!(f, "[Action {name}]\n{}", args)
+    }
 }
 
 enum Output {
@@ -98,9 +134,12 @@ impl AgentRuntime {
                         return;
                     }
                     Some(event) = stream.next() => {
-                        match self.handle_chat_event(iter_index,event).await {
+                        let action = self.handle_chat_event(iter_index,event).await;
+                        match action {
                             Action::Continue => {}
-                            Action::Stop => return,
+                            Action::Stop => {
+                                return
+                            },
                             Action::Resume { assistant: next_assistant, contexts: next_contexts } => {
                                 auto_resume_count += 1;
                                 if auto_resume_count > MAX_AUTO_RESUME {
@@ -146,15 +185,24 @@ impl AgentRuntime {
     /// 2. 上一轮对话中工具审批完毕，处理审批结果
     async fn handle_await_tool_call(
         &self,
+        iter_index: i32,
         mut message: Message,
         mut contexts: Vec<AiMessage>,
         tools: Vec<FunctionCall>,
     ) -> Output {
+        let message_id = message.id;
         let plan = try_or_finish!(self.make_tool_plan(message.id, tools).await, message);
+        log::debug!("{}", plan);
         // MCP 工具执行
         if !plan.exec_mcp.is_empty() {
             let tool_result =
                 try_or_finish!(self.host.execute_tool_calls(&plan.exec_mcp).await, message);
+            self.send_event(AgentOutput::Message {
+                message_id,
+                index: iter_index,
+                delta: tool_result.clone(),
+            })
+            .await;
             message.append_content(tool_result.clone());
             contexts.push(tool_result);
         }
@@ -167,12 +215,18 @@ impl AgentRuntime {
                 let response = try_or_finish!(self.host.list_agents().await, message);
                 let result_json = try_or_finish!(serde_json::to_value(&response), message);
                 for call_id in call_ids {
-                    let output = AiMessage::new_tool_result(vec![FunctionCallOutput {
+                    let tool_result = AiMessage::new_tool_result(vec![FunctionCallOutput {
                         id: call_id,
                         content: result_json.clone(),
                     }]);
-                    message.append_content(output.clone());
-                    contexts.push(output);
+                    self.send_event(AgentOutput::Message {
+                        message_id,
+                        index: iter_index,
+                        delta: tool_result.clone(),
+                    })
+                    .await;
+                    message.append_content(tool_result.clone());
+                    contexts.push(tool_result);
                 }
             }
 
@@ -183,17 +237,23 @@ impl AgentRuntime {
             });
             let results = try_or_finish!(futures::future::try_join_all(futures).await, message);
             for result in results {
-                let val = AiMessage::new_tool_result(vec![FunctionCallOutput {
+                let tool_result = AiMessage::new_tool_result(vec![FunctionCallOutput {
                     id: result.call_id,
                     content: Value::String(Content::arr_to_string(&result.output)),
                 }]);
-                message.append_content(val.clone());
-                contexts.push(val);
+                self.send_event(AgentOutput::Message {
+                    message_id,
+                    index: iter_index,
+                    delta: tool_result.clone(),
+                })
+                .await;
+                message.append_content(tool_result.clone());
+                contexts.push(tool_result);
             }
         }
         // Denied 工具执行
         if !plan.denied.is_empty() {
-            let denied_result = AiMessage::new_tool_result(
+            let tool_result = AiMessage::new_tool_result(
                 plan.denied
                     .into_iter()
                     .map(|call| FunctionCallOutput {
@@ -205,8 +265,14 @@ impl AgentRuntime {
                     })
                     .collect(),
             );
-            message.append_content(denied_result.clone());
-            contexts.push(denied_result);
+            self.send_event(AgentOutput::Message {
+                message_id,
+                index: iter_index,
+                delta: tool_result.clone(),
+            })
+            .await;
+            message.append_content(tool_result.clone());
+            contexts.push(tool_result);
         };
 
         // 通知用户审批
@@ -224,6 +290,7 @@ impl AgentRuntime {
         }
     }
     async fn handle_chat_event(&self, iter_index: i32, event: ChatEvent) -> Action {
+        log::debug!("{}", event);
         match event {
             ChatEvent::Partial { message_id, delta } => {
                 self.send_event(AgentOutput::Message {
@@ -235,22 +302,27 @@ impl AgentRuntime {
 
                 Action::Continue
             }
-
             ChatEvent::AwaitToolCall {
                 message,
                 contexts,
                 tools,
-            } => match self.handle_await_tool_call(message, contexts, tools).await {
-                Output::Resume { data, contexts } => Action::Resume {
-                    assistant: data,
-                    contexts,
-                },
-                Output::Agent(output) => {
-                    self.send_event(output).await;
-                    Action::Stop
-                }
-            },
-
+            } => {
+                let action = match self
+                    .handle_await_tool_call(iter_index, message, contexts, tools)
+                    .await
+                {
+                    Output::Resume { data, contexts } => Action::Resume {
+                        assistant: data,
+                        contexts,
+                    },
+                    Output::Agent(output) => {
+                        self.send_event(output).await;
+                        Action::Stop
+                    }
+                };
+                log::debug!("iter_index: {}, action: {}", iter_index, action);
+                action
+            }
             ChatEvent::Finish {
                 message,
                 contexts: _,
@@ -261,8 +333,9 @@ impl AgentRuntime {
                     error,
                 })
                 .await;
-
-                Action::Stop
+                let action = Action::Stop;
+                log::debug!("iter_index: {}, action: {}", iter_index, action);
+                action
             }
         }
     }

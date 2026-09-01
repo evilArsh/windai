@@ -3,7 +3,7 @@ use serde::Serialize;
 use wind_ai::{message::Message as AiMessage, tool::FunctionCall};
 
 /// 统一对话事件，适用于流式和非流式模式。
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, strum::AsRefStr)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ChatEvent {
     /// 分块内容
@@ -49,5 +49,49 @@ impl ChatEvent {
             contexts,
             tools,
         }
+    }
+}
+
+impl std::fmt::Display for ChatEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name_ref = self.as_ref();
+        let (name, args) = match self {
+            ChatEvent::Partial { message_id, delta } => (
+                name_ref,
+                format!(
+                    "(message_id = {}, message_len = {}, calls_len = {})",
+                    message_id,
+                    delta.content.len(),
+                    delta.tool_calls.as_ref().map(|t| t.len()).unwrap_or(0)
+                ),
+            ),
+            ChatEvent::AwaitToolCall {
+                message,
+                contexts,
+                tools,
+            } => (
+                name_ref,
+                format!(
+                    "(message_id = {}, contexts_len = {}, tools_len = {})",
+                    message.id,
+                    contexts.len(),
+                    tools.len(),
+                ),
+            ),
+            ChatEvent::Finish {
+                message,
+                contexts,
+                error,
+            } => (
+                name_ref,
+                format!(
+                    "(message_id = {}, contexts_len = {}, error = {})",
+                    message.id,
+                    contexts.len(),
+                    error.as_ref().map(|e| e.to_string()).unwrap_or_default(),
+                ),
+            ),
+        };
+        write!(f, "[ChatEvent {name}]\n{}", args)
     }
 }

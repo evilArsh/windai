@@ -110,10 +110,7 @@ impl ChatRunner {
                     match value {
                         Ok(Some(value)) => {
                             msg.append_chunk(value.clone());
-                            yield ChatEvent::Partial {
-                                message_id: assistant_id,
-                                delta: value,
-                            };
+                            yield ChatEvent::partial(assistant_id, value);
                         }
                         Ok(None) => {}
                         Err(err) => {
@@ -138,8 +135,7 @@ impl ChatRunner {
                         let tool_request =
                             AiMessage::new_tool_request(tools.clone(), msg.reasoning_content);
                         contexts.push(tool_request.clone());
-                        assistant.append_content(tool_request.clone());
-                        yield ChatEvent::partial(assistant_id, tool_request);
+                        assistant.append_content(tool_request);
                         yield ChatEvent::await_tool_calls(assistant, contexts, tools);
                     }
                     _ => {
@@ -189,22 +185,12 @@ impl ChatRunner {
                 ctx.model.endpoint.as_deref(),
             );
             let mut stream = std::pin::pin!(stream);
-            // let mut msg = AiMessage::default();
             while let Some(res_event) = stream.next().await {
                 match res_event.status {
                     ResEventStatus::Partial => {
-                        // if let Some(partial_msg) = res_event.data {
-                        //     msg.append_chunk(partial_msg);
-                        //     yield (false, Some(msg));
-                        // }
-                        // yield (false, res_event.data);
                         yield res_event.data;
                     }
                     ResEventStatus::Finish => {
-                        // if let Some(msg_finish) = res_event.data {
-                        //     yield (true, msg_finish);
-                        // }
-                        // yield (true, None);
                         yield None;
                         break;
                     }
