@@ -229,13 +229,13 @@ pub(crate) async fn approve_tool_calls(
 
 #[utoipa::path(
     get,
-    summary = "订阅话题事件流（SSE）",
+    summary = "订阅话题事件流(SSE)",
     path = "/api/v1/topics/{topic_id}/events",
     params(
         ("topic_id", Path, description = "话题 ID"),
     ),
     responses(
-        (status = 200, description = "订阅话题事件流（SSE）：每条事件帧格式为 `event: <变体名>` / `id: <递增序号>` / `data: <TopicEvent JSON>`，帧间空行分隔。`data` 字段即 TopicEvent 结构", content(
+        (status = 200, description = "订阅话题事件流(SSE): 每条事件帧格式为 `event: <变体名>` / `id: <递增序号>` / `data: <TopicEvent JSON>`，帧间空行分隔。`data` 字段即 TopicEvent 结构", content(
             (TopicEvent = "text/event-stream"),
             (TopicEvent = "application/json"),
         )),
@@ -294,25 +294,12 @@ fn event_stream(
                 return future::ready(None);
             }
         };
-        let name = topic_event_name(&event);
         let ev = Event::default()
             .id(seq.to_string())
-            .event(name)
+            .event(event.as_ref())
             .json_data(&event)
             .ok()
             .map(Ok::<_, Infallible>);
         future::ready(ev)
     })
-}
-
-fn topic_event_name(ev: &TopicEvent) -> &'static str {
-    match ev {
-        TopicEvent::Error { .. } => "error",
-        TopicEvent::Snapshot { .. } => "snapshot",
-        TopicEvent::MessageCreated { .. } => "message_created",
-        TopicEvent::Message { .. } => "message",
-        TopicEvent::MessageFinished { .. } => "message_finished",
-        TopicEvent::TaskStatusChanged { .. } => "task_status_changed",
-        TopicEvent::ApprovalRequired { .. } => "approval_required",
-    }
 }

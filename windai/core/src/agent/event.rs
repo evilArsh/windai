@@ -12,7 +12,7 @@ use super::task::SupervisorRequest;
 use super::task::TaskNotification;
 
 /// 外部通知事件
-#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone, strum::AsRefStr)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum TopicEvent {
     /// 错误消息
