@@ -7,4 +7,5 @@ pub mod facade;
 pub mod middleware;
 pub mod openapi;
 pub mod routes;
+pub mod sse;
 pub mod state;

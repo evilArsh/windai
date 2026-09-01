@@ -11,6 +11,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use futures::StreamExt;
+use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 use wind_core::WindCore;
 use wind_core::models::{CreateMcpServer, CreateTopic, McpServerParam, Topic};
@@ -226,6 +227,35 @@ async fn status_not_running_reports_running_false() {
     assert_eq!(body["code"], 200);
     assert_eq!(body["data"]["running"], false);
     assert_eq!(body["data"]["name"], "status-idle");
+}
+
+#[tokio::test]
+async fn sse_stream_ends_when_cancel_token_fired() {
+    let core = common::test_core().await;
+    let cancel = CancellationToken::new();
+    let state = AppState::with_cancel(AppConfig::default(), core, 0, cancel.clone());
+    cancel.cancel();
+    let app = Router::<AppState>::new()
+        .merge(mcp::sse_router())
+        .with_state(state);
+
+    let res = app
+        .oneshot(
+            Request::get("/api/v1/mcp-servers/events")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    // 已取消 token：流应立即结束，body 可被完整读回（无限流会挂起）。
+    let read = tokio::time::timeout(
+        Duration::from_secs(2),
+        axum::body::to_bytes(res.into_body(), 1024),
+    )
+    .await;
+    assert!(read.is_ok(), "cancel token 触发后 SSE 流必须终止");
 }
 
 #[tokio::test]

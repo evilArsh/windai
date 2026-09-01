@@ -3,6 +3,7 @@ use chrono::Utc;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::signal;
+use tokio_util::sync::CancellationToken;
 
 #[cfg(not(unix))]
 use std::future;
@@ -24,7 +25,8 @@ async fn main() {
             .await
             .expect("init core failed"),
     );
-    let state = AppState::new(config.clone(), core, Utc::now().timestamp());
+    let cancel = CancellationToken::new();
+    let state = AppState::with_cancel(config.clone(), core, Utc::now().timestamp(), cancel.clone());
 
     let listener = TcpListener::bind((config.host.as_str(), config.port))
         .await
@@ -32,7 +34,10 @@ async fn main() {
     log::info!("wind-http listening on {}:{}", config.host, config.port);
 
     serve(listener, app(state))
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            cancel.cancel();
+        })
         .await
         .expect("server error");
 }

@@ -2,17 +2,12 @@ use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::sse::{KeepAlive, Sse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use futures::{Stream, StreamExt};
 use serde_json::Value;
-use std::convert::Infallible;
-use std::future;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::broadcast;
-use tokio_stream::wrappers::BroadcastStream;
 use wind_core::WindCore;
 use wind_core::agent::event::TopicEvent;
 
@@ -21,6 +16,7 @@ use crate::dto::envelope::{ApiResponse, map_core_error};
 use crate::dto::message::{CreateChatRequest, SubmitChatResponse};
 use crate::extractor::{ApiPath, json_body};
 use crate::facade::topic::TopicFacade;
+use crate::sse::event_stream;
 use crate::state::AppState;
 use wind_core::models::{Message, UpdateMessage};
 
@@ -244,10 +240,11 @@ pub(crate) async fn approve_tool_calls(
     )
 )]
 pub(crate) async fn subscribe_events(
-    State(core): State<Arc<WindCore>>,
+    State(state): State<AppState>,
     ApiPath(topic_id): ApiPath<i64>,
 ) -> impl IntoResponse {
-    // 先确认 topic 存在，避免对不存在的 topic get-or-create 产生悬挂连接。
+    let core = &state.core;
+    let cancel = state.cancel.clone();
     match core.storage().topic().get_topic(topic_id).await {
         Ok(Some(_)) => {}
         Ok(None) => {
@@ -267,7 +264,7 @@ pub(crate) async fn subscribe_events(
     }
     let handle = core.fetch_topic(topic_id);
     match handle.subscribe().await {
-        Ok(rx) => Sse::new(event_stream(rx))
+        Ok(rx) => Sse::new(event_stream(rx, cancel))
             .keep_alive(
                 KeepAlive::new()
                     .interval(Duration::from_secs(15))
@@ -280,26 +277,4 @@ pub(crate) async fn subscribe_events(
         )
             .into_response(),
     }
-}
-
-fn event_stream(
-    rx: broadcast::Receiver<TopicEvent>,
-) -> impl Stream<Item = Result<Event, Infallible>> {
-    let mut seq: u64 = 0;
-    BroadcastStream::new(rx).filter_map(move |item| {
-        seq += 1;
-        let event = match item {
-            Ok(ev) => ev,
-            Err(_) => {
-                return future::ready(None);
-            }
-        };
-        let ev = Event::default()
-            .id(seq.to_string())
-            .event(event.as_ref())
-            .json_data(&event)
-            .ok()
-            .map(Ok::<_, Infallible>);
-        future::ready(ev)
-    })
 }
