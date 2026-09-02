@@ -326,7 +326,7 @@ async fn create_context_inner(
     chat_ctx: &ChatContext,
 ) -> Result<(Message, Message, Vec<AiMessage>)> {
     let prompt = assemble_prompt(storage, &agent).await?;
-    let stream = chat_ctx.req_config.stream.unwrap_or(true);
+    let stream = chat_ctx.req_config.stream.unwrap_or(false);
 
     let user_content = AiMessage::new_simple(Role::User, user_input, None);
 
