@@ -121,61 +121,91 @@ pub enum TopicCommand {
 
 impl std::fmt::Display for TopicEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let (name, topic_id, binding_id) = match self {
+        let (name, args) = match self {
             TopicEvent::Error {
                 binding_id,
                 topic_id,
+                error,
                 ..
             } => (
-                "Error",
-                topic_id.map(|t| t.to_string()).unwrap_or_default(),
-                binding_id.map(|t| t.to_string()).unwrap_or_default(),
+                self.as_ref(),
+                format!(
+                    "(topic_id = {}, binding_id = {}, error = {})",
+                    topic_id.map(|t| t.to_string()).unwrap_or_default(),
+                    binding_id.map(|t| t.to_string()).unwrap_or_default(),
+                    error
+                ),
             ),
             TopicEvent::Snapshot {
                 binding_id,
                 topic_id,
                 ..
-            } => ("Snapshot", topic_id.to_string(), binding_id.to_string()),
-            TopicEvent::MessageCreated { topic_id, .. } => {
-                ("MessageCreated", topic_id.to_string(), String::new())
-            }
+            } => (
+                self.as_ref(),
+                format!(
+                    "(topic_id = {}, binding_id = {})",
+                    topic_id.to_string(),
+                    binding_id.to_string(),
+                ),
+            ),
+            TopicEvent::MessageCreated { topic_id, .. } => (
+                self.as_ref(),
+                format!(
+                    "(topic_id = {}, binding_id = {})",
+                    topic_id.to_string(),
+                    String::new()
+                ),
+            ),
             TopicEvent::Message {
                 binding_id,
                 topic_id,
                 ..
-            } => ("Message", topic_id.to_string(), binding_id.to_string()),
+            } => (
+                self.as_ref(),
+                format!(
+                    "(topic_id = {}, binding_id = {})",
+                    topic_id.to_string(),
+                    binding_id.to_string(),
+                ),
+            ),
             TopicEvent::MessageFinished {
                 binding_id,
                 topic_id,
                 ..
             } => (
-                "MessageFinished",
-                topic_id.to_string(),
-                binding_id.to_string(),
+                self.as_ref(),
+                format!(
+                    "(topic_id = {}, binding_id = {})",
+                    topic_id.to_string(),
+                    binding_id.to_string(),
+                ),
             ),
             TopicEvent::TaskStatusChanged {
                 binding_id,
                 topic_id,
                 ..
             } => (
-                "TaskStatusChanged",
-                topic_id.to_string(),
-                binding_id.to_string(),
+                self.as_ref(),
+                format!(
+                    "(topic_id = {}, binding_id = {})",
+                    topic_id.to_string(),
+                    binding_id.to_string(),
+                ),
             ),
             TopicEvent::ApprovalRequired {
                 binding_id,
                 topic_id,
                 ..
             } => (
-                "ApprovalRequired",
-                topic_id.to_string(),
-                binding_id.to_string(),
+                self.as_ref(),
+                format!(
+                    "(topic_id = {}, binding_id = {})",
+                    topic_id.to_string(),
+                    binding_id.to_string(),
+                ),
             ),
         };
-        write!(
-            f,
-            "[TopicEvent {name}]\n(topic_id = {topic_id} , binding_id = {binding_id})"
-        )
+        write!(f, "[TopicEvent {name}] {args}")
     }
 }
 

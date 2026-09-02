@@ -25,7 +25,7 @@ impl std::fmt::Display for ToolPlan {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "[ToolPlan]\n(exec_mcp = {}, exec_agent = {}, denied = {} waiting = {})",
+            "[ToolPlan] (exec_mcp = {}, exec_agent = {}, denied = {} waiting = {})",
             self.exec_mcp.len(),
             self.exec_agent.len(),
             self.denied.len(),
@@ -81,7 +81,7 @@ impl std::fmt::Display for Action {
             ),
             Action::Stop => (name_ref, String::new()),
         };
-        write!(f, "[Action {name}]\n{}", args)
+        write!(f, "[Action {name}] {}", args)
     }
 }
 

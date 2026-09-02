@@ -83,7 +83,7 @@ impl std::fmt::Display for Effect {
                 name_ref,
                 format!("(binding_id = {binding_id}, status = {status})"),
             ),
-            Effect::Emit(topic_event) => (name_ref, format!("(topic_event = {}", topic_event)),
+            Effect::Emit(topic_event) => (name_ref, format!("(topic_event = {})", topic_event)),
             Effect::Start {
                 binding_id, spec, ..
             } => (

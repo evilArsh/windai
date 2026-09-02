@@ -394,13 +394,16 @@ impl TopicRuntime {
             }
             Effect::PrepareMain { user_input } => match self.prepare_main_agent(user_input).await {
                 Ok(ev) => Some(ev),
-                Err(err) => Some(vec![FsmEvent::Emit(TopicEvent::Error {
-                    binding_id: None,
-                    topic_id: None,
-                    parent_topic_id: self.topic_id,
-                    message_id: None,
-                    error: err.to_string(),
-                })]),
+                Err(err) => Some(vec![
+                    FsmEvent::Emit(TopicEvent::Error {
+                        binding_id: None,
+                        topic_id: None,
+                        parent_topic_id: self.topic_id,
+                        message_id: None,
+                        error: err.to_string(),
+                    }),
+                    FsmEvent::Topic(TopicMsg::Command(TopicCommand::Shutdown)),
+                ]),
             },
         }
     }
@@ -432,17 +435,17 @@ impl TopicRuntime {
         if self.fsm.is_main_busy() {
             return Err(CoreError::Internal(format!("main agent is running")));
         }
-        let binding = helper::get_main_binding(&self.storage, self.topic_id).await?;
+        let tx = self.storage.begin().await?;
+        let binding = helper::get_main_binding(&tx.storage(), self.topic_id).await?;
         log::debug!("[start_main_agent] get binding: {:#?}", binding);
-        let agent = helper::get_def_by_id(&self.storage, binding.agent_id).await?;
+        let agent = helper::get_def_by_id(&tx.storage(), binding.agent_id).await?;
         log::debug!("[start_main_agent] get agent: {:#?}", agent);
         let chat_ctx =
-            helper::get_base_info(&self.storage, &self.mcp_registry, &binding, &agent).await?;
+            helper::get_base_info(&tx.storage(), &self.mcp_registry, &binding, &agent).await?;
         log::debug!("[start_main_agent] get chat_ctx: {:#?}", chat_ctx);
 
-        let tx = self.storage.begin().await?;
         let agent_topic = match helper::get_topic_by_binding_id(
-            &self.storage,
+            &tx.storage(),
             self.topic_id,
             binding.id,
         )
@@ -463,7 +466,6 @@ impl TopicRuntime {
             helper::create_contexts(&tx.storage(), agent_topic.id, user_input, &agent, &chat_ctx)
                 .await?;
         tx.commit().await?;
-
         let spec = TaskSpec {
             binding_id: binding.id,
             agent,

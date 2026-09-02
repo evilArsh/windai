@@ -92,6 +92,6 @@ impl std::fmt::Display for ChatEvent {
                 ),
             ),
         };
-        write!(f, "[ChatEvent {name}]\n{}", args)
+        write!(f, "[ChatEvent {name}] {}", args)
     }
 }

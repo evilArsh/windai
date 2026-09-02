@@ -63,7 +63,7 @@ impl std::fmt::Display for TaskEvent {
             TaskEvent::ChildResolved => (name_ref, String::new()),
             TaskEvent::Cancel => (name_ref, String::new()),
         };
-        write!(f, "[TaskEvent {name}]\n{}", args)
+        write!(f, "[TaskEvent {name}] {}", args)
     }
 }
 

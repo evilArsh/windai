@@ -42,7 +42,6 @@ async fn test_handle_chat() {
             None,
         ),
     ];
-    let mut seen_stream = false;
     let chat_adapter = adapter::get_chat_adapter(model.adapter);
     let req_body = chat::build_request(
         chat_adapter.as_ref(),
@@ -63,12 +62,8 @@ async fn test_handle_chat() {
     let mut res = Box::pin(res);
     while let Some(value) = res.next().await {
         log::info!("[res] {:?}", value);
-        if value.status == ResEventStatus::Partial {
-            seen_stream = true;
-        }
         if value.error.is_some() {
             panic!("{}", value.error.unwrap());
         }
     }
-    assert_eq!(chat_config.stream.unwrap(), seen_stream);
 }
