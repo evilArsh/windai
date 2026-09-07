@@ -75,7 +75,7 @@ impl TopicFsm {
                 let binding_id = spec.binding_id;
                 self.main_binding_id = Some(binding_id);
                 self.state = TopicState::Running;
-                let task = self.fetch_task(binding_id, config.topic_id);
+                let task = self.fetch_task(binding_id);
                 effects.extend(task.reduce(TaskEvent::Start { spec, config }));
             }
             FsmEvent::StartChild {
@@ -85,7 +85,7 @@ impl TopicFsm {
             } => {
                 let child_binding_id = spec.binding_id;
                 self.apply_task(&mut effects, parent_binding_id, TaskEvent::ChildSpawned);
-                let task = self.fetch_task(child_binding_id, config.topic_id);
+                let task = self.fetch_task(child_binding_id);
                 effects.extend(task.reduce(TaskEvent::Start { spec, config }));
             }
             FsmEvent::ChildResolved { parent_binding_id } => {
@@ -230,10 +230,10 @@ impl TopicFsm {
         }
     }
 
-    fn fetch_task(&mut self, binding_id: i64, topic_id: i64) -> &mut TaskFsm {
+    fn fetch_task(&mut self, binding_id: i64) -> &mut TaskFsm {
         self.tasks
             .entry(binding_id)
-            .or_insert_with(|| TaskFsm::new(binding_id, self.topic_id, topic_id))
+            .or_insert_with(|| TaskFsm::new(binding_id))
     }
 
     fn apply_task(&mut self, effects: &mut Vec<Effect>, binding_id: i64, new_event: TaskEvent) {

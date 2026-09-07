@@ -1,9 +1,11 @@
-use super::McpError;
 use super::connector::ServerHandle;
+use super::{BUILTID_SESSION, McpError, StdioParams};
 use super::{
     CallToolParam, CallToolResult, ClientEvent, ClientSnapshot, ClientStatus, Prompt, Resource,
     ServerParams, Tool,
 };
+use crate::{BuiltinMcp, init_builtin};
+use rmcp::ServerHandler;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -56,7 +58,18 @@ enum RegistryRequest {
         params: ServerParams,
         reply: oneshot::Sender<Result<ClientSnapshot, McpError>>,
     },
+    AcquireBuiltin {
+        name: String,
+        description: String,
+        handle: ServerHandle,
+        reply: oneshot::Sender<Result<(), McpError>>,
+    },
     Release {
+        session_id: String,
+        name: String,
+        reply: oneshot::Sender<Result<ClientSnapshot, McpError>>,
+    },
+    Attach {
         session_id: String,
         name: String,
         reply: oneshot::Sender<Result<ClientSnapshot, McpError>>,
@@ -128,6 +141,28 @@ impl RegistryHandle {
         rx.await.map_err(|_| McpError::ManagerShutdown)?
     }
 
+    /// 加载内建内存服务
+    pub async fn acquire_builtin<T>(&self, info: T) -> Result<(), McpError>
+    where
+        T: ServerHandler + BuiltinMcp + Send + Sync + 'static,
+    {
+        let name = info.get_name().trim().to_string();
+        let description = info.get_description().to_string();
+        let handle = ServerHandle::connect_builtin(info).await?;
+
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(RegistryRequest::AcquireBuiltin {
+                name,
+                description,
+                handle,
+                reply,
+            })
+            .await
+            .map_err(|_| McpError::ManagerShutdown)?;
+        rx.await.map_err(|_| McpError::ManagerShutdown)?
+    }
+
     /// 停止一个 MCP 服务
     /// - 如果 MCP 服务正在被多个 session 共享，则只删除该 session 的引用
     /// - 没有 session 使用该服务时，服务将停止
@@ -135,6 +170,23 @@ impl RegistryHandle {
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(RegistryRequest::Release {
+                session_id: session_id.to_string(),
+                name: name.to_string(),
+                reply,
+            })
+            .await
+            .map_err(|_| McpError::ManagerShutdown)?;
+        rx.await.map_err(|_| McpError::ManagerShutdown)?
+    }
+
+    pub async fn attach_session(
+        &self,
+        session_id: &str,
+        name: &str,
+    ) -> Result<ClientSnapshot, McpError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(RegistryRequest::Attach {
                 session_id: session_id.to_string(),
                 name: name.to_string(),
                 reply,
@@ -303,6 +355,7 @@ impl Registry {
     }
 
     async fn run(mut self) {
+        init_builtin(&mut self).await;
         loop {
             let Some(request) = self.rx.recv().await else {
                 break;
@@ -317,12 +370,29 @@ impl Registry {
                     let result = self.acquire(&session_id, params).await;
                     let _ = reply.send(result);
                 }
+                RegistryRequest::AcquireBuiltin {
+                    name,
+                    description,
+                    handle,
+                    reply,
+                } => {
+                    let result = self.register_builtin(name, description, handle);
+                    let _ = reply.send(result);
+                }
                 RegistryRequest::Release {
                     session_id,
                     name,
                     reply,
                 } => {
                     let result = self.release(&session_id, &name).await;
+                    let _ = reply.send(result);
+                }
+                RegistryRequest::Attach {
+                    session_id,
+                    name,
+                    reply,
+                } => {
+                    let result = self.attach_session(&session_id, &name).await;
                     let _ = reply.send(result);
                 }
                 RegistryRequest::ListClients { reply } => {
@@ -356,6 +426,29 @@ impl Registry {
                 }
             }
         }
+    }
+
+    fn register_builtin(
+        &mut self,
+        name: String,
+        description: String,
+        handle: ServerHandle,
+    ) -> Result<(), McpError> {
+        if self.servers.contains_key(&name) {
+            return Err(McpError::Other(format!(
+                "builtin server {name} already exists"
+            )));
+        }
+        self.servers.insert(
+            name.clone(),
+            ServerEntry {
+                state: ServerState::Connected,
+                ref_sessions: HashSet::from([BUILTID_SESSION.to_owned()]),
+                params: ServerParams::Stdio(StdioParams::new_builtin(name, description)),
+                handle: Some(handle),
+            },
+        );
+        Ok(())
     }
 
     async fn acquire(
@@ -527,6 +620,32 @@ impl Registry {
         Ok(snapshot)
     }
 
+    /// 让 session 引用一个已运行的 client（内建等），只增加引用计数，不发起连接。
+    /// 仅对 `Connected` 生效（内建恒为 Connected）；未运行/连接中/断开中一律报 `ServerNotFound`。
+    async fn attach_session(
+        &mut self,
+        session_id: &str,
+        name: &str,
+    ) -> Result<ClientSnapshot, McpError> {
+        let entry = match self.servers.get_mut(name) {
+            Some(entry) => entry,
+            None => return Err(McpError::ServerNotFound(name.to_string())),
+        };
+        match &entry.state {
+            ServerState::Connected => {
+                entry.ref_sessions.insert(session_id.to_string());
+                let snapshot = entry.snapshot();
+                let ref_sessions = snapshot.ref_sessions.iter().cloned().collect();
+                self.broadcast(ClientEvent::Connected {
+                    name: name.to_string(),
+                    ref_sessions,
+                });
+                Ok(snapshot)
+            }
+            _ => Err(McpError::ServerNotFound(name.to_string())),
+        }
+    }
+
     fn list_clients(&self) -> Vec<ClientSnapshot> {
         self.servers.values().map(|e| e.snapshot()).collect()
     }
@@ -638,10 +757,6 @@ impl Registry {
 mod test {
     use super::*;
     use crate::client::StdioParams;
-
-    // use std::sync::OnceLock;
-    // static REGISTRY: OnceLock<RegistryHandle> = OnceLock::new();
-
     fn everything_params() -> ServerParams {
         ServerParams::Stdio(StdioParams {
             name: "test-everything".to_string(),
@@ -654,27 +769,59 @@ mod test {
             env: None,
         })
     }
-
-    // fn fetch_params() -> ServerParams {
-    //     ServerParams::Stdio(StdioParams {
-    //         id: "test-fetch".to_string(),
-    //         name: "mcp-server-fetch".to_string(),
-    //         description: None,
-    //         command: "uvx".to_string(),
-    //         args: vec!["mcp-server-fetch".to_string()],
-    //         env: None,
-    //     })
-    // }
-
-    // fn setup_registry() -> &'static RegistryHandle {
-    //     REGISTRY.get_or_init(|| {
-    //         let _ = env_logger::builder().is_test(true).try_init();
-    //         Registry::new()
-    //     })
-    // }
     fn setup_registry() -> RegistryHandle {
         let _ = env_logger::builder().is_test(true).try_init();
         Registry::new()
+    }
+
+    struct StubBuiltin;
+
+    impl BuiltinMcp for StubBuiltin {
+        fn get_name(&self) -> &'static str {
+            "stub-attach"
+        }
+        fn get_description(&self) -> &'static str {
+            "stub builtin for attach test"
+        }
+    }
+
+    impl ServerHandler for StubBuiltin {}
+
+    #[tokio::test]
+    async fn test_attach_session_adds_ref_and_idempotent() {
+        let handle = setup_registry();
+        handle
+            .acquire_builtin(StubBuiltin)
+            .await
+            .expect("register builtin");
+
+        let snapshot = handle
+            .attach_session("topic-1", "stub-attach")
+            .await
+            .expect("attach session");
+        assert!(snapshot.ref_sessions.contains("topic-1"));
+        assert!(snapshot.ref_sessions.contains(BUILTID_SESSION));
+
+        // 幂等：同一 session 重复 attach 不重复计数
+        handle
+            .attach_session("topic-1", "stub-attach")
+            .await
+            .expect("attach again");
+        let client = handle.get_client("stub-attach").await.expect("client");
+        assert_eq!(client.ref_sessions.len(), 2);
+
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_attach_unknown_server_errors() {
+        let handle = setup_registry();
+        let err = handle
+            .attach_session("topic-1", "missing")
+            .await
+            .expect_err("should error on missing server");
+        assert!(matches!(err, McpError::ServerNotFound(_)));
+        handle.shutdown().await;
     }
 
     #[tokio::test]

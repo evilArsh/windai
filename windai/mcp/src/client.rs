@@ -13,6 +13,7 @@ pub mod registry;
 pub type JsonObject<F = Value> = serde_json::Map<String, F>;
 
 const MCP_TOOL_IDENTIFIER: &str = "0m0";
+pub const BUILTID_SESSION: &str = "builtin_session";
 
 #[derive(
     utoipa::ToSchema,
@@ -113,6 +114,18 @@ pub struct StdioParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env: Option<HashMap<String, String>>,
 }
+
+impl StdioParams {
+    pub fn new_builtin(name: String, description: String) -> Self {
+        Self {
+            name,
+            description: Some(description),
+            command: String::new(),
+            args: vec![],
+            env: None,
+        }
+    }
+}
 /// 启动 Streamable-HTTP 服务的参数
 #[derive(Debug, Clone, Serialize)]
 pub struct StreamableParams {
@@ -162,10 +175,10 @@ pub enum McpError {
     #[error(transparent)]
     Stdio(#[from] std::io::Error),
 
-    #[error("Failed to initialize client: {0}")]
+    #[error(transparent)]
     ClientInitialize(#[from] ClientInitializeError),
 
-    #[error("MCP service error: {0}")]
+    #[error(transparent)]
     Service(#[from] ServiceError),
 
     #[error("Server '{0}' not found")]
@@ -205,7 +218,7 @@ impl From<rmcp::model::CallToolResult> for CallToolResult {
 }
 
 /// MCP 工具
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct Tool {
     /// 工具名(函数名)
     /// - 工具名前拼接了 MCP 服务名
@@ -217,8 +230,10 @@ pub struct Tool {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// JSON Schema对象定义该工具接收的参数格式
+    #[schema(value_type = Object)]
     pub input_schema: Arc<JsonObject>,
     #[serde(skip)]
+    #[schema(ignore)]
     _p: u8,
 }
 impl Tool {
@@ -258,7 +273,7 @@ impl Tool {
 }
 
 /// 可用于从模型生成文本的提示词（Prompt）
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct Prompt {
     /// 提示词的名称
     pub name: String,
@@ -285,7 +300,7 @@ impl From<rmcp::model::Prompt> for Prompt {
     }
 }
 /// 提示词参数
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct PromptArgument {
     /// 参数的名称
     pub name: String,
@@ -311,7 +326,7 @@ impl From<rmcp::model::PromptArgument> for PromptArgument {
 }
 
 /// 资源
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct Resource {
     /// 表示资源位置的 URI（例如："file:///path/to/file" 或 "str:///content"）
     pub uri: String,

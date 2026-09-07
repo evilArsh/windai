@@ -72,13 +72,16 @@ pub enum AgentScope {
     TopicLocal,
 }
 
-/// Agent 的能力配置。LLM 请求参数不在这里，运行参数来自 Topic 或 TopicAgentBinding 的 ChatConfig。
+/// Agent 的能力配置。
 #[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct AgentDefinitionData {
     /// 该 Agent 绑定的 PromptModule 列表。
     pub prompt_modules: Vec<PromptModuleBinding>,
     /// 该 Agent 拥有的 MCP server 和工具级约束。
     pub mcp_servers: Vec<AgentMcpBinding>,
+    /// 该 Agent 绑定的内建 MCP server与工具级约束。
+    #[serde(default)]
+    pub builtin_mcp_servers: Vec<BuiltinMcpBinding>,
     /// 子 Agent 创建时的默认上下文策略。
     pub context_policy: ContextPolicy,
     /// Agent 调度权限边界。
@@ -92,6 +95,7 @@ impl Default for AgentDefinitionData {
         Self {
             prompt_modules: vec![],
             mcp_servers: vec![],
+            builtin_mcp_servers: vec![],
             context_policy: ContextPolicy::default(),
             permission_policy: PermissionPolicy::default(),
             runtime_limits: RuntimeLimits::default(),
@@ -115,6 +119,19 @@ pub struct AgentMcpBinding {
     /// 工具名包含完整的 server_name + tool_name 组合
     pub denied_tools: Vec<String>,
     /// 当前 MCP 绑定是否启用。
+    pub enabled: bool,
+}
+
+/// Agent 绑定的内建 MCP server与工具级约束。
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
+pub struct BuiltinMcpBinding {
+    /// 内建 MCP 服务名。
+    pub name: String,
+    /// 允许暴露给该 Agent 的工具名列表，空列表表示不额外限制。
+    pub allowed_tools: Vec<String>,
+    /// 明确禁止该 Agent 使用的工具名列表。
+    pub denied_tools: Vec<String>,
+    /// 当前内建绑定是否启用。
     pub enabled: bool,
 }
 

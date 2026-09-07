@@ -30,6 +30,12 @@ impl McpStorage {
                 "mcp server name cannot be empty".into(),
             ));
         }
+        if wind_mcp::builtin::is_builtin_name(&data.name) {
+            return Err(CoreError::Validation(format!(
+                "mcp server name {} is reserved for builtin",
+                data.name
+            )));
+        }
         let id = next_id();
         let now = crate::storage::now_ts();
         let args = utils::vec_to_str_default(data.args.as_deref())?;

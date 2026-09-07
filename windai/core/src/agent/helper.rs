@@ -1,9 +1,12 @@
+use std::path::PathBuf;
+
 use super::function_call::build_tools_from_mcp;
 use super::tool::{self, AgentBindingView, ListAgentsResponse};
 use crate::chat::runner::ChatContext;
+use crate::env::app_dirs;
 use crate::error::{CoreError, Result};
 use crate::models::{
-    AgentBinding, AgentDefinition, AgentMcpBinding, AgentRole, CreateMessage,
+    AgentBinding, AgentDefinition, AgentMcpBinding, AgentRole, BuiltinMcpBinding, CreateMessage,
     CreateToolApprovalCall, CreateToolApprovalRequests, CreateTopic, Message, ToolApprovalRequest,
     Topic, UpdateAgentBinding,
 };
@@ -61,6 +64,7 @@ pub async fn get_message_contexts(storage: &Storage, topic_id: i64) -> Result<Ve
 }
 
 pub async fn create_fork_contexts(
+    cwd: &PathBuf,
     storage: &Storage,
     main_agent_topic_id: i64,
     agent_topic_id: i64,
@@ -82,6 +86,7 @@ pub async fn create_fork_contexts(
 
     main_raw.append(&mut raw);
     create_context_inner(
+        cwd,
         storage,
         agent_topic_id,
         user_input,
@@ -93,6 +98,7 @@ pub async fn create_fork_contexts(
 }
 /// 为一次Agent对话创建完整的上下文：User消息、Assistant消息和历史消息列表
 pub async fn create_contexts(
+    cwd: &PathBuf,
     storage: &Storage,
     agent_topic_id: i64,
     user_input: Vec<Content>,
@@ -100,7 +106,16 @@ pub async fn create_contexts(
     chat_ctx: &ChatContext,
 ) -> Result<(Message, Message, Vec<AiMessage>)> {
     let raw = get_message_contexts(storage, agent_topic_id).await?;
-    create_context_inner(storage, agent_topic_id, user_input, raw, agent, chat_ctx).await
+    create_context_inner(
+        cwd,
+        storage,
+        agent_topic_id,
+        user_input,
+        raw,
+        agent,
+        chat_ctx,
+    )
+    .await
 }
 
 /// 获取当前Topic的主Agent绑定
@@ -318,6 +333,7 @@ pub fn transfer_contexts(raw: Vec<Message>) -> Result<Vec<AiMessage>> {
 }
 
 async fn create_context_inner(
+    cwd: &PathBuf,
     storage: &Storage,
     agent_topic_id: i64,
     user_input: Vec<Content>,
@@ -368,26 +384,30 @@ async fn create_context_inner(
         .await?;
 
     let mut contexts = build_context(raw_contexts, agent).await?;
-
     contexts.push(user_content);
 
+    let mut sys_p = vec![Content::new_text(format!(
+        "<app_data_directory>\n{}\n</app_data_directory>\n
+        <current_working_directory>\n{}\n</current_working_directory>\n
+        <skills_resource_directory>\n{}\n</skills_resource_directory>\n",
+        app_dirs().root_dir().to_string_lossy(),
+        cwd.to_string_lossy().to_string(),
+        app_dirs().skills_dir().to_string_lossy(),
+    ))];
     if let Some(system_prompt) = prompt {
-        contexts.insert(
-            0,
-            AiMessage::new_simple(Role::System, vec![Content::new_text(system_prompt)], None),
-        );
+        sys_p.push(Content::new_text(system_prompt));
     }
+    contexts.insert(0, AiMessage::new_simple(Role::System, sys_p, None));
 
     Ok((user_message, assistant_message, contexts))
 }
 
-/// 判断MCP工具是否被允许：allowed_tools为空则默认允许，denied_tools中存在则拒绝
-fn is_tool_allowed(tool: &Tool, bindings: &[&AgentMcpBinding]) -> bool {
-    bindings.iter().any(|binding| {
+/// 判断MCP工具是否被允许：allowed_tools为空则默认允许，denied_tools中存在则拒绝。
+fn is_tool_allowed(tool: &Tool, gates: &[(&[String], &[String])]) -> bool {
+    gates.iter().any(|(allowed, denied)| {
         // 为空默认允许，denied_tools 列表中存在时视为拒绝
-        let allowed = binding.allowed_tools.is_empty()
-            || binding.allowed_tools.iter().any(|name| name == &tool.name);
-        let denied = binding.denied_tools.iter().any(|name| name == &tool.name);
+        let allowed = allowed.is_empty() || allowed.iter().any(|name| name == &tool.name);
+        let denied = denied.iter().any(|name| name == &tool.name);
         allowed && !denied
     })
 }
@@ -446,33 +466,60 @@ async fn build_agent_tools(
         .mcp_servers
         .iter()
         .filter(|binding| binding.enabled)
-        .collect::<Vec<_>>();
-    if enabled.is_empty() {
-        return Ok(Some(tools));
+        .collect::<Vec<&AgentMcpBinding>>();
+    if !enabled.is_empty() {
+        let ids = enabled
+            .iter()
+            .map(|binding| binding.mcp_server_id)
+            .collect::<Vec<_>>();
+        let servers = storage.mcp().batch_get_by_ids(&ids).await?;
+        let server_names = servers
+            .into_iter()
+            .map(|server| server.name)
+            .collect::<Vec<_>>();
+        if server_names.is_empty() {
+            log::debug!("No MCP server found for agent: {}", agent.id);
+        } else {
+            log::debug!("MCP server found for agent: {}", server_names.join(","));
+            // 拼接出的 MCP 函数名包含了 server name
+            let mcp_tools = mcp_registry.list_tools_by_names(&server_names).await?;
+            let gates = enabled
+                .iter()
+                .map(|b| (b.allowed_tools.as_slice(), b.denied_tools.as_slice()))
+                .collect::<Vec<_>>();
+            let filtered = mcp_tools
+                .into_iter()
+                .filter(|tool| is_tool_allowed(tool, &gates))
+                .collect::<Vec<_>>();
+            tools.extend(build_tools_from_mcp(filtered));
+        }
     }
 
-    let ids = enabled
+    let builtins = agent
+        .data
+        .builtin_mcp_servers
         .iter()
-        .map(|binding| binding.mcp_server_id)
-        .collect::<Vec<_>>();
-    let servers = storage.mcp().batch_get_by_ids(&ids).await?;
-    let server_names = servers
-        .into_iter()
-        .map(|server| server.name)
-        .collect::<Vec<_>>();
-    if server_names.is_empty() {
-        log::debug!("No MCP server found for agent: {}", agent.id);
-        return Ok(Some(tools));
+        .filter(|binding| binding.enabled)
+        .collect::<Vec<&BuiltinMcpBinding>>();
+    if !builtins.is_empty() {
+        let mut names = builtins
+            .iter()
+            .map(|b| b.name.clone())
+            .collect::<Vec<String>>();
+        names.sort();
+        names.dedup();
+        let mcp_tools = mcp_registry.list_tools_by_names(&names).await?;
+        let gates = builtins
+            .iter()
+            .map(|b| (b.allowed_tools.as_slice(), b.denied_tools.as_slice()))
+            .collect::<Vec<_>>();
+        let filtered = mcp_tools
+            .into_iter()
+            .filter(|tool| is_tool_allowed(tool, &gates))
+            .collect::<Vec<_>>();
+        tools.extend(build_tools_from_mcp(filtered));
     }
 
-    log::debug!("MCP server found for agent: {}", server_names.join(","));
-    // 拼接出的 MCP 函数名包含了 server name
-    let mcp_tools = mcp_registry.list_tools_by_names(&server_names).await?;
-    let filtered = mcp_tools
-        .into_iter()
-        .filter(|tool| is_tool_allowed(tool, &enabled))
-        .collect::<Vec<_>>();
-    tools.extend(build_tools_from_mcp(filtered));
     Ok(Some(tools))
 }
 

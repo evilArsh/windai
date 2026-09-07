@@ -16,7 +16,9 @@ use crate::dto::approval::ApproveToolCallsRequest;
 use crate::dto::envelope::ApiResponse;
 use crate::dto::mcp::{McpServerStatusDto, StartMcpServerResult};
 use crate::dto::message::{CreateChatRequest, SubmitChatResponse};
-use wind_mcp::client::{ClientEvent, ClientSnapshot, ClientStatus};
+use wind_mcp::client::{
+    ClientEvent, ClientSnapshot, ClientStatus, Prompt, PromptArgument, Resource, Tool,
+};
 
 /// 聚合 wind-http 全部公开路由与 schema 的 OpenAPI 文档。
 #[derive(OpenApi)]
@@ -28,6 +30,7 @@ use wind_mcp::client::{ClientEvent, ClientSnapshot, ClientStatus};
         crate::routes::topic::list_topics,
         crate::routes::topic::create_topic,
         crate::routes::topic::get_topic_by_binding,
+        crate::routes::topic::list_child_topics,
         crate::routes::topic::get_topic,
         crate::routes::topic::update_topic,
         crate::routes::topic::delete_topic,
@@ -72,7 +75,15 @@ use wind_mcp::client::{ClientEvent, ClientSnapshot, ClientStatus};
         crate::routes::mcp::get_mcp_server_by_name,
         crate::routes::mcp::start_mcp_server,
         crate::routes::mcp::stop_mcp_server,
+        crate::routes::mcp::attach_mcp_server,
         crate::routes::mcp::get_mcp_server_status,
+        crate::routes::mcp::list_mcp_clients,
+        crate::routes::mcp::get_mcp_client,
+        crate::routes::mcp::list_mcp_client_tools,
+        crate::routes::mcp::list_mcp_client_prompts,
+        crate::routes::mcp::list_mcp_client_resources,
+        crate::routes::mcp::list_all_mcp_tools,
+        crate::routes::mcp::list_mcp_tools_by_names,
         crate::routes::mcp::subscribe_mcp_events,
         // prompt
         crate::routes::prompt::list_prompt_modules,
@@ -138,6 +149,10 @@ use wind_mcp::client::{ClientEvent, ClientSnapshot, ClientStatus};
         ClientStatus,
         ClientSnapshot,
         ClientEvent,
+        Tool,
+        Prompt,
+        PromptArgument,
+        Resource,
         // prompt
         PromptModule,
         CreatePromptModule,

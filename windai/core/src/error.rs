@@ -32,6 +32,9 @@ pub enum CoreError {
 
     #[error("Internal error: {0}")]
     Internal(String),
+
+    #[error(transparent)]
+    IO(#[from] std::io::Error),
 }
 
 pub type Result<T> = std::result::Result<T, CoreError>;

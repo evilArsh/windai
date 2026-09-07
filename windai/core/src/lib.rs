@@ -14,10 +14,11 @@ use db::DbPool;
 use error::Result;
 use std::{
     collections::{HashMap, hash_map::Entry},
-    path::Path,
     sync::Mutex,
 };
 use tokio_util::sync::CancellationToken;
+use wind_mcp::builtin::fs::FsServer;
+use wind_mcp::builtin::skills::SkillsServer;
 use wind_mcp::client::registry::{Registry, RegistryHandle};
 
 pub struct WindCore {
@@ -28,44 +29,19 @@ pub struct WindCore {
 }
 
 impl WindCore {
-    /// 使用本地文件数据库初始化。
+    /// 使用本地SQLite数据库初始化。
     ///
-    /// `path` 为可选的数据库文件路径，传 `None` 则使用默认路径
-    /// `~/.windai/windai.db`（可通过 `WINDAI_ROOT_DIR` 环境变量覆盖）。
-    pub async fn init_local(path: Option<&str>) -> Result<Self> {
-        let db_url = match path {
-            Some(p) => {
-                let p = Path::new(p);
-                if p.as_os_str().is_empty() {
-                    return Err(error::CoreError::Validation(
-                        "database path is empty".into(),
-                    ));
-                }
-                if let Some(parent) = p.parent() {
-                    if !parent.as_os_str().is_empty() && !parent.exists() {
-                        return Err(error::CoreError::Validation(format!(
-                            "directory does not exist: {}",
-                            parent.display()
-                        )));
-                    }
-                }
-                p.to_string_lossy().to_string()
-            }
-            None => env::db_path().to_string_lossy().to_string(),
-        };
+    /// 使用 `WIND_ROOT_DIR` 环境变量设置根路径
+    ///
+    /// 默认路径：`~/.windai/windai.db`
+    pub async fn init_local() -> Result<Self> {
+        let db_url = env::app_dirs().db_path().to_string_lossy().to_string();
         Self::init(&db_url).await
     }
 
     /// 使用内存数据库初始化
     pub async fn init_memory() -> Result<Self> {
         Self::init("sqlite::memory:").await
-    }
-
-    async fn init(db_url: &str) -> Result<Self> {
-        let db = db::init_db(db_url)
-            .await
-            .map_err(|e| error::CoreError::Database(e))?;
-        Self::init_with_pool(db).await
     }
     /// 使用外部构建的连接池初始化，供测试使用。
     pub async fn init_with_pool(pool: DbPool) -> Result<Self> {
@@ -74,14 +50,34 @@ impl WindCore {
 
     /// 使用外部构建的连接池和 MCP registry 初始化，供测试复用 MCP 服务。
     pub async fn init_with_pool_and_registry(pool: DbPool, mcp: RegistryHandle) -> Result<Self> {
-        schema::init_schema(&pool).await?;
         storage::init_id_generator(0);
+        schema::init_schema(&pool).await?;
+
+        let app_dir = env::app_dirs();
+        let ctx = CancellationToken::new();
+        let storage = Storage::new(pool);
+        let topic_handler = Mutex::new(HashMap::new());
+
+        let dirs = vec![
+            app_dir.skills_dir().to_path_buf(),
+            app_dir.topic_dir().to_path_buf(),
+        ];
+        mcp.acquire_builtin(FsServer::new(dirs.clone())).await?;
+        mcp.acquire_builtin(SkillsServer::new(dirs)).await?;
+
         Ok(Self {
-            ctx: CancellationToken::new(),
+            ctx,
             mcp,
-            storage: Storage::new(pool),
-            topic_handler: Mutex::new(HashMap::new()),
+            storage,
+            topic_handler,
         })
+    }
+
+    async fn init(db_url: &str) -> Result<Self> {
+        let db = db::init_db(db_url)
+            .await
+            .map_err(|e| error::CoreError::Database(e))?;
+        Self::init_with_pool(db).await
     }
     pub fn storage(&self) -> &Storage {
         &self.storage

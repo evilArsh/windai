@@ -9,7 +9,7 @@ use rmcp::model::{
 };
 use rmcp::service::RunningService;
 use rmcp::transport::{ConfigureCommandExt, StreamableHttpClientTransport, TokioChildProcess};
-use rmcp::{RoleClient, ServiceExt, service::DynService};
+use rmcp::{RoleClient, ServerHandler, ServiceExt, service::DynService};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -27,8 +27,6 @@ static DEDUP_MAP: LazyLock<Mutex<HashMap<String, DedupState>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub struct ServerHandle {
-    // pub name: String,
-    // pub transport: TransportType,
     service: ClientService,
 }
 
@@ -40,11 +38,28 @@ impl ServerHandle {
                     Self::connect_with_dedup(stdio, &normalized).await
                 } else {
                     Self::connect_direct(params).await
-                    // return Err(McpError::UnsupportedStdioCommand(stdio.command.clone()));
                 }
             }
             ServerParams::Streamable(_) => Self::connect_direct(params).await,
         }
+    }
+
+    /// 连接内建内存服务。
+    pub async fn connect_builtin<H>(handler: H) -> Result<Self, McpError>
+    where
+        H: ServerHandler + Send + Sync + 'static,
+    {
+        let (server_tx, client_rx) = tokio::io::duplex(4096);
+        tokio::spawn(async move {
+            match handler.serve(server_tx).await {
+                Ok(service) => {
+                    let _ = service.waiting().await;
+                }
+                Err(e) => log::error!("builtin server serve failed: {}", e),
+            }
+        });
+        let service = ().into_dyn().serve(client_rx).await?;
+        Ok(Self { service })
     }
 
     async fn connect_direct(params: &ServerParams) -> Result<Self, McpError> {
@@ -67,12 +82,7 @@ impl ServerHandle {
                 ().into_dyn().serve(transport).await?
             }
         };
-
-        Ok(Self {
-            // name: params.get_name().into_owned(),
-            // transport: params.get_transport(),
-            service,
-        })
+        Ok(Self { service })
     }
 
     async fn connect_with_dedup(

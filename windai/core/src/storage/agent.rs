@@ -22,7 +22,6 @@ use super::{
     now_ts,
     utils::{self, ensure_affected},
 };
-
 #[derive(Clone)]
 pub struct AgentStorage {
     executor: StorageExecutor,

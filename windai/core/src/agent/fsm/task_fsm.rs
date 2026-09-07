@@ -70,17 +70,13 @@ impl std::fmt::Display for TaskEvent {
 /// Agent 任务状态
 pub struct TaskFsm {
     binding_id: i64,
-    parent_topic_id: i64,
-    topic_id: i64,
     state: AgentStatus,
 }
 
 impl TaskFsm {
-    pub fn new(binding_id: i64, parent_topic_id: i64, topic_id: i64) -> Self {
+    pub fn new(binding_id: i64) -> Self {
         Self {
             binding_id,
-            parent_topic_id,
-            topic_id,
             state: AgentStatus::Idle,
         }
     }

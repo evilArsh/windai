@@ -21,6 +21,8 @@ reqwest = { version = "0.13", features = ["json", "stream"] }
 serde = { version = "1.0", features = ["derive"] }
 strum = { version = "0.28", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
+yaml-rust2 = { version = "0.11" }
+schemars = { version = "1.0", features = ["chrono04"] }
 derive_builder = "0.20"
 unicode-segmentation = "1.12"
 bytes = "1"

@@ -114,7 +114,6 @@ impl std::fmt::Display for SupervisorRequest {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct TaskSpec {
     pub binding_id: i64,
     /// Agent 能力定义
@@ -133,7 +132,6 @@ pub struct TaskSpec {
     pub contexts: Vec<AiMessage>,
 }
 
-#[allow(dead_code)]
 pub struct PendingChild {
     pub parent_binding_id: i64,
     pub binding_id: i64,

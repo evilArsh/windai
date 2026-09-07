@@ -1,6 +1,6 @@
 use futures::StreamExt;
 use wind_ai::{
-    chat::{self, ResEventStatus},
+    chat::{self},
     message::{Content, Message, ReqConfig, Role},
     model::Model,
     provider::adapter::{self},

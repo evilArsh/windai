@@ -25,6 +25,25 @@ impl TopicFacade {
         }
     }
 
+    pub async fn list_child_topics(&self, topic_id: i64) -> ApiResponse<Vec<Topic>> {
+        // 先确认父话题存在，再列出其直接子话题，保持 404 语义一致。
+        match self.core.storage().topic().get_topic(topic_id).await {
+            Ok(None) => return ApiResponse::not_found("topic not found"),
+            Ok(Some(_)) => {}
+            Err(e) => return map_core_error(e),
+        }
+        match self
+            .core
+            .storage()
+            .topic()
+            .list_child_topics(topic_id)
+            .await
+        {
+            Ok(rows) => ApiResponse::ok(rows),
+            Err(e) => map_core_error(e),
+        }
+    }
+
     pub async fn create_topic(&self, input: CreateTopic) -> ApiResponse<Topic> {
         match self.core.storage().topic().create(input).await {
             Ok(t) => ApiResponse::ok(t),

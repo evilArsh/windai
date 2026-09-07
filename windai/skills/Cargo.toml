@@ -1,7 +1,7 @@
 [package]
-name = "wind-mcp"
+name = "wind-skills"
 description = """
-MCP client management for windai
+skills ability for windai
 """
 edition.workspace = true
 version.workspace = true
@@ -10,19 +10,12 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-wind-skills = { path = "../skills" }
+
 serde.workspace = true
 serde_json.workspace = true
+yaml-rust2.workspace = true
 schemars.workspace = true
 thiserror.workspace = true
 log.workspace = true
-rmcp.workspace = true
-tokio.workspace = true
-futures.workspace = true
-strum.workspace = true
-utoipa.workspace = true
 
 [dev-dependencies]
-env_logger.workspace = true
-tokio.workspace = true
-test-case.workspace = true

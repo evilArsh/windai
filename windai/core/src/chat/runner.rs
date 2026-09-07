@@ -306,10 +306,12 @@ mod test {
     fn find_pending_returns_empty_when_all_executed() {
         // 结果分两条 tool_result 消息返回，executed_ids 跨消息累积
         let content = vec![req(&["id1", "id2"]), result(&["id1"]), result(&["id2"])];
-        assert!(ChatRunner::new()
-            .find_pending_calls(&content)
-            .unwrap()
-            .is_empty());
+        assert!(
+            ChatRunner::new()
+                .find_pending_calls(&content)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -317,11 +319,11 @@ mod test {
         // 注释中的重入场景，多轮完整对话后判断当前待执行的调用：
         // [旧轮 result] [reqA] [result 1-1] [reqB] [result 1-2]
         let content = vec![
-            result(&["id_x"]),     // 旧轮结果，早于最近 req，不应计入
-            req(&["id1", "id2"]),  // 第一轮请求
-            result(&["id1"]),      // 第一轮只执行了 id1
-            req(&["id1", "id2"]),  // 第二轮（模型重新发起的）请求
-            result(&["id2"]),      // 第二轮执行了 id2
+            result(&["id_x"]),    // 旧轮结果，早于最近 req，不应计入
+            req(&["id1", "id2"]), // 第一轮请求
+            result(&["id1"]),     // 第一轮只执行了 id1
+            req(&["id1", "id2"]), // 第二轮（模型重新发起的）请求
+            result(&["id2"]),     // 第二轮执行了 id2
         ];
         // 只考虑最近 reqB 之后的 result（id2），id1 仍待执行
         assert_eq!(pending_ids(&content), vec!["id1"]);

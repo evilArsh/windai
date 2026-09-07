@@ -10,6 +10,7 @@ use wind_core::error::CoreError;
 use wind_core::models::*;
 use wind_core::schema::init_schema;
 use wind_core::storage::message::MessageStorage;
+use wind_mcp::client::TransportType;
 
 /// 临时文件数据库，用于需要真实文件持久化的并发/跨连接测试。
 #[allow(dead_code)]
@@ -506,6 +507,64 @@ async fn agent_binding_crud() {
     assert_eq!(found_c.role, AgentRole::Child);
 }
 
+/// 子话题查询：list_child_topics 只返回 parent_id 匹配的直接子话题，且不改变 list_topics 语义。
+#[tokio::test]
+async fn topic_child_listing() {
+    let core = setup().await;
+    let topics = core.storage().topic();
+
+    // 两个根话题
+    let root_a = create_root_topic(topics, "root-a").await;
+    let root_b = create_root_topic(topics, "root-b").await;
+
+    // root-a 下建两个子话题：一个 agent 子会话（带 binding_id），一个仅带 parent_id
+    let child_a = topics
+        .create(CreateTopic {
+            parent_id: Some(root_a.id),
+            binding_id: Some(1001),
+            label: "child-a".into(),
+            icon: None,
+        })
+        .await
+        .unwrap();
+    let child_b = topics
+        .create(CreateTopic {
+            parent_id: Some(root_a.id),
+            binding_id: None,
+            label: "child-b".into(),
+            icon: None,
+        })
+        .await
+        .unwrap();
+
+    // root-a 的子话题按创建顺序返回
+    let children = topics.list_child_topics(root_a.id).await.unwrap();
+    let child_ids: Vec<i64> = children.iter().map(|t| t.id).collect();
+    assert_eq!(child_ids, vec![child_a.id, child_b.id]);
+    assert!(children.iter().all(|t| t.parent_id == Some(root_a.id)));
+
+    // root-b 无子话题
+    assert!(
+        topics
+            .list_child_topics(root_b.id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // list_topics 语义不变：仍只返回根列表中的话题（agent 子会话因带 binding_id 而不出现）
+    let root_ids: Vec<i64> = topics
+        .list_topics()
+        .await
+        .unwrap()
+        .iter()
+        .map(|t| t.id)
+        .collect();
+    assert!(root_ids.contains(&root_a.id));
+    assert!(root_ids.contains(&root_b.id));
+    assert!(!root_ids.contains(&child_a.id));
+}
+
 /// 消息 is_excluded 标志对 list_by_topic / list_contexts 的影响。
 /// tips: 该测试中，消息被手动设置为is_excluded = true, 而不是成对消息被删除后自动设置另一个消息
 #[tokio::test]
@@ -784,4 +843,92 @@ async fn message_boundary_crud() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// 内建 MCP 绑定（builtin_mcp_servers）与保留名
+// ---------------------------------------------------------------------------
+
+/// McpStorage::create 拒绝内建保留名，避免与 registry 常驻内建冲突。
+#[tokio::test]
+async fn mcp_create_rejects_builtin_reserved_name() {
+    let core = setup().await;
+    let result = core
+        .storage()
+        .mcp()
+        .create(CreateMcpServer {
+            r#type: TransportType::Stdio,
+            name: wind_mcp::builtin::BUILTIN_FS.name.to_string(),
+            url: None,
+            description: None,
+            command: Some("npx".into()),
+            args: None,
+            env: None,
+        })
+        .await;
+    assert!(
+        matches!(result, Err(CoreError::Validation(_))),
+        "got: {result:?}"
+    );
+}
+
+/// agent 定义内建 MCP 绑定：目录内名字可创建，未知名被 Validation 拒绝。
+#[tokio::test]
+async fn agent_definition_validates_builtin_binding_names() {
+    let core = setup().await;
+    let agent = core.storage().agent();
+
+    fn build_def(key: &str, builtins: Vec<BuiltinMcpBinding>) -> CreateAgentDefinition {
+        CreateAgentDefinition {
+            key: key.into(),
+            name: key.into(),
+            description: "d".into(),
+            scope: AgentScope::Global,
+            owner_topic_id: None,
+            cloned_from_agent_id: None,
+            active: None,
+            data: AgentDefinitionData {
+                builtin_mcp_servers: builtins,
+                ..AgentDefinitionData::default()
+            },
+        }
+    }
+
+    let ok = agent
+        .create_definition(build_def(
+            "with-builtin",
+            vec![BuiltinMcpBinding {
+                name: wind_mcp::builtin::BUILTIN_FS.name.to_string(),
+                allowed_tools: vec![],
+                denied_tools: vec![],
+                enabled: true,
+            }],
+        ))
+        .await;
+    assert!(ok.is_ok(), "valid builtin name should pass: {ok:?}");
+
+    let bad = agent
+        .create_definition(build_def(
+            "bad-builtin",
+            vec![BuiltinMcpBinding {
+                name: "no-such-builtin".into(),
+                allowed_tools: vec![],
+                denied_tools: vec![],
+                enabled: true,
+            }],
+        ))
+        .await;
+    assert!(
+        matches!(bad, Err(CoreError::Validation(_))),
+        "unknown builtin name should be rejected: {bad:?}"
+    );
+}
+
+/// 旧数据缺 builtin_mcp_servers 字段时反序列化回退为空列表。
+#[test]
+fn agent_definition_data_defaults_builtin_servers() {
+    let mut value = serde_json::to_value(AgentDefinitionData::default()).unwrap();
+    value.as_object_mut().unwrap().remove("builtin_mcp_servers");
+    let data: AgentDefinitionData = serde_json::from_value(value).unwrap();
+    assert!(data.builtin_mcp_servers.is_empty());
 }

@@ -2,7 +2,7 @@ mod common;
 
 use wind_ai::message::ReqConfig;
 use wind_ai::model::AdapterType;
-use wind_core::models::agent::{AgentDefinitionData, AgentRole, AgentScope};
+use wind_core::models::agent::{AgentDefinitionData, AgentRole, AgentScope, BuiltinMcpBinding};
 use wind_core::models::{
     CreateAgentBinding, CreateAgentDefinition, CreateCredentials, CreateMcpServer, CreateModel,
     CreatePromptModule, CreateProvider, CreateTopic,
@@ -271,4 +271,76 @@ async fn approval_lists_return_empty() {
     assert_eq!(f.list_by_message(1).await.code, 200);
     assert_eq!(f.list_pending_by_topic(1).await.code, 200);
     assert_eq!(f.list_pending_by_binding(1).await.code, 200);
+}
+
+#[tokio::test]
+async fn agent_definition_rejects_unknown_builtin_mcp_name() {
+    let core = common::test_core().await;
+    let f = AgentStorageFacade::new(core);
+    let r = f
+        .create_agent_definition(CreateAgentDefinition {
+            key: "bad-builtin".into(),
+            name: "Bad".into(),
+            description: "x".into(),
+            scope: AgentScope::Global,
+            owner_topic_id: None,
+            cloned_from_agent_id: None,
+            active: None,
+            data: AgentDefinitionData {
+                builtin_mcp_servers: vec![BuiltinMcpBinding {
+                    name: "no-such-builtin".into(),
+                    allowed_tools: vec![],
+                    denied_tools: vec![],
+                    enabled: true,
+                }],
+                ..AgentDefinitionData::default()
+            },
+        })
+        .await;
+    assert_eq!(r.code, 400, "got: {r:?}");
+}
+
+#[tokio::test]
+async fn agent_definition_accepts_valid_builtin_mcp_name() {
+    let core = common::test_core().await;
+    let f = AgentStorageFacade::new(core);
+    let r = f
+        .create_agent_definition(CreateAgentDefinition {
+            key: "with-builtin".into(),
+            name: "WithBuiltin".into(),
+            description: "x".into(),
+            scope: AgentScope::Global,
+            owner_topic_id: None,
+            cloned_from_agent_id: None,
+            active: None,
+            data: AgentDefinitionData {
+                builtin_mcp_servers: vec![BuiltinMcpBinding {
+                    name: wind_mcp::builtin::BUILTIN_FS.name.to_string(),
+                    allowed_tools: vec![],
+                    denied_tools: vec![],
+                    enabled: true,
+                }],
+                ..AgentDefinitionData::default()
+            },
+        })
+        .await;
+    assert_eq!(r.code, 200, "got: {r:?}");
+}
+
+#[tokio::test]
+async fn mcp_server_create_rejects_reserved_builtin_name() {
+    let core = common::test_core().await;
+    let f = McpStorageFacade::new(core);
+    let r = f
+        .create_mcp_server(CreateMcpServer {
+            r#type: TransportType::Stdio,
+            name: wind_mcp::builtin::BUILTIN_FS.name.to_string(),
+            url: None,
+            description: None,
+            command: Some("npx".into()),
+            args: None,
+            env: None,
+        })
+        .await;
+    assert_eq!(r.code, 400, "got: {r:?}");
 }

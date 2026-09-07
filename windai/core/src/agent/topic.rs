@@ -6,6 +6,7 @@ use super::task::sync::SyncTask;
 use super::task::{PendingChild, TaskEntry, TaskRegistry, TaskSpec};
 use super::tool::{SpawnAgentRequest, SpawnAgentResponse};
 use crate::agent::event::TopicMsg;
+use crate::env::app_dirs;
 use crate::error::{CoreError, Result};
 use crate::models::{
     AgentMode, AgentStatus, ApprovalRecord, ToolApprovalStatus, UpdateAgentBinding,
@@ -13,6 +14,8 @@ use crate::models::{
 use crate::storage::Storage;
 use futures::future::try_join;
 use std::collections::VecDeque;
+use std::io::ErrorKind;
+use std::path::PathBuf;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use wind_ai::message::Content;
@@ -103,6 +106,8 @@ impl TopicRuntimeHandle {
 }
 
 pub struct TopicRuntime {
+    /// 当前Topic工作目录
+    cwd: PathBuf,
     ctx: CancellationToken,
     topic_id: i64,
     mailbox: TopicMailbox,
@@ -125,6 +130,7 @@ impl TopicRuntime {
         let (tx, rx) = mpsc::channel(256);
         let mailbox = TopicMailbox::new(tx);
         let runtime = Self {
+            cwd: app_dirs().topic_dir().join(topic_id.to_string()),
             ctx: ctx.clone(),
             topic_id,
             mailbox: mailbox.clone(),
@@ -443,6 +449,12 @@ impl TopicRuntime {
         let chat_ctx =
             helper::get_base_info(&tx.storage(), &self.mcp_registry, &binding, &agent).await?;
         log::debug!("[start_main_agent] get chat_ctx: {:#?}", chat_ctx);
+        // 创建主Agent工作空间
+        match std::fs::create_dir(&self.cwd) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => Ok(()),
+            Err(e) => Err(e),
+        }?;
 
         let agent_topic = match helper::get_topic_by_binding_id(
             &tx.storage(),
@@ -462,9 +474,15 @@ impl TopicRuntime {
                 .await?
             }
         };
-        let (user, assistant, contexts) =
-            helper::create_contexts(&tx.storage(), agent_topic.id, user_input, &agent, &chat_ctx)
-                .await?;
+        let (user, assistant, contexts) = helper::create_contexts(
+            &self.cwd,
+            &tx.storage(),
+            agent_topic.id,
+            user_input,
+            &agent,
+            &chat_ctx,
+        )
+        .await?;
         tx.commit().await?;
         let spec = TaskSpec {
             binding_id: binding.id,
@@ -707,6 +725,7 @@ impl TopicRuntime {
             AgentMode::Fork => match self.registry.main_entry() {
                 Some(entry) => {
                     helper::create_fork_contexts(
+                        &self.cwd,
                         &tx.storage(),
                         entry.topic_id,
                         agent_topic.id,
@@ -724,6 +743,7 @@ impl TopicRuntime {
             },
             AgentMode::Sync | AgentMode::Background => {
                 helper::create_contexts(
+                    &self.cwd,
                     &tx.storage(),
                     agent_topic.id,
                     user_input,

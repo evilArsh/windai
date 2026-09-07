@@ -20,11 +20,7 @@ async fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let config = AppConfig::from_env();
-    let core = Arc::new(
-        WindCore::init_local(config.db_path.as_deref())
-            .await
-            .expect("init core failed"),
-    );
+    let core = Arc::new(WindCore::init_local().await.expect("init core failed"));
     let cancel = CancellationToken::new();
     let state = AppState::with_cancel(config.clone(), core, Utc::now().timestamp(), cancel.clone());
 

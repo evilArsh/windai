@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use wind_core::WindCore;
 use wind_core::models::{McpServerParam, Topic};
-use wind_mcp::client::{ClientSnapshot, McpError, ServerParams};
+use wind_mcp::client::{ClientSnapshot, McpError, Prompt, Resource, ServerParams, Tool};
 
 use crate::dto::envelope::{ApiResponse, map_core_error};
 use crate::dto::mcp::{McpServerStatusDto, StartMcpServerResult};
@@ -93,6 +93,24 @@ impl McpRuntimeFacade {
         }
     }
 
+    /// 按 server name 让 topic 引用一个已运行的 client（内建即此场景）。
+    /// 服务已启动则只加引用计数（幂等），不发起连接；服务未运行返回 404。
+    pub async fn attach_server(
+        &self,
+        topic_id: i64,
+        name: &str,
+    ) -> ApiResponse<McpServerStatusDto> {
+        match self.load_topic(topic_id).await {
+            Ok(_) => {}
+            Err(e) => return erase(e),
+        }
+        let session = topic_id.to_string();
+        match self.core.registry().attach_session(&session, name).await {
+            Ok(snapshot) => ApiResponse::ok(dto_from_snapshot(snapshot)),
+            Err(e) => map_mcp_error(e),
+        }
+    }
+
     /// 查询运行期状态：服务未运行（registry 无此名）时返回 `running: false`，HTTP 仍 200。
     pub async fn server_status(&self, id: i64) -> ApiResponse<McpServerStatusDto> {
         let param = match self.load_param(id).await {
@@ -108,6 +126,59 @@ impl McpRuntimeFacade {
                 status: None,
                 ref_sessions: None,
             }),
+        }
+    }
+
+    /// 列出所有运行中的 MCP 客户端
+    pub async fn list_clients(&self) -> ApiResponse<Vec<ClientSnapshot>> {
+        ApiResponse::ok(self.core.registry().list_clients().await)
+    }
+
+    /// 按 server name 查询运行中的 MCP 客户端；未运行返回 404
+    pub async fn get_client(&self, name: &str) -> ApiResponse<ClientSnapshot> {
+        match self.core.registry().get_client(name).await {
+            Some(snapshot) => ApiResponse::ok(snapshot),
+            None => ApiResponse::not_found("mcp server not running"),
+        }
+    }
+
+    /// 列出指定 client 的工具
+    pub async fn list_tools(&self, name: &str) -> ApiResponse<Vec<Tool>> {
+        match self.core.registry().list_tools(name).await {
+            Ok(tools) => ApiResponse::ok(tools),
+            Err(e) => map_mcp_error(e),
+        }
+    }
+
+    /// 按 server names 批量列出工具
+    pub async fn list_tools_by_names(&self, names: Vec<String>) -> ApiResponse<Vec<Tool>> {
+        match self.core.registry().list_tools_by_names(&names).await {
+            Ok(tools) => ApiResponse::ok(tools),
+            Err(e) => map_mcp_error(e),
+        }
+    }
+
+    /// 列出所有运行中 client 的工具
+    pub async fn list_all_tools(&self) -> ApiResponse<Vec<Tool>> {
+        match self.core.registry().list_all_tools().await {
+            Ok(tools) => ApiResponse::ok(tools),
+            Err(e) => map_mcp_error(e),
+        }
+    }
+
+    /// 列出指定 client 的提示词
+    pub async fn list_prompts(&self, name: &str) -> ApiResponse<Vec<Prompt>> {
+        match self.core.registry().list_prompts(name).await {
+            Ok(prompts) => ApiResponse::ok(prompts),
+            Err(e) => map_mcp_error(e),
+        }
+    }
+
+    /// 列出指定 client 的资源
+    pub async fn list_resources(&self, name: &str) -> ApiResponse<Vec<Resource>> {
+        match self.core.registry().list_resources(name).await {
+            Ok(resources) => ApiResponse::ok(resources),
+            Err(e) => map_mcp_error(e),
         }
     }
 }

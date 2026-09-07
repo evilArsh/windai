@@ -24,6 +24,26 @@ pub fn router() -> Router<AppState> {
             "/api/v1/topics/{topic_id}",
             get(get_topic).put(update_topic).delete(delete_topic),
         )
+        .route("/api/v1/topics/{topic_id}/children", get(list_child_topics))
+}
+
+#[utoipa::path(
+    get,
+    summary = "获取指定话题的直接子话题",
+    path = "/api/v1/topics/{topic_id}/children",
+    params(
+        ("topic_id", Path, description = "父话题 ID"),
+    ),
+    responses(
+        (status = 200, description = "直接子话题列表", body = ApiResponse<Vec<Topic>>),
+        (status = 404, description = "话题不存在", body = ApiResponse<Value>)
+    )
+)]
+pub(crate) async fn list_child_topics(
+    State(core): State<Arc<WindCore>>,
+    ApiPath(topic_id): ApiPath<i64>,
+) -> Json<ApiResponse<Vec<Topic>>> {
+    Json(TopicFacade::new(core).list_child_topics(topic_id).await)
 }
 
 #[utoipa::path(

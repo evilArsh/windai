@@ -91,6 +91,19 @@ impl TopicStorage {
         Ok(rows)
     }
 
+    /// 获取指定父话题下的直接子话题
+    pub async fn list_child_topics(&self, parent_id: i64) -> Result<Vec<Topic>> {
+        let mut qb = Self::select_topic();
+        qb.push(" WHERE parent_id = ").push_bind(parent_id);
+        qb.push(" ORDER BY id ASC ");
+        let rows = self
+            .executor
+            .fetch_all(qb.build_query_as::<Topic>())
+            .await?;
+
+        Ok(rows)
+    }
+
     /// 获取 topic
     pub async fn get_topic(&self, id: i64) -> Result<Option<Topic>> {
         let mut qb = Self::select_topic();
