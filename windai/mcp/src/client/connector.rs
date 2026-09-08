@@ -28,6 +28,8 @@ static DEDUP_MAP: LazyLock<Mutex<HashMap<String, DedupState>>> =
 
 pub struct ServerHandle {
     service: ClientService,
+    /// 内建（in-memory）服务端 task
+    builtin_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl ServerHandle {
@@ -50,7 +52,7 @@ impl ServerHandle {
         H: ServerHandler + Send + Sync + 'static,
     {
         let (server_tx, client_rx) = tokio::io::duplex(4096);
-        tokio::spawn(async move {
+        let server_task = tokio::spawn(async move {
             match handler.serve(server_tx).await {
                 Ok(service) => {
                     let _ = service.waiting().await;
@@ -59,7 +61,10 @@ impl ServerHandle {
             }
         });
         let service = ().into_dyn().serve(client_rx).await?;
-        Ok(Self { service })
+        Ok(Self {
+            service,
+            builtin_task: Some(server_task),
+        })
     }
 
     async fn connect_direct(params: &ServerParams) -> Result<Self, McpError> {
@@ -82,7 +87,10 @@ impl ServerHandle {
                 ().into_dyn().serve(transport).await?
             }
         };
-        Ok(Self { service })
+        Ok(Self {
+            service,
+            builtin_task: None,
+        })
     }
 
     async fn connect_with_dedup(
@@ -135,6 +143,9 @@ impl ServerHandle {
 
     pub async fn disconnect(mut self) {
         let _ = self.service.close().await;
+        if let Some(task) = self.builtin_task.take() {
+            let _ = task.await;
+        }
     }
 
     pub async fn call_tool(
@@ -186,5 +197,23 @@ impl ServerHandle {
             .list_all_resources()
             .await
             .map_err(McpError::Service)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::builtin::fs::FsServer;
+
+    #[tokio::test]
+    async fn builtin_connect_disconnect_roundtrip() {
+        let server = FsServer::new(vec![]);
+        let handle = ServerHandle::connect_builtin(server)
+            .await
+            .expect("connect builtin");
+        let tools = handle.list_tools().await.expect("list tools");
+        assert!(!tools.is_empty());
+        // disconnect 会 close 客户端并 join 服务端 task，不挂起即通过
+        handle.disconnect().await;
     }
 }

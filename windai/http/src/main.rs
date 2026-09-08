@@ -21,6 +21,7 @@ async fn main() {
 
     let config = AppConfig::from_env();
     let core = Arc::new(WindCore::init_local().await.expect("init core failed"));
+    let core_shutdown = core.clone();
     let cancel = CancellationToken::new();
     let state = AppState::with_cancel(config.clone(), core, Utc::now().timestamp(), cancel.clone());
 
@@ -36,6 +37,8 @@ async fn main() {
         })
         .await
         .expect("server error");
+
+    core_shutdown.shutdown().await;
 }
 
 async fn shutdown_signal() {
