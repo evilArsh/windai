@@ -42,9 +42,9 @@ pub struct ListDirRequest {
 pub struct ReadFileRequest {
     /// 文件绝对路径。
     pub path: String,
-    /// 字节偏移，默认 0。
+    /// 字节偏移,默认0.
     pub offset: Option<u64>,
-    /// 读取字节上限，默认 64KB。
+    /// 读取字节上限,默认1MB.
     pub limit: Option<u64>,
 }
 
@@ -102,37 +102,30 @@ impl FsServer {
         name = "list_dir",
         description = "Scan a directory, returning the root path and a relative-path listing of files/dirs. Hidden dirs (except whitelisted) and large dependency dirs are skipped."
     )]
-    async fn list_dir(
-        &self,
-        Parameters(req): Parameters<ListDirRequest>,
-    ) -> Result<Json<ListDirResult>, ErrorData> {
-        list_dir(
+    async fn list_dir(&self, Parameters(req): Parameters<ListDirRequest>) -> Json<ListDirResult> {
+        Json(list_dir(
             &self.sandbox,
             PathBuf::from(req.path),
             req.recursive,
             req.max_depth,
-        )
-        .map(Json)
-        .map_err(ErrorData::from)
+        ))
     }
 
     /// 读文本文件；二进制文件仅返回元信息。
     #[tool(
         name = "read_file",
-        description = "Read a text file (UTF-8). Binary files return only metadata (mime/size)."
+        description = "Read a text file (UTF-8). Binary files return only metadata."
     )]
     async fn read_file(
         &self,
         Parameters(req): Parameters<ReadFileRequest>,
-    ) -> Result<Json<ReadFileResult>, ErrorData> {
-        read_file(
+    ) -> Json<ReadFileResult> {
+        Json(read_file(
             &self.sandbox,
             PathBuf::from(req.path),
             req.offset,
             req.limit,
-        )
-        .map(Json)
-        .map_err(ErrorData::from)
+        ))
     }
 
     /// 写文本文件，自动创建父目录。
@@ -143,10 +136,8 @@ impl FsServer {
     async fn write_file(
         &self,
         Parameters(req): Parameters<WriteFileRequest>,
-    ) -> Result<Json<WriteFileResult>, ErrorData> {
-        write_file(&self.sandbox, PathBuf::from(req.path), req.data)
-            .map(Json)
-            .map_err(ErrorData::from)
+    ) -> Json<WriteFileResult> {
+        Json(write_file(&self.sandbox, PathBuf::from(req.path), req.data))
     }
 
     /// 执行子进程；cwd 必须在沙箱内，timeout 单位毫秒。
@@ -154,21 +145,18 @@ impl FsServer {
         name = "exec",
         description = "Execute a subprocess. cwd must be inside the sandbox; timeout is in milliseconds."
     )]
-    async fn exec(
-        &self,
-        Parameters(req): Parameters<ExecRequest>,
-    ) -> Result<Json<ExecResult>, ErrorData> {
-        exec(
-            &self.sandbox,
-            req.command,
-            req.cwd,
-            req.args,
-            req.env,
-            req.timeout,
+    async fn exec(&self, Parameters(req): Parameters<ExecRequest>) -> Json<ExecResult> {
+        Json(
+            exec(
+                &self.sandbox,
+                req.command,
+                req.cwd,
+                req.args,
+                req.env,
+                req.timeout,
+            )
+            .await,
         )
-        .await
-        .map(Json)
-        .map_err(ErrorData::from)
     }
 }
 
@@ -284,11 +272,12 @@ mod tests {
             .await;
 
         match result {
-            Err(e) => {
-                let msg = format!("{e:?}");
-                assert!(msg.contains("NOT_ALLOWED"), "unexpected error: {msg}");
+            Ok(CallToolResponse::Complete(r)) => {
+                assert!(r.is_error.is_none() || r.is_error == Some(false));
+                let structured = r.structured_content.expect("structured content");
+                assert_eq!(structured["bytes"], json!(0));
             }
-            Ok(_) => panic!("expected error for out-of-sandbox read"),
+            other => panic!("expected Complete, got: {other:?}"),
         }
     }
 }
