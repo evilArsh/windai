@@ -1,4 +1,5 @@
 use crate::{
+    eventsource::Event,
     message::{Message, ReqConfig},
     model::AdapterType,
     tool::Tools,
@@ -15,16 +16,16 @@ pub enum AdapterError {
     #[error("Transfer error: {0}")]
     Transfer(String),
 
-    #[error("Json error: {0}")]
+    #[error(transparent)]
     Json(#[from] serde_json::Error),
 
-    #[error("Parse error: {0}")]
+    #[error(transparent)]
     ParseError(#[from] strum::ParseError),
 
     #[error("Invalid content type: {0}")]
     InvalidContentType(String),
 
-    #[error("Io error: {0}")]
+    #[error(transparent)]
     Io(#[from] std::io::Error),
 }
 
@@ -53,7 +54,7 @@ pub trait ChatAdapter: Adapter + Send + Sync {
     /// 将原始响应字节解析为统一格式消息
     fn parse_response(&self, data: &[u8]) -> Result<Message, AdapterError>;
     /// 将原始流式响应单块字节解析为统一格式消息
-    fn parse_stream_chunk(&self, data: &[u8]) -> Result<Vec<Message>, AdapterError>;
+    fn parse_stream_chunk(&self, event: &Event) -> Result<Option<Message>, AdapterError>;
 }
 
 /// 根据 AdapterType 获取对应的对话适配器实例
@@ -63,3 +64,4 @@ pub fn get_chat_adapter(adapter: AdapterType) -> Box<dyn ChatAdapter + Send + Sy
         AdapterType::OpenAIResponse => Box::new(openai_responses::OpenAIResponseAdapter),
     }
 }
+

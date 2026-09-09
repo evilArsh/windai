@@ -61,12 +61,13 @@ evalexpr = { version = "13.0" }
 sqlx = { version = "0.8", features = [
     "runtime-tokio",
     # "sqlite",
-    # "postgres",
-    # "mysql",
+    # "postgres"
     "derive",
     "chrono",
     "json",
 ] }
+pin-project-lite = "0.2"
+nom = { version = "8" }
 
 test-case = "*"
 serial_test = "*"

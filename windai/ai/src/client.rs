@@ -1,6 +1,4 @@
-use async_stream::stream;
-use bytes::{Bytes, BytesMut};
-use futures::stream::Stream;
+use bytes::Bytes;
 use reqwest::{Client, ClientBuilder};
 use reqwest::{Method, RequestBuilder, Response, header};
 use std::error::Error;
@@ -119,40 +117,5 @@ pub async fn handle_response(response: Response) -> Result<Bytes, ClientError> {
     match response.bytes().await {
         Ok(json_bytes) => Ok(json_bytes),
         Err(err) => Err(err.into()),
-    }
-}
-
-/// 处理流式数据，内部维护缓冲区处理跨 chunk 的不完整 SSE 事件。
-///
-/// SSE 协议以 `\n\n` 分隔事件。每次收到新数据时拼接到缓冲区末尾，
-/// 从后往前找到最后一个 `\n\n`，将其之前的数据作为完整事件返回，
-/// 之后的不完整部分保留在缓冲区等待下次拼接。
-pub fn handle_stream(response: Response) -> impl Stream<Item = Result<Bytes, ClientError>> {
-    stream! {
-        let mut buffer = BytesMut::new();
-        let stream = response.bytes_stream();
-        for await result in stream {
-            match result {
-                Ok(bytes) => {
-                    buffer.extend_from_slice(&bytes);
-                    // 从后往前找最后一个 \n\n
-                    let boundary = buffer
-                        .windows(2)
-                        .enumerate()
-                        .rev()
-                        .find(|(_, w)| w[0] == b'\n' && w[1] == b'\n')
-                        .map(|(i, _)| i + 2);
-                    if let Some(pos) = boundary {
-                        yield Ok(buffer.split_to(pos).freeze());
-                    }
-                }
-                Err(err) => {
-                    yield Err(err.into());
-                }
-            };
-        }
-        if !buffer.is_empty() {
-            yield Ok(buffer.freeze());
-        }
     }
 }

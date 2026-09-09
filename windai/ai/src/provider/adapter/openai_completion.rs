@@ -6,9 +6,9 @@ use super::schema::openai_completion::{
     ContentObject, FileContentPart, ToolCallRequest, ToolCallRequestParams,
 };
 use super::{Adapter, AdapterError, ChatAdapter};
+use crate::eventsource::Event;
 use crate::message::{self, Message, MessageBuilder, ReqConfig, Role};
 use crate::model::AdapterType;
-use crate::provider::sse::SseBlock;
 use crate::tool::{FunctionCall, Tools};
 use serde_json::{Value, json};
 
@@ -280,43 +280,33 @@ impl ChatAdapter for OpenAICompletionAdapter {
         }
     }
 
-    fn parse_stream_chunk(&self, data: &[u8]) -> Result<Vec<Message>, AdapterError> {
-        let blocks = SseBlock::parse(data);
-        blocks
-            .into_iter()
-            .filter_map(|block| {
-                let block_data = block.data?;
-                if block_data.is_empty() {
-                    return None;
-                }
-                let completion: ChatStreamCompletion = match serde_json::from_str(&block_data) {
-                    Ok(r) => r,
-                    Err(e) => return Some(Err(e.into())),
-                };
-                let (input_tokens, output_tokens) = match completion.usage {
-                    Some(usage) => (usage.prompt_tokens, usage.completion_tokens),
-                    None => (0, 0),
-                };
-                if let Some(choice) = completion.choices.into_iter().next() {
-                    let mut msg = match self.parse_common(choice.delta, completion.created) {
-                        Ok(r) => r,
-                        Err(e) => return Some(Err(e)),
-                    };
-                    msg.input_tokens = input_tokens;
-                    msg.output_tokens = output_tokens;
-                    Some(Ok(msg))
-                } else {
-                    let msg = MessageBuilder::default()
-                        .input_tokens(input_tokens)
-                        .output_tokens(output_tokens)
-                        .role(Role::Assistant)
-                        .created_at(completion.created)
-                        .build()
-                        .unwrap_or_default();
-                    Some(Ok(msg))
-                }
-            })
-            .collect::<Result<Vec<Message>, AdapterError>>()
+    fn parse_stream_chunk(&self, event: &Event) -> Result<Option<Message>, AdapterError> {
+        let completion: ChatStreamCompletion = match serde_json::from_str(&event.data) {
+            Ok(r) => r,
+            Err(e) => return Err(e.into()),
+        };
+        let (input_tokens, output_tokens) = match completion.usage {
+            Some(usage) => (usage.prompt_tokens, usage.completion_tokens),
+            None => (0, 0),
+        };
+        if let Some(choice) = completion.choices.into_iter().next() {
+            let mut msg = match self.parse_common(choice.delta, completion.created) {
+                Ok(r) => r,
+                Err(e) => return Err(e),
+            };
+            msg.input_tokens = input_tokens;
+            msg.output_tokens = output_tokens;
+            Ok(Some(msg))
+        } else {
+            let msg = MessageBuilder::default()
+                .input_tokens(input_tokens)
+                .output_tokens(output_tokens)
+                .role(Role::Assistant)
+                .created_at(completion.created)
+                .build()
+                .unwrap_or_default();
+            Ok(Some(msg))
+        }
     }
 }
 

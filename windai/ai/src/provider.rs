@@ -1,5 +1,5 @@
 pub mod adapter;
 
-mod sse;
+// mod sse;
 
-pub(crate) mod client;
+

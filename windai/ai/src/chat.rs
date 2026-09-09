@@ -1,20 +1,18 @@
-use async_stream::stream;
-use futures::stream::Stream;
-use log;
-use reqwest::Method;
-use serde_json::Value;
-use url::Url;
-
+use super::eventsource::Eventsource;
 use super::{
     ProviderError,
     message::{Message, ReqConfig},
     provider::adapter::AdapterError,
     tool::Tools,
 };
-use crate::provider::{
-    adapter::{self, ChatAdapter},
-    client,
-};
+use crate::client;
+use crate::provider::adapter::{self, ChatAdapter};
+use async_stream::stream;
+use futures::stream::Stream;
+use log;
+use reqwest::Method;
+use serde_json::Value;
+use url::Url;
 
 /// 聊天统一响应事件
 #[derive(Debug, PartialEq, Eq, strum::Display)]
@@ -161,24 +159,25 @@ pub fn handle_chat(
                         return;
                     }
                 };
-                let stream = client::handle_stream(response);
-                for await result in stream {
+                for await result in response.bytes_stream().eventsource() {
                     match result {
-                        Ok(bytes) => {
-                            let chunks = match chat_adapter.parse_stream_chunk(&bytes) {
-                                Ok(c) => c,
+                        Ok(event) => {
+                            match chat_adapter.parse_stream_chunk(&event) {
+                                Ok(Some(chunk)) => {
+                                    yield ResEvent::new_partial(chunk);
+                                },
+                                Ok(None)=>{
+                                    log::warn!("[parse_stream_chunk] Empty data")
+                                },
                                 Err(e) => {
-                                    log::error!("[parse_stream_chunk error]\n{}", e.to_string());
+                                    log::error!("[parse_stream_chunk] Error\n{}", e.to_string());
                                     yield e.into();
                                     return;
                                 }
                             };
-                            for chunk in chunks {
-                                yield ResEvent::new_partial(chunk);
-                            }
                         }
                         Err(err) => {
-                            yield ResEvent::new_error(err.into());
+                            yield ResEvent::new_error(ProviderError::SSE(err.to_string()));
                         }
                     };
                 }

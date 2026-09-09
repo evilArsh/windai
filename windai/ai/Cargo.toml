@@ -24,6 +24,8 @@ log.workspace = true
 url.workspace = true
 tokio.workspace = true
 utoipa.workspace = true
+pin-project-lite.workspace = true
+nom.workspace = true
 
 [dev-dependencies]
 env_logger.workspace = true

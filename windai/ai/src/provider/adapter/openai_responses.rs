@@ -4,9 +4,9 @@ use super::schema::openai_responses::{
     ResponseReasoning, ResponseRequest, ResponseStream, Tools,
 };
 use super::{Adapter, AdapterError, ChatAdapter};
+use crate::eventsource::Event;
 use crate::message::{self, Content, Message, MessageBuilder, ReqConfig};
 use crate::model::AdapterType;
-use crate::provider::sse::SseBlock;
 use crate::tool;
 use serde_json::Value;
 
@@ -250,109 +250,99 @@ impl ChatAdapter for OpenAIResponseAdapter {
 
         Ok(res)
     }
-    fn parse_stream_chunk(&self, data: &[u8]) -> Result<Vec<Message>, AdapterError> {
-        let blocks = SseBlock::parse(data);
-        blocks
-            .into_iter()
-            .filter_map(|block| {
-                let block_data = block.data?;
-                if block_data.is_empty() {
-                    return None;
+    fn parse_stream_chunk(&self, event: &Event) -> Result<Option<Message>, AdapterError> {
+        let response: ResponseStream = match serde_json::from_str(&event.data) {
+            Ok(r) => r,
+            Err(e) => return Err(e.into()),
+        };
+        let result = match response.r#type.as_ref() {
+            "response.completed" | "response.failed" | "response.incomplete" => {
+                if let Some(resp) = response.response {
+                    let (input_tokens, output_tokens) = resp
+                        .usage
+                        .map(|i| (i.input_tokens, i.output_tokens))
+                        .unwrap_or((0, 0));
+
+                    Ok(Some(
+                        MessageBuilder::default()
+                            .created_at(resp.created_at)
+                            .input_tokens(input_tokens)
+                            .output_tokens(output_tokens)
+                            .build()
+                            .unwrap_or_default(),
+                    ))
+                } else {
+                    Err(AdapterError::Transfer("no data in response".into()))
                 }
-                let response: ResponseStream = match serde_json::from_str(&block_data) {
-                    Ok(r) => r,
-                    Err(e) => return Some(Err(e.into())),
-                };
-                let result = match response.r#type.as_ref() {
-                    "response.completed" | "response.failed" | "response.incomplete" => {
-                        if let Some(resp) = response.response {
-                            let (input_tokens, output_tokens) = resp
-                                .usage
-                                .map(|i| (i.input_tokens, i.output_tokens))
-                                .unwrap_or((0, 0));
+            }
 
-                            Ok(Some(
-                                MessageBuilder::default()
-                                    .created_at(resp.created_at)
-                                    .input_tokens(input_tokens)
-                                    .output_tokens(output_tokens)
-                                    .build()
-                                    .unwrap_or_default(),
-                            ))
-                        } else {
-                            Err(AdapterError::Transfer("no data in response".into()))
-                        }
-                    }
-
-                    "response.output_item.added" => match response.item {
-                        Some(item) => match item {
-                            OutputItem::FunctionCall(call) => Ok(Some(
-                                MessageBuilder::default()
-                                    .tool_calls(vec![tool::FunctionCall {
-                                        id: call.call_id,
-                                        name: call.name,
-                                        arguments: String::new(),
-                                    }])
-                                    .build()
-                                    .unwrap_or_default(),
-                            )),
-                            // TODO: more
-                            _ => Ok(None),
-                        },
-                        _ => Ok(None),
-                    },
-
-                    "response.function_call_arguments.delta" => Ok(Some(
+            "response.output_item.added" => match response.item {
+                Some(item) => match item {
+                    OutputItem::FunctionCall(call) => Ok(Some(
                         MessageBuilder::default()
                             .tool_calls(vec![tool::FunctionCall {
-                                id: String::new(),
-                                name: String::new(),
-                                arguments: response.delta.unwrap_or_default(),
+                                id: call.call_id,
+                                name: call.name,
+                                arguments: String::new(),
                             }])
                             .build()
                             .unwrap_or_default(),
                     )),
-
-                    "response.output_text.delta" => Ok(Some(
-                        MessageBuilder::default()
-                            .content(vec![Content::new_text(response.delta.unwrap_or_default())])
-                            .build()
-                            .unwrap_or_default(),
-                    )),
-
-                    "response.reasoning_text.delta" => Ok(Some(
-                        MessageBuilder::default()
-                            .reasoning_content(response.delta.unwrap_or_default())
-                            .build()
-                            .unwrap_or_default(),
-                    )),
-
-                    "response.audio.delta" => Ok(Some(
-                        MessageBuilder::default()
-                            .content(vec![Content::new_audio(
-                                response.delta.unwrap_or_default(),
-                                String::new(),
-                            )])
-                            .build()
-                            .unwrap_or_default(),
-                    )),
-                    "response.image_generation_call.partial_image" => Ok(Some(
-                        MessageBuilder::default()
-                            .content(vec![Content::new_image(
-                                response.partial_image_b64.unwrap_or_default(),
-                            )])
-                            .build()
-                            .unwrap_or_default(),
-                    )),
+                    // TODO: more
                     _ => Ok(None),
-                };
+                },
+                _ => Ok(None),
+            },
 
-                match result {
-                    Ok(Some(message)) => Some(Ok(message)),
-                    Ok(None) => None,
-                    Err(err) => Some(Err(err)),
-                }
-            })
-            .collect::<Result<Vec<Message>, AdapterError>>()
+            "response.function_call_arguments.delta" => Ok(Some(
+                MessageBuilder::default()
+                    .tool_calls(vec![tool::FunctionCall {
+                        id: String::new(),
+                        name: String::new(),
+                        arguments: response.delta.unwrap_or_default(),
+                    }])
+                    .build()
+                    .unwrap_or_default(),
+            )),
+
+            "response.output_text.delta" => Ok(Some(
+                MessageBuilder::default()
+                    .content(vec![Content::new_text(response.delta.unwrap_or_default())])
+                    .build()
+                    .unwrap_or_default(),
+            )),
+
+            "response.reasoning_text.delta" => Ok(Some(
+                MessageBuilder::default()
+                    .reasoning_content(response.delta.unwrap_or_default())
+                    .build()
+                    .unwrap_or_default(),
+            )),
+
+            "response.audio.delta" => Ok(Some(
+                MessageBuilder::default()
+                    .content(vec![Content::new_audio(
+                        response.delta.unwrap_or_default(),
+                        String::new(),
+                    )])
+                    .build()
+                    .unwrap_or_default(),
+            )),
+            "response.image_generation_call.partial_image" => Ok(Some(
+                MessageBuilder::default()
+                    .content(vec![Content::new_image(
+                        response.partial_image_b64.unwrap_or_default(),
+                    )])
+                    .build()
+                    .unwrap_or_default(),
+            )),
+            _ => Ok(None),
+        };
+
+        match result {
+            Ok(Some(message)) => Ok(Some(message)),
+            Ok(None) => Ok(None),
+            Err(err) => Err(err),
+        }
     }
 }
