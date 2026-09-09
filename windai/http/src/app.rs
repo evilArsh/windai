@@ -3,15 +3,14 @@ use axum::Router;
 use axum::extract::Request;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use axum::routing::get;
 use tower_http::timeout::TimeoutLayer;
-use utoipa::OpenApi;
-use utoipa_swagger_ui::SwaggerUi;
 
 use crate::dto::envelope::ApiResponse;
 use crate::middleware::request_id::request_id_layers;
 use crate::middleware::timeout::CRUD_TIMEOUT;
 use crate::middleware::trace::trace_layer;
-use crate::openapi::ApiDoc;
+use crate::openapi;
 use crate::routes::{agent, chat, health, mcp, model, prompt, provider, topic};
 use crate::state::AppState;
 
@@ -42,7 +41,7 @@ pub fn build_router() -> Router<AppState> {
         .layer(trace_layer());
 
     Router::new()
-        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
+        .route("/api-docs/openapi.json", get(openapi::serve_openapi_json))
         .merge(health::router())
         .merge(chat::sse_router()) // SSE 不套 timeout
         .merge(mcp::sse_router()) // MCP 状态 SSE

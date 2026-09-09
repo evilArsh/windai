@@ -1,3 +1,6 @@
+use std::sync::OnceLock;
+
+use axum::Json;
 use serde_json::Value;
 use utoipa::OpenApi;
 use wind_ai::message::ReqConfig;
@@ -173,3 +176,12 @@ use wind_mcp::client::{
     ))
 )]
 pub struct ApiDoc;
+
+fn openapi_doc() -> &'static Value {
+    static DOC: OnceLock<Value> = OnceLock::new();
+    DOC.get_or_init(|| serde_json::to_value(ApiDoc::openapi()).expect("OpenAPI 文档序列化失败"))
+}
+
+pub async fn serve_openapi_json() -> Json<&'static Value> {
+    Json(openapi_doc())
+}
