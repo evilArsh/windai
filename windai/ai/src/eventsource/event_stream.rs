@@ -285,8 +285,8 @@ where
                 Poll::Ready(Some(Err(err))) => return Poll::Ready(Some(Err(err.into()))),
                 Poll::Ready(None) => {
                     *this.state = EventStreamState::Terminated;
-                    if !this.buffer.is_empty() {
-                        // if
+                    if let Some(event) = this.builder.dispatch() {
+                        return Poll::Ready(Some(Ok(event)));
                     }
                     return Poll::Ready(None);
                 }
