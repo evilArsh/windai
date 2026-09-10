@@ -16,12 +16,10 @@ pub struct AgentDefinition {
     pub name: String,
     /// Agent 能力说明
     pub description: String,
-    /// Agent 作用域，决定它是全局复用还是某个 Topic 的专属副本。
-    pub scope: AgentScope,
     /// 当 scope 为 topic_local 时，表示该 Agent 专属的 Topic id。
     pub owner_topic_id: Option<i64>,
     /// 如果该 Agent 由全局 Agent 复制而来，记录来源 Agent id。
-    pub cloned_from_agent_id: Option<i64>,
+    pub cloned_from_id: Option<i64>,
     /// Agent 是否启用。
     pub active: bool,
     /// Agent 能力配置。
@@ -37,11 +35,8 @@ impl<'s> sqlx::FromRow<'s, DbRow> for AgentDefinition {
             key: row.get("key"),
             name: row.get("name"),
             description: row.get("description"),
-            scope: utils::parse_str_to(&row.get::<String, _>("scope")).map_err(|e| {
-                sqlx::Error::Decode(format!("deserialize agent scope: {}", e).into())
-            })?,
             owner_topic_id: row.get("owner_topic_id"),
-            cloned_from_agent_id: row.get("cloned_from_agent_id"),
+            cloned_from_id: row.get("cloned_from_id"),
             active: row.get("active"),
             data: utils::de_str_to(&row.get::<String, _>("data")).map_err(|e| {
                 sqlx::Error::Decode(format!("deserialize agent definition data: {}", e).into())
@@ -49,27 +44,6 @@ impl<'s> sqlx::FromRow<'s, DbRow> for AgentDefinition {
             created_at: row.get("created_at"),
         })
     }
-}
-
-/// Agent 作用域。
-#[derive(
-    utoipa::ToSchema,
-    Debug,
-    Serialize,
-    Deserialize,
-    Clone,
-    PartialEq,
-    Eq,
-    strum::EnumString,
-    strum::Display,
-)]
-#[serde(rename_all = "snake_case")]
-#[strum(serialize_all = "snake_case")]
-pub enum AgentScope {
-    /// 全局 Agent，可被多个 Topic 复用。
-    Global,
-    /// Topic 专属 Agent，通常由修改全局 Agent 能力配置时复制产生。
-    TopicLocal,
 }
 
 /// Agent 的能力配置。
@@ -144,12 +118,10 @@ pub struct CreateAgentDefinition {
     pub key: String,
     /// Agent 能力说明。
     pub description: String,
-    /// Agent 作用域。
-    pub scope: AgentScope,
     /// 当 scope 为 topic_local 时，表示该 Agent 专属的 Topic id。
     pub owner_topic_id: Option<i64>,
     /// 复制来源 Agent id。
-    pub cloned_from_agent_id: Option<i64>,
+    pub cloned_from_id: Option<i64>,
     /// 是否启用；None 时默认启用。
     pub active: Option<bool>,
     /// Agent 能力配置。
@@ -163,12 +135,10 @@ pub struct UpdateAgentDefinition {
     pub name: Option<String>,
     /// 新的 Agent 能力说明。
     pub description: Option<String>,
-    /// 新的 Agent 作用域。
-    pub scope: Option<AgentScope>,
     /// 新的所属 Topic id。
     pub owner_topic_id: Option<i64>,
     /// 新的复制来源 Agent id。
-    pub cloned_from_agent_id: Option<i64>,
+    pub cloned_from_id: Option<i64>,
     /// 新的启用状态。
     pub active: Option<bool>,
     /// 新的 Agent 能力配置。

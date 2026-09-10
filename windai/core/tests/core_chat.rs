@@ -50,7 +50,7 @@ fn test_agent_group1() -> Vec<CreateAgentDefinition> {
             description: "专业的项目/产品经理，善于将用户需求拆分并将任务分配给团队".into(),
             scope: AgentScope::Global,
             owner_topic_id: None,
-            cloned_from_agent_id: None,
+            cloned_from_id: None,
             active: Some(true),
             data: AgentDefinitionData::default(),
         },
@@ -62,7 +62,7 @@ fn test_agent_group1() -> Vec<CreateAgentDefinition> {
                     .into(),
             scope: AgentScope::Global,
             owner_topic_id: None,
-            cloned_from_agent_id: None,
+            cloned_from_id: None,
             active: Some(true),
             data: AgentDefinitionData::default(),
         },
@@ -72,7 +72,7 @@ fn test_agent_group1() -> Vec<CreateAgentDefinition> {
             description: "专业的计算机领域的律师，善于分析并规避项目中法律有关的问题".into(),
             scope: AgentScope::Global,
             owner_topic_id: None,
-            cloned_from_agent_id: None,
+            cloned_from_id: None,
             active: Some(true),
             data: AgentDefinitionData::default(),
         },
@@ -83,7 +83,7 @@ fn test_agent_group1() -> Vec<CreateAgentDefinition> {
                 "一个专业的rust后端开发工程师,擅长后端开发和架构设计，以及解决各种疑难杂症".into(),
             scope: AgentScope::Global,
             owner_topic_id: None,
-            cloned_from_agent_id: None,
+            cloned_from_id: None,
             active: Some(true),
             data: AgentDefinitionData::default(),
         },
@@ -216,7 +216,7 @@ async fn test_agent_chat() {
     let defs = wc
         .storage()
         .agent()
-        .list_definitions_by_topic(ctx.topic.id)
+        .list_sub_definitions_by_topic(ctx.topic.id)
         .await
         .unwrap();
     // 除开主agent

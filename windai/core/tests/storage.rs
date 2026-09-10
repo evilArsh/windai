@@ -390,7 +390,7 @@ async fn agent_binding_crud() {
             description: "first agent".into(),
             scope: AgentScope::Global,
             owner_topic_id: None,
-            cloned_from_agent_id: None,
+            cloned_from_id: None,
             active: Some(true),
             data: AgentDefinitionData::default(),
         })
@@ -403,7 +403,7 @@ async fn agent_binding_crud() {
             description: "second agent".into(),
             scope: AgentScope::Global,
             owner_topic_id: None,
-            cloned_from_agent_id: None,
+            cloned_from_id: None,
             active: Some(true),
             data: AgentDefinitionData::default(),
         })
@@ -416,7 +416,7 @@ async fn agent_binding_crud() {
             description: "third agent".into(),
             scope: AgentScope::Global,
             owner_topic_id: None,
-            cloned_from_agent_id: None,
+            cloned_from_id: None,
             active: Some(true),
             data: AgentDefinitionData::default(),
         })
@@ -474,7 +474,7 @@ async fn agent_binding_crud() {
     assert_eq!(got_def.name, "Agent B");
 
     // list_definitions_by_topic：只有 role != main 且 enabled 的绑定会关联出 definition
-    let defs = agent.list_definitions_by_topic(topic.id).await.unwrap();
+    let defs = agent.list_sub_definitions_by_topic(topic.id).await.unwrap();
     assert_eq!(defs.len(), 2, "main 绑定的 definition 不应出现在列表中");
     let mut def_ids: Vec<i64> = defs.iter().map(|d| d.id).collect();
     def_ids.sort_unstable();
@@ -885,7 +885,7 @@ async fn agent_definition_validates_builtin_binding_names() {
             description: "d".into(),
             scope: AgentScope::Global,
             owner_topic_id: None,
-            cloned_from_agent_id: None,
+            cloned_from_id: None,
             active: None,
             data: AgentDefinitionData {
                 builtin_mcp_servers: builtins,

@@ -21,7 +21,7 @@ use wind_mcp::client::registry::RegistryHandle;
 pub async fn list_agents(storage: &Storage, topic_id: i64) -> Result<ListAgentsResponse> {
     let agents = storage
         .agent()
-        .list_definitions_by_topic(topic_id)
+        .list_sub_definitions_by_topic(topic_id)
         .await?
         .into_iter()
         .map(|agent| AgentBindingView {

@@ -1,11 +1,16 @@
-use super::{executor::StorageExecutor, utils::ensure_affected};
+use super::{
+    agent::AgentStorage,
+    executor::StorageExecutor,
+    utils::{ensure_affected, next_id, now_ts},
+};
 use crate::{
     db::DbDriver,
+    delete_from,
     error::Result,
     insert,
     models::{ChatConfig, CreateTopic, Topic, UpdateTopic},
     select_fields,
-    storage::{TableName, next_id, now_ts},
+    storage::TableName,
     update, update_fields,
 };
 use sqlx::QueryBuilder;
@@ -30,27 +35,25 @@ impl TopicStorage {
         if ids.is_empty() {
             return Ok(());
         }
-
-        let mut builder = QueryBuilder::new(format!("DELETE FROM {} WHERE {} IN (", table, column));
-        let mut separated = builder.separated(", ");
+        let mut qb = delete_from!(table);
+        qb.push(" WHERE ").push_bind(column).push(" IN (");
+        let mut separated = qb.separated(", ");
         for id in ids {
             separated.push_bind(*id);
         }
         separated.push_unseparated(") ");
-        executor.execute(builder.build()).await?;
+        executor.execute(qb.build()).await?;
 
         Ok(())
     }
     pub async fn create(&self, data: CreateTopic) -> Result<Topic> {
         let id = next_id();
         let parent_id = data.parent_id;
-        let binding_id = data.binding_id;
         let now = now_ts();
         let mut qb = insert!(
             TableName::TOPICS,
             ("id", id),
             ("parent_id", parent_id),
-            ("binding_id", binding_id),
             ("label", data.label.clone()),
             ("icon", data.icon.clone()),
             ("created_at", now),
@@ -60,7 +63,6 @@ impl TopicStorage {
         Ok(Topic {
             id,
             parent_id,
-            binding_id,
             label: data.label,
             icon: data.icon,
             created_at: now,
@@ -79,9 +81,11 @@ impl TopicStorage {
     }
 
     /// 获取所有 topic
+    ///
+    /// 目前只获取根topic
     pub async fn list_topics(&self) -> Result<Vec<Topic>> {
         let mut qb = Self::select_topic();
-        qb.push(" WHERE binding_id IS NULL ");
+        qb.push(" WHERE parent_id IS NULL ");
         qb.push(" ORDER BY id ASC ");
         let rows = self
             .executor
@@ -116,49 +120,20 @@ impl TopicStorage {
         Ok(row)
     }
 
-    pub async fn get_topic_by_binding_id(
-        &self,
-        parent_topic: i64,
-        binding_id: i64,
-    ) -> Result<Option<Topic>> {
-        let mut qb = Self::select_topic();
-        qb.push(" WHERE binding_id = ").push_bind(binding_id);
-        qb.push(" AND parent_id = ").push_bind(parent_topic);
-        let row = self
-            .executor
-            .fetch_optional(qb.build_query_as::<Topic>())
-            .await?;
-
-        Ok(row)
-    }
-
     pub async fn delete_topics(&self, ids: &[i64]) -> Result<()> {
         self.executor
             .with_tx(|executor| async move {
-                Self::batch_delete_by_ids(&executor, TableName::MESSAGES, "topic_id", ids).await?;
+                let agent = AgentStorage::new(executor.clone());
+                let binding_ids = (agent.batch_get_bindings_by_topics(ids).await?)
+                    .into_iter()
+                    .map(|b| b.id)
+                    .collect::<Vec<i64>>();
 
-                if !ids.is_empty() {
-                    let mut qb = QueryBuilder::new("DELETE FROM ");
-                    qb.push(TableName::CHAT_CONFIGS)
-                        .push(" WHERE id IN (SELECT chat_config_id FROM ")
-                        .push(TableName::TOPIC_AGENT_BINDINGS)
-                        .push(" WHERE parent_topic_id IN (");
-                    let mut separated = qb.separated(", ");
-                    for id in ids {
-                        separated.push_bind(*id);
-                    }
-                    separated.push_unseparated(")) ");
-                    executor.execute(qb.build()).await?;
-                }
-
-                Self::batch_delete_by_ids(
-                    &executor,
-                    TableName::TOPIC_AGENT_BINDINGS,
-                    "parent_topic_id",
-                    ids,
-                )
-                .await?;
-                Self::batch_delete_by_ids(&executor, TableName::TOPICS, "id", ids).await?;
+                // 删除只属于该topic的agent_definitions
+                agent.batch_delete_definitions_by_topics(ids).await?;
+                // 批量删除binding
+                agent.delete_bindings(&binding_ids).await?;
+                // 删除所有审批记录
                 Self::batch_delete_by_ids(
                     &executor,
                     TableName::TOOL_APPROVAL_REQUESTS,
@@ -166,6 +141,8 @@ impl TopicStorage {
                     ids,
                 )
                 .await?;
+                // 删除所有topic
+                Self::batch_delete_by_ids(&executor, TableName::TOPICS, "id", ids).await?;
                 Ok(())
             })
             .await
@@ -251,14 +228,7 @@ impl TopicStorage {
     fn select_topic<'a>() -> sqlx::QueryBuilder<'a, DbDriver> {
         select_fields!(
             TableName::TOPICS,
-            (
-                "id",
-                "parent_id",
-                "binding_id",
-                "label",
-                "icon",
-                "created_at"
-            )
+            ("id", "parent_id", "label", "icon", "created_at")
         )
     }
 }

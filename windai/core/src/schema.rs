@@ -37,7 +37,6 @@ CREATE TABLE IF NOT EXISTS credentials (
 CREATE TABLE IF NOT EXISTS topics (
     id              BIGINT  PRIMARY KEY,
     parent_id       BIGINT,
-    binding_id      BIGINT,
     label           TEXT    NOT NULL,
     icon            TEXT,
     created_at      BIGINT,
@@ -49,7 +48,7 @@ CREATE TABLE IF NOT EXISTS messages (
     stream          BOOLEAN NOT NULL DEFAULT 0,
     content         TEXT    NOT NULL DEFAULT '[]',
     model_id        BIGINT NOT NULL,
-    topic_id        BIGINT NOT NULL,
+    binding_id      BIGINT NOT NULL,
     is_boundary     BOOLEAN NOT NULL,
     is_excluded     BOOLEAN NOT NULL,
     input_tokens    BIGINT NOT NULL DEFAULT 0,
@@ -105,9 +104,8 @@ CREATE TABLE IF NOT EXISTS agent_definitions (
     key                     TEXT    NOT NULL UNIQUE,
     name                    TEXT    NOT NULL,
     description             TEXT    NOT NULL,
-    scope                   TEXT    NOT NULL DEFAULT 'global',
     owner_topic_id          BIGINT,
-    cloned_from_agent_id    BIGINT,
+    cloned_from_id          BIGINT,
     active                  BOOLEAN NOT NULL DEFAULT 1,
     data                    TEXT    NOT NULL DEFAULT '{}',
     created_at              BIGINT,
@@ -115,7 +113,7 @@ CREATE TABLE IF NOT EXISTS agent_definitions (
 );
 CREATE TABLE IF NOT EXISTS topic_agent_bindings (
     id              BIGINT  PRIMARY KEY,
-    parent_topic_id BIGINT  NOT NULL,
+    topic_id        BIGINT  NOT NULL,
     agent_id        BIGINT  NOT NULL,
     role            TEXT    NOT NULL,
     model_id        BIGINT,
@@ -129,7 +127,6 @@ CREATE TABLE IF NOT EXISTS topic_agent_bindings (
 );
 CREATE TABLE IF NOT EXISTS tool_approval_requests (
     id                  BIGINT  PRIMARY KEY,
-    parent_topic_id     BIGINT,
     topic_id            BIGINT  NOT NULL,
     message_id          BIGINT  NOT NULL,
     binding_id          BIGINT  NOT NULL,

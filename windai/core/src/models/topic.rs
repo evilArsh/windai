@@ -9,8 +9,8 @@ pub struct Topic {
     pub id: i64,
     /// 父话题id
     pub parent_id: Option<i64>,
-    /// agent binding id
-    pub binding_id: Option<i64>,
+    // /// agent binding id
+    // pub binding_id: Option<i64>,
     /// 话题标签
     pub label: String,
     /// 话题图标
@@ -23,7 +23,7 @@ impl<'s> sqlx::FromRow<'s, DbRow> for Topic {
     fn from_row(row: &'s DbRow) -> Result<Self, sqlx::Error> {
         Ok(Topic {
             id: row.get("id"),
-            binding_id: row.get("binding_id"),
+            // binding_id: row.get("binding_id"),
             icon: row.get("icon"),
             created_at: row.get("created_at"),
             parent_id: row.get("parent_id"),
@@ -55,8 +55,8 @@ impl Default for ToolApprovalPolicy {
 pub struct CreateTopic {
     /// 父话题id
     pub parent_id: Option<i64>,
-    /// agent binding id
-    pub binding_id: Option<i64>,
+    // /// agent binding id
+    // pub binding_id: Option<i64>,
     /// 话题标签
     pub label: String,
     /// 话题图标

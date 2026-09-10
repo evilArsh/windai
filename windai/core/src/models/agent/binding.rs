@@ -39,8 +39,8 @@ pub enum AgentStatus {
 #[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct AgentBinding {
     pub id: i64,
-    /// 该binding的父Topic id。
-    pub parent_topic_id: i64,
+    /// 该binding的Topic id。
+    pub topic_id: i64,
     /// 被绑定的 AgentDefinition id。
     pub agent_id: i64,
     /// 该Agent运行模式。
@@ -65,7 +65,7 @@ impl<'s> sqlx::FromRow<'s, DbRow> for AgentBinding {
     fn from_row(row: &'s DbRow) -> Result<Self, sqlx::Error> {
         Ok(Self {
             id: row.get("id"),
-            parent_topic_id: row.get("parent_topic_id"),
+            topic_id: row.get("topic_id"),
             agent_id: row.get("agent_id"),
             role: utils::parse_str_to(&row.get::<String, _>("role")).map_err(|e| {
                 sqlx::Error::Decode(format!("deserialize binding role: {}", e).into())
@@ -147,7 +147,7 @@ pub enum AgentRole {
 #[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct CreateAgentBinding {
     /// 该binding的父Topic id。
-    pub parent_topic_id: i64,
+    pub topic_id: i64,
     /// 被绑定的 AgentDefinition id。
     pub agent_id: i64,
     /// Agent 在当前 Topic 中的角色。

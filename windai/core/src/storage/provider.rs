@@ -1,6 +1,9 @@
 use wind_ai::model::AdapterType;
 
-use super::{executor::StorageExecutor, now_ts, utils::ensure_affected};
+use super::{
+    executor::StorageExecutor,
+    utils::{ensure_affected, next_id, now_ts},
+};
 use crate::{
     delete_by_id,
     error::{CoreError, Result},
@@ -10,7 +13,7 @@ use crate::{
         UpdateJsonRule, UpdateProvider,
     },
     select_fields,
-    storage::{TableName, next_id},
+    storage::TableName,
     update,
 };
 use sqlx::QueryBuilder;
@@ -206,7 +209,7 @@ impl ProviderStorage {
         let id = next_id();
         let now = now_ts();
         let mut qb = insert!(
-            "credentials",
+            TableName::CREDENTIALS,
             ("id", id),
             ("provider_id", data.provider_id),
             ("key", data.key.clone()),
@@ -225,7 +228,7 @@ impl ProviderStorage {
 
     pub async fn get_provider_credentials(&self, provider_id: i64) -> Result<Vec<Credentials>> {
         let mut qb = select_fields!(
-            "credentials",
+            TableName::CREDENTIALS,
             ("id", "provider_id", "key", "active", "created_at")
         );
         qb.push(" WHERE provider_id = ")
@@ -241,7 +244,7 @@ impl ProviderStorage {
     }
 
     pub async fn delete_credentials(&self, id: i64) -> Result<()> {
-        let mut qb = delete_by_id!("credentials", id);
+        let mut qb = delete_by_id!(TableName::CREDENTIALS, id);
         ensure_affected(self.executor.execute(qb.build()).await?)
     }
 
@@ -249,7 +252,7 @@ impl ProviderStorage {
         let id = next_id();
         let now = now_ts();
         let mut qb = insert!(
-            "json_rule",
+            TableName::JSONRULE,
             ("id", id),
             ("provider_id", data.provider_id),
             ("adapter", data.adapter.to_string()),
@@ -270,7 +273,7 @@ impl ProviderStorage {
 
     pub async fn update_json_rule(&self, id: i64, data: UpdateJsonRule) -> Result<()> {
         let mut qb = update!(
-            "json_rule",
+            TableName::JSONRULE,
             id,
             ("provider_id", data.provider_id),
             ("adapter", data.adapter.map(|a| a.to_string())),
@@ -282,7 +285,7 @@ impl ProviderStorage {
 
     pub async fn list_json_rules(&self, provider_id: i64) -> Result<Vec<JsonRule>> {
         let mut qb = select_fields!(
-            "json_rule",
+            TableName::JSONRULE,
             (
                 "id",
                 "provider_id",
@@ -312,7 +315,7 @@ impl ProviderStorage {
         adapter: AdapterType,
     ) -> Result<Option<JsonRule>> {
         let mut qb = select_fields!(
-            "json_rule",
+            TableName::JSONRULE,
             (
                 "id",
                 "provider_id",
@@ -338,7 +341,7 @@ impl ProviderStorage {
 
     pub async fn get_json_rule_by_id(&self, id: i64) -> Result<Option<JsonRule>> {
         let mut qb = get_by_id!(
-            "json_rule",
+            TableName::JSONRULE,
             id,
             (
                 "id",
@@ -358,7 +361,7 @@ impl ProviderStorage {
     }
 
     pub async fn delete_json_rule(&self, id: i64) -> Result<()> {
-        let mut qb = delete_by_id!("json_rule", id);
+        let mut qb = delete_by_id!(TableName::JSONRULE, id);
         ensure_affected(self.executor.execute(qb.build()).await?)
     }
 }

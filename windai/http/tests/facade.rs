@@ -200,7 +200,7 @@ async fn agent_crud_roundtrips() {
             description: "main agent".into(),
             scope: AgentScope::Global,
             owner_topic_id: None,
-            cloned_from_agent_id: None,
+            cloned_from_id: None,
             active: None,
             data: AgentDefinitionData::default(),
         })
@@ -284,7 +284,7 @@ async fn agent_definition_accepts_valid_builtin_mcp_name() {
             description: "x".into(),
             scope: AgentScope::Global,
             owner_topic_id: None,
-            cloned_from_agent_id: None,
+            cloned_from_id: None,
             active: None,
             data: AgentDefinitionData {
                 builtin_mcp_servers: vec![BuiltinMcpBinding {

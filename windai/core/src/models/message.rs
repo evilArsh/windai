@@ -22,8 +22,8 @@ pub struct Message {
     pub content: Vec<message::Message>,
     /// 模型ID
     pub model_id: i64,
-    /// 消息所在的会话主题id
-    pub topic_id: i64,
+    /// 消息所在的agent_binding_id
+    pub binding_id: i64,
     /// 标识当前消息作为聊天上下文分割点
     pub is_boundary: bool,
     /// 被排除的消息不会作为对话上下文
@@ -52,7 +52,7 @@ impl<'s> sqlx::FromRow<'s, DbRow> for Message {
             stream: row.try_get("stream")?,
             content: parsed_content,
             model_id: row.try_get("model_id")?,
-            topic_id: row.try_get("topic_id")?,
+            binding_id: row.try_get("binding_id")?,
             is_boundary: row.try_get("is_boundary")?,
             is_excluded: row.try_get("is_excluded")?,
             input_tokens: row.try_get("input_tokens")?,
@@ -92,7 +92,7 @@ pub struct CreateMessage {
     pub stream: bool,
     pub content: Vec<message::Message>,
     pub model_id: i64,
-    pub topic_id: i64,
+    pub binding_id: i64,
     pub is_boundary: bool,
     pub is_exclude: bool,
     pub input_tokens: i32,

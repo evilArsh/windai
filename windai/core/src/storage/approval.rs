@@ -7,13 +7,13 @@ use crate::{
         agent::{CreateToolApprovalRequests, ToolApprovalRequest, ToolApprovalStatus},
     },
     select_fields,
-    storage::{TableName, next_id, now_ts},
+    storage::TableName,
     update,
 };
 
 use super::{
     executor::StorageExecutor,
-    utils::{self, ensure_affected},
+    utils::{self, ensure_affected, next_id, now_ts},
 };
 
 #[derive(Clone)]
@@ -33,7 +33,6 @@ impl ToolApprovalStorage {
         if input.calls.is_empty() {
             return Ok(Vec::new());
         }
-
         struct PreparedApproval {
             id: i64,
             tool_call_id: String,
@@ -57,7 +56,6 @@ impl ToolApprovalStorage {
             TableName::TOOL_APPROVAL_REQUESTS,
             (
                 "id",
-                "parent_topic_id",
                 "topic_id",
                 "message_id",
                 "binding_id",
@@ -71,7 +69,6 @@ impl ToolApprovalStorage {
         );
         qb.push_values(rows.iter(), |mut b, item| {
             b.push_bind(item.id);
-            b.push_bind(input.parent_topic_id);
             b.push_bind(input.topic_id);
             b.push_bind(input.message_id);
             b.push_bind(input.binding_id);
@@ -90,7 +87,6 @@ impl ToolApprovalStorage {
                 id: row.id,
                 binding_id: input.binding_id,
                 topic_id: input.topic_id,
-                parent_topic_id: input.parent_topic_id,
                 message_id: input.message_id,
                 tool_call_id: row.tool_call_id,
                 tool_name: row.tool_name,
@@ -194,7 +190,6 @@ impl ToolApprovalStorage {
             TableName::TOOL_APPROVAL_REQUESTS,
             (
                 "id",
-                "parent_topic_id",
                 "topic_id",
                 "message_id",
                 "binding_id",

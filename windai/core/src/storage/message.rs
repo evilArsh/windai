@@ -1,7 +1,6 @@
 use super::{
     executor::StorageExecutor,
-    now_ts,
-    utils::{self, ensure_affected},
+    utils::{self, ensure_affected, next_id, now_ts},
 };
 use crate::{
     db::DbDriver,
@@ -10,7 +9,7 @@ use crate::{
     insert,
     models::{CreateMessage, Message, UpdateMessage},
     select_fields,
-    storage::{TableName, next_id},
+    storage::TableName,
     update,
 };
 use sqlx::QueryBuilder;
@@ -33,7 +32,7 @@ impl MessageStorage {
                 "stream",
                 "content",
                 "model_id",
-                "topic_id",
+                "binding_id",
                 "is_boundary",
                 "is_excluded",
                 "input_tokens",
@@ -54,7 +53,7 @@ impl MessageStorage {
             ("stream", data.stream),
             ("content", utils::vec_to_str_default(Some(&data.content))?),
             ("model_id", data.model_id),
-            ("topic_id", data.topic_id),
+            ("binding_id", data.binding_id),
             ("is_boundary", data.is_boundary),
             ("is_excluded", data.is_exclude),
             ("input_tokens", data.input_tokens),
@@ -69,7 +68,7 @@ impl MessageStorage {
             stream: data.stream,
             content: data.content,
             model_id: data.model_id,
-            topic_id: data.topic_id,
+            binding_id: data.binding_id,
             is_boundary: data.is_boundary,
             is_excluded: data.is_exclude,
             input_tokens: data.input_tokens,
@@ -163,14 +162,14 @@ impl MessageStorage {
             })
             .await
     }
-    /// 查询 topic_id 下所有的消息
-    pub async fn list_by_topic(&self, topic_id: i64) -> Result<Vec<Message>> {
+    /// 查询 binding_id 下所有的消息
+    pub async fn list_by_topic(&self, binding_id: i64) -> Result<Vec<Message>> {
         let rows = self
             .executor
             .fetch_all(
                 Self::select_common()
-                    .push(" WHERE topic_id = ")
-                    .push_bind(topic_id)
+                    .push(" WHERE binding_id = ")
+                    .push_bind(binding_id)
                     .push(" ORDER BY id ASC ")
                     .build_query_as::<Message>(),
             )
@@ -179,22 +178,22 @@ impl MessageStorage {
         Ok(rows)
     }
 
-    /// 查询 topic_id 下所有消息
+    /// 查询 binding_id 下所有消息
     ///
     /// 获取从最新一条含有 is_boundary = true 的消息开始往后所有的消息
-    pub async fn list_contexts(&self, topic_id: i64) -> Result<Vec<Message>> {
+    pub async fn list_contexts(&self, binding_id: i64) -> Result<Vec<Message>> {
         let rows = self
             .executor
             .fetch_all(
                 Self::select_common()
-                    .push(" WHERE topic_id = ")
-                    .push_bind(topic_id)
+                    .push(" WHERE binding_id = ")
+                    .push_bind(binding_id)
                     .push(" AND is_excluded = ")
                     .push_bind(0)
                     .push(" AND id > COALESCE((SELECT MAX(id) FROM ")
                     .push(TableName::MESSAGES)
-                    .push(" WHERE is_boundary = 1 AND topic_id = ")
-                    .push_bind(topic_id)
+                    .push(" WHERE is_boundary = 1 AND binding_id = ")
+                    .push_bind(binding_id)
                     .push("), 0)")
                     .push(" ORDER BY id ASC ")
                     .build_query_as::<Message>(),

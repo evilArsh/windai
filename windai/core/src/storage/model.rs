@@ -1,6 +1,6 @@
 use super::{
     executor::StorageExecutor,
-    utils::{self, ensure_affected},
+    utils::{self, ensure_affected, next_id, now_ts},
 };
 use crate::{
     delete_by_id,
@@ -8,7 +8,7 @@ use crate::{
     get_by_id, insert,
     models::{CreateModel, Model, UpdateModel},
     select_fields,
-    storage::{TableName, next_id},
+    storage::TableName,
     update,
 };
 #[derive(Clone)]
@@ -26,7 +26,7 @@ impl ModelStorage {
             return Err(CoreError::Validation("model name cannot be empty".into()));
         }
         let id = next_id();
-        let now = crate::storage::now_ts();
+        let now = now_ts();
         let active = data.active.unwrap_or(true);
         let modalities = utils::vec_to_str_default(data.modalities.as_deref())?;
         let mut qb = insert!(

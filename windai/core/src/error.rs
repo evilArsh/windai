@@ -3,13 +3,13 @@ pub enum CoreError {
     #[error(transparent)]
     Database(#[from] sqlx::Error),
 
-    #[error("row not found: {0}")]
+    #[error("Row not found: {0}")]
     RowNotFound(String),
 
-    #[error("validation error: {0}")]
+    #[error("Validation error: {0}")]
     Validation(String),
 
-    #[error("chat error: {0}")]
+    #[error("Chat error: {0}")]
     Chat(String),
 
     #[error(transparent)]

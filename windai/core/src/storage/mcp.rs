@@ -1,8 +1,7 @@
-use sqlx::QueryBuilder;
-
+// use sqlx::QueryBuilder;
 use super::{
     executor::StorageExecutor,
-    utils::{self, ensure_affected},
+    utils::{self, ensure_affected, ensure_lte_one, next_id, now_ts},
 };
 use crate::{
     db::DbDriver,
@@ -11,7 +10,7 @@ use crate::{
     insert,
     models::{CreateMcpServer, McpServerParam, UpdateMcpServer},
     select_fields,
-    storage::{TableName, next_id},
+    storage::TableName,
     update,
 };
 #[derive(Clone)]
@@ -30,14 +29,8 @@ impl McpStorage {
                 "mcp server name cannot be empty".into(),
             ));
         }
-        if wind_mcp::builtin::is_builtin_name(&data.name) {
-            return Err(CoreError::Validation(format!(
-                "mcp server name {} is reserved for builtin",
-                data.name
-            )));
-        }
         let id = next_id();
-        let now = crate::storage::now_ts();
+        let now = now_ts();
         let args = utils::vec_to_str_default(data.args.as_deref())?;
         let env = utils::map_to_str_default(data.env.as_ref())?;
         let mut qb = insert!(
@@ -85,7 +78,7 @@ impl McpStorage {
         ensure_affected(self.executor.execute(qb.build()).await?)
     }
 
-    fn common_select<'a>() -> QueryBuilder<'a, DbDriver> {
+    fn common_select<'a>() -> sqlx::QueryBuilder<'a, DbDriver> {
         select_fields!(
             TableName::MCP_SERVERS,
             (
@@ -115,12 +108,16 @@ impl McpStorage {
     /// 通过服务名字查询
     pub async fn get_by_name(&self, name: &str) -> Result<Option<McpServerParam>> {
         let mut qb = Self::common_select();
-        let row = qb
-            .push(" WHERE name = ")
-            .push_bind(name)
-            .build_query_as::<McpServerParam>();
-        let row = self.executor.fetch_optional(row).await?;
-        Ok(row)
+        ensure_lte_one(
+            self.executor
+                .fetch_all(
+                    qb.push(" WHERE name = ")
+                        .push_bind(name)
+                        .build_query_as::<McpServerParam>(),
+                )
+                .await?,
+            Some(format!("mcp server name: {}", name.to_string())),
+        )
     }
 
     /// 通过MCP服务名字批量查询

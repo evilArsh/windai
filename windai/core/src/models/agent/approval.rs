@@ -10,10 +10,8 @@ pub struct ToolApprovalRequest {
     pub id: i64,
     /// agent binding id
     pub binding_id: i64,
-    /// 实际产生 tool request 的 Topic id。
+    /// 产生 tool request 的 topic id。
     pub topic_id: i64,
-    /// 父Topic id
-    pub parent_topic_id: i64,
     /// 包含 tool request 的 assistant message id。
     pub message_id: i64,
     /// 模型生成的 tool call id。
@@ -34,7 +32,6 @@ impl<'s> sqlx::FromRow<'s, DbRow> for ToolApprovalRequest {
     fn from_row(row: &'s DbRow) -> Result<Self, sqlx::Error> {
         Ok(Self {
             id: row.get("id"),
-            parent_topic_id: row.get("parent_topic_id"),
             topic_id: row.get("topic_id"),
             message_id: row.get("message_id"),
             binding_id: row.get("binding_id"),
@@ -86,9 +83,7 @@ pub struct ApprovalRecord {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CreateToolApprovalRequests {
     pub binding_id: i64,
-    /// 审批所属的 root Topic id。
-    pub parent_topic_id: i64,
-    /// 实际产生 tool request 的 Topic id。
+    /// 产生 tool request 的 topic id。
     pub topic_id: i64,
     /// 包含 tool request 的 assistant message id。
     pub message_id: i64,

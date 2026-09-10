@@ -87,7 +87,7 @@ impl AgentStorageFacade {
             .core
             .storage()
             .agent()
-            .list_definitions_by_topic(topic_id)
+            .list_sub_definitions_by_topic(topic_id)
             .await
         {
             Ok(rows) => ApiResponse::ok(rows),
@@ -147,7 +147,7 @@ impl AgentStorageFacade {
             Ok(Some(_)) => {}
             Err(e) => return map_core_error(e),
         }
-        match self.core.storage().agent().delete_binding(id).await {
+        match self.core.storage().agent().delete_bindings(id).await {
             Ok(()) => ApiResponse::ok(()),
             Err(e) => map_core_error(e),
         }
