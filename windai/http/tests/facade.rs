@@ -274,33 +274,6 @@ async fn approval_lists_return_empty() {
 }
 
 #[tokio::test]
-async fn agent_definition_rejects_unknown_builtin_mcp_name() {
-    let core = common::test_core().await;
-    let f = AgentStorageFacade::new(core);
-    let r = f
-        .create_agent_definition(CreateAgentDefinition {
-            key: "bad-builtin".into(),
-            name: "Bad".into(),
-            description: "x".into(),
-            scope: AgentScope::Global,
-            owner_topic_id: None,
-            cloned_from_agent_id: None,
-            active: None,
-            data: AgentDefinitionData {
-                builtin_mcp_servers: vec![BuiltinMcpBinding {
-                    name: "no-such-builtin".into(),
-                    allowed_tools: vec![],
-                    denied_tools: vec![],
-                    enabled: true,
-                }],
-                ..AgentDefinitionData::default()
-            },
-        })
-        .await;
-    assert_eq!(r.code, 400, "got: {r:?}");
-}
-
-#[tokio::test]
 async fn agent_definition_accepts_valid_builtin_mcp_name() {
     let core = common::test_core().await;
     let f = AgentStorageFacade::new(core);

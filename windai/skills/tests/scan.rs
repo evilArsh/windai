@@ -1,6 +1,7 @@
 mod common;
 
 use common::TempDir;
+use std::path::Path;
 use wind_skills::scan;
 
 fn names(metas: &[wind_skills::SkillsMeta]) -> Vec<&str> {
@@ -41,7 +42,13 @@ fn scan_deduplicates_by_name() {
     // 按路径排序先扫到 x，保留先到者
     assert_eq!(metas.len(), 1);
     assert_eq!(metas[0].name, "same");
-    assert!(metas[0].skill_dir.ends_with("x"));
+    // skill_dir 是规范化绝对路径，取末段文件名判断落在哪个目录
+    assert_eq!(
+        Path::new(&metas[0].skill_dir)
+            .file_name()
+            .and_then(|n| n.to_str()),
+        Some("x")
+    );
 }
 
 #[test]

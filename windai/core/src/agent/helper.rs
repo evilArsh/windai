@@ -387,9 +387,9 @@ async fn create_context_inner(
     contexts.push(user_content);
 
     let mut sys_p = vec![Content::new_text(format!(
-        "<app_data_directory>\n{}\n</app_data_directory>\n
-        <current_working_directory>\n{}\n</current_working_directory>\n
-        <skills_resource_directory>\n{}\n</skills_resource_directory>\n",
+        "<AppDataDirectory>\n{}\n</AppDataDirectory>\n
+        <CurrentWorkingDirectory>\n{}\n</CurrentWorkingDirectory>\n
+        <SkillsResourceDirectory>\n{}\n</SkillsResourceDirectory>\n",
         app_dirs().root_dir().to_string_lossy(),
         cwd.to_string_lossy().to_string(),
         app_dirs().skills_dir().to_string_lossy(),
@@ -548,6 +548,11 @@ async fn assemble_prompt(storage: &Storage, agent: &AgentDefinition) -> Result<O
     if prompts.is_empty() {
         Ok(None)
     } else {
-        Ok(Some(prompts.join("\n\n")))
+        let joined = prompts
+            .into_iter()
+            .map(|content| format!("<Prompt>\n{content}\n</Prompt>"))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        Ok(Some(joined))
     }
 }

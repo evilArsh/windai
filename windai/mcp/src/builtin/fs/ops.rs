@@ -573,7 +573,7 @@ mod tests {
         }
 
         fn write(&self, rel: &str, content: &[u8]) {
-            let path = self.path.join(rel);
+            let path = self.path.join(rel_path(rel));
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).expect("create parent dir");
             }
@@ -583,6 +583,17 @@ mod tests {
         fn path(&self) -> &Path {
             &self.path
         }
+    }
+
+    /// 把 `/` 分隔的相对路径按平台分隔符安全拼接，避免 Windows 上出现 `\` 与 `/` 混用。
+    fn rel_path(rel: &str) -> PathBuf {
+        rel.split('/').collect()
+    }
+
+    /// `rel_path` 的字符串形式，用于与 `list_dir` 返回的相对路径条目名比对
+    /// （`list_dir` 走的是 `strip_prefix`，返回平台原生分隔符）。
+    fn rel_name(rel: &str) -> String {
+        rel_path(rel).to_string_lossy().into_owned()
     }
 
     impl Drop for TempDir {
@@ -600,6 +611,7 @@ mod tests {
         let dir = TempDir::new("list");
         dir.write("a.txt", b"aaa");
         dir.write("sub/b.txt", b"bbb");
+        let nested = rel_name("sub/b.txt");
 
         let sb = sandbox(&dir);
         let result = list_dir(&sb, dir.path().to_path_buf(), None, None);
@@ -609,7 +621,7 @@ mod tests {
         let names: Vec<&str> = result.entries.iter().map(|e| e.name.as_str()).collect();
         assert!(names.contains(&"a.txt"));
         assert!(names.contains(&"sub"));
-        assert!(names.contains(&"sub/b.txt"));
+        assert!(names.contains(&nested.as_str()));
     }
 
     #[test]
@@ -617,6 +629,7 @@ mod tests {
         let dir = TempDir::new("list-nr");
         dir.write("a.txt", b"aaa");
         dir.write("sub/b.txt", b"bbb");
+        let nested = rel_name("sub/b.txt");
 
         let sb = sandbox(&dir);
         let result = list_dir(&sb, dir.path().to_path_buf(), Some(false), None);
@@ -626,7 +639,7 @@ mod tests {
         let names: Vec<&str> = result.entries.iter().map(|e| e.name.as_str()).collect();
         assert!(names.contains(&"a.txt"));
         assert!(names.contains(&"sub"));
-        assert!(!names.contains(&"sub/b.txt"));
+        assert!(!names.contains(&nested.as_str()));
     }
 
     #[test]
@@ -764,11 +777,15 @@ mod tests {
         let dir = TempDir::new("write");
         let sb = sandbox(&dir);
 
-        let w = write_file(&sb, dir.path().join("x/y.txt"), "hello".to_string());
+        let w = write_file(
+            &sb,
+            dir.path().join(rel_path("x/y.txt")),
+            "hello".to_string(),
+        );
         assert_eq!(w.error, None);
         assert_eq!(w.bytes, 5);
 
-        let r = read_file(&sb, dir.path().join("x/y.txt"), None, None);
+        let r = read_file(&sb, dir.path().join(rel_path("x/y.txt")), None, None);
         assert_eq!(r.content, "hello");
     }
 
@@ -790,11 +807,16 @@ mod tests {
         let dir = TempDir::new("exec");
         let sb = sandbox(&dir);
 
+        #[cfg(windows)]
+        let (command, args) = ("powershell.exe", vec!["-Command", "echo", "hello"]);
+        #[cfg(unix)]
+        let (command, args) = ("echo", vec!["hello"]);
+
         let result = exec(
             &sb,
-            "echo".to_string(),
+            command.to_string(),
             dir.path().to_string_lossy().into_owned(),
-            Some(vec!["hello".to_string()]),
+            Some(args.into_iter().map(String::from).collect()),
             None,
             5000,
         )
@@ -878,7 +900,7 @@ mod tests {
 
         let w = write_file(
             &sb,
-            inside.path().join("evil/sub/f.txt"),
+            inside.path().join(rel_path("evil/sub/f.txt")),
             "owned".to_string(),
         );
         assert!(w.error.is_some(), "got: {w:?}");
@@ -901,7 +923,7 @@ mod tests {
         let names: Vec<&str> = result.entries.iter().map(|e| e.name.as_str()).collect();
         assert!(names.contains(&"leak"), "leak entry should exist");
         assert!(
-            !names.contains(&"leak/secret.txt"),
+            !names.contains(&rel_name("leak/secret.txt").as_str()),
             "must not recurse into symlink: {names:?}"
         );
         let leak = result.entries.iter().find(|e| e.name == "leak").unwrap();
@@ -920,12 +942,12 @@ mod tests {
 
         let w = write_file(
             &sb,
-            inside.path().join("link/file.txt"),
+            inside.path().join(rel_path("link/file.txt")),
             "hello".to_string(),
         );
         assert_eq!(w.error, None);
         assert_eq!(w.bytes, 5);
-        assert!(inside.path().join("real/file.txt").exists());
+        assert!(inside.path().join(rel_path("real/file.txt")).exists());
     }
 
     #[cfg(unix)]

@@ -1,6 +1,7 @@
 mod common;
 
 use common::TempDir;
+use std::path::Path;
 use wind_skills::{Error, from_path};
 
 #[test]
@@ -19,8 +20,9 @@ fn parse_minimal_skill() {
     assert_eq!(meta.compatibility, None);
     assert_eq!(meta.metadata, None);
     assert_eq!(meta.allowed_tools, None);
-    // skill_dir 是规范化绝对路径
-    assert!(meta.skill_dir.starts_with('/'));
+    // skill_dir 是规范化绝对路径（Windows 上 canonicalize 返回 `\\?\C:\...`，
+    // 不能靠 `/` 前缀判断，须用 Path::is_absolute）。
+    assert!(Path::new(&meta.skill_dir).is_absolute());
     assert!(meta.skill_dir.contains("parse-minimal"));
 }
 

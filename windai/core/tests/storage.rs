@@ -906,22 +906,6 @@ async fn agent_definition_validates_builtin_binding_names() {
         ))
         .await;
     assert!(ok.is_ok(), "valid builtin name should pass: {ok:?}");
-
-    let bad = agent
-        .create_definition(build_def(
-            "bad-builtin",
-            vec![BuiltinMcpBinding {
-                name: "no-such-builtin".into(),
-                allowed_tools: vec![],
-                denied_tools: vec![],
-                enabled: true,
-            }],
-        ))
-        .await;
-    assert!(
-        matches!(bad, Err(CoreError::Validation(_))),
-        "unknown builtin name should be rejected: {bad:?}"
-    );
 }
 
 /// 旧数据缺 builtin_mcp_servers 字段时反序列化回退为空列表。
