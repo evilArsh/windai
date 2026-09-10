@@ -71,22 +71,21 @@ impl TopicFsm {
                 Task(notify) => self.reduce_task_notification(&mut effects, notify),
                 Supervisor(request) => self.reduce_supervisor_request(&mut effects, request),
             },
-            FsmEvent::Start { spec, config } => {
-                let binding_id = spec.binding_id;
+            FsmEvent::Start { spec } => {
+                let binding_id = spec.binding.id;
                 self.main_binding_id = Some(binding_id);
                 self.state = TopicState::Running;
                 let task = self.fetch_task(binding_id);
-                effects.extend(task.reduce(TaskEvent::Start { spec, config }));
+                effects.extend(task.reduce(TaskEvent::Start { spec }));
             }
             FsmEvent::StartChild {
-                parent_binding_id,
+                main_binding_id: parent_binding_id,
                 spec,
-                config,
             } => {
-                let child_binding_id = spec.binding_id;
+                let child_binding_id = spec.binding.id;
                 self.apply_task(&mut effects, parent_binding_id, TaskEvent::ChildSpawned);
                 let task = self.fetch_task(child_binding_id);
-                effects.extend(task.reduce(TaskEvent::Start { spec, config }));
+                effects.extend(task.reduce(TaskEvent::Start { spec }));
             }
             FsmEvent::ChildResolved { parent_binding_id } => {
                 self.apply_task(&mut effects, parent_binding_id, TaskEvent::ChildResolved);
@@ -112,7 +111,7 @@ impl TopicFsm {
                 reply,
             } => {
                 effects.push(Effect::SpawnChild {
-                    parent_binding_id: binding_id,
+                    binding_id,
                     call_id,
                     request,
                     reply,
@@ -136,7 +135,6 @@ impl TopicFsm {
                     message_id,
                     index,
                     binding_id,
-                    parent_topic_id: self.topic_id,
                     data: delta,
                 }));
             }

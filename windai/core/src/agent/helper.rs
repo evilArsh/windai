@@ -1,17 +1,16 @@
-use std::path::PathBuf;
-
 use super::function_call::build_tools_from_mcp;
 use super::tool::{self, AgentBindingView, ListAgentsResponse};
 use crate::chat::runner::ChatContext;
 use crate::env::app_dirs;
 use crate::error::{CoreError, Result};
 use crate::models::{
-    AgentBinding, AgentDefinition, AgentMcpBinding, AgentRole, BuiltinMcpBinding, CreateMessage,
-    CreateToolApprovalCall, CreateToolApprovalRequests, CreateTopic, Message, ToolApprovalRequest,
-    Topic, UpdateAgentBinding,
+    AgentBinding, AgentDefinition, AgentMcpBinding, AgentRole, CreateMessage,
+    CreateToolApprovalCall, CreateToolApprovalRequests, Message, ToolApprovalRequest,
+    UpdateAgentBinding,
 };
 use crate::storage::Storage;
 use futures::future::{try_join, try_join5};
+use std::path::PathBuf;
 use wind_ai::message::{Content, Message as AiMessage, ReqConfig, Role};
 use wind_ai::tool::{FunctionCall, Tools};
 use wind_mcp::client::Tool;
@@ -41,40 +40,22 @@ pub async fn list_approval_requests(
     storage.approval().list_by_message(message_id).await
 }
 
-/// 创建当前Topic的子Topic，用于Agent对话隔离
-pub async fn create_sub_topic(
-    storage: &Storage,
-    parent_topic_id: i64,
-    binding_id: i64,
-    title: String,
-) -> Result<Topic> {
-    storage
-        .topic()
-        .create(CreateTopic {
-            label: title,
-            parent_id: Some(parent_topic_id),
-            binding_id: Some(binding_id),
-            icon: None,
-        })
-        .await
-}
-
-pub async fn get_message_contexts(storage: &Storage, topic_id: i64) -> Result<Vec<Message>> {
-    storage.message().list_contexts(topic_id).await
+pub async fn get_message_contexts(storage: &Storage, binding_id: i64) -> Result<Vec<Message>> {
+    storage.message().list_contexts(binding_id).await
 }
 
 pub async fn create_fork_contexts(
     cwd: &PathBuf,
     storage: &Storage,
-    main_agent_topic_id: i64,
-    agent_topic_id: i64,
+    main_binding_id: i64,
+    binding_id: i64,
     user_input: Vec<Content>,
     agent: &AgentDefinition,
     chat_ctx: &ChatContext,
 ) -> Result<(Message, Message, Vec<AiMessage>)> {
     let (mut main_raw, mut raw) = match try_join(
-        get_message_contexts(storage, main_agent_topic_id),
-        get_message_contexts(storage, agent_topic_id),
+        get_message_contexts(storage, main_binding_id),
+        get_message_contexts(storage, binding_id),
     )
     .await
     {
@@ -86,13 +67,7 @@ pub async fn create_fork_contexts(
 
     main_raw.append(&mut raw);
     create_context_inner(
-        cwd,
-        storage,
-        agent_topic_id,
-        user_input,
-        main_raw,
-        agent,
-        chat_ctx,
+        cwd, storage, binding_id, user_input, main_raw, agent, chat_ctx,
     )
     .await
 }
@@ -100,22 +75,13 @@ pub async fn create_fork_contexts(
 pub async fn create_contexts(
     cwd: &PathBuf,
     storage: &Storage,
-    agent_topic_id: i64,
+    binding_id: i64,
     user_input: Vec<Content>,
     agent: &AgentDefinition,
     chat_ctx: &ChatContext,
 ) -> Result<(Message, Message, Vec<AiMessage>)> {
-    let raw = get_message_contexts(storage, agent_topic_id).await?;
-    create_context_inner(
-        cwd,
-        storage,
-        agent_topic_id,
-        user_input,
-        raw,
-        agent,
-        chat_ctx,
-    )
-    .await
+    let raw = get_message_contexts(storage, binding_id).await?;
+    create_context_inner(cwd, storage, binding_id, user_input, raw, agent, chat_ctx).await
 }
 
 /// 获取当前Topic的主Agent绑定
@@ -132,17 +98,17 @@ pub async fn get_main_binding(storage: &Storage, topic_id: i64) -> Result<AgentB
 /// 通过Agent ID查找当前Topic下的绑定关系
 pub async fn get_binding_by_agent_id(
     storage: &Storage,
-    parent_topic_id: i64,
+    topic_id: i64,
     agent_id: i64,
 ) -> Result<AgentBinding> {
     storage
         .agent()
-        .get_binding_by_agent_id(parent_topic_id, agent_id)
+        .get_binding_by_agent_id(topic_id, agent_id)
         .await?
         .ok_or_else(|| {
             CoreError::RowNotFound(format!(
                 "agent binding by agent_id: {}, topic: {}",
-                agent_id, parent_topic_id
+                agent_id, topic_id
             ))
         })
 }
@@ -155,17 +121,6 @@ pub async fn get_binding_by_id(storage: &Storage, binding_id: i64) -> Result<Age
         .ok_or_else(|| CoreError::RowNotFound(format!("agent binding by id: {}", binding_id)))
 }
 
-/// 查询子 Agent 绑定的 Topic
-pub async fn get_topic_by_binding_id(
-    storage: &Storage,
-    parent_topic_id: i64,
-    binding_id: i64,
-) -> Result<Option<Topic>> {
-    storage
-        .topic()
-        .get_topic_by_binding_id(parent_topic_id, binding_id)
-        .await
-}
 /// 通过Agent ID获取Agent定义（会校验active状态）
 pub async fn get_def_by_id(storage: &Storage, agent_id: i64) -> Result<AgentDefinition> {
     let agent = storage
@@ -263,13 +218,12 @@ pub async fn get_base_info(
 /// 并发保存Assistant消息和工具审批请求
 pub async fn save_approval_state(
     storage: &Storage,
+    topic_id: i64,
     binding_id: i64,
-    parent_topic_id: i64,
     assistant: Message,
     calls: Vec<FunctionCall>,
 ) -> Result<Vec<ToolApprovalRequest>> {
     let message_id = assistant.id;
-    let agent_topic_id = assistant.topic_id;
     let ((), requests) = storage
         .with_tx(|storage| async move {
             storage
@@ -279,8 +233,7 @@ pub async fn save_approval_state(
             let requests = storage
                 .approval()
                 .create_requests(CreateToolApprovalRequests {
-                    parent_topic_id,
-                    topic_id: agent_topic_id,
+                    topic_id,
                     message_id,
                     binding_id,
                     calls: calls
@@ -335,7 +288,7 @@ pub fn transfer_contexts(raw: Vec<Message>) -> Result<Vec<AiMessage>> {
 async fn create_context_inner(
     cwd: &PathBuf,
     storage: &Storage,
-    agent_topic_id: i64,
+    binding_id: i64,
     user_input: Vec<Content>,
     raw_contexts: Vec<Message>,
     agent: &AgentDefinition,
@@ -356,11 +309,11 @@ async fn create_context_inner(
                     stream,
                     content: vec![content_cloned],
                     model_id: chat_ctx.model.id,
-                    topic_id: agent_topic_id,
                     is_boundary: false,
                     is_exclude: false,
                     input_tokens: 0,
                     output_tokens: 0,
+                    binding_id,
                 })
                 .await?;
 
@@ -371,11 +324,11 @@ async fn create_context_inner(
                     stream,
                     content: vec![],
                     model_id: chat_ctx.model.id,
-                    topic_id: agent_topic_id,
                     is_boundary: false,
                     is_exclude: false,
                     input_tokens: 0,
                     output_tokens: 0,
+                    binding_id,
                 })
                 .await?;
 
@@ -473,14 +426,27 @@ async fn build_agent_tools(
             .map(|binding| binding.mcp_server_id)
             .collect::<Vec<_>>();
         let servers = storage.mcp().batch_get_by_ids(&ids).await?;
-        let server_names = servers
+        let mut server_names = servers
             .into_iter()
             .map(|server| server.name)
             .collect::<Vec<_>>();
+        let mut buildin_server_names = agent
+            .data
+            .builtin_mcp_servers
+            .iter()
+            .filter_map(|binding| {
+                if binding.enabled {
+                    Some(binding.name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<String>>();
+        server_names.append(&mut buildin_server_names);
+
         if server_names.is_empty() {
             log::debug!("No MCP server found for agent: {}", agent.id);
         } else {
-            log::debug!("MCP server found for agent: {}", server_names.join(","));
             // 拼接出的 MCP 函数名包含了 server name
             let mcp_tools = mcp_registry.list_tools_by_names(&server_names).await?;
             let gates = enabled
@@ -493,31 +459,6 @@ async fn build_agent_tools(
                 .collect::<Vec<_>>();
             tools.extend(build_tools_from_mcp(filtered));
         }
-    }
-
-    let builtins = agent
-        .data
-        .builtin_mcp_servers
-        .iter()
-        .filter(|binding| binding.enabled)
-        .collect::<Vec<&BuiltinMcpBinding>>();
-    if !builtins.is_empty() {
-        let mut names = builtins
-            .iter()
-            .map(|b| b.name.clone())
-            .collect::<Vec<String>>();
-        names.sort();
-        names.dedup();
-        let mcp_tools = mcp_registry.list_tools_by_names(&names).await?;
-        let gates = builtins
-            .iter()
-            .map(|b| (b.allowed_tools.as_slice(), b.denied_tools.as_slice()))
-            .collect::<Vec<_>>();
-        let filtered = mcp_tools
-            .into_iter()
-            .filter(|tool| is_tool_allowed(tool, &gates))
-            .collect::<Vec<_>>();
-        tools.extend(build_tools_from_mcp(filtered));
     }
 
     Ok(Some(tools))

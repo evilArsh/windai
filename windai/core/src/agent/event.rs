@@ -1,5 +1,6 @@
 use crate::error::CoreError;
 use crate::error::Result;
+use crate::models::AgentMode;
 use crate::models::AgentStatus;
 use crate::models::Message;
 use crate::models::ToolApprovalRequest;
@@ -17,12 +18,10 @@ use super::task::TaskNotification;
 pub enum TopicEvent {
     /// 错误消息
     Error {
-        /// agent binding id
+        /// 来自指定 binding id 的错误
         binding_id: Option<i64>,
-        /// 产生该事件的话题id
-        topic_id: Option<i64>,
-        /// 父话题id
-        parent_topic_id: i64,
+        /// 话题id
+        topic_id: i64,
         /// 消息id
         message_id: Option<i64>,
         /// 错误信息
@@ -32,17 +31,17 @@ pub enum TopicEvent {
     Snapshot {
         /// agent binding id
         binding_id: i64,
-        /// 产生该事件的话题id
+        /// 话题id
         topic_id: i64,
-        /// 父话题id
-        parent_topic_id: i64,
         /// 全量消息
         messages: Vec<Message>,
     },
     /// 消息已创建
     MessageCreated {
-        /// 产生该事件的话题id
+        /// 话题id
         topic_id: i64,
+        /// binding id
+        binding_id: i64,
         /// 初始化消息
         data: Message,
     },
@@ -50,10 +49,8 @@ pub enum TopicEvent {
     Message {
         /// agent binding id
         binding_id: i64,
-        /// 产生该事件的话题id
+        /// 话题id
         topic_id: i64,
-        /// 父话题id
-        parent_topic_id: i64,
         /// 消息id
         message_id: i64,
         /// 消息索引，用于标识消息顺序
@@ -65,9 +62,7 @@ pub enum TopicEvent {
     MessageFinished {
         /// agent binding id
         binding_id: i64,
-        /// 父话题id
-        parent_topic_id: i64,
-        /// 产生该事件的话题id
+        /// 话题id
         topic_id: i64,
         // 消息id
         message_id: i64,
@@ -76,21 +71,19 @@ pub enum TopicEvent {
     TaskStatusChanged {
         /// agent binding id
         binding_id: i64,
-        /// 产生该事件的话题id
+        /// 话题id
         topic_id: i64,
-        /// 父话题id
-        parent_topic_id: i64,
         /// 任务状态
         status: AgentStatus,
+        /// 任务模式
+        mode: AgentMode,
     },
     /// 需要用户审批
     ApprovalRequired {
         /// agent binding id
         binding_id: i64,
-        /// 产生该事件的话题id
+        /// 话题id
         topic_id: i64,
-        /// 父话题id
-        parent_topic_id: i64,
         /// 消息id
         message_id: i64,
         /// 审批请求
@@ -131,7 +124,7 @@ impl std::fmt::Display for TopicEvent {
                 self.as_ref(),
                 format!(
                     "(topic_id = {}, binding_id = {}, error = {})",
-                    topic_id.map(|t| t.to_string()).unwrap_or_default(),
+                    topic_id.to_string(),
                     binding_id.map(|t| t.to_string()).unwrap_or_default(),
                     error
                 ),

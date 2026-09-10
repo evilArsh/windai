@@ -1,7 +1,6 @@
 use super::effect::Effect;
-use crate::agent::runtime::AgentRunConfig;
 use crate::agent::task::TaskSpec;
-use crate::models::{AgentStatus, Message};
+use crate::models::{AgentMode, AgentStatus, Message};
 use wind_ai::message::Content;
 use wind_ai::tool::FunctionCall;
 
@@ -24,10 +23,7 @@ pub enum TaskEvent {
     /// 任务已取消
     Cancelled,
     /// 启动任务
-    Start {
-        spec: TaskSpec,
-        config: AgentRunConfig,
-    },
+    Start { spec: TaskSpec },
     /// 子任务创建成功。
     ChildSpawned,
     /// 已审批，恢复运行。
@@ -56,7 +52,7 @@ impl std::fmt::Display for TaskEvent {
             ),
             TaskEvent::Cancelled => (name_ref, String::new()),
             TaskEvent::Start { spec, .. } => {
-                (name_ref, format!("(binding_id = {})", spec.binding_id))
+                (name_ref, format!("(binding_id = {})", spec.binding.id))
             }
             TaskEvent::ChildSpawned => (name_ref, String::new()),
             TaskEvent::ApprovalResolved => (name_ref, String::new()),
@@ -71,6 +67,7 @@ impl std::fmt::Display for TaskEvent {
 pub struct TaskFsm {
     binding_id: i64,
     state: AgentStatus,
+    mode: AgentMode,
 }
 
 impl TaskFsm {
@@ -78,6 +75,7 @@ impl TaskFsm {
         Self {
             binding_id,
             state: AgentStatus::Idle,
+            mode: AgentMode::Sync,
         }
     }
 
@@ -98,17 +96,15 @@ impl TaskFsm {
         // 借用取出判别值，避免后续 match 按值 move 后无法再访问 new_event。
         let is_cancel = matches!(&new_event, E::Cancel);
         match (from, new_event) {
-            (S::Idle | S::Finished | S::Failed | S::Cancelled, E::Start { spec, config }) => {
+            (S::Idle | S::Finished | S::Failed | S::Cancelled, E::Start { spec }) => {
                 self.state = S::Running;
+                self.mode = spec.mode;
                 vec![
-                    Effect::Start {
-                        binding_id,
-                        spec,
-                        config,
-                    },
+                    Effect::Start { spec },
                     Effect::PersistStatus {
                         binding_id,
                         status: self.state,
+                        mode: self.mode,
                     },
                 ]
             }
@@ -118,6 +114,7 @@ impl TaskFsm {
                     Effect::PersistStatus {
                         binding_id,
                         status: self.state,
+                        mode: self.mode,
                     },
                     Effect::Resume { binding_id },
                 ]
@@ -127,6 +124,7 @@ impl TaskFsm {
                 vec![Effect::PersistStatus {
                     binding_id,
                     status: self.state,
+                    mode: self.mode,
                 }]
             }
             (S::Running, E::ApprovalRequired { data, calls }) => {
@@ -135,6 +133,7 @@ impl TaskFsm {
                     Effect::PersistStatus {
                         binding_id,
                         status: self.state,
+                        mode: self.mode,
                     },
                     Effect::ApprovalRequest {
                         binding_id: self.binding_id,
@@ -148,6 +147,7 @@ impl TaskFsm {
                 vec![Effect::PersistStatus {
                     binding_id,
                     status: self.state,
+                    mode: self.mode,
                 }]
             }
             (S::Running, E::Finish { data }) => {
@@ -157,6 +157,7 @@ impl TaskFsm {
                     Effect::PersistStatus {
                         binding_id,
                         status: self.state,
+                        mode: self.mode,
                     },
                     Effect::Finish { binding_id, data },
                     Effect::SendChildResponse {
@@ -172,6 +173,7 @@ impl TaskFsm {
                     Effect::PersistStatus {
                         binding_id,
                         status: self.state,
+                        mode: self.mode,
                     },
                     Effect::Failed {
                         binding_id,
@@ -196,6 +198,7 @@ impl TaskFsm {
                     Effect::PersistStatus {
                         binding_id,
                         status: self.state,
+                        mode: self.mode,
                     },
                     Effect::SendChildResponse {
                         binding_id,

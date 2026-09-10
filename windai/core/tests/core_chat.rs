@@ -48,7 +48,6 @@ fn test_agent_group1() -> Vec<CreateAgentDefinition> {
             name: "test-main-agent".into(),
             key: "test-main-agent".into(),
             description: "专业的项目/产品经理，善于将用户需求拆分并将任务分配给团队".into(),
-            scope: AgentScope::Global,
             owner_topic_id: None,
             cloned_from_id: None,
             active: Some(true),
@@ -60,7 +59,6 @@ fn test_agent_group1() -> Vec<CreateAgentDefinition> {
             description:
                 "一个专业的前端vue/react开发工程师,擅长前端开发和架构设计，以及各种疑难杂症解决"
                     .into(),
-            scope: AgentScope::Global,
             owner_topic_id: None,
             cloned_from_id: None,
             active: Some(true),
@@ -70,7 +68,6 @@ fn test_agent_group1() -> Vec<CreateAgentDefinition> {
             name: "test-law-agent".into(),
             key: "test-law-agent".into(),
             description: "专业的计算机领域的律师，善于分析并规避项目中法律有关的问题".into(),
-            scope: AgentScope::Global,
             owner_topic_id: None,
             cloned_from_id: None,
             active: Some(true),
@@ -81,7 +78,6 @@ fn test_agent_group1() -> Vec<CreateAgentDefinition> {
             key: "test-backend-agent".into(),
             description:
                 "一个专业的rust后端开发工程师,擅长后端开发和架构设计，以及解决各种疑难杂症".into(),
-            scope: AgentScope::Global,
             owner_topic_id: None,
             cloned_from_id: None,
             active: Some(true),
@@ -152,7 +148,6 @@ async fn seed_chat_data(core: &WindCore, label: &str) -> TestContext {
         .storage()
         .topic()
         .create(CreateTopic {
-            binding_id: None,
             parent_id: None,
             label: format!("test-chat-{}", label),
             icon: None,
@@ -199,7 +194,7 @@ async fn test_agent_chat() {
         wc.storage()
             .agent()
             .create_binding(CreateAgentBinding {
-                parent_topic_id: ctx.topic.id,
+                topic_id: ctx.topic.id,
                 agent_id: agent.id,
                 role: match i {
                     0 => AgentRole::Main,

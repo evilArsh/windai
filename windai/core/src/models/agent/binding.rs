@@ -1,5 +1,5 @@
+use crate::db::DbRow;
 use crate::storage::utils;
-use crate::{db::DbRow, models::ToolApprovalPolicy};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
@@ -119,6 +119,24 @@ pub enum AgentMode {
     // Team,
     /// fork 上下文分支模式。
     Fork,
+}
+
+/// 工具审批策略
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(tag = "type", content = "tools", rename_all = "snake_case")]
+pub enum ToolApprovalPolicy {
+    /// 手动审批
+    Manual,
+    /// 允许名单
+    AllowList(Vec<String>),
+    /// 允许全部
+    AllowAll,
+}
+
+impl Default for ToolApprovalPolicy {
+    fn default() -> Self {
+        Self::AllowAll
+    }
 }
 
 /// Agent 在当前 Topic 中的角色。每个 Topic 只能有一个 Main。

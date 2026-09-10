@@ -1,11 +1,10 @@
 use crate::{
     agent::{
         event::TopicEvent,
-        runtime::AgentRunConfig,
         task::TaskSpec,
         tool::{SpawnAgentRequest, SpawnAgentResponse},
     },
-    models::{AgentStatus, Message},
+    models::{AgentMode, AgentStatus, Message},
 };
 use tokio::sync::oneshot;
 use wind_ai::{message::Content, tool::FunctionCall};
@@ -16,14 +15,13 @@ pub enum Effect {
     PersistStatus {
         binding_id: i64,
         status: AgentStatus,
+        mode: AgentMode,
     },
     /// 广播业务事件
     Emit(TopicEvent),
     /// 启动 AgentRuntime
     Start {
-        binding_id: i64,
         spec: TaskSpec,
-        config: AgentRunConfig,
     },
     /// 审批后恢复运行。
     Resume {
@@ -41,7 +39,8 @@ pub enum Effect {
     },
     /// 创建子 Agent
     SpawnChild {
-        parent_binding_id: i64,
+        /// 发出此命令的 binding_id
+        binding_id: i64,
         call_id: String,
         request: SpawnAgentRequest,
         reply: oneshot::Sender<SpawnAgentResponse>,
@@ -79,24 +78,29 @@ impl std::fmt::Display for Effect {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let name_ref = self.as_ref();
         let (name, args) = match self {
-            Effect::PersistStatus { binding_id, status } => (
-                name_ref,
-                format!("(binding_id = {binding_id}, status = {status})"),
-            ),
-            Effect::Emit(topic_event) => (name_ref, format!("(topic_event = {})", topic_event)),
-            Effect::Start {
-                binding_id, spec, ..
+            Effect::PersistStatus {
+                binding_id,
+                status,
+                mode,
             } => (
                 name_ref,
-                format!(
-                    "(binding_id = {binding_id}, spec = {})",
-                    spec.assistant
-                        .content
-                        .last()
-                        .and_then(|c| Some(Content::arr_to_string(&c.content)))
-                        .unwrap_or_default()
-                ),
+                format!("(binding_id = {binding_id}, status = {status}, mode = {mode})"),
             ),
+            Effect::Emit(topic_event) => (name_ref, format!("(topic_event = {})", topic_event)),
+            Effect::Start { spec } => {
+                let binding_id = spec.binding.id;
+                (
+                    name_ref,
+                    format!(
+                        "(binding_id = {binding_id}, spec = {})",
+                        spec.assistant
+                            .content
+                            .last()
+                            .and_then(|c| Some(Content::arr_to_string(&c.content)))
+                            .unwrap_or_default()
+                    ),
+                )
+            }
             Effect::Resume { binding_id } => (name_ref, format!("(binding_id = {binding_id})")),
             Effect::Cancel { binding_id } => (name_ref, format!("(binding_id = {binding_id})")),
             Effect::SendChildResponse {
@@ -106,7 +110,7 @@ impl std::fmt::Display for Effect {
                 format!("(binding_id = {binding_id}, status = {status}))"),
             ),
             Effect::SpawnChild {
-                parent_binding_id,
+                binding_id: parent_binding_id,
                 call_id,
                 request,
                 ..

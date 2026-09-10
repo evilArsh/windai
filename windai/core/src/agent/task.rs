@@ -1,8 +1,9 @@
 use self::sync::SyncTaskHandler;
-use super::runtime::AgentRunConfig;
 use super::tool::{SpawnAgentRequest, SpawnAgentResponse};
+use crate::chat::runner::ChatContext;
 use crate::models::{
-    AgentDefinition, AgentMode, AgentRole, Credentials, JsonRule, Message, Model, Provider,
+    AgentBinding, AgentDefinition, AgentMode, AgentRole, Credentials, JsonRule, Message, Model,
+    Provider, ToolApprovalPolicy,
 };
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -51,10 +52,7 @@ pub enum SupervisorRequest {
 /// Task 任务命令
 pub enum TaskCommand {
     Cancel,
-    Start {
-        task: TaskSpec,
-        config: AgentRunConfig,
-    },
+    Start { task: TaskSpec },
 }
 
 #[derive(Debug, strum::AsRefStr)]
@@ -115,25 +113,16 @@ impl std::fmt::Display for SupervisorRequest {
 
 #[derive(Debug, Clone)]
 pub struct TaskSpec {
-    pub binding_id: i64,
-    /// Agent 能力定义
+    pub chat_context: ChatContext,
+    pub binding: AgentBinding,
+    pub mode: AgentMode,
     pub agent: AgentDefinition,
-    /// 模型
-    pub model: Model,
-    /// 提供商
-    pub provider: Provider,
-    /// 请求凭证
-    pub credential: Credentials,
-    /// 请求配置
-    pub req_config: ReqConfig,
-    pub rule_set: Option<JsonRule>,
-    pub tools: Option<Vec<Tools>>,
     pub assistant: Message,
     pub contexts: Vec<AiMessage>,
 }
 
 pub struct PendingChild {
-    pub parent_binding_id: i64,
+    pub main_binding_id: i64,
     pub binding_id: i64,
     pub call_id: String,
     pub mode: AgentMode,
@@ -143,22 +132,22 @@ pub struct PendingChild {
 /// 任务的运行时元数据旁表。
 pub struct TaskEntry {
     binding_id: i64,
-    pub topic_id: i64,
     pub role: AgentRole,
-    pub mode: Option<AgentMode>,
     // TODO: 通用抽象句柄
     pub handler: SyncTaskHandler,
 }
 
 impl TaskEntry {
-    pub fn new(binding_id: i64, topic_id: i64, role: AgentRole, handler: SyncTaskHandler) -> Self {
+    pub fn new(binding_id: i64, role: AgentRole, handler: SyncTaskHandler) -> Self {
         TaskEntry {
             binding_id,
-            topic_id,
             role,
-            mode: None,
             handler,
         }
+    }
+
+    pub fn binding_id(&self) -> i64 {
+        self.binding_id
     }
 }
 
@@ -207,10 +196,8 @@ impl TaskRegistry {
                     data.binding_id
                 );
                 let entry = entry.into_mut();
-                entry.mode = data.mode;
                 entry.handler = data.handler;
                 entry.role = data.role;
-                entry.topic_id = data.topic_id;
 
                 entry
             }
@@ -230,7 +217,7 @@ impl TaskRegistry {
     pub fn has_pending_for(&self, parent_binding_id: i64) -> bool {
         self.pending
             .iter()
-            .any(|p| p.parent_binding_id == parent_binding_id)
+            .any(|p| p.main_binding_id == parent_binding_id)
     }
 
     /// 并发批量取消所有运行中的任务并清空注册表

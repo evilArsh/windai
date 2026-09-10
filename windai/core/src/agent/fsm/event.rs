@@ -1,7 +1,6 @@
 use super::task_fsm::TaskEvent;
 use crate::agent::{
     event::{TopicEvent, TopicMsg},
-    runtime::AgentRunConfig,
     task::TaskSpec,
 };
 
@@ -10,13 +9,11 @@ pub enum FsmEvent {
     /// 主 Agent 开始运行
     Start {
         spec: TaskSpec,
-        config: AgentRunConfig,
     },
     /// 子 Agent 开始运行
     StartChild {
-        parent_binding_id: i64,
+        main_binding_id: i64,
         spec: TaskSpec,
-        config: AgentRunConfig,
     },
     ChildResolved {
         parent_binding_id: i64,

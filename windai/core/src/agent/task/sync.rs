@@ -5,7 +5,7 @@ use crate::{
         function_call::execute_tool_calls,
         helper::{self},
         host::AgentHost,
-        runtime::{AgentRunConfig, AgentRuntime},
+        runtime::AgentRuntime,
         tool::{ListAgentsResponse, SpawnAgentRequest, SpawnAgentResponse},
     },
     chat::runner::ChatContext,
@@ -25,7 +25,6 @@ use wind_mcp::client::registry::RegistryHandle;
 
 struct SyncHost {
     binding_id: i64,
-    parent_topic_id: i64,
     topic_id: i64,
     topic_tx: TopicMailbox,
     storage: Storage,
@@ -34,7 +33,6 @@ struct SyncHost {
 impl SyncHost {
     pub fn new(
         binding_id: i64,
-        parent_topic_id: i64,
         topic_id: i64,
         topic_tx: TopicMailbox,
         storage: Storage,
@@ -42,7 +40,6 @@ impl SyncHost {
     ) -> Self {
         Self {
             binding_id,
-            parent_topic_id,
             topic_id,
             topic_tx,
             storage,
@@ -113,7 +110,7 @@ impl AgentHost for SyncHost {
     }
 
     async fn list_agents(&self) -> Result<ListAgentsResponse> {
-        helper::list_agents(&self.storage, self.parent_topic_id).await
+        helper::list_agents(&self.storage, self.topic_id).await
     }
 
     async fn list_approvals(&self, message_id: i64) -> Result<Vec<ToolApprovalRequest>> {
@@ -181,8 +178,8 @@ impl SyncTaskHandler {
         }
         Ok(())
     }
-    pub async fn start(&self, task: TaskSpec, config: AgentRunConfig) -> Result<()> {
-        if let Err(err) = self.cmd_tx.send(TaskCommand::Start { task, config }).await {
+    pub async fn start(&self, task: TaskSpec) -> Result<()> {
+        if let Err(err) = self.cmd_tx.send(TaskCommand::Start { task }).await {
             let err = err.to_string();
             log::error!(
                 "error when start task: {}. (binding_id = {})",
@@ -207,7 +204,6 @@ impl SyncTask {
     pub fn spawn(
         ctx: CancellationToken,
         binding_id: i64,
-        parent_topic_id: i64,
         topic_id: i64,
         topic_tx: TopicMailbox,
         storage: Storage,
@@ -223,7 +219,6 @@ impl SyncTask {
             topic_tx: topic_tx.clone(),
             host: Arc::new(SyncHost::new(
                 binding_id,
-                parent_topic_id,
                 topic_id,
                 topic_tx,
                 storage,
@@ -236,21 +231,14 @@ impl SyncTask {
         handle
     }
 
-    fn start_agent(&self, task: TaskSpec, config: AgentRunConfig) {
-        let agent = AgentRuntime::new(self.host.clone(), config);
+    fn start_agent(&self, task: TaskSpec) {
+        let agent = AgentRuntime::new(self.host.clone());
         tokio::spawn(agent.run(
             self.ctx.child_token(),
-            ChatContext {
-                model: task.model,
-                provider: task.provider,
-                credential: task.credential,
-                req_config: task.req_config,
-                rule_set: task.rule_set,
-                tools: task.tools,
-            },
+            task.chat_context,
+            task.binding,
             task.assistant,
             task.contexts,
-            None,
         ));
     }
     async fn run(mut self) {
@@ -279,8 +267,8 @@ impl SyncTask {
             TaskCommand::Cancel => {
                 self.ctx.cancel();
             }
-            TaskCommand::Start { task, config } => {
-                self.start_agent(task, config);
+            TaskCommand::Start { task } => {
+                self.start_agent(task);
             }
         }
     }

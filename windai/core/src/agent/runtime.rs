@@ -5,7 +5,7 @@ use crate::agent::task::AgentOutput;
 use crate::chat::runner::ChatContext;
 use crate::chat::{ChatEvent, ChatRunner};
 use crate::error::{CoreError, Result};
-use crate::models::{AgentMode, Message, ToolApprovalPolicy, ToolApprovalStatus};
+use crate::models::{AgentBinding, Message, ToolApprovalStatus};
 use futures::stream::StreamExt;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -41,16 +41,6 @@ macro_rules! try_or_finish {
             Err(e) => return Output::Agent(Self::build_finish_error($msg, e)),
         }
     };
-}
-
-#[derive(Debug, Clone)]
-pub struct AgentRunConfig {
-    pub binding_id: i64,
-    pub topic_id: i64,
-    pub parent_topic_id: i64,
-    pub tool_approval_policy: Option<ToolApprovalPolicy>,
-    /// 本次运行的 Agent 模式
-    pub mode: AgentMode,
 }
 
 #[derive(strum::AsRefStr)]
@@ -96,15 +86,15 @@ enum Output {
 pub struct AgentRuntime {
     chat: ChatRunner,
     host: Arc<dyn AgentHost>,
-    config: AgentRunConfig,
+    binding: Option<AgentBinding>,
 }
 
 impl AgentRuntime {
-    pub fn new(host: Arc<dyn AgentHost>, config: AgentRunConfig) -> Self {
+    pub fn new(host: Arc<dyn AgentHost>) -> Self {
         Self {
             chat: ChatRunner::new(),
             host,
-            config,
+            binding: None,
         }
     }
 
@@ -113,13 +103,11 @@ impl AgentRuntime {
         mut self,
         ctx: CancellationToken,
         chat_ctx: ChatContext,
+        binding: AgentBinding,
         mut assistant: Message,
         mut contexts: Vec<AiMessage>,
-        config: Option<AgentRunConfig>,
     ) {
-        if let Some(conf) = config {
-            self.config = conf;
-        }
+        self.binding = Some(binding);
         let mut auto_resume_count = 0usize;
         const MAX_AUTO_RESUME: usize = 32;
         let mut iter_index = -1;
@@ -134,7 +122,7 @@ impl AgentRuntime {
                         return;
                     }
                     Some(event) = stream.next() => {
-                        let action = self.handle_chat_event(iter_index,event).await;
+                        let action = self.handle_chat_event(iter_index, event).await;
                         match action {
                             Action::Continue => {}
                             Action::Stop => {
@@ -373,8 +361,12 @@ impl AgentRuntime {
             }
         }
 
-        let (auto, manual) =
-            partition_tool_calls_by_policy(unhandled, self.config.tool_approval_policy.as_ref());
+        let (auto, manual) = partition_tool_calls_by_policy(
+            unhandled,
+            self.binding
+                .as_ref()
+                .and_then(|b| b.tool_approval_policy.as_ref()),
+        );
         approved.extend(auto);
         waiting.extend(manual);
 

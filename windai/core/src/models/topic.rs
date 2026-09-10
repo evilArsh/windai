@@ -9,8 +9,6 @@ pub struct Topic {
     pub id: i64,
     /// 父话题id
     pub parent_id: Option<i64>,
-    // /// agent binding id
-    // pub binding_id: Option<i64>,
     /// 话题标签
     pub label: String,
     /// 话题图标
@@ -32,31 +30,11 @@ impl<'s> sqlx::FromRow<'s, DbRow> for Topic {
     }
 }
 
-/// 工具审批策略
-#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone, PartialEq)]
-#[serde(tag = "type", content = "tools", rename_all = "snake_case")]
-pub enum ToolApprovalPolicy {
-    /// 手动审批
-    Manual,
-    /// 允许名单
-    AllowList(Vec<String>),
-    /// 允许全部
-    AllowAll,
-}
-
-impl Default for ToolApprovalPolicy {
-    fn default() -> Self {
-        Self::AllowAll
-    }
-}
-
 /// 新增话题
 #[derive(utoipa::ToSchema, Serialize, Deserialize, Debug, Clone)]
 pub struct CreateTopic {
     /// 父话题id
     pub parent_id: Option<i64>,
-    // /// agent binding id
-    // pub binding_id: Option<i64>,
     /// 话题标签
     pub label: String,
     /// 话题图标

@@ -13,7 +13,6 @@ use crate::{
     storage::TableName,
     update, update_fields,
 };
-use sqlx::QueryBuilder;
 use wind_ai::message::ReqConfig;
 
 #[derive(Clone)]
