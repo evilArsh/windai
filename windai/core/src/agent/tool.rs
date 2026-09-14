@@ -109,9 +109,8 @@ pub fn list_catalogs() -> Vec<Tools> {
 
 /// 解析并合并 Agent 工具调用。
 ///
-/// 多个 `list_agents` 调用会被合并为一次查询：
-/// - `call_ids` 收集所有原始 call ID
-/// - `include_disabled` 取逻辑或（任意 call 要求即为 true）
+/// 多个 `list_agents` 调用会被合并为一次查询，`call_ids` 收集所有原始 call ID；
+/// 无 `list_agents` 调用时返回 `None`。
 pub fn parse_agent_action(calls: &[FunctionCall]) -> Result<AgentActionPlan> {
     let mut list_call_ids: Vec<String> = Vec::new();
     let mut spawn_agents: Vec<SpawnAgentAction> = Vec::new();
@@ -134,7 +133,7 @@ pub fn parse_agent_action(calls: &[FunctionCall]) -> Result<AgentActionPlan> {
     }
 
     Ok(AgentActionPlan {
-        list_agents: Some(list_call_ids),
+        list_agents: (!list_call_ids.is_empty()).then_some(list_call_ids),
         spawn_agents,
     })
 }

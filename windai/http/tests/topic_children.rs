@@ -4,11 +4,10 @@
 //! 现有 `GET /api/v1/topics`（根列表）保持不变。
 mod common;
 
-use std::sync::Arc;
-
 use axum::Router;
 use axum::body::Body;
 use axum::http::Request;
+use std::sync::Arc;
 use tower::ServiceExt;
 use wind_core::WindCore;
 use wind_core::models::CreateTopic;
@@ -28,7 +27,6 @@ async fn create_topic(core: &Arc<WindCore>, parent_id: Option<i64>, label: &str)
         .topic()
         .create(CreateTopic {
             parent_id,
-            binding_id: None,
             label: label.to_string(),
             icon: None,
         })

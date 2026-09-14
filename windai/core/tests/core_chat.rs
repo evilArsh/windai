@@ -193,7 +193,7 @@ async fn test_agent_chat() {
     for (i, agent) in agents.iter().enumerate() {
         wc.storage()
             .agent()
-            .create_binding(CreateAgentBinding {
+            .create_instance(CreateInstance {
                 topic_id: ctx.topic.id,
                 agent_id: agent.id,
                 role: match i {
@@ -227,7 +227,7 @@ async fn test_agent_chat() {
             }
         }
     });
-    engine.create_chat(user_input).await.unwrap();
+    engine.create_task(user_input).await.unwrap();
     hdl.await.unwrap();
     let _ = engine.shutdown().await;
 }

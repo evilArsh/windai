@@ -1,11 +1,3 @@
-use axum::Json;
-use axum::Router;
-use axum::extract::Request;
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
-use axum::routing::get;
-use tower_http::timeout::TimeoutLayer;
-
 use crate::dto::envelope::ApiResponse;
 use crate::middleware::request_id::request_id_layers;
 use crate::middleware::timeout::CRUD_TIMEOUT;
@@ -13,6 +5,13 @@ use crate::middleware::trace::trace_layer;
 use crate::openapi;
 use crate::routes::{agent, chat, health, mcp, model, prompt, provider, topic};
 use crate::state::AppState;
+use axum::Json;
+use axum::Router;
+use axum::extract::Request;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use tower_http::timeout::TimeoutLayer;
 
 /// 构建未绑定 state 的路由树，子路由组合后统一 `.with_state`。
 pub fn build_router() -> Router<AppState> {

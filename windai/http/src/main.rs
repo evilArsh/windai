@@ -9,7 +9,6 @@ use tokio_util::sync::CancellationToken;
 use std::future;
 #[cfg(unix)]
 use tokio::signal::unix;
-
 use wind_core::WindCore;
 use wind_http::app::app;
 use wind_http::config::AppConfig;

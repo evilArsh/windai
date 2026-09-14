@@ -1,19 +1,12 @@
-use super::event::{TopicCommand, TopicEvent, TopicMailbox};
+use super::event::{TopicCommand, TopicEvent, TopicMailbox, TopicMsg};
 use super::fsm::{Effect, FsmEvent, TaskEvent, TopicFsm};
-use super::helper::{self};
-use super::task::sync::SyncTask;
-use super::task::{PendingChild, TaskEntry, TaskRegistry, TaskSpec};
+use super::task::{PendingChild, TaskManager, TaskSpec};
 use super::tool::{SpawnAgentRequest, SpawnAgentResponse};
-use crate::agent::event::TopicMsg;
 use crate::env::app_dirs;
 use crate::error::{CoreError, Result};
-use crate::models::{
-    AgentMode, AgentStatus, ApprovalRecord, ToolApprovalStatus, UpdateAgentBinding,
-};
+use crate::models::AgentStatus;
 use crate::storage::Storage;
-use futures::future::try_join;
 use std::collections::VecDeque;
-use std::path::PathBuf;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use wind_ai::message::Content;
@@ -62,31 +55,31 @@ impl TopicRuntimeHandle {
             .map_err(|err| CoreError::Internal(err.to_string()))
     }
 
-    /// 创建新的对话
-    pub async fn create_chat(&self, user_input: Vec<Content>) -> Result<()> {
+    /// 创建新的任务
+    pub async fn create_task(&self, user_input: Vec<Content>) -> Result<()> {
         self.ensure_alive()?;
         self.mailbox
             .send(TopicMsg::Command(TopicCommand::Start { user_input }))
             .await
     }
     /// 取消任务
-    pub async fn cancel_task(&self, binding_id: i64) -> Result<()> {
+    pub async fn cancel_task(&self, instance_id: i64) -> Result<()> {
         self.ensure_alive()?;
         self.mailbox
-            .send(TopicMsg::Command(TopicCommand::Cancel { binding_id }))
+            .send(TopicMsg::Command(TopicCommand::Cancel { instance_id }))
             .await
     }
     /// 审批任务
     pub async fn approve(
         &self,
-        binding_id: i64,
+        instance_id: i64,
         allow_ids: Vec<i64>,
         deny_ids: Vec<i64>,
     ) -> Result<()> {
         self.ensure_alive()?;
         self.mailbox
             .send(TopicMsg::Command(TopicCommand::Approval {
-                binding_id,
+                instance_id,
                 deny_ids,
                 allow_ids,
             }))
@@ -104,17 +97,13 @@ impl TopicRuntimeHandle {
 }
 
 pub struct TopicRuntime {
-    /// 当前Topic工作目录
-    cwd: PathBuf,
     ctx: CancellationToken,
     topic_id: i64,
     mailbox: TopicMailbox,
     mailbox_rx: mpsc::Receiver<TopicMsg>,
     app_rx: Option<broadcast::Sender<TopicEvent>>,
-    storage: Storage,
-    mcp_registry: RegistryHandle,
-    registry: TaskRegistry,
     fsm: TopicFsm,
+    task_mgr: TaskManager,
 }
 
 impl TopicRuntime {
@@ -128,20 +117,20 @@ impl TopicRuntime {
         let (tx, rx) = mpsc::channel(256);
         let mailbox = TopicMailbox::new(tx);
         let runtime = Self {
-            cwd: app_dirs().topic_dir().join(topic_id.to_string()),
             ctx: ctx.clone(),
             topic_id,
             mailbox: mailbox.clone(),
             mailbox_rx: rx,
             app_rx: None,
-            storage,
-            mcp_registry,
-            registry: TaskRegistry::new(),
             fsm: TopicFsm::new(topic_id),
+            task_mgr: TaskManager::new(
+                ctx.child_token(),
+                storage,
+                mcp_registry,
+                app_dirs().topic_dir().join(topic_id.to_string()),
+            ),
         };
-
         tokio::spawn(runtime.run());
-
         TopicRuntimeHandle { mailbox, ctx }
     }
 
@@ -210,52 +199,40 @@ impl TopicRuntime {
     async fn execute(&mut self, effect: Effect) -> Option<Vec<FsmEvent>> {
         log::debug!("{}", effect);
         match effect {
-            Effect::SendChildResponse {
-                binding_id,
-                status,
-                output,
-            } => Some(self.resolve_pending_child(binding_id, status, output).await),
             Effect::SpawnChild {
-                binding_id,
+                instance_id,
                 call_id,
                 request,
                 reply,
             } => {
-                let mode = request.mode;
-                match self.spawn_child(binding_id, request).await {
-                    Ok((main_binding_id, binding_id, res)) => {
-                        self.registry.insert_pending(PendingChild {
-                            call_id: call_id.clone(),
-                            mode,
-                            reply,
-                            binding_id,
-                            main_binding_id,
-                        });
-                        Some(res)
-                    }
-                    Err(err) => {
-                        try_send_log!(
-                            reply,
-                            SpawnAgentResponse {
-                                call_id,
-                                mode,
-                                status: AgentStatus::Failed,
-                                output: vec![Content::new_text(err.to_string())],
-                            },
-                            "SpawnAgent"
-                        );
-                        None
-                    }
+                match self
+                    .handle_spawn_child(instance_id, call_id, request, reply)
+                    .await
+                {
+                    Some(spec) => Some(vec![
+                        FsmEvent::Emit(TopicEvent::MessageCreated {
+                            data: spec.user.clone(),
+                            topic_id: self.topic_id,
+                            instance_id: spec.instance.id,
+                        }),
+                        FsmEvent::Emit(TopicEvent::MessageCreated {
+                            data: spec.assistant.clone(),
+                            topic_id: self.topic_id,
+                            instance_id: spec.instance.id,
+                        }),
+                        FsmEvent::Start { spec },
+                    ]),
+                    None => None,
                 }
             }
             Effect::Approval {
-                binding_id,
+                instance_id,
                 allow_ids,
                 deny_ids,
-            } => match self.apply_approvals(binding_id, allow_ids, deny_ids).await {
+            } => match self.handle_approval(instance_id, allow_ids, deny_ids).await {
                 Ok(res) => Some(res),
                 Err(err) => Some(vec![FsmEvent::Signal {
-                    binding_id,
+                    instance_id,
                     event: TaskEvent::Failed {
                         data: None,
                         error: err.to_string(),
@@ -263,86 +240,111 @@ impl TopicRuntime {
                 }]),
             },
             Effect::ApprovalRequest {
-                binding_id,
+                instance_id,
                 data,
                 calls,
             } => {
                 let message_id = data.id;
-                match helper::save_approval_state(
-                    &self.storage,
-                    self.topic_id,
-                    binding_id,
-                    data.clone(),
-                    calls,
-                )
-                .await
+                let res = match self
+                    .task_mgr
+                    .persist_approval_state(self.topic_id, instance_id, data.clone(), calls)
+                    .await
                 {
                     Ok(requests) => Some(vec![FsmEvent::Emit(TopicEvent::ApprovalRequired {
-                        binding_id,
+                        instance_id,
                         topic_id: self.topic_id,
                         message_id,
                         requests,
                     })]),
                     Err(err) => Some(vec![FsmEvent::Signal {
-                        binding_id,
+                        instance_id,
                         event: TaskEvent::Failed {
                             error: err.to_string(),
                             data: Some(data),
                         },
                     }]),
+                };
+                if self.fsm.is_main_instance(instance_id) {
+                    self.close_event_stream();
                 }
+                res
             }
-            Effect::Finish { binding_id, data } => {
+            Effect::Completed {
+                instance_id,
+                data,
+                status,
+            } => {
                 let message_id = data.id;
-                match helper::save_message(&self.storage, data.clone()).await {
-                    Ok(_) => Some(vec![FsmEvent::Emit(TopicEvent::MessageFinished {
-                        binding_id,
+                let mut event =
+                    self.handle_pending(instance_id, status, TaskManager::get_output(&data));
+                match self.task_mgr.persist_message(data.clone()).await {
+                    Ok(_) => event.push(FsmEvent::Emit(TopicEvent::MessageFinished {
+                        instance_id,
                         topic_id: self.topic_id,
                         message_id,
-                    })]),
-                    Err(err) => Some(vec![FsmEvent::Signal {
-                        binding_id,
+                    })),
+                    Err(err) => event.push(FsmEvent::Signal {
+                        instance_id,
                         event: TaskEvent::Failed {
                             error: err.to_string(),
                             data: Some(data),
                         },
-                    }]),
+                    }),
                 }
+                if self.fsm.is_main_instance(instance_id) {
+                    self.close_event_stream();
+                }
+                Some(event)
             }
             Effect::Failed {
-                binding_id,
+                instance_id,
                 data,
                 error,
+                status,
             } => {
+                let mut event = self.handle_pending(
+                    instance_id,
+                    status,
+                    vec![Content::new_text(error.clone())],
+                );
                 let mut error = error;
                 let message_id = data.as_ref().map(|d| d.id);
                 if let Some(data) = data {
-                    error = match helper::save_message(&self.storage, data).await {
+                    error = match self.task_mgr.persist_message(data).await {
                         Ok(_) => error,
-                        Err(e) => {
-                            log::error!("[Failed] save message error: {}", e);
-                            format!("{error}: {e}")
-                        }
+                        Err(e) => format!("{error}: {e}"),
                     };
                 }
-                Some(vec![FsmEvent::Emit(TopicEvent::Error {
-                    binding_id: Some(binding_id),
+                event.push(FsmEvent::Emit(TopicEvent::Error {
+                    instance_id: Some(instance_id),
                     topic_id: self.topic_id,
                     message_id,
                     error: error.clone(),
-                })])
+                }));
+                if self.fsm.is_main_instance(instance_id) {
+                    self.close_event_stream();
+                }
+                Some(event)
             }
-            Effect::CloseEventStream => {
-                self.app_rx = None;
-                None
+            Effect::Canceled {
+                instance_id,
+                status,
+                error,
+            } => {
+                let event =
+                    self.handle_pending(instance_id, status, vec![Content::new_text(error)]);
+                if self.fsm.is_main_instance(instance_id) {
+                    self.close_event_stream();
+                }
+                Some(event)
             }
             Effect::StopRuntime => {
-                self.ctx.cancel();
+                self.cancel_all();
                 None
             }
-            Effect::Cancel { binding_id } => match self.cancel_task(binding_id).await {
+            Effect::Cancel { instance_id } => match self.task_mgr.cancel(instance_id).await {
                 Err(err) => Some(vec![FsmEvent::Signal {
-                    binding_id,
+                    instance_id,
                     event: TaskEvent::Failed {
                         data: None,
                         error: err.to_string(),
@@ -350,25 +352,26 @@ impl TopicRuntime {
                 }]),
                 Ok(_) => None,
             },
-            Effect::Resume { binding_id } => match self.resume_task(binding_id).await {
+            Effect::Resume { instance_id } => match self.task_mgr.resume(instance_id).await {
+                Ok(Some(spec)) => Some(vec![FsmEvent::Start { spec }]),
+                Ok(_) => None,
                 Err(err) => Some(vec![FsmEvent::Signal {
-                    binding_id,
+                    instance_id,
                     event: TaskEvent::Failed {
                         data: None,
                         error: err.to_string(),
                     },
                 }]),
-                Ok(_) => None,
             },
             Effect::Emit(event) => {
                 self.emit(event);
                 None
             }
             Effect::Start { spec } => {
-                let binding_id = spec.binding.id;
-                match self.start_agent_task(spec).await {
+                let instance_id = spec.instance.id;
+                match self.task_mgr.start(spec, self.mailbox.clone()).await {
                     Err(err) => Some(vec![FsmEvent::Signal {
-                        binding_id,
+                        instance_id,
                         event: TaskEvent::Failed {
                             data: None,
                             error: err.to_string(),
@@ -378,30 +381,54 @@ impl TopicRuntime {
                 }
             }
             Effect::PersistStatus {
-                binding_id,
+                instance_id,
                 status,
                 mode,
-            } => match self.persist_status(binding_id, status, mode).await {
-                Ok(res) => Some(res),
+                agent_id,
+            } => match self
+                .task_mgr
+                .persist_status(instance_id, status, mode, agent_id)
+                .await
+            {
+                Ok(_) => Some(vec![FsmEvent::Emit(TopicEvent::TaskStatusChanged {
+                    instance_id,
+                    topic_id: self.topic_id,
+                    status,
+                    mode,
+                })]),
                 Err(err) => Some(vec![FsmEvent::Emit(TopicEvent::Error {
-                    binding_id: Some(binding_id),
+                    instance_id: Some(instance_id),
                     message_id: None,
                     topic_id: self.topic_id,
                     error: err.to_string(),
                 })]),
             },
-            Effect::PrepareMain { user_input } => match self.prepare_main_agent(user_input).await {
-                Ok(ev) => Some(ev),
-                Err(err) => Some(vec![
-                    FsmEvent::Emit(TopicEvent::Error {
-                        binding_id: None,
-                        topic_id: self.topic_id,
-                        message_id: None,
-                        error: err.to_string(),
-                    }),
-                    FsmEvent::Topic(TopicMsg::Command(TopicCommand::Shutdown)),
-                ]),
-            },
+            Effect::Init { user_input } => {
+                match self.task_mgr.init(self.topic_id, user_input).await {
+                    Ok(spec) => Some(vec![
+                        FsmEvent::Emit(TopicEvent::MessageCreated {
+                            data: spec.user.clone(),
+                            topic_id: self.topic_id,
+                            instance_id: spec.instance.id,
+                        }),
+                        FsmEvent::Emit(TopicEvent::MessageCreated {
+                            data: spec.assistant.clone(),
+                            topic_id: self.topic_id,
+                            instance_id: spec.instance.id,
+                        }),
+                        FsmEvent::Start { spec },
+                    ]),
+                    Err(err) => Some(vec![
+                        FsmEvent::Emit(TopicEvent::Error {
+                            instance_id: None,
+                            topic_id: self.topic_id,
+                            message_id: None,
+                            error: err.to_string(),
+                        }),
+                        FsmEvent::Topic(TopicMsg::Command(TopicCommand::Shutdown)),
+                    ]),
+                }
+            }
         }
     }
 
@@ -427,174 +454,61 @@ impl TopicRuntime {
             }
         }
     }
-    /// 准备新的 Main Agent 对话配置
-    async fn prepare_main_agent(&mut self, user_input: Vec<Content>) -> Result<Vec<FsmEvent>> {
-        if self.fsm.is_main_busy() {
-            return Err(CoreError::Internal(format!("main agent is running")));
-        }
-        let tx = self.storage.begin().await?;
-
-        let mut binding = helper::get_main_binding(&tx.storage(), self.topic_id).await?;
-        let mode = *binding.mode.get_or_insert(AgentMode::Sync);
-
-        let binding_id = binding.id;
-        log::debug!("[start_main_agent] get binding: {:#?}", binding);
-        let agent = helper::get_def_by_id(&tx.storage(), binding.agent_id).await?;
-        log::debug!("[start_main_agent] get agent: {:#?}", agent);
-        let chat_ctx =
-            helper::get_base_info(&tx.storage(), &self.mcp_registry, &binding, &agent).await?;
-        log::debug!("[start_main_agent] get chat_ctx: {:#?}", chat_ctx);
-        // 创建主Agent工作空间
-        std::fs::create_dir_all(&self.cwd)?;
-
-        let (user, assistant, contexts) = helper::create_contexts(
-            &self.cwd,
-            &tx.storage(),
-            binding.id,
-            user_input,
-            &agent,
-            &chat_ctx,
-        )
-        .await?;
-        tx.commit().await?;
-        let spec = TaskSpec {
-            chat_context: chat_ctx,
-            binding,
-            mode,
-            agent,
-            assistant: assistant.clone(),
-            contexts,
-        };
-
-        Ok(vec![
-            FsmEvent::Emit(TopicEvent::MessageCreated {
-                data: user,
-                topic_id: self.topic_id,
-                binding_id,
-            }),
-            FsmEvent::Emit(TopicEvent::MessageCreated {
-                data: assistant,
-                topic_id: self.topic_id,
-                binding_id,
-            }),
-            FsmEvent::Start { spec },
-        ])
-    }
-
-    async fn resume_task(&mut self, binding_id: i64) -> Result<()> {
-        let mut binding = helper::get_binding_by_id(&self.storage, binding_id).await?;
-        let mode = *binding.mode.get_or_insert(AgentMode::Sync);
-
-        let agent = helper::get_def_by_id(&self.storage, binding.agent_id).await?;
-
-        let (chat_ctx, contexts) = try_join(
-            helper::get_base_info(&self.storage, &self.mcp_registry, &binding, &agent),
-            helper::get_message_contexts(&self.storage, binding.id),
-        )
-        .await?;
-
-        let assistant = contexts.last().cloned().ok_or_else(|| {
-            CoreError::Internal(format!("no assistant in this binding: {}", binding.id))
-        })?;
-        let contexts = helper::transfer_contexts(contexts)?;
-
-        let spec = TaskSpec {
-            chat_context: chat_ctx,
-            binding,
-            mode,
-            agent,
-            assistant,
-            contexts,
-        };
-
-        if let Some(entry) = self.registry.get_entry(binding_id) {
-            entry.handler.start(spec).await
-        } else {
-            self.start_agent_task(spec).await
-        }
-    }
-
-    /// 启动一个 SyncTask 并注册到 registry
-    ///
-    /// TODO: 启动background 任务
-    ///
-    /// TODO: 更新AgentBinding mode
-    async fn start_agent_task(&mut self, spec: TaskSpec) -> Result<()> {
-        debug_assert_eq!(spec.binding.topic_id, self.topic_id);
-        let sync_handle = SyncTask::spawn(
-            self.ctx.child_token(),
-            spec.binding.id,
-            spec.binding.topic_id,
-            self.mailbox.clone(),
-            self.storage.clone(),
-            self.mcp_registry.clone(),
-        );
-
-        let entry = self.registry.upsert(TaskEntry::new(
-            spec.binding.id,
-            spec.binding.role,
-            sync_handle,
-        ));
-        entry.handler.start(spec).await?;
-
-        Ok(())
-    }
-
-    async fn cancel_task(&mut self, binding_id: i64) -> Result<()> {
-        if let Some(entry) = self.registry.get_entry(binding_id) {
-            entry.handler.cancel().await
-        } else {
-            Err(CoreError::Internal(format!(
-                "task not found, binding_id: {}",
-                binding_id
-            )))
-        }
-    }
 
     async fn shutdown(&mut self) -> Result<()> {
-        self.app_rx = None;
-        self.registry.clear();
+        self.close_event_stream();
+        self.task_mgr.clear();
         Ok(())
     }
 
-    async fn persist_status(
+    async fn handle_spawn_child(
         &mut self,
-        binding_id: i64,
-        status: AgentStatus,
-        mode: AgentMode,
-    ) -> Result<Vec<FsmEvent>> {
-        helper::update_binding(
-            &self.storage,
-            binding_id,
-            UpdateAgentBinding {
-                agent_id: None,
-                role: None,
-                model_id: None,
-                chat_config_id: None,
-                enabled: None,
-                status: Some(status),
-                mode: Some(mode),
-                tool_approval_policy: None,
-            },
-        )
-        .await?;
-        Ok(vec![FsmEvent::Emit(TopicEvent::TaskStatusChanged {
-            binding_id,
-            topic_id: self.topic_id,
-            status,
-            mode,
-        })])
+        parent_instance_id: i64,
+        call_id: String,
+        request: SpawnAgentRequest,
+        reply: oneshot::Sender<SpawnAgentResponse>,
+    ) -> Option<TaskSpec> {
+        let mode = request.mode;
+        match self
+            .task_mgr
+            .spawn_child(self.topic_id, parent_instance_id, request)
+            .await
+        {
+            Ok(spec) => {
+                self.task_mgr.insert_pending(PendingChild {
+                    call_id,
+                    mode,
+                    reply,
+                    instance_id: spec.instance.id,
+                    parent_instance_id,
+                });
+                Some(spec)
+            }
+            Err(err) => {
+                try_send_log!(
+                    reply,
+                    SpawnAgentResponse {
+                        call_id,
+                        mode,
+                        status: AgentStatus::Failed,
+                        output: vec![Content::new_text(err.to_string())],
+                    },
+                    "SpawnAgent"
+                );
+                None
+            }
+        }
     }
 
-    /// 解析 pending 子任务并回复父任务;
-    async fn resolve_pending_child(
+    /// 任务结束，处理状态
+    fn handle_pending(
         &mut self,
-        binding_id: i64,
+        instance_id: i64,
         status: AgentStatus,
         output: Vec<Content>,
     ) -> Vec<FsmEvent> {
-        let mut follow_ups = vec![];
-        if let Some(pending) = self.registry.take_pending(binding_id) {
+        let mut event = vec![];
+        if let Some(pending) = self.task_mgr.take_pending(instance_id) {
             try_send_log!(
                 pending.reply,
                 SpawnAgentResponse {
@@ -605,147 +519,42 @@ impl TopicRuntime {
                 },
                 "resolve pending child"
             );
-            let parent = pending.main_binding_id;
-            if !self.registry.has_pending_for(parent) {
-                follow_ups.push(FsmEvent::ChildResolved {
-                    parent_binding_id: parent,
+            if !self.task_mgr.has_pending_for(pending.parent_instance_id) {
+                event.push(FsmEvent::ChildResolved {
+                    instance_id: pending.parent_instance_id,
                 });
             }
         }
-        follow_ups
-    }
 
-    /// 创建子 Agent
-    async fn spawn_child(
-        &mut self,
-        from_binding_id: i64,
-        request: SpawnAgentRequest,
-    ) -> Result<(i64, i64, Vec<FsmEvent>)> {
-        let mode = request.mode;
-        let agent = helper::get_def_by_key(&self.storage, &request.agent_key).await?;
-        let mut binding =
-            helper::get_binding_by_agent_id(&self.storage, self.topic_id, agent.id).await?;
-        binding.mode.insert(mode);
-
-        let binding_id = binding.id;
-        log::debug!(
-            "[spawn agent] from_binding_id = {}, target_binding_id = {}",
-            from_binding_id,
-            binding_id
-        );
-        if self.fsm.is_task_busy(binding.id) {
-            return Err(CoreError::Internal(format!(
-                "Agent is busy, binding_id: {}",
-                binding_id
-            )));
-        }
-        let chat_ctx =
-            helper::get_base_info(&self.storage, &self.mcp_registry, &binding, &agent).await?;
-
-        let tx = self.storage.begin().await?;
-        let user_input = vec![Content::new_text(request.task)];
-        let (user, assistant, contexts) = match mode {
-            AgentMode::Fork => match self.registry.main_entry() {
-                Some(entry) => {
-                    if entry.binding_id() != from_binding_id {
-                        return Err(CoreError::Validation(format!(
-                            "[spawn agent] Only main task is allowed to spawn child, current binding_id: {}, main_binding_id: {}",
-                            from_binding_id,
-                            entry.binding_id()
-                        )));
-                    }
-                    helper::create_fork_contexts(
-                        &self.cwd,
-                        &tx.storage(),
-                        from_binding_id,
-                        binding_id,
-                        user_input,
-                        &agent,
-                        &chat_ctx,
-                    )
-                    .await?
-                }
-                None => {
-                    return Err(CoreError::Validation(format!(
-                        "[spawn agent] Main task not found, cannot spawn"
-                    )));
-                }
-            },
-            AgentMode::Sync | AgentMode::Background => {
-                helper::create_contexts(
-                    &self.cwd,
-                    &tx.storage(),
-                    binding_id,
-                    user_input,
-                    &agent,
-                    &chat_ctx,
-                )
-                .await?
-            }
-        };
-        tx.commit().await?;
-
-        let spec = TaskSpec {
-            chat_context: chat_ctx,
-            binding,
-            mode,
-            agent,
-            assistant: assistant.clone(),
-            contexts,
-        };
-
-        Ok((
-            from_binding_id,
-            binding_id,
-            vec![
-                FsmEvent::Emit(TopicEvent::MessageCreated {
-                    data: user,
-                    topic_id: self.topic_id,
-                    binding_id,
-                }),
-                FsmEvent::Emit(TopicEvent::MessageCreated {
-                    topic_id: self.topic_id,
-                    data: assistant,
-                    binding_id,
-                }),
-                FsmEvent::StartChild {
-                    spec,
-                    main_binding_id: from_binding_id,
-                },
-            ],
-        ))
+        event
     }
 
     /// 批量审批
-    async fn apply_approvals(
+    async fn handle_approval(
         &mut self,
-        binding_id: i64,
+        instance_id: i64,
         allow_ids: Vec<i64>,
         deny_ids: Vec<i64>,
     ) -> Result<Vec<FsmEvent>> {
-        let mut records = Vec::with_capacity(deny_ids.len() + allow_ids.len());
-        for id in deny_ids {
-            records.push(ApprovalRecord {
-                id,
-                status: ToolApprovalStatus::Denied,
-            });
-        }
-        for id in allow_ids {
-            records.push(ApprovalRecord {
-                id,
-                status: ToolApprovalStatus::Approved,
-            });
-        }
-        self.storage.approval().batch_set_status(records).await?;
+        self.task_mgr
+            .persist_approval_record(allow_ids, deny_ids)
+            .await?;
         Ok(vec![FsmEvent::Signal {
-            binding_id,
+            instance_id,
             event: TaskEvent::ApprovalResolved,
         }])
+    }
+
+    fn close_event_stream(&mut self) {
+        self.app_rx = None;
+    }
+    fn cancel_all(&self) {
+        self.ctx.cancel();
     }
 }
 
 impl Drop for TopicRuntime {
     fn drop(&mut self) {
-        self.ctx.cancel();
+        self.cancel_all();
     }
 }

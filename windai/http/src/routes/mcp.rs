@@ -1,18 +1,3 @@
-use serde::Deserialize;
-use serde_json::Value;
-use std::sync::Arc;
-use std::time::Duration;
-
-use axum::extract::State;
-use axum::extract::rejection::JsonRejection;
-use axum::response::IntoResponse;
-use axum::response::sse::{KeepAlive, Sse};
-use axum::routing::{get, post};
-use axum::{Json, Router};
-use wind_core::WindCore;
-use wind_core::models::{CreateMcpServer, McpServerParam, UpdateMcpServer};
-use wind_mcp::client::{ClientEvent, ClientSnapshot, Prompt, Resource, Tool};
-
 use crate::dto::envelope::ApiResponse;
 use crate::dto::mcp::{McpServerStatusDto, StartMcpServerResult};
 use crate::extractor::{ApiPath, ApiQuery, json_body};
@@ -20,6 +5,19 @@ use crate::facade::mcp_runtime::McpRuntimeFacade;
 use crate::facade::storage::mcp::McpStorageFacade;
 use crate::sse::event_stream;
 use crate::state::AppState;
+use axum::extract::State;
+use axum::extract::rejection::JsonRejection;
+use axum::response::IntoResponse;
+use axum::response::sse::{KeepAlive, Sse};
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use serde::Deserialize;
+use serde_json::Value;
+use std::sync::Arc;
+use std::time::Duration;
+use wind_core::WindCore;
+use wind_core::models::{CreateMcpServer, McpServerParam, UpdateMcpServer};
+use wind_mcp::client::{ClientEvent, ClientSnapshot, Prompt, Resource, Tool};
 
 pub fn router() -> Router<AppState> {
     Router::new()

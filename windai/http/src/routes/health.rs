@@ -1,12 +1,11 @@
+use crate::dto::envelope::ApiResponse;
+use crate::facade::system::SystemFacade;
+use crate::state::AppState;
 use axum::Json;
 use axum::Router;
 use axum::extract::State;
 use axum::routing::get;
 use serde_json::Value;
-
-use crate::dto::envelope::ApiResponse;
-use crate::facade::system::SystemFacade;
-use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/healthz", get(health))

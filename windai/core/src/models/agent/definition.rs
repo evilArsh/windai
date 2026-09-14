@@ -16,7 +16,7 @@ pub struct AgentDefinition {
     pub name: String,
     /// Agent 能力说明
     pub description: String,
-    /// 当 scope 为 topic_local 时，表示该 Agent 专属的 Topic id。
+    /// 该 Agent 专属的 Topic id；None 表示全局 Agent。
     pub owner_topic_id: Option<i64>,
     /// 如果该 Agent 由全局 Agent 复制而来，记录来源 Agent id。
     pub cloned_from_id: Option<i64>,
@@ -118,7 +118,7 @@ pub struct CreateAgentDefinition {
     pub key: String,
     /// Agent 能力说明。
     pub description: String,
-    /// 当 scope 为 topic_local 时，表示该 Agent 专属的 Topic id。
+    /// 该 Agent 专属的 Topic id；None 表示全局 Agent。
     pub owner_topic_id: Option<i64>,
     /// 复制来源 Agent id。
     pub cloned_from_id: Option<i64>,
@@ -154,8 +154,6 @@ pub struct PermissionPolicy {
     pub can_spawn_sync: bool,
     /// 当前 Agent 是否允许创建后台子 Agent。
     pub can_spawn_background: bool,
-    /// 当前 Agent 是否允许创建团队 Agent。
-    pub can_spawn_team: bool,
     /// 当前 Agent 是否允许创建 fork Agent。
     pub can_spawn_fork: bool,
     /// 当前 Agent 创建的子 Agent 是否允许继续创建子 Agent。
@@ -170,7 +168,6 @@ impl Default for PermissionPolicy {
             can_spawn_agents: true,
             can_spawn_sync: true,
             can_spawn_background: false,
-            can_spawn_team: false,
             can_spawn_fork: false,
             can_spawn_recursive: false,
             max_spawn_depth: 1,

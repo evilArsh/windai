@@ -71,15 +71,15 @@ pub async fn execute_tool_calls(
     ))
 }
 
-/// 根据 Topic 级审批策略拆分可自动执行和需要人工审批的工具调用。
+/// 根据审批策略拆分可自动执行和需要人工审批的工具调用。
 /// 当不存在审批策略时，所有工具调用都自动执行。
 ///
-/// (自动审批,手动审批)
+/// (自动审批, 手动审批)
 pub fn partition_tool_calls_by_policy(
     pending: Vec<FunctionCall>,
-    topic_policy: Option<&ToolApprovalPolicy>,
+    policy: Option<&ToolApprovalPolicy>,
 ) -> (Vec<FunctionCall>, Vec<FunctionCall>) {
-    match topic_policy {
+    match policy {
         Some(policy) => match policy {
             ToolApprovalPolicy::AllowAll => (pending, vec![]),
             ToolApprovalPolicy::AllowList(approved_list) => pending

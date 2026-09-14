@@ -2,8 +2,8 @@ use super::{
     events::ChatEvent,
     rule::{apply_json_rule, build_rule},
 };
-use crate::models::Provider;
 use crate::models::{JsonRule, Message as CoreMessage, Model};
+use crate::models::{Provider, Topic};
 use crate::{
     error::{CoreError, Result},
     models::Credentials,
@@ -12,8 +12,9 @@ use async_stream::{stream, try_stream};
 use futures::{Stream, StreamExt};
 use std::collections::HashSet;
 use std::pin::{Pin, pin};
-use wind_ai::message::{Content, Message as AiMessage, ReqConfig, Role};
-use wind_ai::provider::adapter::{ChatAdapter, get_chat_adapter};
+use wind_ai::message::{Content, Message as AiMessage, Role};
+use wind_ai::model::Model as AiModel;
+use wind_ai::provider::adapter::get_chat_adapter;
 use wind_ai::tool::FunctionCall;
 use wind_ai::{
     chat::{ResEventStatus, build_request, handle_chat},
@@ -21,12 +22,20 @@ use wind_ai::{
 };
 use wind_rule::RuleSet;
 
+fn to_ai_model(model: &Model) -> Result<AiModel> {
+    Ok(AiModel {
+        name: model.name.clone(),
+        adapter: model.adapter.clone(),
+        endpoint: model.endpoint.clone(),
+        config: model.config.as_ref().map(|c| c.to_json_obj()).transpose()?,
+    })
+}
 #[derive(Clone, Debug)]
 pub struct ChatContext {
     pub model: Model,
     pub provider: Provider,
+    pub topic: Topic,
     pub credential: Credentials,
-    pub req_config: ReqConfig,
     pub rule_set: Option<JsonRule>,
     pub tools: Option<Vec<Tools>>,
 }
@@ -96,13 +105,11 @@ impl ChatRunner {
     ) -> Pin<Box<dyn Stream<Item = ChatEvent> + Send + 'a>> {
         Box::pin(stream! {
             let assistant_id = assistant.id;
-            let chat_adapter = get_chat_adapter(ctx.model.adapter);
             let mut error_obj: Option<CoreError> = None;
             let mut msg = AiMessage::default();
             {
                 let forward = pin!(Self::forward_stream(
-                    chat_adapter.as_ref(),
-                    ctx,
+                    &ctx,
                     contexts.as_slice(),
                     rule.as_ref(),
                 ));
@@ -149,7 +156,6 @@ impl ChatRunner {
     }
 
     fn forward_stream(
-        chat_adapter: &dyn ChatAdapter,
         ctx: &ChatContext,
         contexts: &[AiMessage],
         rule: Option<&RuleSet>,
@@ -157,13 +163,17 @@ impl ChatRunner {
         try_stream! {
             log::debug!(
                 "[request body]\n[user_input]\n{},\n\n[config]\n{:#?}",
-                contexts.last().and_then(|c|Some(Content::arr_to_string(&c.content))).unwrap_or(String::new()),
+                contexts
+                    .last()
+                    .and_then(|c| Some(Content::arr_to_string(&c.content)))
+                    .unwrap_or(String::new()),
                 ctx
             );
+            let model = to_ai_model(&ctx.model)?;
+            let chat_adapter = get_chat_adapter(model.adapter);
             let mut req_body = build_request(
-                chat_adapter,
-                &ctx.model.name,
-                &ctx.req_config,
+                &*chat_adapter,
+                &model,
                 contexts,
                 ctx.tools.as_deref(),
             )?;
@@ -171,18 +181,18 @@ impl ChatRunner {
             apply_json_rule(
                 rule,
                 &mut req_body,
-                ctx.model.adapter,
+                model.adapter,
                 &ctx.provider.name,
-                &ctx.model.name,
-                ctx.model.endpoint.as_deref(),
+                &model.name,
+                model.endpoint.as_deref(),
             );
 
             let stream = handle_chat(
-                chat_adapter,
+                &*chat_adapter,
                 &req_body,
                 &ctx.provider.base_url,
                 &ctx.credential.key,
-                ctx.model.endpoint.as_deref(),
+                model.endpoint.as_deref(),
             );
             let mut stream = std::pin::pin!(stream);
             while let Some(res_event) = stream.next().await {

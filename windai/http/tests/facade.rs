@@ -2,9 +2,9 @@ mod common;
 
 use wind_ai::message::ReqConfig;
 use wind_ai::model::AdapterType;
-use wind_core::models::agent::{AgentDefinitionData, AgentRole, AgentScope, BuiltinMcpBinding};
+use wind_core::models::agent::{AgentDefinitionData, AgentRole, BuiltinMcpBinding};
 use wind_core::models::{
-    CreateAgentBinding, CreateAgentDefinition, CreateCredentials, CreateMcpServer, CreateModel,
+    CreateInstance, CreateAgentDefinition, CreateCredentials, CreateMcpServer, CreateModel,
     CreatePromptModule, CreateProvider, CreateTopic,
 };
 use wind_http::facade::storage::agent::AgentStorageFacade;
@@ -34,7 +34,6 @@ async fn create_topic_roundtrips() {
     let created = facade
         .create_topic(CreateTopic {
             parent_id: None,
-            binding_id: None,
             label: "hello".into(),
             icon: None,
         })
@@ -198,7 +197,6 @@ async fn agent_crud_roundtrips() {
             key: "main".into(),
             name: "Main".into(),
             description: "main agent".into(),
-            scope: AgentScope::Global,
             owner_topic_id: None,
             cloned_from_id: None,
             active: None,
@@ -211,15 +209,15 @@ async fn agent_crud_roundtrips() {
     assert_eq!(f.get_agent_definition(agent_id).await.code, 200);
     assert_eq!(f.get_agent_definition_by_key("main".into()).await.code, 200);
 
-    // clone 到 topic 42，产生 TopicLocal 副本
+    // clone 到 topic 42，产生 owner_topic_id 指向 42 的副本
     let cloned = f.clone_agent_definition(agent_id, 42).await;
     assert_eq!(cloned.code, 200);
     assert_eq!(cloned.data.unwrap().owner_topic_id, Some(42));
 
     // binding
     let binding = f
-        .create_agent_binding(CreateAgentBinding {
-            parent_topic_id: 42,
+        .create_agent_binding(CreateInstance {
+            topic_id: 42,
             agent_id,
             role: AgentRole::Main,
             model_id: None,
@@ -265,6 +263,24 @@ async fn delete_agent_binding_missing_returns_404() {
 }
 
 #[tokio::test]
+async fn list_binding_messages_returns_404_for_unknown_binding() {
+    let core = common::test_core().await;
+    let f = TopicFacade::new(core);
+    let r = f.list_binding_messages(999_999).await;
+    assert_eq!(r.code, 404);
+    assert!(r.data.is_none());
+}
+
+#[tokio::test]
+async fn list_binding_context_returns_404_for_unknown_binding() {
+    let core = common::test_core().await;
+    let f = TopicFacade::new(core);
+    let r = f.list_binding_context(999_999).await;
+    assert_eq!(r.code, 404);
+    assert!(r.data.is_none());
+}
+
+#[tokio::test]
 async fn approval_lists_return_empty() {
     let core = common::test_core().await;
     let f = ToolApprovalFacade::new(core);
@@ -282,7 +298,6 @@ async fn agent_definition_accepts_valid_builtin_mcp_name() {
             key: "with-builtin".into(),
             name: "WithBuiltin".into(),
             description: "x".into(),
-            scope: AgentScope::Global,
             owner_topic_id: None,
             cloned_from_id: None,
             active: None,

@@ -1,4 +1,5 @@
 use super::ID_GENERATOR;
+use super::executor::StorageExecutor;
 use crate::{
     db::DbQueryResult,
     error::{CoreError, Result},
@@ -309,6 +310,35 @@ macro_rules! get_by_id {
     }};
 }
 
+/// 按 `column IN (...)` 批量删除。
+///
+/// column 为内部常量
+///
+/// 拼接结果示例
+///
+/// `DELETE FROM {table} WHERE {column} IN (?, ?)`
+pub(crate) async fn batch_delete_in(
+    executor: &StorageExecutor,
+    table: &str,
+    column: &str,
+    ids: &[i64],
+) -> Result<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let mut qb = crate::delete_from!(table);
+    qb.push(" WHERE ").push(column).push(" IN (");
+    {
+        let mut separated = qb.separated(", ");
+        for id in ids {
+            separated.push_bind(*id);
+        }
+    }
+    qb.push(")");
+    executor.execute(qb.build()).await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     // ==================== insert! ====================
@@ -478,5 +508,21 @@ mod tests {
     fn get_by_id_single_column() {
         let qb = get_by_id!("items", 99, ("status"));
         assert_eq!(qb.sql(), "SELECT status FROM items WHERE id = ?");
+    }
+
+    // ==================== batch_delete_in ====================
+
+    #[test]
+    fn batch_delete_in_generates_column_not_bind() {
+        use crate::db::DbDriver;
+        let mut qb: sqlx::QueryBuilder<'_, DbDriver> = crate::delete_from!("topics");
+        qb.push(" WHERE ")
+            .push("id")
+            .push(" IN (")
+            .push_bind(1_i64)
+            .push(", ")
+            .push_bind(2_i64)
+            .push(")");
+        assert_eq!(qb.sql(), "DELETE FROM topics WHERE id IN (?, ?)");
     }
 }

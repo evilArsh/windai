@@ -2,7 +2,7 @@ use std::sync::Arc;
 use wind_ai::message::ReqConfig;
 use wind_core::WindCore;
 use wind_core::models::{
-    ChatConfig, CreateTopic, Message, Topic, UpdateAgentBinding, UpdateMessage, UpdateTopic,
+    ChatConfig, CreateTopic, Message, Topic, UpdateInstance, UpdateMessage, UpdateTopic,
 };
 
 use crate::dto::approval::ApproveToolCallsRequest;
@@ -79,33 +79,51 @@ impl TopicFacade {
         }
     }
 
-    pub async fn get_topic_by_binding(
-        &self,
-        binding_id: i64,
-        parent_topic_id: i64,
-    ) -> ApiResponse<Topic> {
+    /// 通过 binding 反查其所属 topic。
+    pub async fn get_topic_by_binding(&self, binding_id: i64) -> ApiResponse<Topic> {
+        let binding = match self.core.storage().agent().get_instance(binding_id).await {
+            Ok(Some(b)) => b,
+            Ok(None) => return ApiResponse::not_found("binding not found"),
+            Err(e) => return map_core_error(e),
+        };
+        self.get_topic(binding.topic_id).await
+    }
+
+    /// 获取某个 Agent 绑定的全部消息。
+    pub async fn list_binding_messages(&self, binding_id: i64) -> ApiResponse<Vec<Message>> {
+        // 先确认 binding 存在，否则「不存在」与「存在但无消息」都返回空列表。
+        match self.core.storage().agent().get_instance(binding_id).await {
+            Ok(None) => return ApiResponse::not_found("binding not found"),
+            Ok(Some(_)) => {}
+            Err(e) => return map_core_error(e),
+        }
         match self
             .core
             .storage()
-            .topic()
-            .get_topic_by_binding_id(parent_topic_id, binding_id)
+            .message()
+            .list_by_instance(binding_id)
             .await
         {
-            Ok(Some(t)) => ApiResponse::ok(t),
-            Ok(None) => ApiResponse::not_found("topic not found"),
-            Err(e) => map_core_error(e),
-        }
-    }
-
-    pub async fn list_topic_messages(&self, topic_id: i64) -> ApiResponse<Vec<Message>> {
-        match self.core.storage().message().list_by_topic(topic_id).await {
             Ok(rows) => ApiResponse::ok(rows),
             Err(e) => map_core_error(e),
         }
     }
 
-    pub async fn list_message_context(&self, topic_id: i64) -> ApiResponse<Vec<Message>> {
-        match self.core.storage().message().list_contexts(topic_id).await {
+    /// 获取某个 Agent 绑定的消息上下文。
+    pub async fn list_binding_context(&self, binding_id: i64) -> ApiResponse<Vec<Message>> {
+        // 先确认 binding 存在，否则「不存在」与「存在但无上下文」都返回空列表。
+        match self.core.storage().agent().get_instance(binding_id).await {
+            Ok(None) => return ApiResponse::not_found("binding not found"),
+            Ok(Some(_)) => {}
+            Err(e) => return map_core_error(e),
+        }
+        match self
+            .core
+            .storage()
+            .message()
+            .list_contexts(binding_id)
+            .await
+        {
             Ok(rows) => ApiResponse::ok(rows),
             Err(e) => map_core_error(e),
         }
@@ -156,7 +174,7 @@ impl TopicFacade {
             Err(e) => return map_core_error(e),
         }
         let handle = self.core.fetch_topic(topic_id);
-        match handle.create_chat(input.content).await {
+        match handle.create_task(input.content).await {
             Ok(()) => ApiResponse::ok(SubmitChatResponse { accepted: true }),
             Err(e) => map_core_error(e),
         }
@@ -196,10 +214,10 @@ impl TopicFacade {
         if records.is_empty() {
             return ApiResponse::not_found("no pending approvals");
         }
-        if records.iter().any(|r| r.parent_topic_id != topic_id) {
+        if records.iter().any(|r| r.topic_id != topic_id) {
             return ApiResponse::not_found("approval not found for topic");
         }
-        let binding_id = records[0].binding_id;
+        let binding_id = records[0].instance_id;
         let handle = self.core.fetch_topic(topic_id);
         match handle
             .approve(binding_id, input.allow_ids, input.deny_ids)
@@ -211,7 +229,7 @@ impl TopicFacade {
     }
 
     pub async fn get_chat_config(&self, binding_id: i64) -> ApiResponse<ChatConfig> {
-        let binding = match self.core.storage().agent().get_binding(binding_id).await {
+        let binding = match self.core.storage().agent().get_instance(binding_id).await {
             Ok(Some(b)) => b,
             Ok(None) => return ApiResponse::not_found("binding not found"),
             Err(e) => return map_core_error(e),
@@ -232,7 +250,7 @@ impl TopicFacade {
         input: ReqConfig,
     ) -> ApiResponse<ChatConfig> {
         // 先确认 binding 存在，避免插入 chat_config 后 binding 缺失导致孤儿行。
-        match self.core.storage().agent().get_binding(binding_id).await {
+        match self.core.storage().agent().get_instance(binding_id).await {
             Ok(None) => return ApiResponse::not_found("binding not found"),
             Ok(Some(_)) => {}
             Err(e) => return map_core_error(e),
@@ -241,7 +259,7 @@ impl TopicFacade {
             Ok(c) => c,
             Err(e) => return map_core_error(e),
         };
-        let update = UpdateAgentBinding {
+        let update = UpdateInstance {
             chat_config_id: Some(created.id),
             ..Default::default()
         };
@@ -249,7 +267,7 @@ impl TopicFacade {
             .core
             .storage()
             .agent()
-            .update_binding(binding_id, update)
+            .update_instance(binding_id, update)
             .await
         {
             return map_core_error(e);
@@ -262,7 +280,7 @@ impl TopicFacade {
         binding_id: i64,
         input: ReqConfig,
     ) -> ApiResponse<ChatConfig> {
-        let binding = match self.core.storage().agent().get_binding(binding_id).await {
+        let binding = match self.core.storage().agent().get_instance(binding_id).await {
             Ok(Some(b)) => b,
             Ok(None) => return ApiResponse::not_found("binding not found"),
             Err(e) => return map_core_error(e),

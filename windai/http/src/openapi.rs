@@ -1,15 +1,14 @@
-use std::sync::OnceLock;
-
 use axum::Json;
 use serde_json::Value;
+use std::sync::OnceLock;
 use utoipa::OpenApi;
 use wind_ai::message::ReqConfig;
 use wind_core::agent::event::TopicEvent;
 use wind_core::models::{
-    AgentBinding, AgentDefinition, ChatConfig, CreateAgentBinding, CreateAgentDefinition,
+    AgentInstance, AgentDefinition, ChatConfig, CreateInstance, CreateAgentDefinition,
     CreateCredentials, CreateJsonRule, CreateMcpServer, CreateModel, CreatePromptModule,
     CreateProvider, CreateTopic, Credentials, JsonRule, McpServerParam, Message, Model,
-    PromptModule, Provider, ToolApprovalRequest, Topic, UpdateAgentBinding, UpdateAgentDefinition,
+    PromptModule, Provider, ToolApprovalRequest, Topic, UpdateInstance, UpdateAgentDefinition,
     UpdateJsonRule, UpdateMcpServer, UpdateMessage, UpdateModel, UpdatePromptModule,
     UpdateProvider, UpdateTopic,
 };
@@ -167,9 +166,9 @@ use wind_mcp::client::{
         AgentDefinition,
         CreateAgentDefinition,
         UpdateAgentDefinition,
-        AgentBinding,
-        CreateAgentBinding,
-        UpdateAgentBinding,
+        AgentInstance,
+        CreateInstance,
+        UpdateInstance,
         ToolApprovalRequest,
         // SSE 事件
         TopicEvent,

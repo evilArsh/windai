@@ -5,8 +5,8 @@ use super::schema::openai_responses::{
 };
 use super::{Adapter, AdapterError, ChatAdapter};
 use crate::eventsource::Event;
-use crate::message::{self, Content, Message, MessageBuilder, ReqConfig};
-use crate::model::AdapterType;
+use crate::message::{self, Content, Message, MessageBuilder};
+use crate::model::{AdapterType, Model};
 use crate::tool;
 use serde_json::Value;
 
@@ -44,8 +44,7 @@ impl Adapter for OpenAIResponseAdapter {
 impl ChatAdapter for OpenAIResponseAdapter {
     fn build_request(
         &self,
-        model_name: &str,
-        config: &ReqConfig,
+        model: &Model,
         contexts: &[Message],
         tools: Option<&[tool::Tools]>,
     ) -> Result<Value, AdapterError> {
@@ -154,17 +153,30 @@ impl ChatAdapter for OpenAIResponseAdapter {
             })
             .collect::<Vec<InputItem>>();
 
+        let stream: Option<bool> = model
+            .config
+            .as_ref()
+            .and_then(|config| config.get("stream"))
+            .and_then(|v| v.as_bool());
+
+        let reasoning: Option<String> = model
+            .config
+            .as_ref()
+            .and_then(|config| config.get("reasoning"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
         let req = serde_json::to_value(&ResponseRequest {
-            model: Some(model_name.to_string()),
+            model: Some(model.name.clone()),
             input: input_messages,
-            stream: config.stream,
-            temperature: config.temperature,
-            top_p: config.top_p,
-            max_output_tokens: config.max_tokens,
-            parallel_tool_calls: config.parallel_tool_calls,
-            reasoning: match config.reasoning {
-                Some(true) => Some(ResponseReasoning {
-                    effort: Some("medium".to_string()),
+            stream,
+            temperature: None,
+            top_p: None,
+            max_output_tokens: None,
+            parallel_tool_calls: None,
+            reasoning: match reasoning {
+                Some(reason) => Some(ResponseReasoning {
+                    effort: Some(reason),
                 }),
                 _ => None,
             },

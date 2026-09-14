@@ -4,13 +4,12 @@
 //! 同一 mcp server 可被多个 topic 共享引用。
 mod common;
 
-use std::sync::Arc;
-use std::time::Duration;
-
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use futures::StreamExt;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 use wind_core::WindCore;
@@ -33,7 +32,6 @@ async fn create_topic(core: &Arc<WindCore>) -> Topic {
         .topic()
         .create(CreateTopic {
             parent_id: None,
-            binding_id: None,
             label: "mcp-runtime-test".to_string(),
             icon: None,
         })

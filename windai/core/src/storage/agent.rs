@@ -4,14 +4,14 @@ use super::{
 };
 use crate::{
     db::DbDriver,
-    delete_by_id, delete_from,
+    delete_by_id,
     error::{CoreError, Result},
     get_by_id, insert,
     models::{
-        AgentStatus, ToolApprovalPolicy,
+        AgentStatus, CreateTopicAgentMap, TopicAgentMap,
         agent::{
-            AgentBinding, AgentDefinition, AgentRole, CreateAgentBinding, CreateAgentDefinition,
-            UpdateAgentBinding, UpdateAgentDefinition,
+            AgentDefinition, AgentInstance, AgentRole, CreateAgentDefinition, CreateInstance,
+            UpdateAgentDefinition, UpdateInstance,
         },
     },
     select_fields,
@@ -121,19 +121,15 @@ impl AgentStorage {
         Ok(rows)
     }
 
-    /// 删除topic特有的agent定义
+    /// 删除 topic 特有的 agent 定义。
     pub(crate) async fn batch_delete_definitions_by_topics(&self, topic_ids: &[i64]) -> Result<()> {
-        if topic_ids.is_empty() {
-            return Ok(());
-        }
-        let mut qb = delete_from!(TableName::AGENT_DEFINITION);
-        qb.push(" WHERE owner_topic_id IN ( ");
-        let mut separated = qb.separated(", ");
-        for id in topic_ids {
-            separated.push_bind(*id);
-        }
-        separated.push_unseparated(") ");
-        ensure_affected(self.executor.execute(qb.build()).await?)
+        utils::batch_delete_in(
+            &self.executor,
+            TableName::AGENT_DEFINITION,
+            "owner_topic_id",
+            topic_ids,
+        )
+        .await
     }
 
     pub async fn get_definition_by_key(&self, key: &str) -> Result<Option<AgentDefinition>> {
@@ -161,149 +157,86 @@ impl AgentStorage {
         Ok(rows)
     }
 
-    /// 创建新的 TopicAgentBinding
-    pub async fn create_binding(&self, data: CreateAgentBinding) -> Result<AgentBinding> {
-        // TODO: 校验topic_id是否已有agent_id绑定
+    /// 创建新的  Agent 实例
+    pub(crate) async fn create_instance(&self, data: CreateInstance) -> Result<AgentInstance> {
         let id = next_id();
         let now = now_ts();
+        let role = data.role.unwrap_or(AgentRole::Child);
         let status = AgentStatus::Idle;
-        let policy = ToolApprovalPolicy::default();
-        let enabled = data.enabled.unwrap_or(true);
         let mut qb = insert!(
-            TableName::TOPIC_AGENT_BINDINGS,
+            TableName::AGENT_INSTANCES,
             ("id", id),
             ("topic_id", data.topic_id),
             ("agent_id", data.agent_id),
-            ("role", data.role.to_string()),
-            ("model_id", data.model_id),
-            ("chat_config_id", data.chat_config_id),
+            ("role", role.to_string()),
+            ("mode", data.mode.map(|v| v.to_string())),
             ("status", status.to_string()),
-            ("tool_approval_policy", serde_json::to_string(&policy)?),
-            ("enabled", enabled),
             ("created_at", now)
         );
         self.executor.execute(qb.build()).await?;
 
-        Ok(AgentBinding {
+        Ok(AgentInstance {
             id,
+            parent_id: data.parent_id,
             topic_id: data.topic_id,
             agent_id: data.agent_id,
             mode: None,
-            role: data.role,
+            role,
             status,
-            model_id: data.model_id,
-            tool_approval_policy: Some(policy),
-            chat_config_id: data.chat_config_id,
-            enabled,
             created_at: now,
         })
     }
 
-    /// 更新 TopicAgentBinding
-    pub async fn update_binding(&self, id: i64, data: UpdateAgentBinding) -> Result<()> {
+    /// 更新 Agent 实例
+    pub(crate) async fn update_instance(&self, id: i64, data: UpdateInstance) -> Result<()> {
         let mut qb = update!(
-            TableName::TOPIC_AGENT_BINDINGS,
+            TableName::AGENT_INSTANCES,
             id,
             ("agent_id", data.agent_id),
-            ("role", data.role.map(|v| v.to_string())),
-            ("model_id", data.model_id),
-            ("chat_config_id", data.chat_config_id),
             ("status", data.status.map(|v| v.to_string())),
             ("mode", data.mode.map(|v| v.to_string())),
-            (
-                "tool_approval_policy",
-                utils::map_to_str_optional(data.tool_approval_policy.as_ref())?
-            ),
-            ("enabled", data.enabled)
         );
         ensure_affected(self.executor.execute(qb.build()).await?)
     }
 
-    pub async fn delete_bindings(&self, ids: &[i64]) -> Result<()> {
+    pub(crate) async fn delete_instances(&self, ids: &[i64]) -> Result<()> {
         if ids.is_empty() {
             return Ok(());
         }
-
         self.executor
             .with_tx(|executor| async move {
-                // 1. 删 chat_configs：
-                //    DELETE FROM chat_configs
-                //    WHERE id IN (
-                //        SELECT chat_config_id FROM topic_agent_bindings
-                //        WHERE id IN (?, ?, ...)
-                //    )
-                let mut qb = delete_from!(TableName::CHAT_CONFIGS);
-                qb.push(" WHERE id IN ( SELECT chat_config_id FROM ")
-                    .push(TableName::TOPIC_AGENT_BINDINGS)
-                    .push(" WHERE id IN (");
-                {
-                    let mut separated = qb.separated(", ");
-                    for id in ids {
-                        separated.push_bind(*id);
-                    }
-                }
-                qb.push(") )");
-                executor.execute(qb.build()).await?;
-
-                // 2. 删 messages：
-                //    DELETE FROM messages WHERE binding_id IN (?, ?, ...)
-                let mut qb = delete_from!(TableName::MESSAGES);
-                qb.push(" WHERE binding_id IN (");
-                {
-                    let mut separated = qb.separated(", ");
-                    for id in ids {
-                        separated.push_bind(*id);
-                    }
-                }
-                qb.push(")");
-                executor.execute(qb.build()).await?;
-
-                // 3. 删 topic_agent_bindings：
-                //    DELETE FROM topic_agent_bindings WHERE id IN (?, ?, ...)
-                let mut qb = delete_from!(TableName::TOPIC_AGENT_BINDINGS);
-                qb.push(" WHERE id IN (");
-                {
-                    let mut separated = qb.separated(", ");
-                    for id in ids {
-                        separated.push_bind(*id);
-                    }
-                }
-                qb.push(")");
-                executor.execute(qb.build()).await?;
-
+                utils::batch_delete_in(
+                    &executor,
+                    TableName::TOOL_APPROVAL_REQUESTS,
+                    "instance_id",
+                    ids,
+                )
+                .await?;
+                utils::batch_delete_in(&executor, TableName::MESSAGES, "instance_id", ids).await?;
+                utils::batch_delete_in(&executor, TableName::AGENT_INSTANCES, "id", ids).await?;
                 Ok(())
             })
             .await
     }
 
-    pub async fn get_binding(&self, id: i64) -> Result<Option<AgentBinding>> {
+    pub(crate) async fn get_instance(&self, id: i64) -> Result<Option<AgentInstance>> {
         let row = self
             .executor
             .fetch_optional(
-                get_by_id!(TableName::TOPIC_AGENT_BINDINGS, id).build_query_as::<AgentBinding>(),
+                get_by_id!(TableName::AGENT_INSTANCES, id).build_query_as::<AgentInstance>(),
             )
             .await?;
         Ok(row)
     }
 
-    pub async fn get_bindings_by_topic(&self, topic_id: i64) -> Result<Vec<AgentBinding>> {
-        let mut qb = Self::select_bindings();
-        qb.push(" WHERE topic_id = ")
-            .push_bind(topic_id)
-            .push(" ORDER BY id ASC ");
-        let row = self
-            .executor
-            .fetch_all(qb.build_query_as::<AgentBinding>())
-            .await?;
-
-        Ok(row)
-    }
-
-    pub(crate) async fn batch_get_bindings_by_topics(
+    pub(crate) async fn batch_get_instances_by_topics(
         &self,
         topic_ids: &[i64],
-    ) -> Result<Vec<AgentBinding>> {
-        let mut qb = Self::select_bindings();
+    ) -> Result<Vec<AgentInstance>> {
+        if topic_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut qb = Self::select_instances();
         qb.push(" WHERE topic_id IN ( ");
         let mut separated = qb.separated(", ");
         for id in topic_ids {
@@ -314,113 +247,79 @@ impl AgentStorage {
 
         let row = self
             .executor
-            .fetch_all(qb.build_query_as::<AgentBinding>())
+            .fetch_all(qb.build_query_as::<AgentInstance>())
             .await?;
 
         Ok(row)
     }
 
-    /// 每个Topic下的同一个AgentDefinition只能被一个AgentBinding绑定。
-    pub async fn get_binding_by_agent_id(
-        &self,
-        topic_id: i64,
-        agent_id: i64,
-    ) -> Result<Option<AgentBinding>> {
+    /// 获取 topic 的主 Agent 实例
+    pub(crate) async fn get_main_instance(&self, topic_id: i64) -> Result<Option<AgentInstance>> {
         ensure_lte_one(
             self.executor
                 .fetch_all(
-                    Self::select_bindings()
-                        .push(" WHERE agent_id = ")
-                        .push_bind(agent_id)
-                        .push(" AND topic_id = ")
-                        .push_bind(topic_id)
-                        .push(" AND enabled = ")
-                        .push_bind(true)
-                        .build_query_as::<AgentBinding>(),
-                )
-                .await?,
-            Some(format!(
-                "(topic_id = {}, agent_id = {})",
-                topic_id, agent_id
-            )),
-        )
-    }
-
-    pub async fn get_main_binding(&self, topic_id: i64) -> Result<Option<AgentBinding>> {
-        ensure_lte_one(
-            self.executor
-                .fetch_all(
-                    Self::select_bindings()
+                    Self::select_instances()
                         .push(" WHERE topic_id = ")
                         .push_bind(topic_id)
                         .push(" AND role = ")
                         .push_bind(AgentRole::Main.to_string())
-                        .push(" AND enabled = ")
-                        .push_bind(true)
-                        .build_query_as::<AgentBinding>(),
+                        .build_query_as::<AgentInstance>(),
                 )
                 .await?,
             Some(format!(
-                "Only one main binding allowed in a topic, topic_id: {}",
+                "Only one main instance allowed in a topic, topic_id: {}",
                 topic_id
             )),
         )
     }
 
-    pub async fn list_bindings_by_topic(&self, topic_id: i64) -> Result<Vec<AgentBinding>> {
+    pub async fn list_instances_by_topic(&self, topic_id: i64) -> Result<Vec<AgentInstance>> {
         let rows = self
             .executor
             .fetch_all(
-                Self::select_bindings()
+                Self::select_instances()
                     .push(" WHERE topic_id = ")
                     .push_bind(topic_id)
                     .push(" ORDER BY id ASC ")
-                    .build_query_as::<AgentBinding>(),
+                    .build_query_as::<AgentInstance>(),
             )
             .await?;
         Ok(rows)
     }
 
-    /// 查找topic下绑定的所有AgentDefinition
+    /// TODO: 添加agent和topic映射表。删除topic时同时删除该表映射
+    /// 查找 topic 下绑定的所有 AgentDefinition。
     ///
-    /// 过滤掉主Agent和已禁用的绑定
-    pub async fn list_sub_definitions_by_topic(&self, topic: i64) -> Result<Vec<AgentDefinition>> {
-        // FIXME: tablename is hardcoded
-        let mut qb = sqlx::QueryBuilder::new(
-            r#"
-            SELECT
-                agent_definitions.id AS id,
-                agent_definitions.key AS key,
-                agent_definitions.name AS name,
-                agent_definitions.description AS description,
-                agent_definitions.owner_topic_id AS owner_topic_id,
-                agent_definitions.cloned_from_id AS cloned_from_id,
-                agent_definitions.active AS active,
-                agent_definitions.data AS data,
-                agent_definitions.created_at AS created_at
-            FROM "#,
-        );
-        qb.push(TableName::AGENT_DEFINITION)
-            .push(" INNER JOIN ")
-            .push(TableName::TOPIC_AGENT_BINDINGS)
-            .push(
-                r#" ON agent_definitions.id = topic_agent_bindings.agent_id
-            WHERE
-                topic_agent_bindings.role <> 'main'
-                AND topic_agent_bindings.enabled = 1
-                AND topic_agent_bindings.topic_id =
-            "#,
-            );
-        qb.push_bind(topic)
-            .push(" ORDER BY topic_agent_bindings.id ASC ");
-        let rows = self
-            .executor
-            .fetch_all(qb.build_query_as::<AgentDefinition>())
-            .await?;
-        Ok(rows)
+    /// 过滤掉主 Agent 和已禁用的绑定。
+    pub async fn list_sub_definitions_by_topic(
+        &self,
+        topic_id: i64,
+    ) -> Result<Vec<AgentDefinition>> {
+        todo!()
+        // let mut qb = Self::select_definitions();
+        // qb.push(" WHERE id IN (SELECT agent_id FROM ")
+        //     .push(TableName::AGENT_INSTANCES)
+        //     .push(" WHERE ")
+        //     .push(TableName::AGENT_INSTANCES)
+        //     .push(".topic_id = ")
+        //     .push_bind(topic_id)
+        //     .push(" AND ")
+        //     .push(TableName::AGENT_INSTANCES)
+        //     .push(".role <> ")
+        //     .push_bind(AgentRole::Main.to_string())
+        //     .push(" AND ")
+        //     .push(TableName::AGENT_INSTANCES)
+        //     .push(".enabled = ")
+        //     .push_bind(true)
+        //     .push(") ORDER BY id ASC ");
+        // let rows = self
+        //     .executor
+        //     .fetch_all(qb.build_query_as::<AgentDefinition>())
+        //     .await?;
+        // Ok(rows)
     }
 
-    /// 复制一份`agent_id`给新的`owner_topic_id`
+    /// 复制一份 `agent_id` 给新的 `owner_topic_id`
     pub async fn clone_definition_for_topic(
         &self,
         agent_id: i64,
@@ -447,7 +346,11 @@ impl AgentStorage {
         .await
     }
 
-    fn select_definitions<'a>() -> sqlx::QueryBuilder<'a, DbDriver> {
+    pub async fn create_topic_agent_map(&self, data: CreateTopicAgentMap) -> Result<TopicAgentMap> {
+        todo!()
+    }
+
+    pub fn select_definitions<'a>() -> sqlx::QueryBuilder<'a, DbDriver> {
         select_fields!(
             TableName::AGENT_DEFINITION,
             (
@@ -455,7 +358,6 @@ impl AgentStorage {
                 "key",
                 "name",
                 "description",
-                "scope",
                 "owner_topic_id",
                 "cloned_from_id",
                 "active",
@@ -465,11 +367,12 @@ impl AgentStorage {
         )
     }
 
-    fn select_bindings<'a>() -> sqlx::QueryBuilder<'a, DbDriver> {
+    fn select_instances<'a>() -> sqlx::QueryBuilder<'a, DbDriver> {
         select_fields!(
-            TableName::TOPIC_AGENT_BINDINGS,
+            TableName::AGENT_INSTANCES,
             (
                 "id",
+                "parent_id",
                 "topic_id",
                 "agent_id",
                 "role",
@@ -481,6 +384,13 @@ impl AgentStorage {
                 "enabled",
                 "created_at"
             )
+        )
+    }
+
+    fn select_agent_maps<'a>() -> sqlx::QueryBuilder<'a, DbDriver> {
+        select_fields!(
+            TableName::TOPIC_AGENT_MAPS,
+            ("id", "topic_id", "agent_id", "role", "created_at")
         )
     }
 }

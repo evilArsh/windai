@@ -1,3 +1,4 @@
+use crate::JsonObject;
 use serde::{Deserialize, Serialize};
 
 /// 模型适配器类型
@@ -38,4 +39,6 @@ pub struct Model {
     ///
     /// 默认使用与 [AdapterType] 关联的提供商的默认端点。
     pub endpoint: Option<String>,
+    /// 模型请求配置
+    pub config: Option<JsonObject>,
 }

@@ -82,7 +82,6 @@ impl AppDirs {
     pub fn db_path(&self) -> &Path {
         &self.db
     }
-
 }
 
 /// 获取应用目录句柄

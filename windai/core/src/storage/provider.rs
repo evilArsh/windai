@@ -1,5 +1,3 @@
-use wind_ai::model::AdapterType;
-
 use super::{
     executor::StorageExecutor,
     utils::{ensure_affected, next_id, now_ts},
@@ -17,6 +15,7 @@ use crate::{
     update,
 };
 use sqlx::QueryBuilder;
+use wind_ai::model::AdapterType;
 #[derive(Clone)]
 pub struct ProviderStorage {
     executor: StorageExecutor,

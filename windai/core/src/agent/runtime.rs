@@ -1,11 +1,11 @@
 use super::function_call::partition_tool_calls_by_policy;
 use super::host::AgentHost;
+use super::task::AgentOutput;
 use super::tool::{self, AGENT_TOOL_PREFIX, SpawnAgentResponse};
-use crate::agent::task::AgentOutput;
 use crate::chat::runner::ChatContext;
 use crate::chat::{ChatEvent, ChatRunner};
 use crate::error::{CoreError, Result};
-use crate::models::{AgentBinding, Message, ToolApprovalStatus};
+use crate::models::{AgentInstance, Message, ToolApprovalStatus};
 use futures::stream::StreamExt;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -83,18 +83,20 @@ enum Output {
     },
 }
 
-pub struct AgentRuntime {
+pub struct AgentRuntime<'a> {
     chat: ChatRunner,
     host: Arc<dyn AgentHost>,
-    binding: Option<AgentBinding>,
+    instance: Option<AgentInstance>,
+    chat_ctx: Option<&'a ChatContext>,
 }
 
-impl AgentRuntime {
+impl<'a> AgentRuntime<'a> {
     pub fn new(host: Arc<dyn AgentHost>) -> Self {
         Self {
             chat: ChatRunner::new(),
             host,
-            binding: None,
+            instance: None,
+            chat_ctx: None,
         }
     }
 
@@ -103,11 +105,12 @@ impl AgentRuntime {
         mut self,
         ctx: CancellationToken,
         chat_ctx: ChatContext,
-        binding: AgentBinding,
+        instance: AgentInstance,
         mut assistant: Message,
         mut contexts: Vec<AiMessage>,
     ) {
-        self.binding = Some(binding);
+        self.instance = Some(instance);
+        self.chat_ctx = Some(&chat_ctx);
         let mut auto_resume_count = 0usize;
         const MAX_AUTO_RESUME: usize = 32;
         let mut iter_index = -1;
@@ -363,9 +366,9 @@ impl AgentRuntime {
 
         let (auto, manual) = partition_tool_calls_by_policy(
             unhandled,
-            self.binding
+            self.chat_ctx
                 .as_ref()
-                .and_then(|b| b.tool_approval_policy.as_ref()),
+                .and_then(|b| b.topic.tool_approval_policy.as_ref()),
         );
         approved.extend(auto);
         waiting.extend(manual);

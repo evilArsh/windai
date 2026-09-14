@@ -1,11 +1,9 @@
+use crate::dto::envelope::{ApiResponse, map_core_error};
+use crate::dto::mcp::{McpServerStatusDto, StartMcpServerResult};
 use std::sync::Arc;
-
 use wind_core::WindCore;
 use wind_core::models::{McpServerParam, Topic};
 use wind_mcp::client::{ClientSnapshot, McpError, Prompt, Resource, ServerParams, Tool};
-
-use crate::dto::envelope::{ApiResponse, map_core_error};
-use crate::dto::mcp::{McpServerStatusDto, StartMcpServerResult};
 
 /// MCP 服务运行时 facade：启动 / 停止 / 查询运行期状态。
 ///

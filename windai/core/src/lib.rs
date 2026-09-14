@@ -7,9 +7,8 @@ pub mod models;
 pub mod schema;
 pub mod storage;
 
-use crate::agent::topic::{TopicRuntime, TopicRuntimeHandle};
-
 use self::storage::Storage;
+use crate::agent::topic::{TopicRuntime, TopicRuntimeHandle};
 use db::DbPool;
 use error::Result;
 use std::{

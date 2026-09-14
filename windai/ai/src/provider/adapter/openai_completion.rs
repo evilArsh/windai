@@ -7,8 +7,8 @@ use super::schema::openai_completion::{
 };
 use super::{Adapter, AdapterError, ChatAdapter};
 use crate::eventsource::Event;
-use crate::message::{self, Message, MessageBuilder, ReqConfig, Role};
-use crate::model::AdapterType;
+use crate::message::{self, Message, MessageBuilder, Role};
+use crate::model::{AdapterType, Model};
 use crate::tool::{FunctionCall, Tools};
 use serde_json::{Value, json};
 
@@ -66,8 +66,7 @@ impl OpenAICompletionAdapter {
 impl ChatAdapter for OpenAICompletionAdapter {
     fn build_request(
         &self,
-        model_name: &str,
-        config: &ReqConfig,
+        model: &Model,
         contexts: &[Message],
         tools: Option<&[Tools]>,
     ) -> Result<Value, AdapterError> {
@@ -212,26 +211,31 @@ impl ChatAdapter for OpenAICompletionAdapter {
             })
             .collect::<Vec<ChatCompletionMessageParam>>();
 
+        let stream: Option<bool> = model
+            .config
+            .as_ref()
+            .and_then(|config| config.get("stream"))
+            .and_then(|v| v.as_bool());
+
+        let reasoning: Option<String> = model
+            .config
+            .as_ref()
+            .and_then(|config| config.get("reasoning"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        // TODO: merge model.config
         let req = ChatCompletionRequest {
-            model: model_name.to_string(),
+            model: model.name.clone(),
             messages: input_messages,
-            temperature: config.temperature,
-            top_p: config.top_p,
-            max_completion_tokens: config.max_tokens,
-            stream: config.stream,
-            presence_penalty: config.presence_penalty,
-            frequency_penalty: config.frequency_penalty,
-            parallel_tool_calls: config.parallel_tool_calls,
-            reasoning_effort: match config.reasoning {
-                Some(val) => {
-                    if val {
-                        Some("medium".to_string())
-                    } else {
-                        None
-                    }
-                }
-                None => None,
-            },
+            temperature: None,
+            top_p: None,
+            max_completion_tokens: None,
+            stream,
+            presence_penalty: None,
+            frequency_penalty: None,
+            parallel_tool_calls: None,
+            reasoning_effort: reasoning,
             audio: None,
             logit_bias: None,
             logprobs: None,
@@ -246,7 +250,7 @@ impl ChatAdapter for OpenAICompletionAdapter {
             service_tier: None,
             stop: None,
             store: None,
-            stream_options: match config.stream {
+            stream_options: match stream {
                 Some(true) => Some(json!({"include_usage": true})),
                 _ => None,
             },

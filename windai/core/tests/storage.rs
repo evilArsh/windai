@@ -4,7 +4,7 @@ use sqlx::{
 };
 use std::path::PathBuf;
 use std::str::FromStr;
-use wind_ai::message::{Content, Message as AiMessage, Role};
+use wind_ai::message::{Content, Message as AiMessage, ReqConfig, Role};
 use wind_core::WindCore;
 use wind_core::error::CoreError;
 use wind_core::models::*;
@@ -108,7 +108,7 @@ fn assert_not_found<T: std::fmt::Debug>(result: wind_core::error::Result<T>) {
 
 /// 构造一条用户消息。`from_id = None` 表示用户消息。
 fn user_msg(
-    topic_id: i64,
+    binding_id: i64,
     model_id: i64,
     text: &str,
     is_boundary: bool,
@@ -123,7 +123,7 @@ fn user_msg(
             None,
         )],
         model_id,
-        topic_id,
+        binding_id,
         is_boundary,
         is_exclude,
         input_tokens: 5,
@@ -133,7 +133,7 @@ fn user_msg(
 
 /// 构造一条助手消息，`from_id` 指向其配对的用户消息。
 fn asst_msg(
-    topic_id: i64,
+    binding_id: i64,
     model_id: i64,
     from_id: i64,
     text: &str,
@@ -149,7 +149,7 @@ fn asst_msg(
             None,
         )],
         model_id,
-        topic_id,
+        binding_id,
         is_boundary,
         is_exclude,
         input_tokens: 0,
@@ -160,7 +160,7 @@ fn asst_msg(
 /// 在 topic 下创建一对 user-assistant 消息，返回 (user_id, assistant_id)。
 async fn create_pair(
     msg: &MessageStorage,
-    topic_id: i64,
+    binding_id: i64,
     model_id: i64,
     user_text: &str,
     assistant_text: &str,
@@ -168,12 +168,18 @@ async fn create_pair(
     assistant_exclude: bool,
 ) -> (i64, i64) {
     let user = msg
-        .create(user_msg(topic_id, model_id, user_text, false, user_exclude))
+        .create(user_msg(
+            binding_id,
+            model_id,
+            user_text,
+            false,
+            user_exclude,
+        ))
         .await
         .unwrap();
     let assistant = msg
         .create(asst_msg(
-            topic_id,
+            binding_id,
             model_id,
             user.id,
             assistant_text,
@@ -363,9 +369,48 @@ async fn create_root_topic(
     topic_storage
         .create(CreateTopic {
             parent_id: None,
-            binding_id: None,
             label: label.into(),
             icon: None,
+        })
+        .await
+        .unwrap()
+}
+
+/// 创建一个 AgentDefinition；`owner_topic_id` 为 `Some` 表示 topic 专属 Agent。
+async fn create_agent_def(
+    agent: &wind_core::storage::agent::AgentStorage,
+    key: &str,
+    owner_topic_id: Option<i64>,
+) -> AgentDefinition {
+    agent
+        .create_definition(CreateAgentDefinition {
+            key: key.into(),
+            name: key.into(),
+            description: key.into(),
+            owner_topic_id,
+            cloned_from_id: None,
+            active: Some(true),
+            data: AgentDefinitionData::default(),
+        })
+        .await
+        .unwrap()
+}
+
+/// 为 `topic_id` 绑定 `agent_id`，返回 binding。
+async fn bind_agent(
+    agent: &wind_core::storage::agent::AgentStorage,
+    topic_id: i64,
+    agent_id: i64,
+    role: AgentRole,
+) -> AgentInstance {
+    agent
+        .create_instance(CreateInstance {
+            topic_id,
+            agent_id,
+            role,
+            model_id: None,
+            chat_config_id: None,
+            enabled: Some(true),
         })
         .await
         .unwrap()
@@ -388,7 +433,6 @@ async fn agent_binding_crud() {
             key: "agent-a".into(),
             name: "Agent A".into(),
             description: "first agent".into(),
-            scope: AgentScope::Global,
             owner_topic_id: None,
             cloned_from_id: None,
             active: Some(true),
@@ -401,7 +445,6 @@ async fn agent_binding_crud() {
             key: "agent-b".into(),
             name: "Agent B".into(),
             description: "second agent".into(),
-            scope: AgentScope::Global,
             owner_topic_id: None,
             cloned_from_id: None,
             active: Some(true),
@@ -414,7 +457,6 @@ async fn agent_binding_crud() {
             key: "agent-c".into(),
             name: "Agent C".into(),
             description: "third agent".into(),
-            scope: AgentScope::Global,
             owner_topic_id: None,
             cloned_from_id: None,
             active: Some(true),
@@ -428,19 +470,19 @@ async fn agent_binding_crud() {
 
     // create_binding：在 topic 下创建三个 binding，分别绑定三个 definition；第一个为 Main
     let binding_main = agent
-        .create_binding(CreateAgentBinding {
-            parent_topic_id: topic.id,
+        .create_instance(CreateInstance {
             agent_id: def_a.id,
             role: AgentRole::Main,
             model_id: None,
             chat_config_id: None,
             enabled: Some(true),
+            topic_id: topic.id,
         })
         .await
         .unwrap();
     let binding_b = agent
-        .create_binding(CreateAgentBinding {
-            parent_topic_id: topic.id,
+        .create_instance(CreateInstance {
+            topic_id: topic.id,
             agent_id: def_b.id,
             role: AgentRole::Child,
             model_id: None,
@@ -450,8 +492,8 @@ async fn agent_binding_crud() {
         .await
         .unwrap();
     let binding_c = agent
-        .create_binding(CreateAgentBinding {
-            parent_topic_id: topic.id,
+        .create_instance(CreateInstance {
+            topic_id: topic.id,
             agent_id: def_c.id,
             role: AgentRole::Child,
             model_id: None,
@@ -462,9 +504,9 @@ async fn agent_binding_crud() {
         .unwrap();
 
     // get_binding / get_definition：通过 id 找回创建的 binding / definition
-    let got = agent.get_binding(binding_main.id).await.unwrap().unwrap();
+    let got = agent.get_instance(binding_main.id).await.unwrap().unwrap();
     assert_eq!(got.id, binding_main.id);
-    assert_eq!(got.parent_topic_id, topic.id);
+    assert_eq!(got.topic_id, topic.id);
     assert_eq!(got.agent_id, def_a.id);
     assert_eq!(got.role, AgentRole::Main);
 
@@ -496,7 +538,7 @@ async fn agent_binding_crud() {
         .unwrap();
     assert_eq!(found.id, binding_b.id);
     assert_eq!(found.agent_id, def_b.id);
-    assert_eq!(found.parent_topic_id, topic.id);
+    assert_eq!(found.topic_id, topic.id);
 
     let found_c = agent
         .get_binding_by_agent_id(topic.id, def_c.id)
@@ -517,11 +559,10 @@ async fn topic_child_listing() {
     let root_a = create_root_topic(topics, "root-a").await;
     let root_b = create_root_topic(topics, "root-b").await;
 
-    // root-a 下建两个子话题：一个 agent 子会话（带 binding_id），一个仅带 parent_id
+    // root-a 下建两个子话题
     let child_a = topics
         .create(CreateTopic {
             parent_id: Some(root_a.id),
-            binding_id: Some(1001),
             label: "child-a".into(),
             icon: None,
         })
@@ -530,7 +571,6 @@ async fn topic_child_listing() {
     let child_b = topics
         .create(CreateTopic {
             parent_id: Some(root_a.id),
-            binding_id: None,
             label: "child-b".into(),
             icon: None,
         })
@@ -552,7 +592,7 @@ async fn topic_child_listing() {
             .is_empty()
     );
 
-    // list_topics 语义不变：仍只返回根列表中的话题（agent 子会话因带 binding_id 而不出现）
+    // list_topics 只返回根话题，子话题不出现在根列表中
     let root_ids: Vec<i64> = topics
         .list_topics()
         .await
@@ -565,7 +605,7 @@ async fn topic_child_listing() {
     assert!(!root_ids.contains(&child_a.id));
 }
 
-/// 消息 is_excluded 标志对 list_by_topic / list_contexts 的影响。
+/// 消息 is_excluded 标志对 list_by_binding / list_contexts 的影响。
 /// tips: 该测试中，消息被手动设置为is_excluded = true, 而不是成对消息被删除后自动设置另一个消息
 #[tokio::test]
 async fn message_excluded_crud() {
@@ -580,8 +620,8 @@ async fn message_excluded_crud() {
         let (u1, a1) = create_pair(msg, topic.id, model_id, "q1", "a1", false, false).await;
         let (u2, a2) = create_pair(msg, topic.id, model_id, "q2", "a2", false, false).await;
 
-        // list_by_topic：数量、id 与创建顺序
-        let list = msg.list_by_topic(topic.id).await.unwrap();
+        // list_by_binding：数量、id 与创建顺序
+        let list = msg.list_by_instance(topic.id).await.unwrap();
         assert_eq!(list.len(), 4);
         let ids: Vec<i64> = list.iter().map(|m| m.id).collect();
         assert_eq!(ids, vec![u1, a1, u2, a2]);
@@ -618,8 +658,8 @@ async fn message_excluded_crud() {
         )
         .await;
 
-        // list_by_topic：排除不影响全量列表
-        let list = msg.list_by_topic(topic.id).await.unwrap();
+        // list_by_binding：排除不影响全量列表
+        let list = msg.list_by_instance(topic.id).await.unwrap();
         assert_eq!(list.len(), 4);
         let ids: Vec<i64> = list.iter().map(|m| m.id).collect();
         assert_eq!(ids, vec![u1, a1, u2, a2]);
@@ -655,8 +695,8 @@ async fn message_excluded_crud() {
         let _ = create_pair(msg, topic.id, model_id, "q1", "a1", true, true).await;
         let _ = create_pair(msg, topic.id, model_id, "q2", "a2", true, true).await;
 
-        // list_by_topic：仍然全部存在
-        let list = msg.list_by_topic(topic.id).await.unwrap();
+        // list_by_binding：仍然全部存在
+        let list = msg.list_by_instance(topic.id).await.unwrap();
         assert_eq!(list.len(), 4);
 
         // list_contexts：全部被排除，上下文为空
@@ -678,8 +718,8 @@ async fn message_del_excluded_crud() {
     let (u1, a1) = create_pair(msg, topic.id, model_id, "q1", "a1", false, false).await;
     let (u2, a2) = create_pair(msg, topic.id, model_id, "q2", "a2", false, false).await;
 
-    // list_by_topic：数量、id 与创建顺序
-    let list = msg.list_by_topic(topic.id).await.unwrap();
+    // list_by_binding：数量、id 与创建顺序
+    let list = msg.list_by_instance(topic.id).await.unwrap();
     assert_eq!(list.len(), 4);
     let ids: Vec<i64> = list.iter().map(|m| m.id).collect();
     assert_eq!(ids, vec![u1, a1, u2, a2]);
@@ -708,8 +748,8 @@ async fn message_del_excluded_crud() {
             "list_contexts 不应返回 is_excluded=1 的消息"
         );
 
-        // 2. list_by_topic：所有未删除的消息完全存在（u1 仍存在，但已被排除）
-        let list = msg.list_by_topic(topic.id).await.unwrap();
+        // 2. list_by_binding：所有未删除的消息完全存在（u1 仍存在，但已被排除）
+        let list = msg.list_by_instance(topic.id).await.unwrap();
         assert_eq!(list.len(), 3);
         let list_ids: Vec<i64> = list.iter().map(|m| m.id).collect();
         assert!(list_ids.contains(&u1));
@@ -742,8 +782,8 @@ async fn message_del_excluded_crud() {
             "list_contexts 不应返回 is_excluded=1 的消息"
         );
 
-        // 2. list_by_topic：所有未删除的消息完全存在
-        let list = msg.list_by_topic(topic.id).await.unwrap();
+        // 2. list_by_binding：所有未删除的消息完全存在
+        let list = msg.list_by_instance(topic.id).await.unwrap();
         assert_eq!(list.len(), 3);
         let list_ids: Vec<i64> = list.iter().map(|m| m.id).collect();
         assert!(list_ids.contains(&a1));
@@ -782,13 +822,13 @@ async fn message_boundary_crud() {
             _ => vec![s.u1, s.a1, s.u2, s.a2, s.b],
         };
 
-        // list_by_topic：所有消息完全存在且按 id 顺序
-        let list = msg.list_by_topic(topic.id).await.unwrap();
+        // list_by_binding：所有消息完全存在且按 id 顺序
+        let list = msg.list_by_instance(topic.id).await.unwrap();
         assert_eq!(list.len(), 5);
         let ids: Vec<i64> = list.iter().map(|m| m.id).collect();
         assert_eq!(
             ids, expected_order,
-            "position {position} 下 list_by_topic 顺序错误"
+            "position {position} 下 list_by_binding 顺序错误"
         );
 
         // list_contexts：只返回 boundary 之后（不含 boundary 自身）且未排除的消息
@@ -831,8 +871,8 @@ async fn message_boundary_crud() {
             "position {position} 下 list_contexts 不应返回 is_excluded=1 的消息"
         );
 
-        // list_by_topic：所有未删除的消息完全存在
-        let list = msg.list_by_topic(topic.id).await.unwrap();
+        // list_by_binding：所有未删除的消息完全存在
+        let list = msg.list_by_instance(topic.id).await.unwrap();
         assert_eq!(list.len(), 4);
         let list_ids: Vec<i64> = list.iter().map(|m| m.id).collect();
         assert!(!list_ids.contains(&s.a1));
@@ -883,7 +923,6 @@ async fn agent_definition_validates_builtin_binding_names() {
             key: key.into(),
             name: key.into(),
             description: "d".into(),
-            scope: AgentScope::Global,
             owner_topic_id: None,
             cloned_from_id: None,
             active: None,
@@ -915,4 +954,628 @@ fn agent_definition_data_defaults_builtin_servers() {
     value.as_object_mut().unwrap().remove("builtin_mcp_servers");
     let data: AgentDefinitionData = serde_json::from_value(value).unwrap();
     assert!(data.builtin_mcp_servers.is_empty());
+}
+
+/// 删除 Topic 时级联清理：专属 definition、binding、message、chat_config、审批记录。
+#[tokio::test]
+async fn topic_delete_cascades() {
+    let core = setup().await;
+    let agent = core.storage().agent();
+    let topics = core.storage().topic();
+    let msg = core.storage().message();
+    let model_id = 1;
+
+    let root = create_root_topic(topics, "cascade-root").await;
+
+    // owner_topic_id 指向该 topic 的 definition 属于"专属 definition"
+    let def = agent
+        .create_definition(CreateAgentDefinition {
+            key: "owned-agent".into(),
+            name: "Owned".into(),
+            description: "owned by topic".into(),
+            owner_topic_id: Some(root.id),
+            cloned_from_id: None,
+            active: Some(true),
+            data: AgentDefinitionData::default(),
+        })
+        .await
+        .unwrap();
+
+    let config = topics
+        .create_chat_config(ReqConfig::default())
+        .await
+        .unwrap();
+    let binding = agent
+        .create_instance(CreateInstance {
+            topic_id: root.id,
+            agent_id: def.id,
+            role: AgentRole::Main,
+            model_id: None,
+            chat_config_id: Some(config.id),
+            enabled: Some(true),
+        })
+        .await
+        .unwrap();
+
+    let (u1, a1) = create_pair(msg, binding.id, model_id, "q1", "a1", false, false).await;
+    let approvals = core
+        .storage()
+        .approval()
+        .create_requests(CreateToolApprovalRequests {
+            binding_id: binding.id,
+            topic_id: root.id,
+            message_id: a1,
+            calls: vec![CreateToolApprovalCall {
+                tool_call_id: "call-1".into(),
+                tool_name: "fs0m0read".into(),
+                arguments: serde_json::json!({}),
+            }],
+        })
+        .await
+        .unwrap();
+    assert_eq!(approvals.len(), 1, "审批记录应创建成功");
+
+    topics.delete_topics(&[root.id]).await.unwrap();
+
+    assert!(
+        topics.get_topic(root.id).await.unwrap().is_none(),
+        "topic 应被删除"
+    );
+    assert!(
+        agent.get_definition(def.id).await.unwrap().is_none(),
+        "topic 专属 definition 应被删除"
+    );
+    assert!(
+        agent.get_instance(binding.id).await.unwrap().is_none(),
+        "binding 应被删除"
+    );
+    assert!(msg.get(u1).await.unwrap().is_none(), "user 消息应被删除");
+    assert!(
+        msg.get(a1).await.unwrap().is_none(),
+        "assistant 消息应被删除"
+    );
+    assert!(
+        topics.get_chat_config(config.id).await.unwrap().is_none(),
+        "chat_config 应被删除"
+    );
+    assert!(
+        core.storage()
+            .approval()
+            .list_by_message(a1)
+            .await
+            .unwrap()
+            .is_empty(),
+        "审批记录应被删除"
+    );
+}
+
+/// 删除 binding 时级联清理 messages、chat_config 与审批记录，topic/definition 保留。
+#[tokio::test]
+async fn binding_delete_cascades() {
+    let core = setup().await;
+    let agent = core.storage().agent();
+    let topics = core.storage().topic();
+    let msg = core.storage().message();
+    let model_id = 1;
+
+    let root = create_root_topic(topics, "binding-cascade").await;
+    let def = agent
+        .create_definition(CreateAgentDefinition {
+            key: "keep-me".into(),
+            name: "KeepMe".into(),
+            description: "global agent".into(),
+            owner_topic_id: None,
+            cloned_from_id: None,
+            active: Some(true),
+            data: AgentDefinitionData::default(),
+        })
+        .await
+        .unwrap();
+
+    let config = topics
+        .create_chat_config(ReqConfig::default())
+        .await
+        .unwrap();
+    let binding = agent
+        .create_instance(CreateInstance {
+            topic_id: root.id,
+            agent_id: def.id,
+            role: AgentRole::Main,
+            model_id: None,
+            chat_config_id: Some(config.id),
+            enabled: Some(true),
+        })
+        .await
+        .unwrap();
+
+    let (u1, a1) = create_pair(msg, binding.id, model_id, "q1", "a1", false, false).await;
+    core.storage()
+        .approval()
+        .create_requests(CreateToolApprovalRequests {
+            binding_id: binding.id,
+            topic_id: root.id,
+            message_id: a1,
+            calls: vec![CreateToolApprovalCall {
+                tool_call_id: "call-1".into(),
+                tool_name: "fs0m0read".into(),
+                arguments: serde_json::json!({}),
+            }],
+        })
+        .await
+        .unwrap();
+
+    agent.delete_instances(&[binding.id]).await.unwrap();
+
+    assert!(
+        agent.get_instance(binding.id).await.unwrap().is_none(),
+        "binding 应被删除"
+    );
+    assert!(msg.get(u1).await.unwrap().is_none(), "user 消息应被删除");
+    assert!(
+        msg.get(a1).await.unwrap().is_none(),
+        "assistant 消息应被删除"
+    );
+    assert!(
+        topics.get_chat_config(config.id).await.unwrap().is_none(),
+        "chat_config 应被删除"
+    );
+    assert!(
+        core.storage()
+            .approval()
+            .list_by_message(a1)
+            .await
+            .unwrap()
+            .is_empty(),
+        "审批记录应被删除"
+    );
+    assert!(
+        topics.get_topic(root.id).await.unwrap().is_some(),
+        "topic 必须保留"
+    );
+    assert!(
+        agent.get_definition(def.id).await.unwrap().is_some(),
+        "definition 必须保留"
+    );
+}
+
+/// 一个 topic 下同一个 AgentDefinition 只能被一个 binding 使用。
+#[tokio::test]
+async fn create_binding_rejects_duplicate_agent() {
+    let core = setup().await;
+    let agent = core.storage().agent();
+    let topics = core.storage().topic();
+
+    let root = create_root_topic(topics, "dup-agent").await;
+    let def = agent
+        .create_definition(CreateAgentDefinition {
+            key: "dup".into(),
+            name: "Dup".into(),
+            description: "dup".into(),
+            owner_topic_id: None,
+            cloned_from_id: None,
+            active: Some(true),
+            data: AgentDefinitionData::default(),
+        })
+        .await
+        .unwrap();
+
+    agent
+        .create_instance(CreateInstance {
+            topic_id: root.id,
+            agent_id: def.id,
+            role: AgentRole::Child,
+            model_id: None,
+            chat_config_id: None,
+            enabled: Some(false),
+        })
+        .await
+        .unwrap();
+
+    // 即便已有 binding 被禁用，也不允许再绑一次
+    let err = agent
+        .create_instance(CreateInstance {
+            topic_id: root.id,
+            agent_id: def.id,
+            role: AgentRole::Child,
+            model_id: None,
+            chat_config_id: None,
+            enabled: Some(true),
+        })
+        .await
+        .expect_err("重复绑定应被拒绝");
+    assert!(
+        matches!(err, CoreError::Validation(_)),
+        "expected Validation, got {err:?}"
+    );
+}
+
+/// 一个 topic 下只能有一个主 Agent。
+#[tokio::test]
+async fn create_binding_rejects_second_main() {
+    let core = setup().await;
+    let agent = core.storage().agent();
+    let topics = core.storage().topic();
+
+    let root = create_root_topic(topics, "dup-main").await;
+    let mut defs = Vec::new();
+    for key in ["main-a", "main-b"] {
+        defs.push(
+            agent
+                .create_definition(CreateAgentDefinition {
+                    key: key.into(),
+                    name: key.into(),
+                    description: key.into(),
+                    owner_topic_id: None,
+                    cloned_from_id: None,
+                    active: Some(true),
+                    data: AgentDefinitionData::default(),
+                })
+                .await
+                .unwrap(),
+        );
+    }
+
+    agent
+        .create_instance(CreateInstance {
+            topic_id: root.id,
+            agent_id: defs[0].id,
+            role: AgentRole::Main,
+            model_id: None,
+            chat_config_id: None,
+            enabled: Some(true),
+        })
+        .await
+        .unwrap();
+
+    let err = agent
+        .create_instance(CreateInstance {
+            topic_id: root.id,
+            agent_id: defs[1].id,
+            role: AgentRole::Main,
+            model_id: None,
+            chat_config_id: None,
+            enabled: Some(true),
+        })
+        .await
+        .expect_err("第二个主 Agent 应被拒绝");
+    assert!(
+        matches!(err, CoreError::Validation(_)),
+        "expected Validation, got {err:?}"
+    );
+}
+
+/// topic 没有任何专属 definition 时，删除也必须成功。
+#[tokio::test]
+async fn topic_delete_succeeds_without_owned_definitions() {
+    let core = setup().await;
+    let agent = core.storage().agent();
+    let topics = core.storage().topic();
+    let msg = core.storage().message();
+    let model_id = 1;
+
+    let root = create_root_topic(topics, "no-owned-def").await;
+    let def = agent
+        .create_definition(CreateAgentDefinition {
+            key: "global-agent".into(),
+            name: "Global".into(),
+            description: "global".into(),
+            owner_topic_id: None,
+            cloned_from_id: None,
+            active: Some(true),
+            data: AgentDefinitionData::default(),
+        })
+        .await
+        .unwrap();
+    let binding = agent
+        .create_instance(CreateInstance {
+            topic_id: root.id,
+            agent_id: def.id,
+            role: AgentRole::Main,
+            model_id: None,
+            chat_config_id: None,
+            enabled: Some(true),
+        })
+        .await
+        .unwrap();
+    let (u1, a1) = create_pair(msg, binding.id, model_id, "q1", "a1", false, false).await;
+
+    topics.delete_topics(&[root.id]).await.unwrap();
+
+    assert!(
+        topics.get_topic(root.id).await.unwrap().is_none(),
+        "topic 应被删除"
+    );
+    assert!(
+        agent.get_instance(binding.id).await.unwrap().is_none(),
+        "binding 应被删除"
+    );
+    assert!(msg.get(u1).await.unwrap().is_none(), "user 消息应被删除");
+    assert!(
+        msg.get(a1).await.unwrap().is_none(),
+        "assistant 消息应被删除"
+    );
+    assert!(
+        agent.get_definition(def.id).await.unwrap().is_some(),
+        "全局 definition 不属于该 topic，不应被删除"
+    );
+}
+
+/// 删除一个 topic 不能影响其它 topic 的 definition / binding / 消息。
+#[tokio::test]
+async fn topic_delete_does_not_touch_other_topics() {
+    let core = setup().await;
+    let agent = core.storage().agent();
+    let topics = core.storage().topic();
+    let msg = core.storage().message();
+    let model_id = 1;
+
+    let root_a = create_root_topic(topics, "keep-b-root-a").await;
+    let root_b = create_root_topic(topics, "keep-b-root-b").await;
+
+    let def_a = create_agent_def(agent, "keep-b-a", Some(root_a.id)).await;
+    let def_b = create_agent_def(agent, "keep-b-b", Some(root_b.id)).await;
+    let binding_a = bind_agent(agent, root_a.id, def_a.id, AgentRole::Main).await;
+    let binding_b = bind_agent(agent, root_b.id, def_b.id, AgentRole::Main).await;
+    let (ua, aa) = create_pair(msg, binding_a.id, model_id, "qa", "aa", false, false).await;
+    let (ub, ab) = create_pair(msg, binding_b.id, model_id, "qb", "ab", false, false).await;
+
+    topics.delete_topics(&[root_a.id]).await.unwrap();
+
+    assert!(
+        topics.get_topic(root_a.id).await.unwrap().is_none(),
+        "topic A 应被删除"
+    );
+    assert!(
+        agent.get_definition(def_a.id).await.unwrap().is_none(),
+        "A 的专属 definition 应被删除"
+    );
+    assert!(
+        agent.get_instance(binding_a.id).await.unwrap().is_none(),
+        "A 的 binding 应被删除"
+    );
+    assert!(
+        msg.get(ua).await.unwrap().is_none(),
+        "A 的 user 消息应被删除"
+    );
+    assert!(
+        msg.get(aa).await.unwrap().is_none(),
+        "A 的 assistant 消息应被删除"
+    );
+
+    assert!(
+        topics.get_topic(root_b.id).await.unwrap().is_some(),
+        "topic B 必须保留"
+    );
+    assert!(
+        agent.get_definition(def_b.id).await.unwrap().is_some(),
+        "B 的 definition 必须保留"
+    );
+    assert!(
+        agent.get_instance(binding_b.id).await.unwrap().is_some(),
+        "B 的 binding 必须保留"
+    );
+    assert!(
+        msg.get(ub).await.unwrap().is_some(),
+        "B 的 user 消息必须保留"
+    );
+    assert!(
+        msg.get(ab).await.unwrap().is_some(),
+        "B 的 assistant 消息必须保留"
+    );
+}
+
+/// topic 专属 definition 只能绑定到其所属 topic。
+#[tokio::test]
+async fn create_binding_rejects_foreign_topic_local_definition() {
+    let core = setup().await;
+    let agent = core.storage().agent();
+    let topics = core.storage().topic();
+
+    let root_a = create_root_topic(topics, "local-owner-a").await;
+    let root_b = create_root_topic(topics, "local-owner-b").await;
+    let local_def = create_agent_def(agent, "local-only", Some(root_a.id)).await;
+
+    // 归属 topic 自身可以绑定
+    bind_agent(agent, root_a.id, local_def.id, AgentRole::Main).await;
+
+    // 其它 topic 绑定同一个专属 definition 应被拒绝
+    let err = agent
+        .create_instance(CreateInstance {
+            topic_id: root_b.id,
+            agent_id: local_def.id,
+            role: AgentRole::Main,
+            model_id: None,
+            chat_config_id: None,
+            enabled: Some(true),
+        })
+        .await
+        .expect_err("跨 topic 绑定专属 Agent 应被拒绝");
+    assert!(
+        matches!(err, CoreError::Validation(_)),
+        "expected Validation, got {err:?}"
+    );
+
+    // 已有 binding 改绑专属 definition 同样应被拒绝
+    let global_def = create_agent_def(agent, "global-in-b", None).await;
+    let child = bind_agent(agent, root_b.id, global_def.id, AgentRole::Child).await;
+    let err = agent
+        .update_instance(
+            child.id,
+            UpdateInstance {
+                agent_id: Some(local_def.id),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("改绑到其它 topic 的专属 Agent 应被拒绝");
+    assert!(
+        matches!(err, CoreError::Validation(_)),
+        "expected Validation, got {err:?}"
+    );
+}
+
+/// 一次删除多个 topic，且不级联删除其子 topic。
+#[tokio::test]
+async fn topic_delete_handles_multiple_ids_and_keeps_child_topics() {
+    let core = setup().await;
+    let agent = core.storage().agent();
+    let topics = core.storage().topic();
+
+    let root_a = create_root_topic(topics, "root-a").await;
+    let root_b = create_root_topic(topics, "root-b").await;
+    let child = topics
+        .create(CreateTopic {
+            parent_id: Some(root_a.id),
+            label: "child".into(),
+            icon: None,
+        })
+        .await
+        .unwrap();
+
+    // 两个根 topic 各带一个 binding，使 delete_bindings 走多元素 IN (?, ?) 分支
+    let mut bindings = Vec::new();
+    for (topic_id, key) in [(root_a.id, "multi-a"), (root_b.id, "multi-b")] {
+        let def = agent
+            .create_definition(CreateAgentDefinition {
+                key: key.into(),
+                name: key.into(),
+                description: key.into(),
+                owner_topic_id: None,
+                cloned_from_id: None,
+                active: Some(true),
+                data: AgentDefinitionData::default(),
+            })
+            .await
+            .unwrap();
+        bindings.push(
+            agent
+                .create_instance(CreateInstance {
+                    topic_id,
+                    agent_id: def.id,
+                    role: AgentRole::Main,
+                    model_id: None,
+                    chat_config_id: None,
+                    enabled: Some(true),
+                })
+                .await
+                .unwrap(),
+        );
+    }
+
+    topics.delete_topics(&[root_a.id, root_b.id]).await.unwrap();
+
+    assert!(
+        topics.get_topic(root_a.id).await.unwrap().is_none(),
+        "root_a 应被删除"
+    );
+    assert!(
+        topics.get_topic(root_b.id).await.unwrap().is_none(),
+        "root_b 应被删除"
+    );
+    assert!(
+        topics.get_topic(child.id).await.unwrap().is_some(),
+        "子 topic 不应被级联删除"
+    );
+    for binding in bindings {
+        assert!(
+            agent.get_instance(binding.id).await.unwrap().is_none(),
+            "binding {} 应被删除",
+            binding.id
+        );
+    }
+}
+
+/// update_binding 的 agent_id / role 变更预校验。
+#[tokio::test]
+async fn update_binding_rejects_conflicts() {
+    let core = setup().await;
+    let agent = core.storage().agent();
+    let topics = core.storage().topic();
+
+    let root = create_root_topic(topics, "update-conflict").await;
+    let mut defs = Vec::new();
+    for key in ["upd-a", "upd-b"] {
+        defs.push(
+            agent
+                .create_definition(CreateAgentDefinition {
+                    key: key.into(),
+                    name: key.into(),
+                    description: key.into(),
+                    owner_topic_id: None,
+                    cloned_from_id: None,
+                    active: Some(true),
+                    data: AgentDefinitionData::default(),
+                })
+                .await
+                .unwrap(),
+        );
+    }
+    let (def_a, def_b) = (defs[0].id, defs[1].id);
+
+    agent
+        .create_instance(CreateInstance {
+            topic_id: root.id,
+            agent_id: def_a,
+            role: AgentRole::Main,
+            model_id: None,
+            chat_config_id: None,
+            enabled: Some(true),
+        })
+        .await
+        .unwrap();
+    let child = agent
+        .create_instance(CreateInstance {
+            topic_id: root.id,
+            agent_id: def_b,
+            role: AgentRole::Child,
+            model_id: None,
+            chat_config_id: None,
+            enabled: Some(true),
+        })
+        .await
+        .unwrap();
+
+    // 该 topic 已有 Main，改角色应被拒绝
+    let err = agent
+        .update_instance(
+            child.id,
+            UpdateInstance {
+                role: Some(AgentRole::Main),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("topic 已有主 Agent，改角色应被拒绝");
+    assert!(
+        matches!(err, CoreError::Validation(_)),
+        "expected Validation, got {err:?}"
+    );
+
+    // def_a 已被占用，改绑它应被拒绝
+    let err = agent
+        .update_instance(
+            child.id,
+            UpdateInstance {
+                agent_id: Some(def_a),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("def_a 已被占用，改绑应被拒绝");
+    assert!(
+        matches!(err, CoreError::Validation(_)),
+        "expected Validation, got {err:?}"
+    );
+
+    // 合法更新不应被预校验误伤
+    agent
+        .update_instance(
+            child.id,
+            UpdateInstance {
+                role: Some(AgentRole::Child),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
 }

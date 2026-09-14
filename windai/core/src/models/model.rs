@@ -1,9 +1,9 @@
-use serde::{Deserialize, Serialize};
-use sqlx::Row;
-use wind_ai::model::AdapterType;
-
 use crate::db::DbRow;
 use crate::storage::utils;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sqlx::Row;
+use wind_ai::{JsonObject, model::AdapterType};
 
 /// 模态类型, 用于UI展示
 #[derive(
@@ -27,6 +27,41 @@ pub enum ModelType {
     Audio,
     /// 视频模型
     Video,
+}
+
+/// 推理级别
+#[derive(
+    utoipa::ToSchema,
+    Debug,
+    Serialize,
+    Deserialize,
+    Clone,
+    PartialEq,
+    strum::EnumString,
+    strum::Display,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasonEffort {
+    None,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+}
+#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
+pub struct ModelConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ReasonEffort>,
+}
+impl ModelConfig {
+    pub fn to_json_obj(&self) -> Result<JsonObject, serde_json::Error> {
+        match serde_json::to_value(self)? {
+            Value::Object(map) => Ok(map),
+            _ => Err(serde::de::Error::custom(format!("expected a json object"))),
+        }
+    }
 }
 
 /// 模型结构
@@ -53,6 +88,8 @@ pub struct Model {
     ///
     /// 默认使用[AdapterType]类型下的不同提供商的默认端点。
     pub endpoint: Option<String>,
+    /// 模型请求配置
+    pub config: Option<ModelConfig>,
     /// 模型使用次数统计
     pub frequency: Option<i32>,
     /// 创建时间
@@ -66,12 +103,12 @@ impl<'s> sqlx::FromRow<'s, DbRow> for Model {
             name: row.get("name"),
             provider_id: row.get("provider_id"),
             alias: row.get("alias"),
-            adapter: utils::parse_str_to(&row.get::<String, _>("adapter")).map_err(|e| {
-                sqlx::Error::Decode(format!("Failed to deserialize adapter type: {}", e).into())
-            })?,
-            modalities: utils::de_str_to(&row.get::<String, _>("modalities")).map_err(|e| {
-                sqlx::Error::Decode(format!("Failed to deserialize modalities: {}", e).into())
-            })?,
+            adapter: utils::parse_str_to(&row.get::<String, _>("adapter"))
+                .map_err(|e| sqlx::Error::Decode(e.into()))?,
+            modalities: utils::de_str_to(&row.get::<String, _>("modalities"))
+                .map_err(|e| sqlx::Error::Decode(e.into()))?,
+            config: utils::de_str_to(&row.get::<String, _>("config"))
+                .map_err(|e| sqlx::Error::Decode(e.into()))?,
             active: row.get("active"),
             icon: row.get("icon"),
             endpoint: row.get("endpoint"),
@@ -100,6 +137,8 @@ pub struct CreateModel {
     pub icon: Option<String>,
     /// 模型专属端点地址
     pub endpoint: Option<String>,
+    /// 模型配置
+    pub config: Option<ModelConfig>,
 }
 
 /// 更新模型参数
@@ -121,6 +160,8 @@ pub struct UpdateModel {
     pub endpoint: Option<String>,
     /// 模型使用次数统计
     pub frequency: Option<i32>,
+    /// 模型配置
+    pub config: Option<ModelConfig>,
 }
 
 impl Default for UpdateModel {
@@ -134,6 +175,7 @@ impl Default for UpdateModel {
             icon: None,
             endpoint: None,
             frequency: None,
+            config: None,
         }
     }
 }

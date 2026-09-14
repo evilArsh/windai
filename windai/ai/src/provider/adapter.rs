@@ -1,7 +1,8 @@
 use crate::{
+    JsonObject,
     eventsource::Event,
-    message::{Message, ReqConfig},
-    model::AdapterType,
+    message::Message,
+    model::{AdapterType, Model},
     tool::Tools,
 };
 use serde_json::Value;
@@ -46,8 +47,7 @@ pub trait ChatAdapter: Adapter + Send + Sync {
     /// 将统一请求配置和消息列表转换为提供商标准请求格式
     fn build_request(
         &self,
-        model_name: &str,
-        config: &ReqConfig,
+        model: &Model,
         contexts: &[Message],
         tools: Option<&[Tools]>,
     ) -> Result<Value, AdapterError>;
@@ -64,4 +64,3 @@ pub fn get_chat_adapter(adapter: AdapterType) -> Box<dyn ChatAdapter + Send + Sy
         AdapterType::OpenAIResponse => Box::new(openai_responses::OpenAIResponseAdapter),
     }
 }
-

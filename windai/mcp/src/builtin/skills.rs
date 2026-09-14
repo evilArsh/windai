@@ -1,7 +1,7 @@
 mod ops;
 
-use std::path::{Path, PathBuf};
-
+use super::fs::Sandbox;
+use crate::BuiltinMcp;
 use rmcp::{
     ErrorData, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Json, wrapper::Parameters},
@@ -9,11 +9,8 @@ use rmcp::{
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
+use std::path::{Path, PathBuf};
 use wind_skills::SkillsMeta;
-
-use crate::BuiltinMcp;
-
-use super::fs::Sandbox;
 
 #[derive(Deserialize, JsonSchema)]
 pub struct SkillsListRequest {

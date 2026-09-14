@@ -1,3 +1,10 @@
+use crate::dto::approval::ApproveToolCallsRequest;
+use crate::dto::envelope::{ApiResponse, map_core_error};
+use crate::dto::message::{CreateChatRequest, SubmitChatResponse};
+use crate::extractor::{ApiPath, json_body};
+use crate::facade::topic::TopicFacade;
+use crate::sse::event_stream;
+use crate::state::AppState;
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
@@ -10,24 +17,17 @@ use std::sync::Arc;
 use std::time::Duration;
 use wind_core::WindCore;
 use wind_core::agent::event::TopicEvent;
-
-use crate::dto::approval::ApproveToolCallsRequest;
-use crate::dto::envelope::{ApiResponse, map_core_error};
-use crate::dto::message::{CreateChatRequest, SubmitChatResponse};
-use crate::extractor::{ApiPath, json_body};
-use crate::facade::topic::TopicFacade;
-use crate::sse::event_stream;
-use crate::state::AppState;
 use wind_core::models::{Message, UpdateMessage};
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route("/api/v1/topics/{topic_id}/messages", post(create_chat))
         .route(
-            "/api/v1/topics/{topic_id}/messages",
-            get(list_messages).post(create_chat),
+            "/api/v1/agent-bindings/{binding_id}/messages",
+            get(list_messages),
         )
         .route(
-            "/api/v1/topics/{topic_id}/messages/context",
+            "/api/v1/agent-bindings/{binding_id}/messages/context",
             get(list_context),
         )
         .route(
@@ -55,31 +55,35 @@ pub fn sse_router() -> Router<AppState> {
 
 #[utoipa::path(
     get,
-    summary = "获取话题消息列表",
-    path = "/api/v1/topics/{topic_id}/messages",
+    summary = "获取 Agent 绑定的消息列表",
+    path = "/api/v1/agent-bindings/{binding_id}/messages",
     params(
-        ("topic_id", Path, description = "话题 ID"),
+        ("binding_id", Path, description = "Agent 绑定 ID"),
     ),
     responses(
-        (status = 200, description = "获取话题消息列表", body = ApiResponse<Vec<Message>>)
+        (status = 200, description = "获取 Agent 绑定的消息列表", body = ApiResponse<Vec<Message>>)
     )
 )]
 pub(crate) async fn list_messages(
     State(core): State<Arc<WindCore>>,
-    ApiPath(topic_id): ApiPath<i64>,
+    ApiPath(binding_id): ApiPath<i64>,
 ) -> Json<ApiResponse<Vec<Message>>> {
-    Json(TopicFacade::new(core).list_topic_messages(topic_id).await)
+    Json(
+        TopicFacade::new(core)
+            .list_binding_messages(binding_id)
+            .await,
+    )
 }
 
 #[utoipa::path(
     post,
-    summary = "提交对话消息",
+    summary = "提交对话消息（作用于该 topic 的主 Agent）",
     path = "/api/v1/topics/{topic_id}/messages",
     params(
         ("topic_id", Path, description = "话题 ID"),
     ),
     responses(
-        (status = 200, description = "提交对话消息", body = ApiResponse<SubmitChatResponse>)
+        (status = 200, description = "提交对话消息（作用于该 topic 的主 Agent）", body = ApiResponse<SubmitChatResponse>)
     )
 )]
 pub(crate) async fn create_chat(
@@ -95,20 +99,24 @@ pub(crate) async fn create_chat(
 
 #[utoipa::path(
     get,
-    summary = "获取消息上下文",
-    path = "/api/v1/topics/{topic_id}/messages/context",
+    summary = "获取 Agent 绑定的消息上下文",
+    path = "/api/v1/agent-bindings/{binding_id}/messages/context",
     params(
-        ("topic_id", Path, description = "话题 ID"),
+        ("binding_id", Path, description = "Agent 绑定 ID"),
     ),
     responses(
-        (status = 200, description = "获取消息上下文", body = ApiResponse<Vec<Message>>)
+        (status = 200, description = "获取 Agent 绑定的消息上下文", body = ApiResponse<Vec<Message>>)
     )
 )]
 pub(crate) async fn list_context(
     State(core): State<Arc<WindCore>>,
-    ApiPath(topic_id): ApiPath<i64>,
+    ApiPath(binding_id): ApiPath<i64>,
 ) -> Json<ApiResponse<Vec<Message>>> {
-    Json(TopicFacade::new(core).list_message_context(topic_id).await)
+    Json(
+        TopicFacade::new(core)
+            .list_binding_context(binding_id)
+            .await,
+    )
 }
 
 #[utoipa::path(

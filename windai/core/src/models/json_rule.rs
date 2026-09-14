@@ -1,9 +1,8 @@
+use crate::db::DbRow;
+use crate::storage::utils;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use wind_ai::model::AdapterType;
-
-use crate::db::DbRow;
-use crate::storage::utils;
 
 /// JSON 规则，用于用户手动处理模型请求配置
 #[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]

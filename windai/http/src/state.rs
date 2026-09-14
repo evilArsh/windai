@@ -1,9 +1,8 @@
+use crate::config::AppConfig;
 use axum::extract::FromRef;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use wind_core::WindCore;
-
-use crate::config::AppConfig;
 
 /// 应用级共享状态。只放跨请求共享对象，不放请求级临时数据。
 #[derive(Clone)]

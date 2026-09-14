@@ -1,7 +1,6 @@
+use super::super::task::TaskSpec;
 use super::effect::Effect;
-use crate::agent::task::TaskSpec;
 use crate::models::{AgentMode, AgentStatus, Message};
-use wind_ai::message::Content;
 use wind_ai::tool::FunctionCall;
 
 /// Agent 任务事件
@@ -24,11 +23,11 @@ pub enum TaskEvent {
     Cancelled,
     /// 启动任务
     Start { spec: TaskSpec },
-    /// 子任务创建成功。
+    /// 子任务创建成功
     ChildSpawned,
-    /// 已审批，恢复运行。
+    /// 已审批，恢复运行
     ApprovalResolved,
-    /// 子任务完成，恢复运行。
+    /// 子任务完成，恢复运行
     ChildResolved,
     /// 收到取消指令
     Cancel,
@@ -52,7 +51,7 @@ impl std::fmt::Display for TaskEvent {
             ),
             TaskEvent::Cancelled => (name_ref, String::new()),
             TaskEvent::Start { spec, .. } => {
-                (name_ref, format!("(binding_id = {})", spec.binding.id))
+                (name_ref, format!("(instance_id = {})", spec.instance.id))
             }
             TaskEvent::ChildSpawned => (name_ref, String::new()),
             TaskEvent::ApprovalResolved => (name_ref, String::new()),
@@ -65,78 +64,82 @@ impl std::fmt::Display for TaskEvent {
 
 /// Agent 任务状态
 pub struct TaskFsm {
-    binding_id: i64,
+    instance_id: i64,
     state: AgentStatus,
     mode: AgentMode,
 }
 
 impl TaskFsm {
-    pub fn new(binding_id: i64) -> Self {
+    pub fn new(instance_id: i64) -> Self {
         Self {
-            binding_id,
+            instance_id,
             state: AgentStatus::Idle,
             mode: AgentMode::Sync,
         }
     }
 
-    pub fn binding_id(&self) -> i64 {
-        self.binding_id
+    pub fn instance_id(&self) -> i64 {
+        self.instance_id
     }
 
     pub fn state(&self) -> AgentStatus {
         self.state
     }
 
-    /// 迁移任务状态并生成副作用。
+    /// 迁移任务状态并生成副作用
     pub fn reduce(&mut self, new_event: TaskEvent) -> Vec<Effect> {
         use AgentStatus as S;
         use TaskEvent as E;
-        let binding_id = self.binding_id;
+        let instance_id = self.instance_id;
         let from = self.state;
-        // 借用取出判别值，避免后续 match 按值 move 后无法再访问 new_event。
         let is_cancel = matches!(&new_event, E::Cancel);
         match (from, new_event) {
             (S::Idle | S::Finished | S::Failed | S::Cancelled, E::Start { spec }) => {
                 self.state = S::Running;
-                self.mode = spec.mode;
+                self.mode = spec.instance.mode.unwrap_or(AgentMode::Sync);
+                let agent_id = spec.instance.agent_id;
                 vec![
-                    Effect::Start { spec },
                     Effect::PersistStatus {
-                        binding_id,
+                        instance_id,
                         status: self.state,
                         mode: self.mode,
+                        agent_id,
                     },
+                    Effect::Start { spec },
                 ]
             }
             (S::WaitingApproval, E::ApprovalResolved) => {
                 self.state = S::Running;
                 vec![
                     Effect::PersistStatus {
-                        binding_id,
+                        instance_id,
                         status: self.state,
                         mode: self.mode,
+                        agent_id: None,
                     },
-                    Effect::Resume { binding_id },
+                    Effect::Resume { instance_id },
                 ]
             }
             (S::WaitingChild, E::ChildResolved) => {
                 self.state = S::Running;
                 vec![Effect::PersistStatus {
-                    binding_id,
+                    instance_id,
                     status: self.state,
                     mode: self.mode,
+                    agent_id: None,
                 }]
             }
             (S::Running, E::ApprovalRequired { data, calls }) => {
                 self.state = S::WaitingApproval;
                 vec![
                     Effect::PersistStatus {
-                        binding_id,
+                        instance_id,
                         status: self.state,
                         mode: self.mode,
+                        agent_id: None,
                     },
                     Effect::ApprovalRequest {
-                        binding_id: self.binding_id,
+                        instance_id: self.instance_id,
                         data,
                         calls,
                     },
@@ -145,25 +148,25 @@ impl TaskFsm {
             (S::Running, E::ChildSpawned) => {
                 self.state = S::WaitingChild;
                 vec![Effect::PersistStatus {
-                    binding_id,
+                    instance_id,
                     status: self.state,
                     mode: self.mode,
+                    agent_id: None,
                 }]
             }
             (S::Running, E::Finish { data }) => {
                 self.state = S::Finished;
-                let output = Self::finished_output(&data);
                 vec![
                     Effect::PersistStatus {
-                        binding_id,
+                        instance_id,
                         status: self.state,
                         mode: self.mode,
+                        agent_id: None,
                     },
-                    Effect::Finish { binding_id, data },
-                    Effect::SendChildResponse {
-                        binding_id,
+                    Effect::Completed {
+                        instance_id,
+                        data,
                         status: self.state,
-                        output,
                     },
                 ]
             }
@@ -171,19 +174,16 @@ impl TaskFsm {
                 self.state = S::Failed;
                 vec![
                     Effect::PersistStatus {
-                        binding_id,
+                        instance_id,
                         status: self.state,
                         mode: self.mode,
+                        agent_id: None,
                     },
                     Effect::Failed {
-                        binding_id,
+                        instance_id,
                         data,
                         error: error.clone(),
-                    },
-                    Effect::SendChildResponse {
-                        binding_id,
                         status: self.state,
-                        output: vec![Content::new_text(error)],
                     },
                 ]
             }
@@ -196,43 +196,32 @@ impl TaskFsm {
                 self.state = S::Cancelled;
                 let mut effects = vec![
                     Effect::PersistStatus {
-                        binding_id,
+                        instance_id,
                         status: self.state,
                         mode: self.mode,
+                        agent_id: None,
                     },
-                    Effect::SendChildResponse {
-                        binding_id,
+                    Effect::Canceled {
+                        instance_id,
                         status: self.state,
-                        output: vec![Content::new_text("Task was cancelled".to_string())],
+                        error: "Task was cancelled".into(),
                     },
                 ];
                 // "取消指令"需要额外下发 CancelAgent；
                 if is_cancel {
-                    effects.insert(1, Effect::Cancel { binding_id });
+                    effects.insert(1, Effect::Cancel { instance_id });
                 }
                 effects
             }
             (other_s, other_e) => {
                 log::warn!(
                     "[TaskFsm] Task {} cannot transition from {} to {}",
-                    binding_id,
+                    instance_id,
                     other_s,
                     other_e
                 );
                 vec![]
             }
         }
-    }
-    fn finished_output(data: &Message) -> Vec<Content> {
-        data.content
-            .last()
-            .and_then(|c| {
-                if c.is_simple() {
-                    Some(c.content.clone())
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_else(|| vec![Content::new_text("Task has no valid result".to_string())])
     }
 }

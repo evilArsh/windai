@@ -1,9 +1,8 @@
-use std::convert::Infallible;
-use std::task::Poll;
-
 use axum::response::sse::Event;
 use futures::{Stream, StreamExt};
 use serde::Serialize;
+use std::convert::Infallible;
+use std::task::Poll;
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_util::sync::CancellationToken;

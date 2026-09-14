@@ -13,64 +13,57 @@ use wind_ai::{message::Content, tool::FunctionCall};
 pub enum Effect {
     /// 保存任务状态
     PersistStatus {
-        binding_id: i64,
+        instance_id: i64,
         status: AgentStatus,
         mode: AgentMode,
+        agent_id: Option<i64>,
     },
     /// 广播业务事件
     Emit(TopicEvent),
     /// 启动 AgentRuntime
-    Start {
-        spec: TaskSpec,
-    },
+    Start { spec: TaskSpec },
     /// 审批后恢复运行。
-    Resume {
-        binding_id: i64,
-    },
+    Resume { instance_id: i64 },
     /// 取消 Agent 任务。
-    Cancel {
-        binding_id: i64,
-    },
-    /// 解析 pending 子任务并回复父任务。
-    SendChildResponse {
-        binding_id: i64,
-        status: AgentStatus,
-        output: Vec<Content>,
-    },
+    Cancel { instance_id: i64 },
     /// 创建子 Agent
     SpawnChild {
-        /// 发出此命令的 binding_id
-        binding_id: i64,
+        /// 发出此命令的 instance_id
+        instance_id: i64,
         call_id: String,
         request: SpawnAgentRequest,
         reply: oneshot::Sender<SpawnAgentResponse>,
     },
     /// 批量写审批状态
     Approval {
-        binding_id: i64,
+        instance_id: i64,
         allow_ids: Vec<i64>,
         deny_ids: Vec<i64>,
     },
-    /// 关闭当前对话的事件流
-    CloseEventStream,
     /// 终止整个 topic runtime。
     StopRuntime,
-    PrepareMain {
-        user_input: Vec<Content>,
-    },
+    /// 初始化任务
+    Init { user_input: Vec<Content> },
+    /// agent 发出审批请求
     ApprovalRequest {
-        binding_id: i64,
+        instance_id: i64,
         data: Message,
         calls: Vec<FunctionCall>,
     },
-    Finish {
-        binding_id: i64,
+    Completed {
+        instance_id: i64,
         data: Message,
+        status: AgentStatus,
     },
     Failed {
-        binding_id: i64,
-        // message_id: Option<i64>,
+        instance_id: i64,
         data: Option<Message>,
+        status: AgentStatus,
+        error: String,
+    },
+    Canceled {
+        instance_id: i64,
+        status: AgentStatus,
         error: String,
     },
 }
@@ -79,20 +72,24 @@ impl std::fmt::Display for Effect {
         let name_ref = self.as_ref();
         let (name, args) = match self {
             Effect::PersistStatus {
-                binding_id,
+                instance_id,
                 status,
                 mode,
+                agent_id,
             } => (
                 name_ref,
-                format!("(binding_id = {binding_id}, status = {status}, mode = {mode})"),
+                format!(
+                    "(instance_id = {instance_id}, status = {status}, mode = {mode}), agent_id = {:?}",
+                    agent_id,
+                ),
             ),
             Effect::Emit(topic_event) => (name_ref, format!("(topic_event = {})", topic_event)),
             Effect::Start { spec } => {
-                let binding_id = spec.binding.id;
+                let instance_id = spec.instance.id;
                 (
                     name_ref,
                     format!(
-                        "(binding_id = {binding_id}, spec = {})",
+                        "(instance_id = {instance_id}, spec = {})",
                         spec.assistant
                             .content
                             .last()
@@ -101,35 +98,40 @@ impl std::fmt::Display for Effect {
                     ),
                 )
             }
-            Effect::Resume { binding_id } => (name_ref, format!("(binding_id = {binding_id})")),
-            Effect::Cancel { binding_id } => (name_ref, format!("(binding_id = {binding_id})")),
-            Effect::SendChildResponse {
-                binding_id, status, ..
+            Effect::Resume { instance_id } => (name_ref, format!("(instance_id = {instance_id})")),
+            Effect::Cancel { instance_id } => (name_ref, format!("(instance_id = {instance_id})")),
+            Effect::Canceled {
+                instance_id,
+                status,
+                ..
             } => (
                 name_ref,
-                format!("(binding_id = {binding_id}, status = {status}))"),
+                format!("(instance_id = {instance_id}, status = {status}))"),
             ),
             Effect::SpawnChild {
-                binding_id: parent_binding_id,
+                instance_id,
                 call_id,
                 request,
                 ..
             } => (
                 name_ref,
                 format!(
-                    "(parent_binding_id = {parent_binding_id}, call_id = {call_id}, agent-key = {}, mode = {}))",
+                    "(from_instance_id = {instance_id}, call_id = {call_id}, agent-key = {}, mode = {}))",
                     request.agent_key, request.mode
                 ),
             ),
-            Effect::Approval { binding_id, .. } => {
-                (name_ref, format!("(binding_id = {binding_id})"))
+            Effect::Approval { instance_id, .. } => {
+                (name_ref, format!("(instance_id = {instance_id})"))
             }
-            Effect::CloseEventStream => (name_ref, String::new()),
             Effect::StopRuntime => (name_ref, String::new()),
-            Effect::PrepareMain { .. } => (name_ref, String::new()),
+            Effect::Init { .. } => (name_ref, String::new()),
             Effect::ApprovalRequest { .. } => (name_ref, String::new()),
-            Effect::Finish { binding_id, .. } => (name_ref, format!("(binding_id = {binding_id})")),
-            Effect::Failed { binding_id, .. } => (name_ref, format!("(binding_id = {binding_id})")),
+            Effect::Completed { instance_id, .. } => {
+                (name_ref, format!("(instance_id = {instance_id})"))
+            }
+            Effect::Failed { instance_id, .. } => {
+                (name_ref, format!("(instance_id = {instance_id})"))
+            }
         };
         write!(f, "[Effect {name}]\n{}", args)
     }

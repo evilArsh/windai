@@ -1,9 +1,8 @@
+use crate::db::DbRow;
+use crate::storage;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use wind_ai::message;
-
-use crate::db::DbRow;
-use crate::storage;
 
 /// 消息结构
 #[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
@@ -13,8 +12,6 @@ pub struct Message {
     /// 标识该响应所对应的原始用户消息ID
     /// - 当为None时，该消息是用户消息
     pub from_id: Option<i64>,
-    /// 是否为流式消息
-    pub stream: bool,
     /// 消息内容。
     /// - 在单次对话中，如果存在多轮工具调用，该字段按顺序记录所有的调用结果；
     /// 包含模型选择的工具列表，用户工具调用结果，以及模型自然语言回复
@@ -22,8 +19,8 @@ pub struct Message {
     pub content: Vec<message::Message>,
     /// 模型ID
     pub model_id: i64,
-    /// 消息所在的agent_binding_id
-    pub binding_id: i64,
+    /// 该消息属于指定 instance
+    pub instance_id: i64,
     /// 标识当前消息作为聊天上下文分割点
     pub is_boundary: bool,
     /// 被排除的消息不会作为对话上下文
@@ -49,10 +46,9 @@ impl<'s> sqlx::FromRow<'s, DbRow> for Message {
         Ok(Self {
             id: row.try_get("id")?,
             from_id: row.try_get("from_id")?,
-            stream: row.try_get("stream")?,
             content: parsed_content,
             model_id: row.try_get("model_id")?,
-            binding_id: row.try_get("binding_id")?,
+            instance_id: row.try_get("instance_id")?,
             is_boundary: row.try_get("is_boundary")?,
             is_excluded: row.try_get("is_excluded")?,
             input_tokens: row.try_get("input_tokens")?,
@@ -89,10 +85,9 @@ pub enum ContentType {
 
 pub struct CreateMessage {
     pub from_id: Option<i64>,
-    pub stream: bool,
     pub content: Vec<message::Message>,
     pub model_id: i64,
-    pub binding_id: i64,
+    pub instance_id: i64,
     pub is_boundary: bool,
     pub is_exclude: bool,
     pub input_tokens: i32,

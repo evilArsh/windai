@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use wind_core::WindCore;
 use wind_core::models::{
-    AgentBinding, AgentDefinition, CreateAgentBinding, CreateAgentDefinition, UpdateAgentBinding,
-    UpdateAgentDefinition,
+    AgentDefinition, AgentInstance, CreateAgentDefinition, CreateInstance, UpdateAgentDefinition,
+    UpdateInstance,
 };
 
 use crate::dto::envelope::{ApiResponse, map_core_error};
@@ -112,18 +112,15 @@ impl AgentStorageFacade {
         }
     }
 
-    pub async fn create_agent_binding(
-        &self,
-        input: CreateAgentBinding,
-    ) -> ApiResponse<AgentBinding> {
+    pub async fn create_agent_binding(&self, input: CreateInstance) -> ApiResponse<AgentInstance> {
         match self.core.storage().agent().create_binding(input).await {
             Ok(b) => ApiResponse::ok(b),
             Err(e) => map_core_error(e),
         }
     }
 
-    pub async fn get_agent_binding(&self, id: i64) -> ApiResponse<AgentBinding> {
-        match self.core.storage().agent().get_binding(id).await {
+    pub async fn get_agent_binding(&self, id: i64) -> ApiResponse<AgentInstance> {
+        match self.core.storage().agent().get_instance(id).await {
             Ok(Some(b)) => ApiResponse::ok(b),
             Ok(None) => ApiResponse::not_found("agent binding not found"),
             Err(e) => map_core_error(e),
@@ -133,21 +130,21 @@ impl AgentStorageFacade {
     pub async fn update_agent_binding(
         &self,
         id: i64,
-        input: UpdateAgentBinding,
-    ) -> ApiResponse<AgentBinding> {
-        if let Err(e) = self.core.storage().agent().update_binding(id, input).await {
+        input: UpdateInstance,
+    ) -> ApiResponse<AgentInstance> {
+        if let Err(e) = self.core.storage().agent().update_instance(id, input).await {
             return map_core_error(e);
         }
         self.get_agent_binding(id).await
     }
 
     pub async fn delete_agent_binding(&self, id: i64) -> ApiResponse<()> {
-        match self.core.storage().agent().get_binding(id).await {
+        match self.core.storage().agent().get_instance(id).await {
             Ok(None) => return ApiResponse::not_found("agent binding not found"),
             Ok(Some(_)) => {}
             Err(e) => return map_core_error(e),
         }
-        match self.core.storage().agent().delete_bindings(id).await {
+        match self.core.storage().agent().delete_bindings(&[id]).await {
             Ok(()) => ApiResponse::ok(()),
             Err(e) => map_core_error(e),
         }
@@ -156,13 +153,13 @@ impl AgentStorageFacade {
     pub async fn get_agent_binding_by_agent(
         &self,
         agent_id: i64,
-        parent_topic_id: i64,
-    ) -> ApiResponse<AgentBinding> {
+        topic_id: i64,
+    ) -> ApiResponse<AgentInstance> {
         match self
             .core
             .storage()
             .agent()
-            .get_binding_by_agent_id(parent_topic_id, agent_id)
+            .get_binding_by_agent_id(topic_id, agent_id)
             .await
         {
             Ok(Some(b)) => ApiResponse::ok(b),
@@ -174,12 +171,12 @@ impl AgentStorageFacade {
     pub async fn list_agent_bindings_by_topic(
         &self,
         topic_id: i64,
-    ) -> ApiResponse<Vec<AgentBinding>> {
+    ) -> ApiResponse<Vec<AgentInstance>> {
         match self
             .core
             .storage()
             .agent()
-            .list_bindings_by_topic(topic_id)
+            .list_instances_by_topic(topic_id)
             .await
         {
             Ok(rows) => ApiResponse::ok(rows),
@@ -187,8 +184,14 @@ impl AgentStorageFacade {
         }
     }
 
-    pub async fn get_main_binding(&self, topic_id: i64) -> ApiResponse<AgentBinding> {
-        match self.core.storage().agent().get_main_binding(topic_id).await {
+    pub async fn get_main_binding(&self, topic_id: i64) -> ApiResponse<AgentInstance> {
+        match self
+            .core
+            .storage()
+            .agent()
+            .get_main_instance(topic_id)
+            .await
+        {
             Ok(Some(b)) => ApiResponse::ok(b),
             Ok(None) => ApiResponse::not_found("agent binding not found"),
             Err(e) => map_core_error(e),

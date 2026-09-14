@@ -10,12 +10,12 @@ pub mod topic;
 pub mod utils;
 
 use self::{
-    agent::AgentStorage, approval::ToolApprovalStorage, mcp::McpStorage, message::MessageStorage,
-    model::ModelStorage, prompt::PromptStorage, provider::ProviderStorage, topic::TopicStorage,
+    agent::AgentStorage, approval::ToolApprovalStorage, executor::StorageExecutor, mcp::McpStorage,
+    message::MessageStorage, model::ModelStorage, prompt::PromptStorage, provider::ProviderStorage,
+    topic::TopicStorage,
 };
 use super::db::DbPool;
 use crate::error::Result;
-use crate::storage::executor::StorageExecutor;
 use ferroid::{
     generator::AtomicSnowflakeGenerator,
     id::SnowflakeTwitterId,
@@ -40,7 +40,6 @@ pub(crate) struct TableName;
 
 impl TableName {
     pub const TOPICS: &'static str = "topics";
-    pub const CHAT_CONFIGS: &'static str = "chat_configs";
     pub const PROVIDERS: &'static str = "providers";
     pub const CREDENTIALS: &'static str = "credentials";
     pub const JSONRULE: &'static str = "json_rule";
@@ -50,7 +49,8 @@ impl TableName {
     pub const TOOL_APPROVAL_REQUESTS: &'static str = "tool_approval_requests";
     pub const PROMPT_MODULES: &'static str = "prompt_modules";
     pub const AGENT_DEFINITION: &'static str = "agent_definitions";
-    pub const TOPIC_AGENT_BINDINGS: &'static str = "topic_agent_bindings";
+    pub const AGENT_INSTANCES: &'static str = "agent_instances";
+    pub const TOPIC_AGENT_MAPS: &'static str = "topic_agent_maps";
 }
 
 impl Storage {

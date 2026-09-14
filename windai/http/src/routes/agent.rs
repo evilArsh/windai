@@ -1,13 +1,3 @@
-use serde_json::Value;
-use std::sync::Arc;
-
-use axum::extract::State;
-use axum::extract::rejection::JsonRejection;
-use axum::routing::{get, post};
-use axum::{Json, Router};
-use serde::Deserialize;
-use wind_core::WindCore;
-
 use crate::dto::agent::CloneAgentDefinitionRequest;
 use crate::dto::envelope::ApiResponse;
 use crate::extractor::{ApiPath, ApiQuery, json_body};
@@ -15,10 +5,18 @@ use crate::facade::storage::agent::AgentStorageFacade;
 use crate::facade::storage::approval::ToolApprovalFacade;
 use crate::facade::topic::TopicFacade;
 use crate::state::AppState;
+use axum::extract::State;
+use axum::extract::rejection::JsonRejection;
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use serde::Deserialize;
+use serde_json::Value;
+use std::sync::Arc;
 use wind_ai::message::ReqConfig;
+use wind_core::WindCore;
 use wind_core::models::{
-    AgentBinding, AgentDefinition, ChatConfig, CreateAgentBinding, CreateAgentDefinition,
-    ToolApprovalRequest, UpdateAgentBinding, UpdateAgentDefinition,
+    AgentInstance, AgentDefinition, ChatConfig, CreateInstance, CreateAgentDefinition,
+    ToolApprovalRequest, UpdateInstance, UpdateAgentDefinition,
 };
 
 pub fn router() -> Router<AppState> {
@@ -261,13 +259,13 @@ pub(crate) async fn clone_definition(
     summary = "创建 Agent 绑定",
     path = "/api/v1/agent-bindings",
     responses(
-        (status = 200, description = "创建 Agent 绑定", body = ApiResponse<AgentBinding>)
+        (status = 200, description = "创建 Agent 绑定", body = ApiResponse<AgentInstance>)
     )
 )]
 pub(crate) async fn create_binding(
     State(core): State<Arc<WindCore>>,
-    body: Result<Json<CreateAgentBinding>, JsonRejection>,
-) -> Result<Json<ApiResponse<AgentBinding>>, Json<ApiResponse<()>>> {
+    body: Result<Json<CreateInstance>, JsonRejection>,
+) -> Result<Json<ApiResponse<AgentInstance>>, Json<ApiResponse<()>>> {
     let input = json_body(body)?;
     Ok(Json(
         AgentStorageFacade::new(core)
@@ -284,13 +282,13 @@ pub(crate) async fn create_binding(
         ("binding_id", Path, description = "Agent 绑定 ID"),
     ),
     responses(
-        (status = 200, description = "获取 Agent 绑定", body = ApiResponse<AgentBinding>)
+        (status = 200, description = "获取 Agent 绑定", body = ApiResponse<AgentInstance>)
     )
 )]
 pub(crate) async fn get_binding(
     State(core): State<Arc<WindCore>>,
     ApiPath(binding_id): ApiPath<i64>,
-) -> Json<ApiResponse<AgentBinding>> {
+) -> Json<ApiResponse<AgentInstance>> {
     Json(
         AgentStorageFacade::new(core)
             .get_agent_binding(binding_id)
@@ -306,14 +304,14 @@ pub(crate) async fn get_binding(
         ("binding_id", Path, description = "Agent 绑定 ID"),
     ),
     responses(
-        (status = 200, description = "更新 Agent 绑定", body = ApiResponse<AgentBinding>)
+        (status = 200, description = "更新 Agent 绑定", body = ApiResponse<AgentInstance>)
     )
 )]
 pub(crate) async fn update_binding(
     State(core): State<Arc<WindCore>>,
     ApiPath(binding_id): ApiPath<i64>,
-    body: Result<Json<UpdateAgentBinding>, JsonRejection>,
-) -> Result<Json<ApiResponse<AgentBinding>>, Json<ApiResponse<()>>> {
+    body: Result<Json<UpdateInstance>, JsonRejection>,
+) -> Result<Json<ApiResponse<AgentInstance>>, Json<ApiResponse<()>>> {
     let input = json_body(body)?;
     Ok(Json(
         AgentStorageFacade::new(core)
@@ -347,8 +345,8 @@ pub(crate) async fn delete_binding(
 #[derive(Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub(crate) struct ByAgentQuery {
-    /// 父 Topic id（必填，用于定位 binding 所属话题）
-    parent_topic_id: i64,
+    /// Topic id（必填，用于定位 binding 所属话题）
+    topic_id: i64,
 }
 
 #[utoipa::path(
@@ -360,17 +358,17 @@ pub(crate) struct ByAgentQuery {
         ByAgentQuery,
     ),
     responses(
-        (status = 200, description = "按 Agent 获取绑定", body = ApiResponse<AgentBinding>)
+        (status = 200, description = "按 Agent 获取绑定", body = ApiResponse<AgentInstance>)
     )
 )]
 pub(crate) async fn get_binding_by_agent(
     State(core): State<Arc<WindCore>>,
     ApiPath(agent_id): ApiPath<i64>,
     ApiQuery(q): ApiQuery<ByAgentQuery>,
-) -> Json<ApiResponse<AgentBinding>> {
+) -> Json<ApiResponse<AgentInstance>> {
     Json(
         AgentStorageFacade::new(core)
-            .get_agent_binding_by_agent(agent_id, q.parent_topic_id)
+            .get_agent_binding_by_agent(agent_id, q.topic_id)
             .await,
     )
 }
@@ -383,13 +381,13 @@ pub(crate) async fn get_binding_by_agent(
         ("topic_id", Path, description = "话题 ID"),
     ),
     responses(
-        (status = 200, description = "获取话题下的 Agent 绑定列表", body = ApiResponse<Vec<AgentBinding>>)
+        (status = 200, description = "获取话题下的 Agent 绑定列表", body = ApiResponse<Vec<AgentInstance>>)
     )
 )]
 pub(crate) async fn list_bindings_by_topic(
     State(core): State<Arc<WindCore>>,
     ApiPath(topic_id): ApiPath<i64>,
-) -> Json<ApiResponse<Vec<AgentBinding>>> {
+) -> Json<ApiResponse<Vec<AgentInstance>>> {
     Json(
         AgentStorageFacade::new(core)
             .list_agent_bindings_by_topic(topic_id)
@@ -405,13 +403,13 @@ pub(crate) async fn list_bindings_by_topic(
         ("topic_id", Path, description = "话题 ID"),
     ),
     responses(
-        (status = 200, description = "获取主 Agent 绑定", body = ApiResponse<AgentBinding>)
+        (status = 200, description = "获取主 Agent 绑定", body = ApiResponse<AgentInstance>)
     )
 )]
 pub(crate) async fn get_main_binding(
     State(core): State<Arc<WindCore>>,
     ApiPath(topic_id): ApiPath<i64>,
-) -> Json<ApiResponse<AgentBinding>> {
+) -> Json<ApiResponse<AgentInstance>> {
     Json(
         AgentStorageFacade::new(core)
             .get_main_binding(topic_id)

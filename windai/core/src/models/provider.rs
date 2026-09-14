@@ -1,7 +1,6 @@
+use crate::db::DbRow;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
-
-use crate::db::DbRow;
 
 /// 提供商账号
 #[derive(utoipa::ToSchema, Serialize, Deserialize, Clone)]

@@ -1,19 +1,17 @@
 use super::{
     agent::AgentStorage,
     executor::StorageExecutor,
-    utils::{ensure_affected, next_id, now_ts},
+    utils::{self, ensure_affected, next_id, now_ts},
 };
 use crate::{
     db::DbDriver,
-    delete_from,
     error::Result,
     insert,
-    models::{ChatConfig, CreateTopic, Topic, UpdateTopic},
+    models::{CreateTopic, Topic, UpdateTopic},
     select_fields,
     storage::TableName,
-    update, update_fields,
+    update,
 };
-use wind_ai::message::ReqConfig;
 
 #[derive(Clone)]
 pub struct TopicStorage {
@@ -25,26 +23,6 @@ impl TopicStorage {
         Self { executor }
     }
 
-    async fn batch_delete_by_ids(
-        executor: &StorageExecutor,
-        table: &str,
-        column: &str,
-        ids: &[i64],
-    ) -> Result<()> {
-        if ids.is_empty() {
-            return Ok(());
-        }
-        let mut qb = delete_from!(table);
-        qb.push(" WHERE ").push_bind(column).push(" IN (");
-        let mut separated = qb.separated(", ");
-        for id in ids {
-            separated.push_bind(*id);
-        }
-        separated.push_unseparated(") ");
-        executor.execute(qb.build()).await?;
-
-        Ok(())
-    }
     pub async fn create(&self, data: CreateTopic) -> Result<Topic> {
         let id = next_id();
         let parent_id = data.parent_id;
@@ -53,6 +31,11 @@ impl TopicStorage {
             TableName::TOPICS,
             ("id", id),
             ("parent_id", parent_id),
+            ("model_id", data.model_id),
+            (
+                "tool_approval_policy",
+                serde_json::to_string(&data.tool_approval_policy)?
+            ),
             ("label", data.label.clone()),
             ("icon", data.icon.clone()),
             ("created_at", now),
@@ -65,6 +48,8 @@ impl TopicStorage {
             label: data.label,
             icon: data.icon,
             created_at: now,
+            model_id: data.model_id,
+            tool_approval_policy: data.tool_approval_policy,
         })
     }
 
@@ -119,111 +104,43 @@ impl TopicStorage {
         Ok(row)
     }
 
+    /// 删除 topic 及其直接关联数据。
+    ///
+    /// 子 topic 不在此处级联，调用方需一并传入其 id。
+    /// TODO: 同时删除agent和topic映射表
     pub async fn delete_topics(&self, ids: &[i64]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
         self.executor
             .with_tx(|executor| async move {
                 let agent = AgentStorage::new(executor.clone());
-                let binding_ids = (agent.batch_get_bindings_by_topics(ids).await?)
+                let instance_ids = agent
+                    .batch_get_instances_by_topics(ids)
+                    .await?
                     .into_iter()
                     .map(|b| b.id)
                     .collect::<Vec<i64>>();
 
-                // 删除只属于该topic的agent_definitions
+                // 删除只属于该 topic 的 agent_definitions
                 agent.batch_delete_definitions_by_topics(ids).await?;
-                // 批量删除binding
-                agent.delete_bindings(&binding_ids).await?;
-                // 删除所有审批记录
-                Self::batch_delete_by_ids(
+                // 删除该 topic 的 instance，连带 agent_instances / chat_configs /
+                // messages / tool_approval_requests
+                agent.delete_instances(&instance_ids).await?;
+                // 兜底删除该 topic 下残留的审批记录
+                utils::batch_delete_in(
                     &executor,
                     TableName::TOOL_APPROVAL_REQUESTS,
                     "topic_id",
                     ids,
                 )
                 .await?;
-                // 删除所有topic
-                Self::batch_delete_by_ids(&executor, TableName::TOPICS, "id", ids).await?;
+                // 删除 topic 自身
+                utils::batch_delete_in(&executor, TableName::TOPICS, "id", ids).await?;
                 Ok(())
             })
             .await
     }
-
-    pub async fn create_chat_config(&self, config: ReqConfig) -> Result<ChatConfig> {
-        let id = next_id();
-        let now = now_ts();
-        let mut qb = insert!(
-            TableName::CHAT_CONFIGS,
-            ("id", id),
-            ("temperature", config.temperature),
-            ("top_p", config.top_p),
-            ("max_tokens", config.max_tokens),
-            ("stream", config.stream),
-            ("presence_penalty", config.presence_penalty),
-            ("frequency_penalty", config.frequency_penalty),
-            ("parallel_tool_calls", config.parallel_tool_calls),
-            ("reasoning", config.reasoning),
-            ("created_at", now)
-        );
-        self.executor.execute(qb.build()).await?;
-
-        Ok(ChatConfig {
-            id,
-            data: config,
-            created_at: now,
-        })
-    }
-
-    pub async fn update_chat_config(&self, id: i64, config: ReqConfig) -> Result<()> {
-        ensure_affected(
-            self.executor
-                .execute(
-                    update_fields!(
-                        TableName::CHAT_CONFIGS,
-                        ("temperature", config.temperature),
-                        ("top_p", config.top_p),
-                        ("max_tokens", config.max_tokens),
-                        ("stream", config.stream),
-                        ("presence_penalty", config.presence_penalty),
-                        ("frequency_penalty", config.frequency_penalty),
-                        ("parallel_tool_calls", config.parallel_tool_calls),
-                        ("reasoning", config.reasoning),
-                        ("updated_at", Some(now_ts()))
-                    )
-                    .push(" WHERE id =  ")
-                    .push_bind(id)
-                    .build(),
-                )
-                .await?,
-        )
-    }
-
-    pub async fn get_chat_config(&self, id: i64) -> Result<Option<ChatConfig>> {
-        let row = self
-            .executor
-            .fetch_optional(
-                select_fields!(
-                    TableName::CHAT_CONFIGS,
-                    (
-                        "id",
-                        "temperature",
-                        "top_p",
-                        "max_tokens",
-                        "stream",
-                        "presence_penalty",
-                        "frequency_penalty",
-                        "parallel_tool_calls",
-                        "reasoning",
-                        "created_at"
-                    )
-                )
-                .push(" WHERE id = ")
-                .push_bind(id)
-                .build_query_as::<ChatConfig>(),
-            )
-            .await?;
-
-        Ok(row)
-    }
-
     fn select_topic<'a>() -> sqlx::QueryBuilder<'a, DbDriver> {
         select_fields!(
             TableName::TOPICS,

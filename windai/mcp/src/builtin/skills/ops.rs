@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-
 use wind_skills::{SkillsMeta, scan};
 
 /// 递归扫描目录，收集所有 skill 的元数据。

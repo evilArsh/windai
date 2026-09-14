@@ -4,11 +4,10 @@
 //! 需要真实 MCP 服务的完整路径用 `#[ignore]`（需 npx），仓库惯例与 core 测试一致。
 mod common;
 
-use std::sync::Arc;
-
 use axum::Router;
 use axum::body::Body;
 use axum::http::Request;
+use std::sync::Arc;
 use tower::ServiceExt;
 use wind_core::WindCore;
 use wind_core::models::CreateTopic;
@@ -52,7 +51,6 @@ async fn create_topic(core: &Arc<WindCore>, label: &str) -> i64 {
         .topic()
         .create(CreateTopic {
             parent_id: None,
-            binding_id: None,
             label: label.to_string(),
             icon: None,
         })

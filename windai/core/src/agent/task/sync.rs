@@ -8,7 +8,6 @@ use crate::{
         runtime::AgentRuntime,
         tool::{ListAgentsResponse, SpawnAgentRequest, SpawnAgentResponse},
     },
-    chat::runner::ChatContext,
     error::{CoreError, Result},
     models::ToolApprovalRequest,
     storage::Storage,
@@ -24,7 +23,7 @@ use wind_ai::{
 use wind_mcp::client::registry::RegistryHandle;
 
 struct SyncHost {
-    binding_id: i64,
+    instance_id: i64,
     topic_id: i64,
     topic_tx: TopicMailbox,
     storage: Storage,
@@ -32,14 +31,14 @@ struct SyncHost {
 }
 impl SyncHost {
     pub fn new(
-        binding_id: i64,
+        instance_id: i64,
         topic_id: i64,
         topic_tx: TopicMailbox,
         storage: Storage,
         mcp_registry: RegistryHandle,
     ) -> Self {
         Self {
-            binding_id,
+            instance_id,
             topic_id,
             topic_tx,
             storage,
@@ -59,7 +58,7 @@ impl AgentHost for SyncHost {
         match output {
             AgentOutput::Started => {
                 self.notify_task(TaskNotification::Started {
-                    binding_id: self.binding_id,
+                    instance_id: self.instance_id,
                 })
                 .await;
             }
@@ -69,8 +68,7 @@ impl AgentHost for SyncHost {
                 delta,
             } => {
                 self.notify_task(TaskNotification::Message {
-                    binding_id: self.binding_id,
-                    topic_id: self.topic_id,
+                    instance_id: self.instance_id,
                     message_id,
                     index,
                     delta,
@@ -80,7 +78,7 @@ impl AgentHost for SyncHost {
             AgentOutput::Finish { data, error } => match error {
                 Some(err) => {
                     self.notify_task(TaskNotification::Failed {
-                        binding_id: self.binding_id,
+                        instance_id: self.instance_id,
                         data,
                         error: err.to_string(),
                     })
@@ -88,7 +86,7 @@ impl AgentHost for SyncHost {
                 }
                 None => {
                     self.notify_task(TaskNotification::Finish {
-                        binding_id: self.binding_id,
+                        instance_id: self.instance_id,
                         data,
                     })
                     .await;
@@ -100,7 +98,7 @@ impl AgentHost for SyncHost {
                 calls,
             } => {
                 self.notify_task(TaskNotification::ApprovalRequired {
-                    binding_id: self.binding_id,
+                    instance_id: self.instance_id,
                     data,
                     calls,
                 })
@@ -126,7 +124,7 @@ impl AgentHost for SyncHost {
         if let Err(err) = self
             .topic_tx
             .request_supervisor(SupervisorRequest::SpawnAgent {
-                binding_id: self.binding_id,
+                instance_id: self.instance_id,
                 call_id,
                 request,
                 reply: tx,
@@ -161,7 +159,7 @@ impl AgentHost for SyncHost {
 
 #[derive(Clone)]
 pub struct SyncTaskHandler {
-    binding_id: i64,
+    instance_id: i64,
     cmd_tx: mpsc::Sender<TaskCommand>,
 }
 
@@ -170,9 +168,9 @@ impl SyncTaskHandler {
         if let Err(err) = self.cmd_tx.send(TaskCommand::Cancel).await {
             let err = err.to_string();
             log::error!(
-                "error when cancel task: {}. (binding_id = {})",
+                "error when cancel task: {}. (instance_id = {})",
                 err,
-                self.binding_id
+                self.instance_id
             );
             return Err(CoreError::Internal(err));
         }
@@ -182,9 +180,9 @@ impl SyncTaskHandler {
         if let Err(err) = self.cmd_tx.send(TaskCommand::Start { task }).await {
             let err = err.to_string();
             log::error!(
-                "error when start task: {}. (binding_id = {})",
+                "error when start task: {}. (instance_id = {})",
                 err,
-                self.binding_id
+                self.instance_id
             );
             return Err(CoreError::Internal(err));
         }
@@ -196,29 +194,32 @@ pub struct SyncTask {
     ctx: CancellationToken,
     cmd_rx: mpsc::Receiver<TaskCommand>,
     host: Arc<dyn AgentHost>,
-    binding_id: i64,
+    instance_id: i64,
     topic_tx: TopicMailbox,
 }
 
 impl SyncTask {
     pub fn spawn(
         ctx: CancellationToken,
-        binding_id: i64,
+        instance_id: i64,
         topic_id: i64,
         topic_tx: TopicMailbox,
         storage: Storage,
         mcp_registry: RegistryHandle,
     ) -> SyncTaskHandler {
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
-        let handle = SyncTaskHandler { binding_id, cmd_tx };
+        let handle = SyncTaskHandler {
+            instance_id,
+            cmd_tx,
+        };
 
         let task = Self {
             cmd_rx,
             ctx,
-            binding_id,
+            instance_id,
             topic_tx: topic_tx.clone(),
             host: Arc::new(SyncHost::new(
-                binding_id,
+                instance_id,
                 topic_id,
                 topic_tx,
                 storage,
@@ -236,7 +237,7 @@ impl SyncTask {
         tokio::spawn(agent.run(
             self.ctx.child_token(),
             task.chat_context,
-            task.binding,
+            task.instance,
             task.assistant,
             task.contexts,
         ));
@@ -248,7 +249,7 @@ impl SyncTask {
 
                 _ = self.ctx.cancelled() => {
                     let _ = self.topic_tx.notify_task(TaskNotification::Cancelled {
-                        binding_id: self.binding_id,
+                        instance_id: self.instance_id,
                     }).await;
                     return
                 },

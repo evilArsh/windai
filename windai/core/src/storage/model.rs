@@ -40,6 +40,7 @@ impl ModelStorage {
             ("active", active),
             ("icon", data.icon.clone()),
             ("endpoint", data.endpoint.clone()),
+            ("config", serde_json::to_string(&data.config)?),
             ("created_at", now),
         );
         self.executor.execute(qb.build()).await?;
@@ -55,6 +56,7 @@ impl ModelStorage {
             endpoint: data.endpoint,
             frequency: Some(0),
             created_at: now,
+            config: data.config,
         })
     }
 

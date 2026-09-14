@@ -1,16 +1,14 @@
-use serde_json::Value;
-use std::sync::Arc;
-
-use axum::extract::State;
-use axum::extract::rejection::JsonRejection;
-use axum::routing::get;
-use axum::{Json, Router};
-use wind_core::WindCore;
-
 use crate::dto::envelope::ApiResponse;
 use crate::extractor::{ApiPath, json_body};
 use crate::facade::storage::model::ModelStorageFacade;
 use crate::state::AppState;
+use axum::extract::State;
+use axum::extract::rejection::JsonRejection;
+use axum::routing::get;
+use axum::{Json, Router};
+use serde_json::Value;
+use std::sync::Arc;
+use wind_core::WindCore;
 use wind_core::models::{CreateModel, Model, UpdateModel};
 
 pub fn router() -> Router<AppState> {

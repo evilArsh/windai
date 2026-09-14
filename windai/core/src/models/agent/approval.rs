@@ -8,8 +8,8 @@ use sqlx::Row;
 pub struct ToolApprovalRequest {
     /// 唯一id
     pub id: i64,
-    /// agent binding id
-    pub binding_id: i64,
+    /// agent 实例 id
+    pub instance_id: i64,
     /// 产生 tool request 的 topic id。
     pub topic_id: i64,
     /// 包含 tool request 的 assistant message id。
@@ -34,7 +34,7 @@ impl<'s> sqlx::FromRow<'s, DbRow> for ToolApprovalRequest {
             id: row.get("id"),
             topic_id: row.get("topic_id"),
             message_id: row.get("message_id"),
-            binding_id: row.get("binding_id"),
+            instance_id: row.get("instance_id"),
             tool_call_id: row.get("tool_call_id"),
             tool_name: row.get("tool_name"),
             arguments: utils::de_str_to(&row.get::<String, _>("arguments")).map_err(|e| {
@@ -82,7 +82,7 @@ pub struct ApprovalRecord {
 /// 批量创建审批请求的输入。
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CreateToolApprovalRequests {
-    pub binding_id: i64,
+    pub instance_id: i64,
     /// 产生 tool request 的 topic id。
     pub topic_id: i64,
     /// 包含 tool request 的 assistant message id。

@@ -28,8 +28,8 @@ use wind_core::WindCore;
 // In-memory SQLite (tests / ephemeral)
 let core = WindCore::init_memory().await?;
 
-// File-backed SQLite
-let core = WindCore::init_local(Some("/path/to/windai.db")).await?;
+// File-backed SQLite — path comes from the app dirs (`WIND_ROOT_DIR`, default `~/.windai/windai.db`)
+let core = WindCore::init_local().await?;
 
 // Custom connection pool (e.g. shared-cache for tests)
 let core = WindCore::init_with_pool(pool).await?;
@@ -39,6 +39,8 @@ let core = WindCore::init_with_pool_and_registry(pool, registry).await?;
 ```
 
 `WindCore` is a process-level runtime root: one instance per process, owns the DB pool + MCP registry, and manages one `TopicRuntime` actor per topic.
+
+The SQLite schema is created with `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS` and there is **no migration mechanism** — after a schema change, delete the local DB file (`~/.windai/windai.db`, or the file under `WIND_ROOT_DIR`) so it is rebuilt.
 
 ### Register Provider & Model
 
@@ -77,22 +79,21 @@ let mid = model.id;
 
 ### Create a Topic & Start a Chat
 
-Chats run through the **agent system**: a `Topic` owns a `TopicRuntime`; an `AgentBinding` (with role `Main`) says which agent the topic uses. The runtime streams progress as `TopicEvent`s over a `broadcast` channel.
+Chats run through the **agent system**: a `Topic` is a scope owning a `TopicRuntime` and one *main* agent plus its sibling `AgentBinding`s. Each `AgentBinding` binds one `AgentDefinition` into the topic, and messages are recorded against the binding (`Message.binding_id`). The runtime streams progress as `TopicEvent`s over a `broadcast` channel.
 
 ```rust
 use wind_core::agent::event::TopicEvent;
 use wind_core::models::{
-    AgentRole, AgentScope, AgentDefinitionData,
+    AgentRole, AgentDefinitionData,
     CreateAgentBinding, CreateAgentDefinition, CreateTopic,
 };
 use wind_ai::message::Content;
 
 let storage = core.storage();
 
-// 1. Create a topic
+// 1. Create a topic (a scope; parent_id is reserved for a tree nobody builds yet)
 let topic = storage.topic().create(CreateTopic {
     parent_id: None,
-    binding_id: None,
     label: "My Chat".into(),
     icon: None,
 }).await?;
@@ -103,16 +104,15 @@ let agent_def = storage.agent().create_definition(CreateAgentDefinition {
     name: "assistant".into(),
     key: "assistant".into(),
     description: "Default assistant".into(),
-    scope: AgentScope::Global,
-    owner_topic_id: None,
-    cloned_from_agent_id: None,
+    owner_topic_id: None,     // None = global definition
+    cloned_from_id: None,
     active: Some(true),
     data: AgentDefinitionData::default(),
 }).await?;
 
 // 3. Bind it as the topic's main agent (an agent *instance*)
 let binding = storage.agent().create_binding(CreateAgentBinding {
-    parent_topic_id: tid,
+    topic_id: tid,
     agent_id: agent_def.id,
     role: AgentRole::Main,
     model_id: Some(mid),
@@ -145,8 +145,8 @@ while let Ok(event) = events.recv().await {
 ```
 
 **Key points:**
-- `create_chat` submits `Vec<Content>` (the full `wind_ai::message::Content` protocol) and returns immediately — the runtime accepts it asynchronously. You do **not** hand-build `Message` records; the engine creates sub-topics, user/assistant messages, and tool results internally.
-- Each agent instance runs in its own sub-topic (`parent_topic_id` on the binding tracks the owning topic). The event stream channel closes when the main task goes idle — re-subscribe per conversation.
+- `create_chat` submits `Vec<Content>` (the full `wind_ai::message::Content` protocol) and returns immediately — the runtime accepts it asynchronously. You do **not** hand-build `Message` records; the engine creates the user/assistant messages bound to the main binding, plus tool results, internally.
+- A topic has one `TopicRuntime` and multiple `AgentBinding`s (one main, plus children). There is no per-agent sub-topic: isolation comes from `Message.binding_id`, so read a binding's history with `MessageStorage::list_by_binding` / `list_contexts`. The event stream channel closes when the main task goes idle — re-subscribe per conversation.
 - `TopicEvent` variants: `Error`, `Snapshot`, `MessageCreated`, `Message` (streaming delta), `MessageFinished`, `TaskStatusChanged`, `ApprovalRequired`.
 
 ### MCP Tool Calling
@@ -155,7 +155,7 @@ Register MCP servers, then attach them to an agent definition. The engine discov
 
 ```rust
 use wind_core::models::agent::{AgentDefinitionData, AgentMcpBinding};
-use wind_core::models::{CreateMcpServer, CreateAgentDefinition, AgentScope};
+use wind_core::models::{CreateMcpServer, CreateAgentDefinition};
 use wind_mcp::client::TransportType;
 
 let mcp = storage.mcp().create(CreateMcpServer {
@@ -177,9 +177,8 @@ storage.agent().create_definition(CreateAgentDefinition {
     name: "tool-user".into(),
     key: "tool-user".into(),
     description: "Assistant with MCP tools".into(),
-    scope: AgentScope::Global,
     owner_topic_id: None,
-    cloned_from_agent_id: None,
+    cloned_from_id: None,
     active: Some(true),
     data: AgentDefinitionData {
         mcp_servers: vec![AgentMcpBinding {
@@ -273,9 +272,14 @@ let s = core.storage();
 s.provider().list_all().await?;
 s.model().list_by_provider().await?;
 s.topic().list_topics().await?;
-s.message().list_by_topic(tid).await?;
+s.agent().list_bindings_by_topic(tid).await?;
 
-// Cascade delete
+// Messages belong to a binding, not a topic
+s.message().list_by_binding(binding.id).await?;   // full history
+s.message().list_contexts(binding.id).await?;     // context-eligible subset
+
+// Cascade delete — bindings → approvals/chat_configs/messages; the topic row plus
+// its own definitions. Child topics are NOT cascaded, pass their ids explicitly.
 s.topic().delete_topics(&[tid]).await?;
 s.provider().delete(pid).await?;  // cascades credentials + json_rules
 
@@ -295,7 +299,7 @@ core.shutdown().await;
 | `wind-ai`    | Provider abstraction — streaming/non-streaming, adapter pattern (`ChatAdapter`), SSE parsing |
 | `wind-mcp`   | MCP client — actor-based registry, stdio/HTTP transports, tool discovery & execution       |
 | `wind-rule`  | JSON rule engine — declarative request transformation, expression evaluation               |
-| `wind-http`  | HTTP service — axum REST + SSE over the core, facade layer, OpenAPI (`/swagger-ui`)        |
+| `wind-http`  | HTTP service — axum REST + SSE over the core, facade layer, OpenAPI (`/api-docs/openapi.json`) |
 | `wind-tui`   | Terminal UI (skeleton) — ratatui + crossterm                                               |
 
 ## Topic Events
@@ -310,7 +314,7 @@ The public event contract is `TopicEvent`, consumed via `TopicRuntimeHandle::sub
 | `MessageFinished`  | A message is complete                                    |
 | `TaskStatusChanged`| An agent task changed status (`Idle`/`Running`/`Finished`/…) |
 | `Error`            | A task or the runtime failed                             |
-| `Snapshot`         | Full message list for a topic                            |
+| `Snapshot`         | Full message list for a binding                          |
 
 A typical tool-call flow: `MessageCreated → Message (streaming) → ApprovalRequired → [approve] → Message (tool results + text) → MessageFinished`. The low-level `ChatEvent` (`Partial`/`AwaitToolCall`/`Finish`) is an internal detail of `AgentRuntime` — external code consumes `TopicEvent`.
 
@@ -319,20 +323,19 @@ A typical tool-call flow: `MessageCreated → Message (streaming) → ApprovalRe
 | File                                 | Content                                                                  |
 | ------------------------------------ | ------------------------------------------------------------------------ |
 | `windai/core/tests/storage.rs`       | Storage CRUD, validation, cascades, batch operations (no `.env` needed)  |
-| `windai/core/tests/core_chat.rs`     | Non-MCP chat flows: streaming, history, errors, JSON rules, persistence  |
+| `windai/core/tests/core_chat.rs`     | One test (`test_agent_chat`, `#[ignore]` behind `.env`): seeds providers/agents/bindings, subscribes to topic events, drives `create_chat` |
 | `windai/core/tests/chat.rs`          | AI adapter tests (needs `.env`)                                          |
-| `windai/core/tests/core_chat_mcp.rs` | MCP approval tests — currently **commented out**                         |
+| `windai/core/tests/common/lib.rs`    | Shared helpers: `init_test_core()`, `init_test_core_with_registry()`, `McpTestEnv`, MCP server params |
 | `windai/http/tests/*`                | HTTP router/facade/mirror tests via `tower::ServiceExt::oneshot`         |
 
 ## Environment Variables
 
 | Variable          | Purpose                                      |
 | ----------------- | -------------------------------------------- |
-| `WINDAI_ROOT_DIR` | Core data directory (default `~/.windai/`)   |
+| `WIND_ROOT_DIR`   | Core data directory (default `~/.windai/`; DB file is `windai.db` inside it) |
 | `RUST_LOG`        | Log level (`debug`, `info`, `warn`, `error`) |
 | `WIND_HTTP_HOST`  | `wind-http` bind host (default `127.0.0.1`)  |
 | `WIND_HTTP_PORT`  | `wind-http` bind port (default `7324`)       |
-| `WINDAI_DB_PATH`  | `wind-http` SQLite file path                 |
 
 ## License
 

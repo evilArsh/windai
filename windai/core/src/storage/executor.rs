@@ -1,15 +1,13 @@
-use std::{future::Future, sync::Arc};
-
-use sqlx::{
-    Database, FromRow, IntoArguments,
-    query::{Query, QueryAs},
-};
-use tokio::sync::Mutex;
-
 use crate::{
     db::{DbDriver, DbPool, DbRow, DbTransaction},
     error::Result,
 };
+use sqlx::{
+    Database, FromRow, IntoArguments,
+    query::{Query, QueryAs},
+};
+use std::{future::Future, sync::Arc};
+use tokio::sync::Mutex;
 
 macro_rules! with_transaction {
     ($self:expr, $tx:ident, $body:expr) => {

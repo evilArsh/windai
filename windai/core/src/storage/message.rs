@@ -32,7 +32,7 @@ impl MessageStorage {
                 "stream",
                 "content",
                 "model_id",
-                "binding_id",
+                "instance_id",
                 "is_boundary",
                 "is_excluded",
                 "input_tokens",
@@ -50,10 +50,9 @@ impl MessageStorage {
             TableName::MESSAGES,
             ("id", id),
             ("from_id", data.from_id),
-            ("stream", data.stream),
             ("content", utils::vec_to_str_default(Some(&data.content))?),
             ("model_id", data.model_id),
-            ("binding_id", data.binding_id),
+            ("instance_id", data.instance_id),
             ("is_boundary", data.is_boundary),
             ("is_excluded", data.is_exclude),
             ("input_tokens", data.input_tokens),
@@ -65,10 +64,9 @@ impl MessageStorage {
         Ok(Message {
             id,
             from_id: data.from_id,
-            stream: data.stream,
             content: data.content,
             model_id: data.model_id,
-            binding_id: data.binding_id,
+            instance_id: data.instance_id,
             is_boundary: data.is_boundary,
             is_excluded: data.is_exclude,
             input_tokens: data.input_tokens,
@@ -162,14 +160,14 @@ impl MessageStorage {
             })
             .await
     }
-    /// 查询 binding_id 下所有的消息
-    pub async fn list_by_topic(&self, binding_id: i64) -> Result<Vec<Message>> {
+    /// 查询 instance_id 下所有的消息
+    pub async fn list_by_instance(&self, instance_id: i64) -> Result<Vec<Message>> {
         let rows = self
             .executor
             .fetch_all(
                 Self::select_common()
-                    .push(" WHERE binding_id = ")
-                    .push_bind(binding_id)
+                    .push(" WHERE instance_id = ")
+                    .push_bind(instance_id)
                     .push(" ORDER BY id ASC ")
                     .build_query_as::<Message>(),
             )
@@ -178,22 +176,22 @@ impl MessageStorage {
         Ok(rows)
     }
 
-    /// 查询 binding_id 下所有消息
+    /// 查询实例下所有消息
     ///
     /// 获取从最新一条含有 is_boundary = true 的消息开始往后所有的消息
-    pub async fn list_contexts(&self, binding_id: i64) -> Result<Vec<Message>> {
+    pub async fn list_contexts(&self, instance_id: i64) -> Result<Vec<Message>> {
         let rows = self
             .executor
             .fetch_all(
                 Self::select_common()
-                    .push(" WHERE binding_id = ")
-                    .push_bind(binding_id)
+                    .push(" WHERE instance_id = ")
+                    .push_bind(instance_id)
                     .push(" AND is_excluded = ")
                     .push_bind(0)
                     .push(" AND id > COALESCE((SELECT MAX(id) FROM ")
                     .push(TableName::MESSAGES)
-                    .push(" WHERE is_boundary = 1 AND binding_id = ")
-                    .push_bind(binding_id)
+                    .push(" WHERE is_boundary = 1 AND instance_id = ")
+                    .push_bind(instance_id)
                     .push("), 0)")
                     .push(" ORDER BY id ASC ")
                     .build_query_as::<Message>(),

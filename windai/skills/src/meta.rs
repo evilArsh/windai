@@ -1,12 +1,10 @@
 //! SKILL.md 解析与元数据。
 
-use std::{collections::HashMap, path::PathBuf};
-
+use crate::{Error, Result, SKILL_NAME};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, path::PathBuf};
 use yaml_rust2::{Yaml, YamlLoader, yaml::Hash};
-
-use crate::{Error, Result, SKILL_NAME};
 
 const NAME_MAX: usize = 64;
 const DESCRIPTION_MAX: usize = 1024;

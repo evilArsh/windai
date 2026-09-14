@@ -296,33 +296,3 @@ impl Default for Message {
         }
     }
 }
-
-/// 对话请求参数
-#[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone, Default)]
-pub struct ReqConfig {
-    /// 采样温度，范围 0~2。较高值使输出更随机，较低值使输出更聚焦。
-    /// 通常建议只调 temperature 或 top_p 之一。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub temperature: Option<f64>,
-    /// 核采样阈值。模型只考虑累积概率达到 top_p 的候选 token。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub top_p: Option<f64>,
-    /// 最大输出 token 数。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_tokens: Option<i32>,
-    /// 是否启用流式输出
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stream: Option<bool>,
-    /// 存在性惩罚，-2.0 ~ 2.0。正值增加模型讨论新话题的可能性。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub presence_penalty: Option<f64>,
-    /// 频率惩罚，-2.0 ~ 2.0。正值降低模型逐字重复的可能性。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub frequency_penalty: Option<f64>,
-    /// 是否在工具调用期间启用并行工具调用。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parallel_tool_calls: Option<bool>,
-    /// 是否开启推理模式。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning: Option<bool>,
-}

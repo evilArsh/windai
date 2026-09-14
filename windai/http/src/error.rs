@@ -1,9 +1,8 @@
+use crate::dto::envelope::ApiResponse;
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-
-use crate::dto::envelope::ApiResponse;
 
 /// HTTP 层错误：extractor 校验失败统一封装为 `ApiResponse`（code=500）。
 ///

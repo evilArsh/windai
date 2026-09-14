@@ -1,3 +1,5 @@
+use super::task::SupervisorRequest;
+use super::task::TaskNotification;
 use crate::error::CoreError;
 use crate::error::Result;
 use crate::models::AgentMode;
@@ -9,17 +11,14 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use wind_ai::message::Content;
 use wind_ai::message::Message as AiMessage;
 
-use super::task::SupervisorRequest;
-use super::task::TaskNotification;
-
 /// 外部通知事件
 #[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone, strum::AsRefStr)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum TopicEvent {
     /// 错误消息
     Error {
-        /// 来自指定 binding id 的错误
-        binding_id: Option<i64>,
+        /// 来自 Agent 实例的错误
+        instance_id: Option<i64>,
         /// 话题id
         topic_id: i64,
         /// 消息id
@@ -29,8 +28,8 @@ pub enum TopicEvent {
     },
     /// 全量快照消息
     Snapshot {
-        /// agent binding id
-        binding_id: i64,
+        /// agent 实例 id
+        instance_id: i64,
         /// 话题id
         topic_id: i64,
         /// 全量消息
@@ -40,15 +39,15 @@ pub enum TopicEvent {
     MessageCreated {
         /// 话题id
         topic_id: i64,
-        /// binding id
-        binding_id: i64,
+        /// instance id
+        instance_id: i64,
         /// 初始化消息
         data: Message,
     },
     /// 流式分片消息
     Message {
-        /// agent binding id
-        binding_id: i64,
+        /// agent 实例 id
+        instance_id: i64,
         /// 话题id
         topic_id: i64,
         /// 消息id
@@ -60,8 +59,8 @@ pub enum TopicEvent {
     },
     /// 消息完成
     MessageFinished {
-        /// agent binding id
-        binding_id: i64,
+        /// agent 实例 id
+        instance_id: i64,
         /// 话题id
         topic_id: i64,
         // 消息id
@@ -69,8 +68,8 @@ pub enum TopicEvent {
     },
     /// 任务状态变更
     TaskStatusChanged {
-        /// agent binding id
-        binding_id: i64,
+        /// agent 实例 id
+        instance_id: i64,
         /// 话题id
         topic_id: i64,
         /// 任务状态
@@ -80,8 +79,8 @@ pub enum TopicEvent {
     },
     /// 需要用户审批
     ApprovalRequired {
-        /// agent binding id
-        binding_id: i64,
+        /// agent 实例 id
+        instance_id: i64,
         /// 话题id
         topic_id: i64,
         /// 消息id
@@ -99,11 +98,11 @@ pub enum TopicCommand {
         user_input: Vec<Content>,
     },
     Cancel {
-        binding_id: i64,
+        instance_id: i64,
     },
     Shutdown,
     Approval {
-        binding_id: i64,
+        instance_id: i64,
         deny_ids: Vec<i64>,
         allow_ids: Vec<i64>,
     },
@@ -116,85 +115,89 @@ impl std::fmt::Display for TopicEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let (name, args) = match self {
             TopicEvent::Error {
-                binding_id,
+                instance_id,
                 topic_id,
                 error,
                 ..
             } => (
                 self.as_ref(),
                 format!(
-                    "(topic_id = {}, binding_id = {}, error = {})",
+                    "(topic_id = {}, instance_id = {}, error = {})",
                     topic_id.to_string(),
-                    binding_id.map(|t| t.to_string()).unwrap_or_default(),
+                    instance_id.map(|t| t.to_string()).unwrap_or_default(),
                     error
                 ),
             ),
             TopicEvent::Snapshot {
-                binding_id,
+                instance_id,
                 topic_id,
                 ..
             } => (
                 self.as_ref(),
                 format!(
-                    "(topic_id = {}, binding_id = {})",
+                    "(topic_id = {}, instance_id = {})",
                     topic_id.to_string(),
-                    binding_id.to_string(),
+                    instance_id.to_string(),
                 ),
             ),
-            TopicEvent::MessageCreated { topic_id, .. } => (
+            TopicEvent::MessageCreated {
+                instance_id,
+                topic_id,
+                ..
+            } => (
                 self.as_ref(),
                 format!(
-                    "(topic_id = {}, binding_id = {})",
+                    "(topic_id = {}, instance_id = {})",
                     topic_id.to_string(),
-                    String::new()
+                    instance_id.to_string(),
                 ),
             ),
             TopicEvent::Message {
-                binding_id,
+                instance_id,
                 topic_id,
                 ..
             } => (
                 self.as_ref(),
                 format!(
-                    "(topic_id = {}, binding_id = {})",
+                    "(topic_id = {}, instance_id = {})",
                     topic_id.to_string(),
-                    binding_id.to_string(),
+                    instance_id.to_string(),
                 ),
             ),
             TopicEvent::MessageFinished {
-                binding_id,
+                instance_id,
                 topic_id,
                 ..
             } => (
                 self.as_ref(),
                 format!(
-                    "(topic_id = {}, binding_id = {})",
+                    "(topic_id = {}, instance_id = {})",
                     topic_id.to_string(),
-                    binding_id.to_string(),
+                    instance_id.to_string(),
                 ),
             ),
             TopicEvent::TaskStatusChanged {
-                binding_id,
+                instance_id,
                 topic_id,
                 ..
             } => (
                 self.as_ref(),
                 format!(
-                    "(topic_id = {}, binding_id = {})",
+                    "(topic_id = {}, instance_id = {})",
                     topic_id.to_string(),
-                    binding_id.to_string(),
+                    instance_id.to_string(),
                 ),
             ),
             TopicEvent::ApprovalRequired {
-                binding_id,
+                instance_id,
                 topic_id,
                 ..
             } => (
                 self.as_ref(),
                 format!(
-                    "(topic_id = {}, binding_id = {})",
+                    "(topic_id = {}, instance_id = {})",
                     topic_id.to_string(),
-                    binding_id.to_string(),
+                    instance_id.to_string(),
                 ),
             ),
         };

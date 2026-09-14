@@ -58,7 +58,7 @@ impl ToolApprovalStorage {
                 "id",
                 "topic_id",
                 "message_id",
-                "binding_id",
+                "instance_id",
                 "tool_call_id",
                 "tool_name",
                 "arguments",
@@ -71,7 +71,7 @@ impl ToolApprovalStorage {
             b.push_bind(item.id);
             b.push_bind(input.topic_id);
             b.push_bind(input.message_id);
-            b.push_bind(input.binding_id);
+            b.push_bind(input.instance_id);
             b.push_bind(&item.tool_call_id);
             b.push_bind(&item.tool_name);
             b.push_bind(&item.arguments);
@@ -85,7 +85,7 @@ impl ToolApprovalStorage {
             .into_iter()
             .map(|row| ToolApprovalRequest {
                 id: row.id,
-                binding_id: input.binding_id,
+                instance_id: input.instance_id,
                 topic_id: input.topic_id,
                 message_id: input.message_id,
                 tool_call_id: row.tool_call_id,
@@ -162,11 +162,11 @@ impl ToolApprovalStorage {
         self.list_pending_by("topic_id", topic_id).await
     }
 
-    pub async fn list_pending_by_binding(
+    pub async fn list_pending_by_instance(
         &self,
-        binding_id: i64,
+        instance_id: i64,
     ) -> Result<Vec<ToolApprovalRequest>> {
-        self.list_pending_by("binding_id", binding_id).await
+        self.list_pending_by("instance_id", instance_id).await
     }
 
     async fn list_pending_by(&self, column: &str, id: i64) -> Result<Vec<ToolApprovalRequest>> {
@@ -192,7 +192,7 @@ impl ToolApprovalStorage {
                 "id",
                 "topic_id",
                 "message_id",
-                "binding_id",
+                "instance_id",
                 "tool_call_id",
                 "tool_name",
                 "arguments",

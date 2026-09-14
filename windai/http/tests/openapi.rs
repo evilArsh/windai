@@ -27,11 +27,8 @@ fn openapi_query_params_are_query() {
         .unwrap();
     let agent_id = params.iter().find(|p| p["name"] == "agent_id").unwrap();
     assert_eq!(agent_id["in"], "path", "agent_id 应为 path");
-    let parent = params
-        .iter()
-        .find(|p| p["name"] == "parent_topic_id")
-        .unwrap();
-    assert_eq!(parent["in"], "query", "parent_topic_id 应为 query");
+    let topic = params.iter().find(|p| p["name"] == "topic_id").unwrap();
+    assert_eq!(topic["in"], "query", "topic_id 应为 query");
 }
 
 #[test]

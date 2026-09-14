@@ -1,11 +1,7 @@
 use super::eventsource::Eventsource;
-use super::{
-    ProviderError,
-    message::{Message, ReqConfig},
-    provider::adapter::AdapterError,
-    tool::Tools,
-};
+use super::{ProviderError, message::Message, provider::adapter::AdapterError, tool::Tools};
 use crate::client;
+use crate::model::Model;
 use crate::provider::adapter::{self, ChatAdapter};
 use async_stream::stream;
 use futures::stream::Stream;
@@ -88,12 +84,11 @@ impl From<url::ParseError> for ResEvent {
 /// 生成请求体
 pub fn build_request(
     chat_adapter: &dyn ChatAdapter,
-    model_name: &str,
-    config: &ReqConfig,
+    model: &Model,
     contexts: &[Message],
     tools: Option<&[Tools]>,
 ) -> Result<Value, ProviderError> {
-    let req_body = match chat_adapter.build_request(model_name, config, contexts, tools) {
+    let req_body = match chat_adapter.build_request(model, contexts, tools) {
         Ok(body) => body,
         Err(e) => return Err(e.into()),
     };

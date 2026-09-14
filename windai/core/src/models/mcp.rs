@@ -1,12 +1,10 @@
-use std::collections::HashMap;
-
-use serde::{Deserialize, Serialize};
-use sqlx::Row;
-use wind_mcp::client::{ServerParams, TransportType};
-
 use crate::db::DbRow;
 use crate::error::CoreError;
 use crate::storage;
+use serde::{Deserialize, Serialize};
+use sqlx::Row;
+use std::collections::HashMap;
+use wind_mcp::client::{ServerParams, TransportType};
 
 /// MCP 服务配置，(Stdio, Streamable-HTTP)
 #[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]

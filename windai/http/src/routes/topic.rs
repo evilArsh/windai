@@ -1,15 +1,13 @@
+use crate::dto::envelope::ApiResponse;
+use crate::extractor::{ApiPath, json_body};
+use crate::facade::topic::TopicFacade;
+use crate::state::AppState;
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::routing::get;
 use axum::{Json, Router};
-use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
-
-use crate::dto::envelope::ApiResponse;
-use crate::extractor::{ApiPath, ApiQuery, json_body};
-use crate::facade::topic::TopicFacade;
-use crate::state::AppState;
 use wind_core::WindCore;
 use wind_core::models::{CreateTopic, Topic, UpdateTopic};
 
@@ -134,33 +132,25 @@ pub(crate) async fn delete_topic(
     Json(TopicFacade::new(core).delete_topic(topic_id).await)
 }
 
-#[derive(Deserialize, utoipa::IntoParams)]
-#[into_params(parameter_in = Query)]
-pub(crate) struct ByBindingQuery {
-    /// 父 Topic id（必填，用于定位 binding 所属话题）
-    parent_topic_id: i64,
-}
-
 #[utoipa::path(
     get,
     summary = "按 binding 获取话题",
     path = "/api/v1/topics/by-binding/{binding_id}",
     params(
         ("binding_id", Path, description = "Agent 绑定 ID"),
-        ByBindingQuery,
     ),
     responses(
-        (status = 200, description = "按 binding 获取话题", body = ApiResponse<Topic>)
+        (status = 200, description = "按 binding 获取话题", body = ApiResponse<Topic>),
+        (status = 404, description = "绑定不存在", body = ApiResponse<Value>)
     )
 )]
 pub(crate) async fn get_topic_by_binding(
     State(core): State<Arc<WindCore>>,
     ApiPath(binding_id): ApiPath<i64>,
-    ApiQuery(q): ApiQuery<ByBindingQuery>,
 ) -> Json<ApiResponse<Topic>> {
     Json(
         TopicFacade::new(core)
-            .get_topic_by_binding(binding_id, q.parent_topic_id)
+            .get_topic_by_binding(binding_id)
             .await,
     )
 }

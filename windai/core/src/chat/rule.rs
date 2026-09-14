@@ -57,7 +57,9 @@ pub fn apply_json_rule(
 mod test {
     use super::*;
     use serde_json::json;
-    use wind_ai::{chat::build_request, message::ReqConfig, provider::adapter::get_chat_adapter};
+    use wind_ai::{
+        JsonObject, chat::build_request, model::Model, provider::adapter::get_chat_adapter,
+    };
 
     const REASONING_RULE: &str = r#"{
         "rules": [{
@@ -86,9 +88,15 @@ mod test {
     }
 
     /// 通过真实的 adapter 生成请求体，保证规则作用在真实字段名上
-    fn build_body(adapter: AdapterType, config: &ReqConfig) -> Value {
+    fn build_body(adapter: AdapterType, config: JsonObject) -> Value {
         let chat_adapter = get_chat_adapter(adapter);
-        build_request(chat_adapter.as_ref(), "test-model", config, &[], None).unwrap()
+        let model = Model {
+            name: "test-model".into(),
+            adapter,
+            endpoint: None,
+            config: Some(config),
+        };
+        build_request(&*chat_adapter, &model, &[], Some(&[])).unwrap()
     }
 
     /// 编译 JSON 规则字符串并应用到请求体上（等价于生产路径）
@@ -164,9 +172,10 @@ mod test {
 
     #[test]
     fn test_json_rule_reasoning_enabled() {
-        let mut config = ReqConfig::default();
-        config.reasoning = Some(true);
-        let mut req_body = build_body(AdapterType::OpenAICompletion, &config);
+        let mut config = JsonObject::new();
+        config.insert("reasoning".to_string(), serde_json::json!(true));
+
+        let mut req_body = build_body(AdapterType::OpenAICompletion, config);
         // 前置：adapter 生成了可被规则消费的 reasoning_effort 字段
         assert_eq!(req_body["reasoning_effort"], "medium");
 
@@ -188,9 +197,10 @@ mod test {
     #[test]
     fn test_json_rule_reasoning_disabled() {
         // reasoning 未开启时 adapter 不生成 reasoning_effort
-        let mut config = ReqConfig::default();
-        config.reasoning = Some(false);
-        let mut req_body = build_body(AdapterType::OpenAICompletion, &config);
+        let mut config = JsonObject::new();
+        config.insert("reasoning".to_string(), serde_json::json!(false));
+
+        let mut req_body = build_body(AdapterType::OpenAICompletion, config);
         assert!(req_body.get("reasoning_effort").is_none());
 
         apply_rule_json(
@@ -208,9 +218,10 @@ mod test {
 
     #[test]
     fn completion_compute_caps_max_tokens() {
-        let mut config = ReqConfig::default();
-        config.max_tokens = Some(8192);
-        let mut req_body = build_body(AdapterType::OpenAICompletion, &config);
+        let mut config = JsonObject::new();
+        config.insert("max_tokens".to_string(), serde_json::json!(8192));
+
+        let mut req_body = build_body(AdapterType::OpenAICompletion, config);
         assert_eq!(req_body["max_completion_tokens"], 8192);
 
         apply_rule_json(
@@ -227,10 +238,11 @@ mod test {
 
     #[test]
     fn completion_set_and_remove_fields() {
-        let mut config = ReqConfig::default();
-        config.stream = Some(false);
-        config.temperature = Some(0.5);
-        let mut req_body = build_body(AdapterType::OpenAICompletion, &config);
+        let mut config = JsonObject::new();
+        config.insert("stream".to_string(), serde_json::json!(false));
+        config.insert("temperature".to_string(), serde_json::json!(0.5));
+
+        let mut req_body = build_body(AdapterType::OpenAICompletion, config);
         assert_eq!(req_body["stream"], false);
         assert_eq!(req_body["temperature"], 0.5);
 
@@ -255,9 +267,10 @@ mod test {
 
     #[test]
     fn responses_set_reasoning_effort() {
-        let mut config = ReqConfig::default();
-        config.reasoning = Some(true);
-        let mut req_body = build_body(AdapterType::OpenAIResponse, &config);
+        let mut config = JsonObject::new();
+        config.insert("reasoning".to_string(), serde_json::json!(true));
+
+        let mut req_body = build_body(AdapterType::OpenAIResponse, config);
         // responses API 用嵌套对象 reasoning.effort，而非 completion 的 reasoning_effort 字符串
         assert_eq!(req_body["reasoning"]["effort"], "medium");
 
@@ -275,9 +288,9 @@ mod test {
 
     #[test]
     fn responses_compute_caps_max_output_tokens() {
-        let mut config = ReqConfig::default();
-        config.max_tokens = Some(4096);
-        let mut req_body = build_body(AdapterType::OpenAIResponse, &config);
+        let mut config = JsonObject::new();
+        config.insert("max_tokens".to_string(), serde_json::json!(4096));
+        let mut req_body = build_body(AdapterType::OpenAIResponse, config);
         assert_eq!(req_body["max_output_tokens"], 4096);
 
         apply_rule_json(
