@@ -14,15 +14,15 @@ use wind_skills::SkillsMeta;
 
 #[derive(Deserialize, JsonSchema)]
 pub struct SkillsListRequest {
-    /// 要扫描的目录绝对路径。
+    /// 要扫描的目录绝对路径
     pub dir: String,
-    /// 是否递归子目录，默认 true。
+    /// 是否递归子目录，默认 true
     pub recursive: Option<bool>,
-    /// 允许递归的子目录层数，默认不限。
+    /// 允许递归的子目录层数，默认不限
     pub max_depth: Option<u16>,
 }
 
-/// wind-skills MCP 服务：技能披露。
+/// wind-skills MCP 服务：技能披露
 pub struct SkillsServer {
     sandbox: Sandbox,
     tool_router: ToolRouter<Self>,
@@ -49,7 +49,7 @@ impl BuiltinMcp for SkillsServer {
 
 #[tool_router(router = tool_router)]
 impl SkillsServer {
-    /// 扫描目录，收集所有 skill（SKILL.md）的元数据。
+    /// 扫描目录，收集所有 skill（SKILL.md）的元数据
     #[tool(
         name = "skills_list",
         description = "Scan a directory and collect metadata (name/description/skill_dir) for every SKILL.md skill."

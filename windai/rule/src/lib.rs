@@ -10,7 +10,7 @@ pub use compile::RuleSet;
 pub use error::{Error, Result};
 use serde_json::{Map, Value};
 
-/// 规则求值的上下文，由调用方注入。
+/// 规则求值的上下文，由调用方注入
 #[derive(Debug, Clone, Default)]
 pub struct EvalContext {
     vars: Map<String, Value>,
@@ -26,7 +26,7 @@ impl EvalContext {
         self
     }
 
-    /// 获取变量值。
+    /// 获取变量值
     ///
     /// TODO: 获取嵌套路径值
     pub fn get(&self, key: &str) -> Option<&Value> {

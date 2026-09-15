@@ -14,72 +14,72 @@ use serde_json::Value;
 /// 响应创建请求的主结构体
 #[derive(Debug, Serialize, Clone)]
 pub struct ResponseRequest {
-    /// 是否在后台运行模型响应。
+    /// 是否在后台运行模型响应
     #[serde(skip_serializing_if = "Option::is_none")]
     pub background: Option<bool>,
 
-    /// 此请求的上下文管理配置。
+    /// 此请求的上下文管理配置
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_management: Option<Vec<ContextManagementConfig>>,
 
-    /// 此响应所属的会话。
-    /// 该会话的项目将自动添加并更新。
+    /// 此响应所属的会话
+    /// 该会话的项目将自动添加并更新
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conversation: Option<ConversationParam>,
 
-    /// 指定要在模型响应中包含的附加输出数据。
+    /// 指定要在模型响应中包含的附加输出数据
     #[serde(skip_serializing_if = "is_none_or_empty_vec")]
     pub include: Option<Vec<ResponseIncludable>>,
 
-    /// 输入内容，可以是简单的字符串，也可以是消息对象数组。
+    /// 输入内容，可以是简单的字符串，也可以是消息对象数组
     pub input: Vec<InputItem>,
 
-    /// 插入到模型上下文中的系统（或开发者）消息。
-    /// 与 `previous_response_id` 一起使用时，先前响应的指令不会延续到下一个响应。
-    /// 这使得在新响应中替换系统（或开发者）消息变得简单。
+    /// 插入到模型上下文中的系统（或开发者）消息
+    /// 与 `previous_response_id` 一起使用时，先前响应的指令不会延续到下一个响应
+    /// 这使得在新响应中替换系统（或开发者）消息变得简单
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
 
-    /// 响应可生成的token数量上限，包括可见输出token和推理token。
+    /// 响应可生成的 token 数量上限，包括可见输出 token 和推理 token
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<i32>,
 
-    /// 内置工具在单个响应中可处理的总调用次数上限。
-    /// 此上限适用于所有内置工具调用的总和，而非单个工具的调用次数。
-    /// 若模型尝试进行超出此限制的工具调用，后续调用将被忽略。
+    /// 内置工具在单个响应中可处理的总调用次数上限
+    /// 此上限适用于所有内置工具调用的总和，而非单个工具的调用次数
+    /// 若模型尝试进行超出此限制的工具调用，后续调用将被忽略
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tool_calls: Option<i32>,
 
-    /// 可附加到对象的16个键值对集合。
+    /// 可附加到对象的 16 个键值对集合
     /// 这对于以结构化格式存储有关对象的附加信息非常有用，
-    /// 并且可以通过API或仪表板查询对象。
-    /// 键是最大长度为64个字符的字符串。值是最大长度为512个字符的字符串。
+    /// 并且可以通过 API 或仪表板查询对象
+    /// 键是最大长度为 64 个字符的字符串。值是最大长度为 512 个字符的字符串
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
 
-    /// 模型名称。
+    /// 模型名称
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
 
-    /// 是否允许模型并行运行工具调用。
+    /// 是否允许模型并行运行工具调用
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parallel_tool_calls: Option<bool>,
 
-    /// 模型先前响应的唯一ID。用于创建多轮对话。
-    /// 不能与 `conversation` 同时使用。
+    /// 模型先前响应的唯一 ID。用于创建多轮对话
+    /// 不能与 `conversation` 同时使用
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous_response_id: Option<String>,
 
-    /// 对提示模板及其变量的引用。
+    /// 对提示模板及其变量的引用
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt: Option<Value>,
 
-    /// 由OpenAI用于缓存类似请求的响应以优化缓存命中率。替换 `user` 字段。
+    /// 由 OpenAI 用于缓存类似请求的响应以优化缓存命中率。替换 `user` 字段
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_cache_key: Option<String>,
 
     /// 提示缓存的保留策略。设置为 `24h` 以启用扩展提示缓存，
-    /// 这将使缓存的前缀保持更长时间，最长可达24小时。
+    /// 这将使缓存的前缀保持更长时间，最长可达 24 小时
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_cache_retention: Option<String>,
 
@@ -87,29 +87,29 @@ pub struct ResponseRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<ResponseReasoning>,
 
-    /// 用于帮助检测可能违反OpenAI使用政策的应用程序用户的稳定标识符。
-    /// ID应为唯一标识每个用户的字符串，最大长度为64个字符。
-    /// 我们建议对其用户名或电子邮件地址进行哈希处理，以避免向我们发送任何识别信息。
+    /// 用于帮助检测可能违反 OpenAI 使用政策的应用程序用户的稳定标识符
+    /// ID 应为唯一标识每个用户的字符串，最大长度为 64 个字符
+    /// 我们建议对其用户名或电子邮件地址进行哈希处理，以避免向我们发送任何识别信息
     #[serde(skip_serializing_if = "Option::is_none")]
     pub safety_identifier: Option<String>,
 
-    /// 指定用于服务请求的处理类型。
-    /// - 如果设置为 'auto'，则请求将使用项目设置中配置的服务层级进行处理。
-    ///   除非另有配置，否则项目将使用 'default'。
-    /// - 如果设置为 'default'，则请求将使用所选模型的标准定价和性能进行处理。
+    /// 指定用于服务请求的处理类型
+    /// - 如果设置为 'auto'，则请求将使用项目设置中配置的服务层级进行处理
+    ///   除非另有配置，否则项目将使用 'default'
+    /// - 如果设置为 'default'，则请求将使用所选模型的标准定价和性能进行处理
     /// - 如果设置为 '[flex](/docs/guides/flex-processing)' 或 '[priority](https://openai.com/api-priority-processing/)'，
-    ///   则请求将使用相应的服务层级进行处理。
-    /// - 未设置时，默认行为是 'auto'。
-    /// 当设置 `service_tier` 参数时，响应体将包含基于实际用于服务请求的处理模式的 `service_tier` 值。
-    /// 此响应值可能与参数中设置的值不同。
+    ///   则请求将使用相应的服务层级进行处理
+    /// - 未设置时，默认行为是 'auto'
+    /// 当设置 `service_tier` 参数时，响应体将包含基于实际用于服务请求的处理模式的 `service_tier` 值
+    /// 此响应值可能与参数中设置的值不同
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<String>,
 
-    /// 是否存储生成的模型响应以供以后通过API检索。
+    /// 是否存储生成的模型响应以供以后通过 API 检索
     #[serde(skip_serializing_if = "Option::is_none")]
     pub store: Option<bool>,
 
-    /// 若设置为 true，模型生成的响应数据将通过服务器发送事件（server-sent events）实时流式传输至客户端。
+    /// 若设置为 true，模型生成的响应数据将通过服务器发送事件（server-sent events）实时流式传输至客户端
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
 
@@ -124,12 +124,12 @@ pub struct ResponseRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_options: Option<Value>,
 
-    /// 采样温度应在0到2之间选择。较高的数值（如0.8）会使输出更具随机性，而较低的数值（如0.2）则会使输出更加聚焦和确定。
-    /// 通常建议调整温度参数或top_p参数，但不要同时调整两者。
+    /// 采样温度应在 0 到 2 之间选择。较高的数值（如 0.8）会使输出更具随机性，而较低的数值（如 0.2）则会使输出更加聚焦和确定
+    /// 通常建议调整温度参数或 top_p 参数，但不要同时调整两者
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
 
-    /// 模型文本响应的配置选项。可以是纯文本或结构化JSON数据
+    /// 模型文本响应的配置选项。可以是纯文本或结构化 JSON 数据
     ///
     /// 或使用默认文本格式：
     /// ```json
@@ -160,16 +160,16 @@ pub struct ResponseRequest {
     #[serde(skip_serializing_if = "is_none_or_empty_vec")]
     pub tools: Option<Vec<Tools>>,
 
-    /// 一种替代温度采样的方法是核采样，在这种方法中，模型仅考虑那些累积概率达到 top_p 的候选token。
-    /// 例如，当 top_p 设置为 0.1 时，模型只会考虑那些累计概率质量达到前 10% 的token。
+    /// 一种替代温度采样的方法是核采样，在这种方法中，模型仅考虑那些累积概率达到 top_p 的候选 token
+    /// 例如，当 top_p 设置为 0.1 时，模型只会考虑那些累计概率质量达到前 10% 的 token
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f64>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_logprobs: Option<f64>,
 
-    /// - auto: 如果此响应的输入超出模型的上下文窗口大小，模型将通过丢弃对话开头的项目来截断响应，以适应上下文窗口。
-    /// - disabled（默认）：如果输入大小将超出模型的上下文窗口大小，请求将以400错误失败。
+    /// - auto: 如果此响应的输入超出模型的上下文窗口大小，模型将通过丢弃对话开头的项目来截断响应，以适应上下文窗口
+    /// - disabled（默认）：如果输入大小将超出模型的上下文窗口大小，请求将以 400 错误失败
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncation: Option<String>,
 }
@@ -186,13 +186,13 @@ pub enum ToolChoice {
     Types(ToolChoiceTypes),
     /// 函数工具选择
     Function(ToolChoiceFunction),
-    /// MCP工具选择
+    /// MCP 工具选择
     Mcp(ToolChoiceMcp),
     /// 自定义工具选择
     Custom(ToolChoiceCustom),
     /// 应用补丁工具选择
     ApplyPatch(ToolChoiceApplyPatch),
-    /// Shell工具选择
+    /// Shell 工具选择
     Shell(ToolChoiceShell),
 }
 
@@ -200,8 +200,8 @@ pub enum ToolChoice {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolChoiceAllowed {
     /// 将模型可用的工具约束到预定义集合
-    /// auto允许模型从允许的工具中选择并生成消息
-    /// required要求模型调用一个或多个允许的工具
+    /// auto 允许模型从允许的工具中选择并生成消息
+    /// required 要求模型调用一个或多个允许的工具
     pub mode: String,
     /// 模型应被允许调用的工具定义列表
     /// ```json
@@ -224,16 +224,16 @@ pub struct ToolChoiceTypes {
 pub struct ToolChoiceFunction {
     /// 要调用的函数的名称
     pub name: String,
-    /// 对于函数调用，类型始终为function
+    /// 对于函数调用，类型始终为 function
     pub r#type: String,
 }
 
-/// 使用此选项强制模型调用远程MCP服务器上的特定工具
+/// 使用此选项强制模型调用远程 MCP 服务器上的特定工具
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolChoiceMcp {
-    /// 要使用的MCP服务器的标签
+    /// 要使用的 MCP 服务器的标签
     pub server_label: String,
-    /// 对于MCP工具，类型始终为mcp
+    /// 对于 MCP 工具，类型始终为 mcp
     pub r#type: String,
     /// 要在服务器上调用的工具的名称
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -245,21 +245,21 @@ pub struct ToolChoiceMcp {
 pub struct ToolChoiceCustom {
     /// 要调用的自定义工具的名称
     pub name: String,
-    /// 对于自定义工具调用，类型始终为custom
+    /// 对于自定义工具调用，类型始终为 custom
     pub r#type: String,
 }
 
-/// 强制模型在执行工具调用时调用apply_patch工具
+/// 强制模型在执行工具调用时调用 apply_patch 工具
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolChoiceApplyPatch {
-    /// 要调用的工具。始终为apply_patch
+    /// 要调用的工具。始终为 apply_patch
     pub r#type: String,
 }
 
-/// 强制模型在需要工具调用时调用shell工具
+/// 强制模型在需要工具调用时调用 shell 工具
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolChoiceShell {
-    /// 要调用的工具。始终为shell
+    /// 要调用的工具。始终为 shell
     pub r#type: String,
 }
 
@@ -267,25 +267,25 @@ pub struct ToolChoiceShell {
 pub struct ResponseReasoning {
     /// 可选值： none, minimal, low, medium, high, xhigh
     ///
-    /// 限制推理模型在推理上的努力程度。降低推理努力可带来更快的响应速度，并减少响应中用于推理的token数量。
+    /// 限制推理模型在推理上的努力程度。降低推理努力可带来更快的响应速度，并减少响应中用于推理的 token 数量
     ///
-    /// gpt-5.1 默认值为 none，即不进行推理。gpt-5.1 支持的推理值为：none, low, medium, and high。所有推理值在 gpt-5.1 中均支持工具调用。
+    /// gpt-5.1 默认值为 none，即不进行推理。gpt-5.1 支持的推理值为：none, low, medium, and high。所有推理值在 gpt-5.1 中均支持工具调用
     ///
-    /// gpt-5.1 之前的所有模型默认推理努力为中，且不支持无值。
+    /// gpt-5.1 之前的所有模型默认推理努力为中，且不支持无值
     ///
-    /// gpt-5-pro 模型默认（且仅支持）高推理努力。
+    /// gpt-5-pro 模型默认（且仅支持）高推理努力
     ///
-    /// xhigh 在所有 gpt-5.1-codex-max 之后的模型中均受支持。
+    /// xhigh 在所有 gpt-5.1-codex-max 之后的模型中均受支持
     pub effort: Option<String>,
 }
 
 /// 上下文管理配置
 #[derive(Debug, Serialize, Default, Clone)]
 pub struct ContextManagementConfig {
-    ///  entry 类型。目前仅支持 'compaction'（压缩）。
+    ///  entry 类型。目前仅支持 'compaction'（压缩）
     pub r#type: String,
 
-    /// 触发压缩的 Token 阈值。最小值通常为 1000。
+    /// 触发压缩的 Token 阈值。最小值通常为 1000
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compact_threshold: Option<f64>,
 }
@@ -322,25 +322,25 @@ pub enum ResponseIncludable {
 }
 
 #[derive(Debug, Serialize, Clone)]
-/// 输入模型的消息带有指示遵循角色层级的指令。
-/// 以开发者或系统角色给出的指令优先于以用户角色给出的指令。
+/// 输入模型的消息带有指示遵循角色层级的指令
+/// 以开发者或系统角色给出的指令优先于以用户角色给出的指令
 ///
 /// Message 和 EasyInputMessage 合并
 pub struct Message {
-    /// 模型接收的文本、图像或音频输入，用于生成回应。也可包含先前的助手回应。
+    /// 模型接收的文本、图像或音频输入，用于生成回应。也可包含先前的助手回应
     ///
     pub content: Vec<InputContent>,
     /// 角色
     ///
     /// role: "user" or "system" or "developer"
     pub role: Role,
-    /// 将助手消息标记为中间评论（commentary）或最终答案（final_answer）。
-    /// 对于像gpt-5.3-codex及更高版本的模型，在发送后续请求时，需保留并重新发送所有助手消息的阶段标签——删除它们可能会降低性能。
-    /// 此标签不用于用户消息。
+    /// 将助手消息标记为中间评论（commentary）或最终答案（final_answer）
+    /// 对于像 gpt-5.3-codex 及更高版本的模型，在发送后续请求时，需保留并重新发送所有助手消息的阶段标签——删除它们可能会降低性能
+    /// 此标签不用于用户消息
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phase: Option<String>,
     /// 项目状态。可选值为 in_progress, completed, incomplete
-    /// 通过API返回项目列表时，该字段将被填充。
+    /// 通过 API 返回项目列表时，该字段将被填充
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     /// 总是 "message"
@@ -428,20 +428,20 @@ pub struct ResponseInputImage {
     /// "input_image"
     pub r#type: String,
     pub file_id: Option<String>,
-    /// 要发送给模型的图像的URL。可以是完全限定的URL，也可以是数据URL中base64编码的图像。
+    /// 要发送给模型的图像的 URL。可以是完全限定的 URL，也可以是数据 URL 中 base64 编码的图像
     pub image_url: Option<String>,
 }
 #[derive(Debug, Serialize, Clone)]
 pub struct ResponseInputFile {
-    /// 输入项的类型。始终为 "input_file"。
+    /// 输入项的类型。始终为 "input_file"
     pub r#type: String,
-    /// 要发送给模型的文件内容。
+    /// 要发送给模型的文件内容
     pub file_data: Option<String>,
-    /// 要发送给模型的文件ID。
+    /// 要发送给模型的文件 ID
     pub file_id: Option<String>,
-    /// 要发送给模型的文件URL。
+    /// 要发送给模型的文件 URL
     pub file_url: Option<String>,
-    /// 要发送给模型的文件名。
+    /// 要发送给模型的文件名
     pub filename: Option<String>,
 }
 /// 易用的输入消息结构
@@ -467,11 +467,11 @@ pub struct TokenUsage {
 /// Responses 响应结构体
 #[derive(Debug, Deserialize)]
 pub struct Response {
-    /// Responses 的唯一标识符。
+    /// Responses 的唯一标识符
     pub id: String,
-    /// 聊天补全创建时间的 Unix 时间戳（秒级）。
+    /// 聊天补全创建时间的 Unix 时间戳（秒级）
     pub created_at: i64,
-    /// 模型未能生成响应时返回的错误对象。
+    /// 模型未能生成响应时返回的错误对象
     ///
     /// 返回格式：
     /// ```json
@@ -488,7 +488,7 @@ pub struct Response {
     pub instructions: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
-    /// 模型名称。
+    /// 模型名称
     pub model: String,
     pub object: String,
     /// 模型输出内容
@@ -523,11 +523,11 @@ pub struct Response {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tool_calls: Option<Value>,
 
-    /// SDK专用便利属性，包含输出数组中所有output_text项的聚合文本输出
+    /// SDK 专用便利属性，包含输出数组中所有 output_text 项的聚合文本输出
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_text: Option<String>,
 
-    /// 模型先前响应的唯一ID
+    /// 模型先前响应的唯一 ID
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous_response_id: Option<String>,
 
@@ -561,7 +561,7 @@ pub struct Response {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<Value>,
 
-    /// 用于帮助检测可能违反OpenAI使用政策的应用程序用户的稳定标识符
+    /// 用于帮助检测可能违反 OpenAI 使用政策的应用程序用户的稳定标识符
     #[serde(skip_serializing_if = "Option::is_none")]
     pub safety_identifier: Option<String>,
 
@@ -816,15 +816,15 @@ pub enum Tools {
     ComputerUsePreview(ComputerUsePreviewTool),
     /// 网络搜索工具
     WebSearch(WebSearchTool),
-    /// MCP工具
+    /// MCP 工具
     Mcp(McpTool),
     /// 代码解释器工具
     CodeInterpreter(CodeInterpreterTool),
     /// 图像生成工具
     ImageGeneration(ImageGenerationTool),
-    /// 本地Shell工具
+    /// 本地 Shell 工具
     LocalShell(LocalShellTool),
-    /// Shell工具
+    /// Shell 工具
     Shell(ShellTool),
     /// 自定义工具
     Custom(CustomTool),
@@ -843,15 +843,15 @@ pub enum Tools {
 pub struct FunctionTool {
     /// 要调用的函数的名称
     pub name: String,
-    /// 描述函数参数的JSON模式对象
+    /// 描述函数参数的 JSON 模式对象
     /// ```json
     /// map<unknown>
     /// ```
     pub parameters: Option<Value>,
-    /// 是否强制执行严格的参数验证。默认为true
+    /// 是否强制执行严格的参数验证。默认为 true
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strict: Option<bool>,
-    /// 函数工具的类型。始终为function
+    /// 函数工具的类型。始终为 function
     pub r#type: String,
     /// 此函数是否被延迟并通过工具搜索加载
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -864,9 +864,9 @@ pub struct FunctionTool {
 /// 从上传的文件中搜索相关内容的工具
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileSearchTool {
-    /// 文件搜索工具的类型。始终为file_search
+    /// 文件搜索工具的类型。始终为 file_search
     pub r#type: String,
-    /// 要搜索的向量存储的ID
+    /// 要搜索的向量存储的 ID
     pub vector_store_ids: Vec<String>,
     /// 要应用的过滤器
     /// ```json
@@ -874,7 +874,7 @@ pub struct FileSearchTool {
     /// ```
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filters: Option<Value>,
-    /// 要返回的最大结果数。此数字应在1到50之间（含）
+    /// 要返回的最大结果数。此数字应在 1 到 50 之间（含）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_num_results: Option<Value>,
     /// 搜索的排名选项
@@ -915,7 +915,7 @@ pub struct ComputerUsePreviewTool {
 /// 搜索与提示相关的互联网资源的工具
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebSearchTool {
-    /// 网络搜索工具的类型。web_search或web_search_2025_08_26之一
+    /// 网络搜索工具的类型。web_search 或 web_search_2025_08_26 之一
     pub r#type: String,
     /// 搜索的过滤器
     /// ```json
@@ -925,7 +925,7 @@ pub struct WebSearchTool {
     /// ```
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filters: Option<Value>,
-    /// 用于搜索的上下文窗口空间量的高级指导。low、medium或high之一。默认为medium
+    /// 用于搜索的上下文窗口空间量的高级指导。low、medium 或 high 之一。默认为 medium
     #[serde(skip_serializing_if = "Option::is_none")]
     pub search_context_size: Option<String>,
     /// 用户的近似位置
@@ -945,9 +945,9 @@ pub struct WebSearchTool {
 /// 通过远程模型上下文协议（MCP）服务器为模型提供额外工具访问权限
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpTool {
-    /// 此MCP服务器的标签，用于在工具调用中标识它
+    /// 此 MCP 服务器的标签，用于在工具调用中标识它
     pub server_label: String,
-    /// MCP工具的类型。始终为 mcp
+    /// MCP 工具的类型。始终为 mcp
     pub r#type: String,
     /// 允许的工具名称列表或过滤器对象
     /// ```json
@@ -958,22 +958,22 @@ pub struct McpTool {
     /// ```
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allowed_tools: Option<Value>,
-    /// 可用于远程MCP服务器的OAuth访问 token
+    /// 可用于远程 MCP 服务器的 OAuth 访问 token
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authorization: Option<String>,
     /// 服务连接器的标识符
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connector_id: Option<String>,
-    /// 此MCP工具是否被延迟并通过工具搜索发现
+    /// 此 MCP 工具是否被延迟并通过工具搜索发现
     #[serde(skip_serializing_if = "Option::is_none")]
     pub defer_loading: Option<bool>,
-    /// 发送到MCP服务器的可选HTTP标头
+    /// 发送到 MCP 服务器的可选 HTTP 标头
     /// ```json
     /// map<string>
     /// ```
     #[serde(skip_serializing_if = "Option::is_none")]
     pub headers: Option<Value>,
-    /// 指定MCP服务器的哪些工具需要批准
+    /// 指定 MCP 服务器的哪些工具需要批准
     /// ```json
     /// {
     ///   "always": {
@@ -988,15 +988,15 @@ pub struct McpTool {
     /// ```
     #[serde(skip_serializing_if = "Option::is_none")]
     pub require_approval: Option<Value>,
-    /// MCP服务器的可选描述，用于提供更多上下文
+    /// MCP 服务器的可选描述，用于提供更多上下文
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server_description: Option<String>,
-    /// MCP服务器的URL
+    /// MCP 服务器的 URL
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server_url: Option<String>,
 }
 
-/// 运行Python代码以帮助生成对提示的响应的工具
+/// 运行 Python 代码以帮助生成对提示的响应的工具
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodeInterpreterTool {
     /// 代码解释器容器
@@ -1013,15 +1013,15 @@ pub struct CodeInterpreterTool {
     pub r#type: String,
 }
 
-/// 使用GPT图像模型生成图像的工具
+/// 使用 GPT 图像模型生成图像的工具
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageGenerationTool {
     /// 图像生成工具的类型。始终为 image_generation
     pub r#type: String,
-    /// 是生成新图像还是编辑现有图像。默认为auto
+    /// 是生成新图像还是编辑现有图像。默认为 auto
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
-    /// 生成图像的背景类型。transparent、opaque或auto之一。默认为auto
+    /// 生成图像的背景类型。transparent、opaque 或 auto 之一。默认为 auto
     #[serde(skip_serializing_if = "Option::is_none")]
     pub background: Option<String>,
     /// 控制模型在匹配输入图像的风格和特征（尤其是面部特征）方面付出多少努力
@@ -1036,42 +1036,42 @@ pub struct ImageGenerationTool {
     /// ```
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_image_mask: Option<Value>,
-    /// 要使用的图像生成模型。默认为gpt-image-1
+    /// 要使用的图像生成模型。默认为 gpt-image-1
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<Value>,
-    /// 生成图像的审核级别。默认为auto
+    /// 生成图像的审核级别。默认为 auto
     #[serde(skip_serializing_if = "Option::is_none")]
     pub moderation: Option<String>,
-    /// 输出图像的压缩级别。默认为100
+    /// 输出图像的压缩级别。默认为 100
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_compression: Option<Value>,
-    /// 生成图像的输出格式。png、webp或jpeg之一。默认为png
+    /// 生成图像的输出格式。png、webp 或 jpeg 之一。默认为 png
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_format: Option<String>,
-    /// 在流式模式下生成的部分图像数量，从0（默认值）到3
+    /// 在流式模式下生成的部分图像数量，从 0（默认值）到 3
     #[serde(skip_serializing_if = "Option::is_none")]
     pub partial_images: Option<Value>,
-    /// 生成图像的质量。low、medium、high或auto之一。默认为auto
+    /// 生成图像的质量。low、medium、high 或 auto 之一。默认为 auto
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quality: Option<String>,
-    /// 生成图像的尺寸。1024x1024、1024x1536、1536x1024或auto之一。默认为auto
+    /// 生成图像的尺寸。1024x1024、1024x1536、1536x1024 或 auto 之一。默认为 auto
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<String>,
 }
 
-/// 允许模型在本地环境中执行shell命令的工具
+/// 允许模型在本地环境中执行 shell 命令的工具
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalShellTool {
-    /// 本地shell工具的类型。始终为 local_shell
+    /// 本地 shell 工具的类型。始终为 local_shell
     pub r#type: String,
 }
 
-/// 允许模型执行shell命令的工具
+/// 允许模型执行 shell 命令的工具
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShellTool {
-    /// shell工具的类型。始终为 shell
+    /// shell 工具的类型。始终为 shell
     pub r#type: String,
-    /// 执行shell命令的环境
+    /// 执行 shell 命令的环境
     /// ```json
     /// ContainerAuto | LocalEnvironment | ContainerReference
     /// ```
@@ -1122,7 +1122,7 @@ pub struct NamespaceTool {
     pub r#type: String,
 }
 
-/// 延迟工具的托管或BYOT工具搜索配置
+/// 延迟工具的托管或 BYOT 工具搜索配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSearchTool {
     /// 工具的类型。始终为 tool_search
@@ -1141,12 +1141,12 @@ pub struct ToolSearchTool {
 /// 此工具搜索网络以获取相关结果以在响应中使用
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebSearchPreviewTool {
-    /// 网络搜索工具的类型。web_search_preview或web_search_preview_2025_03_11之一
+    /// 网络搜索工具的类型。web_search_preview 或 web_search_preview_2025_03_11 之一
     pub r#type: String,
     /// 搜索内容类型
     #[serde(skip_serializing_if = "Option::is_none")]
     pub search_content_types: Option<Value>,
-    /// 用于搜索的上下文窗口空间量的高级指导。low、medium或high之一。默认为medium
+    /// 用于搜索的上下文窗口空间量的高级指导。low、medium 或 high 之一。默认为 medium
     #[serde(skip_serializing_if = "Option::is_none")]
     pub search_context_size: Option<String>,
     /// 用户的位置
@@ -1170,14 +1170,14 @@ pub struct ApplyPatchTool {
     pub r#type: String,
 }
 /// 文件搜索工具调用结果对象
-/// 文件搜索工具调用的结果。有关更多信息，请参阅文件搜索指南。
+/// 文件搜索工具调用的结果。有关更多信息，请参阅文件搜索指南
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileSearchCall {
-    /// 文件搜索工具调用的唯一ID
+    /// 文件搜索工具调用的唯一 ID
     pub id: String,
     /// 用于搜索文件的查询数组
     pub queries: Vec<String>,
-    /// 文件搜索工具调用的状态。可能为in_progress、searching、completed、incomplete或failed之一
+    /// 文件搜索工具调用的状态。可能为 in_progress、searching、completed、incomplete 或 failed 之一
     pub status: String,
     /// 文件搜索工具调用的类型。始终为 file_search_call
     pub r#type: String,
@@ -1186,16 +1186,16 @@ pub struct FileSearchCall {
     pub results: Option<Value>,
 }
 /// 计算机使用工具调用对象
-/// 计算机使用工具的调用。有关更多信息，请参阅计算机使用指南。
+/// 计算机使用工具的调用。有关更多信息，请参阅计算机使用指南
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComputerCall {
-    /// 计算机调用的唯一ID
+    /// 计算机调用的唯一 ID
     pub id: String,
     /// 使用输出响应工具调用时使用的标识符
     pub call_id: String,
     /// 计算机调用的待处理安全检查数组
     pub pending_safety_checks: Value,
-    /// 项目的状态。可能为in_progress、completed或incomplete之一。通过API返回项目时填充
+    /// 项目的状态。可能为 in_progress、completed 或 incomplete 之一。通过 API 返回项目时填充
     pub status: String,
     /// 计算机调用的类型。始终为 computer_call
     pub r#type: String,
@@ -1209,26 +1209,26 @@ pub struct ComputerCall {
 /// 计算机工具调用输出对象
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComputerCallOutput {
-    /// 产生输出的计算机工具调用的ID
+    /// 产生输出的计算机工具调用的 ID
     pub call_id: String,
     /// 与计算机使用工具一起使用的计算机截图图像
     pub output: Value,
     /// 计算机工具调用输出的类型。始终为 computer_call_output
     pub r#type: String,
-    /// 计算机工具调用输出的ID
+    /// 计算机工具调用输出的 ID
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// 开发者已确认的API报告的安全检查
+    /// 开发者已确认的 API 报告的安全检查
     #[serde(skip_serializing_if = "Option::is_none")]
     pub acknowledged_safety_checks: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
 }
 /// 网络搜索工具调用结果对象
-/// 网络搜索工具调用的结果。有关更多信息，请参阅[网络搜索指南](/docs/guides/tools-web-search)。
+/// 网络搜索工具调用的结果。有关更多信息，请参阅[网络搜索指南](/docs/guides/tools-web-search)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebSearchCall {
-    /// 网络搜索工具调用的唯一ID
+    /// 网络搜索工具调用的唯一 ID
     pub id: String,
     /// 描述此网络搜索调用中采取的具体操作的对象
     /// 包括模型如何使用网络（搜索、打开页面、在页面中查找）的详细信息
@@ -1241,28 +1241,28 @@ pub struct WebSearchCall {
 /// 函数调用工具调用对象，由模型生成并返回
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionCall {
-    /// 要传递给函数的参数的JSON字符串
+    /// 要传递给函数的参数的 JSON 字符串
     pub arguments: String,
-    /// 模型生成的函数工具调用的唯一ID
+    /// 模型生成的函数工具调用的唯一 ID
     pub call_id: String,
     /// 要运行的函数名称
     pub name: String,
     /// 函数工具调用的类型。始终为 function_call
     pub r#type: String,
-    /// 函数工具调用的唯一ID
+    /// 函数工具调用的唯一 ID
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     /// 要运行的函数的命名空间
     #[serde(skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
-    /// 项目的状态。可能为in_progress、completed或incomplete之一。通过API返回项目时填充
+    /// 项目的状态。可能为 in_progress、completed 或 incomplete 之一。通过 API 返回项目时填充
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
 }
 /// 函数工具调用的输出，本地函数调用结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionCallOutput {
-    /// 模型生成的函数工具调用的唯一ID
+    /// 模型生成的函数工具调用的唯一 ID
     pub call_id: String,
     /// 函数工具调用的文本、图像或文件输出
     /// ```json
@@ -1271,10 +1271,10 @@ pub struct FunctionCallOutput {
     pub output: Value,
     /// 函数工具调用输出的类型。始终为 function_call_output
     pub r#type: String,
-    /// 函数工具调用输出的唯一ID。通过API返回此项时填充
+    /// 函数工具调用输出的唯一 ID。通过 API 返回此项时填充
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// 项目的状态。in_progress、completed或incomplete之一。通过API返回项目时填充
+    /// 项目的状态。in_progress、completed 或 incomplete 之一。通过 API 返回项目时填充
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
 }
@@ -1286,10 +1286,10 @@ pub struct ToolSearchCall {
     pub arguments: Value,
     /// 项目类型。始终为 tool_search_call
     pub r#type: String,
-    /// 此工具搜索调用的唯一ID
+    /// 此工具搜索调用的唯一 ID
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// 模型生成的工具搜索调用的唯一ID
+    /// 模型生成的工具搜索调用的唯一 ID
     #[serde(skip_serializing_if = "Option::is_none")]
     pub call_id: Option<String>,
     /// 工具搜索是由服务器执行还是由客户端执行
@@ -1324,10 +1324,10 @@ pub struct ToolSearchOutput {
     pub tools: Value,
     /// 项目类型。始终为 tool_search_output
     pub r#type: String,
-    /// 此工具搜索输出的唯一ID
+    /// 此工具搜索输出的唯一 ID
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// 模型生成的工具搜索调用的唯一ID
+    /// 模型生成的工具搜索调用的唯一 ID
     #[serde(skip_serializing_if = "Option::is_none")]
     pub call_id: Option<String>,
     /// 工具搜索是由服务器执行还是由客户端执行
@@ -1353,10 +1353,10 @@ pub struct Reasoning {
     /// 推理文本内容
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<Vec<ReasoningContent>>,
-    /// 推理项目的加密内容 - 当响应在include参数中包含reasoning.encrypted_content时填充
+    /// 推理项目的加密内容 - 当响应在 include 参数中包含 reasoning.encrypted_content 时填充
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encrypted_content: Option<String>,
-    /// 项目的状态。in_progress、completed或incomplete之一。通过API返回项目时填充
+    /// 项目的状态。in_progress、completed 或 incomplete 之一。通过 API 返回项目时填充
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
 }
@@ -1366,14 +1366,14 @@ pub struct ReasoningContent {
     pub text: String,
     pub r#type: String,
 }
-/// 由v1/responses/compact API生成的压缩项目
+/// 由 v1/responses/compact API 生成的压缩项目
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Compaction {
     /// 压缩摘要的加密内容
     pub encrypted_content: String,
     /// 项目的类型。始终为 compaction
     pub r#type: String,
-    /// 压缩项目的ID
+    /// 压缩项目的 ID
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
 }
@@ -1381,9 +1381,9 @@ pub struct Compaction {
 /// 模型发出的图像生成请求
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageGenerationCall {
-    /// 图像生成调用的唯一ID
+    /// 图像生成调用的唯一 ID
     pub id: String,
-    /// 以base64编码的生成图像
+    /// 以 base64 编码的生成图像
     pub result: String,
     /// 图像生成调用的状态
     pub status: String,
@@ -1394,29 +1394,29 @@ pub struct ImageGenerationCall {
 /// 运行代码的工具调用
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodeInterpreterCall {
-    /// 代码解释器工具调用的唯一ID
+    /// 代码解释器工具调用的唯一 ID
     pub id: String,
-    /// 要运行的代码，如果不可用则为null
+    /// 要运行的代码，如果不可用则为 null
     pub code: String,
-    /// 用于运行代码的容器的ID
+    /// 用于运行代码的容器的 ID
     pub container_id: String,
-    /// 代码解释器生成的输出，例如日志或图像。如果没有可用输出，则可以为null
+    /// 代码解释器生成的输出，例如日志或图像。如果没有可用输出，则可以为 null
     /// ```json
     /// array<Logs | Image>
     /// ```
     pub outputs: Value,
-    /// 代码解释器工具调用的状态。有效值为in_progress、completed、incomplete、interpreting和failed
+    /// 代码解释器工具调用的状态。有效值为 in_progress、completed、incomplete、interpreting 和 failed
     pub status: String,
     /// 代码解释器工具调用的类型。始终为 code_interpreter_call
     pub r#type: String,
 }
 
-/// 在本地shell上运行命令的工具调用
+/// 在本地 shell 上运行命令的工具调用
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalShellCall {
-    /// 本地shell调用的唯一ID
+    /// 本地 shell 调用的唯一 ID
     pub id: String,
-    /// 在服务器上执行shell命令
+    /// 在服务器上执行 shell 命令
     /// ```json
     /// {
     ///   "command": array<string>,
@@ -1428,31 +1428,31 @@ pub struct LocalShellCall {
     /// }
     /// ```
     pub action: Value,
-    /// 模型生成的本地shell工具调用的唯一ID
+    /// 模型生成的本地 shell 工具调用的唯一 ID
     pub call_id: String,
-    /// 本地shell调用的状态
+    /// 本地 shell 调用的状态
     pub status: String,
-    /// 本地shell调用的类型。始终为 local_shell_call
+    /// 本地 shell 调用的类型。始终为 local_shell_call
     pub r#type: String,
 }
-/// 本地shell工具调用的输出
+/// 本地 shell 工具调用的输出
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalShellCallOutput {
-    /// 模型生成的本地shell工具调用的唯一ID
+    /// 模型生成的本地 shell 工具调用的唯一 ID
     pub id: String,
-    /// 本地shell工具调用的输出JSON字符串
+    /// 本地 shell 工具调用的输出 JSON 字符串
     pub output: String,
-    /// 本地shell工具调用输出的类型。始终为 local_shell_call_output
+    /// 本地 shell 工具调用输出的类型。始终为 local_shell_call_output
     pub r#type: String,
-    /// 项目的状态。in_progress、completed或incomplete之一
+    /// 项目的状态。in_progress、completed 或 incomplete 之一
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
 }
 
-/// 表示执行一个或多个shell命令请求的工具
+/// 表示执行一个或多个 shell 命令请求的工具
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShellCall {
-    /// 描述如何运行工具调用的shell命令和限制
+    /// 描述如何运行工具调用的 shell 命令和限制
     /// ```json
     /// {
     ///   "commands": array<string>,
@@ -1461,43 +1461,43 @@ pub struct ShellCall {
     /// }
     /// ```
     pub action: Value,
-    /// 模型生成的shell工具调用的唯一ID
+    /// 模型生成的 shell 工具调用的唯一 ID
     pub call_id: String,
     /// 项目的类型。始终为 shell_call
     pub r#type: String,
-    /// shell工具调用的唯一ID。通过API返回此项时填充
+    /// shell 工具调用的唯一 ID。通过 API 返回此项时填充
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// 执行shell命令的环境
+    /// 执行 shell 命令的环境
     /// ```json
     /// LocalEnvironment | ContainerReference
     /// ```
     #[serde(skip_serializing_if = "Option::is_none")]
     pub environment: Option<Value>,
-    /// shell调用的状态。in_progress、completed或incomplete之一
+    /// shell 调用的状态。in_progress、completed 或 incomplete 之一
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
 }
 
-/// shell工具调用发出的流式输出项目
+/// shell 工具调用发出的流式输出项目
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShellCallOutput {
-    /// 模型生成的shell工具调用的唯一ID
+    /// 模型生成的 shell 工具调用的唯一 ID
     pub call_id: String,
-    /// 捕获的stdout和stderr输出块及其相关结果
+    /// 捕获的 stdout 和 stderr 输出块及其相关结果
     /// ```json
     /// array<ResponseFunctionShellCallOutputContent>
     /// ```
     pub output: Value,
     /// 项目的类型。始终为 shell_call_output
     pub r#type: String,
-    /// shell工具调用输出的唯一ID。通过API返回此项时填充
+    /// shell 工具调用输出的唯一 ID。通过 API 返回此项时填充
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// 为此shell调用的组合输出捕获的最大UTF-8字符数
+    /// 为此 shell 调用的组合输出捕获的最大 UTF-8 字符数
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_length: Option<Value>,
-    /// shell调用输出的状态
+    /// shell 调用输出的状态
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
 }
@@ -1505,45 +1505,45 @@ pub struct ShellCallOutput {
 /// 表示使用差异补丁创建、删除或更新文件请求的工具调用
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApplyPatchCall {
-    /// 模型生成的apply patch工具调用的唯一ID
+    /// 模型生成的 apply patch 工具调用的唯一 ID
     pub call_id: String,
-    /// apply_patch工具调用的特定创建、删除或更新指令
+    /// apply_patch 工具调用的特定创建、删除或更新指令
     /// ```json
     /// CreateFile | DeleteFile | UpdateFile
     /// ```
     pub operation: Value,
-    /// apply patch工具调用的状态。in_progress或completed之一
+    /// apply patch 工具调用的状态。in_progress 或 completed 之一
     pub status: String,
     /// 项目的类型。始终为 apply_patch_call
     pub r#type: String,
-    /// apply patch工具调用的唯一ID。通过API返回此项时填充
+    /// apply patch 工具调用的唯一 ID。通过 API 返回此项时填充
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
 }
 
-/// apply patch工具调用发出的流式输出
+/// apply patch 工具调用发出的流式输出
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApplyPatchCallOutput {
-    /// 模型生成的apply patch工具调用的唯一ID
+    /// 模型生成的 apply patch 工具调用的唯一 ID
     pub call_id: String,
-    /// apply patch工具调用输出的状态。completed或failed之一
+    /// apply patch 工具调用输出的状态。completed 或 failed 之一
     pub status: String,
     /// 项目的类型。始终为 apply_patch_call_output
     pub r#type: String,
-    /// apply patch工具调用输出的唯一ID。通过API返回此项时填充
+    /// apply patch 工具调用输出的唯一 ID。通过 API 返回此项时填充
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// 来自apply patch工具的可选人类可读日志文本（例如，补丁结果或错误）
+    /// 来自 apply patch 工具的可选人类可读日志文本（例如，补丁结果或错误）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
 }
 
-/// MCP服务器上可用工具的列表
+/// MCP 服务器上可用工具的列表
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpListTools {
-    /// 列表的唯一ID
+    /// 列表的唯一 ID
     pub id: String,
-    /// MCP服务器的标签
+    /// MCP 服务器的标签
     pub server_label: String,
     /// 服务器上可用的工具
     /// ```json
@@ -1565,28 +1565,28 @@ pub struct McpListTools {
 /// 工具调用的人工批准请求
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpApprovalRequest {
-    /// 批准请求的唯一ID
+    /// 批准请求的唯一 ID
     pub id: String,
-    /// 工具参数的JSON字符串
+    /// 工具参数的 JSON 字符串
     pub arguments: String,
     /// 要运行的工具的名称
     pub name: String,
-    /// 发出请求的MCP服务器的标签
+    /// 发出请求的 MCP 服务器的标签
     pub server_label: String,
     /// 项目的类型。始终为 mcp_approval_request
     pub r#type: String,
 }
 
-/// MCP批准请求的响应
+/// MCP 批准请求的响应
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpApprovalResponse {
-    /// 正在回答的批准请求的ID
+    /// 正在回答的批准请求的 ID
     pub approval_request_id: String,
     /// 请求是否被批准
     pub approve: bool,
     /// 项目的类型。始终为 mcp_approval_response
     pub r#type: String,
-    /// 批准响应的唯一ID
+    /// 批准响应的唯一 ID
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     /// 决策的可选原因
@@ -1594,20 +1594,20 @@ pub struct McpApprovalResponse {
     pub reason: Option<String>,
 }
 
-/// MCP服务器上工具的调用
+/// MCP 服务器上工具的调用
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpCall {
-    /// 工具调用的唯一ID
+    /// 工具调用的唯一 ID
     pub id: String,
-    /// 传递给工具的参数的JSON字符串
+    /// 传递给工具的参数的 JSON 字符串
     pub arguments: String,
     /// 运行的工具体名称
     pub name: String,
-    /// 运行工具的MCP服务器的标签
+    /// 运行工具的 MCP 服务器的标签
     pub server_label: String,
     /// 项目的类型。始终为 mcp_call
     pub r#type: String,
-    /// MCP工具调用批准请求的唯一标识符
+    /// MCP 工具调用批准请求的唯一标识符
     #[serde(skip_serializing_if = "Option::is_none")]
     pub approval_request_id: Option<String>,
     /// 工具调用的错误（如果有）
@@ -1616,7 +1616,7 @@ pub struct McpCall {
     /// 工具调用的输出
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
-    /// 工具调用的状态。in_progress、completed、incomplete、calling或failed之一
+    /// 工具调用的状态。in_progress、completed、incomplete、calling 或 failed 之一
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
 }
@@ -1624,7 +1624,7 @@ pub struct McpCall {
 /// 从您的代码发送回模型的自定义工具调用的输出
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomToolCallOutput {
-    /// 用于将此自定义工具调用输出映射到自定义工具调用的调用ID
+    /// 用于将此自定义工具调用输出映射到自定义工具调用的调用 ID
     pub call_id: String,
     /// 由您的代码生成的自定义工具调用的输出
     /// ```json
@@ -1633,7 +1633,7 @@ pub struct CustomToolCallOutput {
     pub output: Value,
     /// 自定义工具调用输出的类型。始终为 custom_tool_call_output
     pub r#type: String,
-    /// 自定义工具调用输出在OpenAI平台中的唯一ID
+    /// 自定义工具调用输出在 OpenAI 平台中的唯一 ID
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
 }
@@ -1649,7 +1649,7 @@ pub struct CustomToolCall {
     pub name: String,
     /// 自定义工具调用的类型。始终为 custom_tool_call
     pub r#type: String,
-    /// 自定义工具调用在OpenAI平台中的唯一ID
+    /// 自定义工具调用在 OpenAI 平台中的唯一 ID
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     /// 被调用的自定义工具的命名空间
@@ -1660,7 +1660,7 @@ pub struct CustomToolCall {
 /// 用于引用项目的内部标识符
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ItemReference {
-    /// 要引用的项目的ID
+    /// 要引用的项目的 ID
     pub id: String,
     /// 要引用的项目的类型。始终为 item_reference
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1669,11 +1669,11 @@ pub struct ItemReference {
 /// 模型响应内容
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ResponseOutputMessage {
-    /// 响应消息的唯一标识符。
+    /// 响应消息的唯一标识符
     pub id: Option<String>,
     /// 模型响应的文本内容
     pub content: Vec<ResponseOutput>,
-    /// 模型输出的角色。
+    /// 模型输出的角色
     pub role: Role,
     /// 状态："in_progress" or "completed" or "incomplete"
     pub status: Option<String>,
@@ -1690,7 +1690,7 @@ pub enum ResponseOutput {
     ResponseOutputText(ResponseOutputText),
     ResponseOutputRefusal(ResponseOutputRefusal),
 }
-/// 模型的文本输出。
+/// 模型的文本输出
 /// 参考：https://developers.openai.com/api/reference/resources/responses/methods/create
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ResponseOutputText {
@@ -1705,7 +1705,7 @@ pub struct ResponseOutputText {
     #[serde(skip_serializing_if = "Option::is_none")]
     ///  类型
     pub r#type: Option<String>,
-    /// 模型拒绝响应。
+    /// 模型拒绝响应
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refusal: Option<ResponseOutputRefusal>,
 }
@@ -1735,24 +1735,24 @@ pub struct FileCitation {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct URLCitation {
-    /// URL引用在消息中最后一个字符的索引
+    /// URL 引用在消息中最后一个字符的索引
     pub end_index: i32,
-    /// URL引用在消息中第一个字符的索引
+    /// URL 引用在消息中第一个字符的索引
     pub start_index: i32,
     /// 网络资源的标题
     pub title: String,
-    /// URL引用的类型。始终为  "url_citation"
+    /// URL 引用的类型。始终为  "url_citation"
     pub citation_type: String,
-    /// 网络资源的URL
+    /// 网络资源的 URL
     pub url: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContainerFileCitation {
-    /// 容器文件的ID
+    /// 容器文件的 ID
     pub container_id: String,
     /// 容器文件引用在消息中最后一个字符的索引
     pub end_index: i32,
-    /// 文件的ID
+    /// 文件的 ID
     pub file_id: String,
     /// 被引用的容器文件名
     pub filename: String,
@@ -1763,7 +1763,7 @@ pub struct ContainerFileCitation {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FilePath {
-    /// 文件的ID
+    /// 文件的 ID
     pub file_id: String,
     /// 文件在文件列表中的索引
     pub index: i32,

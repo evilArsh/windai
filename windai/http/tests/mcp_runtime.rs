@@ -1,7 +1,7 @@
-//! MCP 服务运行时端点测试（start/stop/status + SSE）。无 .env。
+//! MCP 服务运行时端点测试（start/stop/attach + SSE）。无 .env
 //!
 //! session 语义：`topic_id` 即 `acquire`/`release` 的 `session_id`，
-//! 同一 mcp server 可被多个 topic 共享引用。
+//! 同一 mcp server 可被多个 topic 共享引用
 mod common;
 
 use axum::Router;
@@ -20,7 +20,7 @@ use wind_http::state::AppState;
 use wind_mcp::client::TransportType;
 
 fn test_router(core: Arc<WindCore>) -> Router {
-    let state = AppState::new(AppConfig::default(), core, 0);
+    let state = AppState::new(AppConfig::default(), core);
     Router::<AppState>::new()
         .merge(mcp::sse_router())
         .merge(mcp::router())
@@ -34,6 +34,8 @@ async fn create_topic(core: &Arc<WindCore>) -> Topic {
             parent_id: None,
             label: "mcp-runtime-test".to_string(),
             icon: None,
+            model_id: None,
+            tool_approval_policy: None,
         })
         .await
         .unwrap()
@@ -124,8 +126,9 @@ async fn start_valid_server_returns_accepted() {
     assert_eq!(res.status(), StatusCode::OK);
     let body = read_json::<()>(res).await;
     assert_eq!(body["code"], 200);
-    assert_eq!(body["data"]["accepted"], true);
-    assert_eq!(body["data"]["name"], "start-ok");
+    // 连接在后台进行，受理即返回，此刻没有可回传的实体
+    assert!(body["data"].is_null());
+    assert_eq!(body["msg"], "ok");
 }
 
 #[tokio::test]
@@ -192,46 +195,10 @@ async fn stop_not_running_returns_not_found() {
 }
 
 #[tokio::test]
-async fn status_unknown_id_returns_404() {
-    let core = common::test_core().await;
-    let app = test_router(core);
-    let res = app
-        .oneshot(
-            Request::get("/api/v1/mcp-servers/999999/status")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let body = read_json::<()>(res).await;
-    assert_eq!(body["code"], 404);
-}
-
-#[tokio::test]
-async fn status_not_running_reports_running_false() {
-    let core = common::test_core().await;
-    let srv = create_stdio_server(&core, "status-idle", Some("/nonexistent-cmd")).await;
-    let app = test_router(core);
-    let res = app
-        .oneshot(
-            Request::get(format!("/api/v1/mcp-servers/{}/status", srv.id))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let body = read_json::<()>(res).await;
-    assert_eq!(body["code"], 200);
-    assert_eq!(body["data"]["running"], false);
-    assert_eq!(body["data"]["name"], "status-idle");
-}
-
-#[tokio::test]
 async fn sse_stream_ends_when_cancel_token_fired() {
     let core = common::test_core().await;
     let cancel = CancellationToken::new();
-    let state = AppState::with_cancel(AppConfig::default(), core, 0, cancel.clone());
+    let state = AppState::with_cancel(AppConfig::default(), core, cancel.clone());
     cancel.cancel();
     let app = Router::<AppState>::new()
         .merge(mcp::sse_router())
@@ -247,7 +214,7 @@ async fn sse_stream_ends_when_cancel_token_fired() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
 
-    // 已取消 token：流应立即结束，body 可被完整读回（无限流会挂起）。
+    // 已取消 token：流应立即结束，body 可被完整读回（无限流会挂起）
     let read = tokio::time::timeout(
         Duration::from_secs(2),
         axum::body::to_bytes(res.into_body(), 1024),
@@ -283,7 +250,7 @@ async fn sse_streams_connecting_and_error_for_failed_start() {
     let srv = create_stdio_server(&core, "sse-bad", Some("/nonexistent-cmd")).await;
     let app = test_router(core);
 
-    // 先订阅，再触发事件，避免错过广播。
+    // 先订阅，再触发事件，避免错过广播
     let res = app
         .clone()
         .oneshot(
@@ -296,7 +263,7 @@ async fn sse_streams_connecting_and_error_for_failed_start() {
     assert_eq!(res.status(), StatusCode::OK);
     let mut body = res.into_body().into_data_stream();
 
-    // start 失败的命令：registry 会广播 Connecting 后紧跟 Error。
+    // start 失败的命令：registry 会广播 Connecting 后紧跟 Error
     let start = app
         .oneshot(
             Request::post(format!(

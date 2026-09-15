@@ -12,7 +12,7 @@ use wind_core::models::{
     UpdateJsonRule, UpdateProvider,
 };
 
-use crate::dto::envelope::ApiResponse;
+use crate::dto::ApiResponse;
 use crate::extractor::{ApiPath, ApiQuery, json_body};
 use crate::facade::storage::provider::ProviderStorageFacade;
 use crate::state::AppState;

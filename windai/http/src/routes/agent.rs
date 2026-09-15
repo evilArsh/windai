@@ -1,22 +1,18 @@
-use crate::dto::agent::CloneAgentDefinitionRequest;
-use crate::dto::envelope::ApiResponse;
-use crate::extractor::{ApiPath, ApiQuery, json_body};
+use crate::dto::ApiResponse;
+use crate::extractor::{ApiPath, json_body};
 use crate::facade::storage::agent::AgentStorageFacade;
 use crate::facade::storage::approval::ToolApprovalFacade;
-use crate::facade::topic::TopicFacade;
 use crate::state::AppState;
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
-use wind_ai::message::ReqConfig;
 use wind_core::WindCore;
 use wind_core::models::{
-    AgentInstance, AgentDefinition, ChatConfig, CreateInstance, CreateAgentDefinition,
-    ToolApprovalRequest, UpdateInstance, UpdateAgentDefinition,
+    AgentDefinition, AgentInstance, CreateAgentDefinition, ToolApprovalRequest,
+    UpdateAgentDefinition,
 };
 
 pub fn router() -> Router<AppState> {
@@ -36,39 +32,21 @@ pub fn router() -> Router<AppState> {
                 .delete(delete_definition),
         )
         .route(
-            "/api/v1/topics/{topic_id}/agent-definitions",
+            "/api/v1/agent-definitions/topics/{topic_id}",
             get(list_definitions_by_topic),
         )
         .route(
-            "/api/v1/topics/{topic_id}/agent-definitions/clone",
+            "/api/v1/agent-definitions/topics/{topic_id}/clone/{agent_definition_id}",
             post(clone_definition),
         )
-        .route("/api/v1/agent-bindings", post(create_binding))
+        .route("/api/v1/agent-instances/{instance_id}", get(get_instance))
         .route(
-            "/api/v1/agent-bindings/by-agent/{agent_id}",
-            get(get_binding_by_agent),
+            "/api/v1/agent-instances/{instance_id}/tool-approvals/pending",
+            get(list_pending_by_instance),
         )
         .route(
-            "/api/v1/agent-bindings/{binding_id}",
-            get(get_binding).put(update_binding).delete(delete_binding),
-        )
-        .route(
-            "/api/v1/agent-bindings/{binding_id}/chat-config",
-            get(get_chat_config)
-                .post(create_chat_config)
-                .put(update_chat_config),
-        )
-        .route(
-            "/api/v1/agent-bindings/{binding_id}/tool-approvals/pending",
-            get(list_pending_by_binding),
-        )
-        .route(
-            "/api/v1/topics/{topic_id}/agent-bindings",
-            get(list_bindings_by_topic),
-        )
-        .route(
-            "/api/v1/topics/{topic_id}/agent-bindings/main",
-            get(get_main_binding),
+            "/api/v1/topics/{topic_id}/agent-instances",
+            get(list_instances_by_topic),
         )
         .route(
             "/api/v1/messages/{message_id}/tool-approvals",
@@ -209,7 +187,7 @@ pub(crate) async fn get_definition_by_key(
 #[utoipa::path(
     get,
     summary = "获取话题下的 Agent 定义列表",
-    path = "/api/v1/topics/{topic_id}/agent-definitions",
+    path = "/api/v1/agent-definitions/topics/{topic_id}",
     params(
         ("topic_id", Path, description = "话题 ID"),
     ),
@@ -231,258 +209,72 @@ pub(crate) async fn list_definitions_by_topic(
 #[utoipa::path(
     post,
     summary = "克隆 Agent 定义",
-    path = "/api/v1/topics/{topic_id}/agent-definitions/clone",
+    path = "/api/v1/agent-definitions/topics/{topic_id}/clone/{agent_definition_id}",
     params(
         ("topic_id", Path, description = "话题 ID"),
+        ("agent_definition_id", Path, description = "被克隆的 Agent 定义 ID"),
     ),
     responses(
-        (status = 200, description = "克隆 Agent 定义", body = ApiResponse<AgentDefinition>)
+        (status = 200, description = "克隆 Agent 定义", body = ApiResponse<AgentDefinition>),
+        (status = 404, description = "源 Agent 定义不存在", body = ApiResponse<Value>)
     )
 )]
 pub(crate) async fn clone_definition(
     State(core): State<Arc<WindCore>>,
-    ApiPath(topic_id): ApiPath<i64>,
-    body: Result<Json<CloneAgentDefinitionRequest>, JsonRejection>,
-) -> Result<Json<ApiResponse<AgentDefinition>>, Json<ApiResponse<()>>> {
-    let input = json_body(body)?;
-    Ok(Json(
+    ApiPath((topic_id, agent_definition_id)): ApiPath<(i64, i64)>,
+) -> Json<ApiResponse<AgentDefinition>> {
+    Json(
         AgentStorageFacade::new(core)
-            .clone_agent_definition(input.agent_id, topic_id)
+            .clone_agent_definition(agent_definition_id, topic_id)
             .await,
-    ))
-}
-
-// ---- agent bindings ----
-
-#[utoipa::path(
-    post,
-    summary = "创建 Agent 绑定",
-    path = "/api/v1/agent-bindings",
-    responses(
-        (status = 200, description = "创建 Agent 绑定", body = ApiResponse<AgentInstance>)
     )
-)]
-pub(crate) async fn create_binding(
-    State(core): State<Arc<WindCore>>,
-    body: Result<Json<CreateInstance>, JsonRejection>,
-) -> Result<Json<ApiResponse<AgentInstance>>, Json<ApiResponse<()>>> {
-    let input = json_body(body)?;
-    Ok(Json(
-        AgentStorageFacade::new(core)
-            .create_agent_binding(input)
-            .await,
-    ))
 }
+
+// ---- agent instances (core 托管，只读) ----
 
 #[utoipa::path(
     get,
-    summary = "获取 Agent 绑定",
-    path = "/api/v1/agent-bindings/{binding_id}",
+    summary = "获取 Agent 实例",
+    path = "/api/v1/agent-instances/{instance_id}",
     params(
-        ("binding_id", Path, description = "Agent 绑定 ID"),
+        ("instance_id", Path, description = "Agent 实例 ID"),
     ),
     responses(
-        (status = 200, description = "获取 Agent 绑定", body = ApiResponse<AgentInstance>)
+        (status = 200, description = "获取 Agent 实例", body = ApiResponse<AgentInstance>),
+        (status = 404, description = "实例不存在", body = ApiResponse<Value>)
     )
 )]
-pub(crate) async fn get_binding(
+pub(crate) async fn get_instance(
     State(core): State<Arc<WindCore>>,
-    ApiPath(binding_id): ApiPath<i64>,
+    ApiPath(instance_id): ApiPath<i64>,
 ) -> Json<ApiResponse<AgentInstance>> {
     Json(
         AgentStorageFacade::new(core)
-            .get_agent_binding(binding_id)
-            .await,
-    )
-}
-
-#[utoipa::path(
-    put,
-    summary = "更新 Agent 绑定",
-    path = "/api/v1/agent-bindings/{binding_id}",
-    params(
-        ("binding_id", Path, description = "Agent 绑定 ID"),
-    ),
-    responses(
-        (status = 200, description = "更新 Agent 绑定", body = ApiResponse<AgentInstance>)
-    )
-)]
-pub(crate) async fn update_binding(
-    State(core): State<Arc<WindCore>>,
-    ApiPath(binding_id): ApiPath<i64>,
-    body: Result<Json<UpdateInstance>, JsonRejection>,
-) -> Result<Json<ApiResponse<AgentInstance>>, Json<ApiResponse<()>>> {
-    let input = json_body(body)?;
-    Ok(Json(
-        AgentStorageFacade::new(core)
-            .update_agent_binding(binding_id, input)
-            .await,
-    ))
-}
-
-#[utoipa::path(
-    delete,
-    summary = "删除 Agent 绑定",
-    path = "/api/v1/agent-bindings/{binding_id}",
-    params(
-        ("binding_id", Path, description = "Agent 绑定 ID"),
-    ),
-    responses(
-        (status = 200, description = "删除 Agent 绑定", body = ApiResponse<Value>)
-    )
-)]
-pub(crate) async fn delete_binding(
-    State(core): State<Arc<WindCore>>,
-    ApiPath(binding_id): ApiPath<i64>,
-) -> Json<ApiResponse<()>> {
-    Json(
-        AgentStorageFacade::new(core)
-            .delete_agent_binding(binding_id)
-            .await,
-    )
-}
-
-#[derive(Deserialize, utoipa::IntoParams)]
-#[into_params(parameter_in = Query)]
-pub(crate) struct ByAgentQuery {
-    /// Topic id（必填，用于定位 binding 所属话题）
-    topic_id: i64,
-}
-
-#[utoipa::path(
-    get,
-    summary = "按 Agent 获取绑定",
-    path = "/api/v1/agent-bindings/by-agent/{agent_id}",
-    params(
-        ("agent_id", Path, description = "Agent ID"),
-        ByAgentQuery,
-    ),
-    responses(
-        (status = 200, description = "按 Agent 获取绑定", body = ApiResponse<AgentInstance>)
-    )
-)]
-pub(crate) async fn get_binding_by_agent(
-    State(core): State<Arc<WindCore>>,
-    ApiPath(agent_id): ApiPath<i64>,
-    ApiQuery(q): ApiQuery<ByAgentQuery>,
-) -> Json<ApiResponse<AgentInstance>> {
-    Json(
-        AgentStorageFacade::new(core)
-            .get_agent_binding_by_agent(agent_id, q.topic_id)
+            .get_instance(instance_id)
             .await,
     )
 }
 
 #[utoipa::path(
     get,
-    summary = "获取话题下的 Agent 绑定列表",
-    path = "/api/v1/topics/{topic_id}/agent-bindings",
+    summary = "获取话题下的子 Agent 实例列表",
+    path = "/api/v1/topics/{topic_id}/agent-instances",
     params(
         ("topic_id", Path, description = "话题 ID"),
     ),
     responses(
-        (status = 200, description = "获取话题下的 Agent 绑定列表", body = ApiResponse<Vec<AgentInstance>>)
+        (status = 200, description = "获取话题下的子 Agent 实例列表", body = ApiResponse<Vec<AgentInstance>>)
     )
 )]
-pub(crate) async fn list_bindings_by_topic(
+pub(crate) async fn list_instances_by_topic(
     State(core): State<Arc<WindCore>>,
     ApiPath(topic_id): ApiPath<i64>,
 ) -> Json<ApiResponse<Vec<AgentInstance>>> {
     Json(
         AgentStorageFacade::new(core)
-            .list_agent_bindings_by_topic(topic_id)
+            .list_instances_by_topic(topic_id)
             .await,
     )
-}
-
-#[utoipa::path(
-    get,
-    summary = "获取主 Agent 绑定",
-    path = "/api/v1/topics/{topic_id}/agent-bindings/main",
-    params(
-        ("topic_id", Path, description = "话题 ID"),
-    ),
-    responses(
-        (status = 200, description = "获取主 Agent 绑定", body = ApiResponse<AgentInstance>)
-    )
-)]
-pub(crate) async fn get_main_binding(
-    State(core): State<Arc<WindCore>>,
-    ApiPath(topic_id): ApiPath<i64>,
-) -> Json<ApiResponse<AgentInstance>> {
-    Json(
-        AgentStorageFacade::new(core)
-            .get_main_binding(topic_id)
-            .await,
-    )
-}
-
-// ---- chat config (TopicFacade) ----
-
-#[utoipa::path(
-    get,
-    summary = "获取对话配置",
-    path = "/api/v1/agent-bindings/{binding_id}/chat-config",
-    params(
-        ("binding_id", Path, description = "Agent 绑定 ID"),
-    ),
-    responses(
-        (status = 200, description = "获取对话配置", body = ApiResponse<ChatConfig>)
-    )
-)]
-pub(crate) async fn get_chat_config(
-    State(core): State<Arc<WindCore>>,
-    ApiPath(binding_id): ApiPath<i64>,
-) -> Json<ApiResponse<ChatConfig>> {
-    Json(TopicFacade::new(core).get_chat_config(binding_id).await)
-}
-
-#[utoipa::path(
-    post,
-    summary = "创建对话配置",
-    path = "/api/v1/agent-bindings/{binding_id}/chat-config",
-    params(
-        ("binding_id", Path, description = "Agent 绑定 ID"),
-    ),
-    responses(
-        (status = 200, description = "创建对话配置", body = ApiResponse<ChatConfig>)
-    )
-)]
-pub(crate) async fn create_chat_config(
-    State(core): State<Arc<WindCore>>,
-    ApiPath(binding_id): ApiPath<i64>,
-    body: Result<Json<ReqConfig>, JsonRejection>,
-) -> Result<Json<ApiResponse<ChatConfig>>, Json<ApiResponse<()>>> {
-    let input = json_body(body)?;
-    Ok(Json(
-        TopicFacade::new(core)
-            .create_chat_config(binding_id, input)
-            .await,
-    ))
-}
-
-#[utoipa::path(
-    put,
-    summary = "更新对话配置",
-    path = "/api/v1/agent-bindings/{binding_id}/chat-config",
-    params(
-        ("binding_id", Path, description = "Agent 绑定 ID"),
-    ),
-    responses(
-        (status = 200, description = "更新对话配置", body = ApiResponse<ChatConfig>)
-    )
-)]
-pub(crate) async fn update_chat_config(
-    State(core): State<Arc<WindCore>>,
-    ApiPath(binding_id): ApiPath<i64>,
-    body: Result<Json<ReqConfig>, JsonRejection>,
-) -> Result<Json<ApiResponse<ChatConfig>>, Json<ApiResponse<()>>> {
-    let input = json_body(body)?;
-    Ok(Json(
-        TopicFacade::new(core)
-            .update_chat_config(binding_id, input)
-            .await,
-    ))
 }
 
 // ---- tool approvals (read-only) ----
@@ -533,22 +325,22 @@ pub(crate) async fn list_pending_by_topic(
 
 #[utoipa::path(
     get,
-    summary = "获取绑定待审批列表",
-    path = "/api/v1/agent-bindings/{binding_id}/tool-approvals/pending",
+    summary = "获取实例待审批列表",
+    path = "/api/v1/agent-instances/{instance_id}/tool-approvals/pending",
     params(
-        ("binding_id", Path, description = "Agent 绑定 ID"),
+        ("instance_id", Path, description = "Agent 实例 ID"),
     ),
     responses(
-        (status = 200, description = "获取绑定待审批列表", body = ApiResponse<Vec<ToolApprovalRequest>>)
+        (status = 200, description = "获取实例待审批列表", body = ApiResponse<Vec<ToolApprovalRequest>>)
     )
 )]
-pub(crate) async fn list_pending_by_binding(
+pub(crate) async fn list_pending_by_instance(
     State(core): State<Arc<WindCore>>,
-    ApiPath(binding_id): ApiPath<i64>,
+    ApiPath(instance_id): ApiPath<i64>,
 ) -> Json<ApiResponse<Vec<ToolApprovalRequest>>> {
     Json(
         ToolApprovalFacade::new(core)
-            .list_pending_by_binding(binding_id)
+            .list_pending_by_instance(instance_id)
             .await,
     )
 }

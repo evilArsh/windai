@@ -1,7 +1,7 @@
-//! MCP 运行时发现端点测试（clients / tools / prompts / resources）。无 .env。
+//! MCP 运行时发现端点测试（clients / tools / prompts / resources）。无 .env
 //!
 //! registry 按 server name 操作。测试覆盖空 registry 与「服务未运行」的语义；
-//! 需要真实 MCP 服务的完整路径用 `#[ignore]`（需 npx），仓库惯例与 core 测试一致。
+//! 需要真实 MCP 服务的完整路径用 `#[ignore]`（需 npx），仓库惯例与 core 测试一致
 mod common;
 
 use axum::Router;
@@ -16,7 +16,7 @@ use wind_http::routes::mcp;
 use wind_http::state::AppState;
 
 fn test_router(core: Arc<WindCore>) -> Router {
-    let state = AppState::new(AppConfig::default(), core, 0);
+    let state = AppState::new(AppConfig::default(), core);
     Router::<AppState>::new()
         .merge(mcp::router())
         .with_state(state)
@@ -53,6 +53,8 @@ async fn create_topic(core: &Arc<WindCore>, label: &str) -> i64 {
             parent_id: None,
             label: label.to_string(),
             icon: None,
+            model_id: None,
+            tool_approval_policy: None,
         })
         .await
         .unwrap()
@@ -196,8 +198,8 @@ async fn attach_builtin_adds_topic_ref() {
     )
     .await;
     assert_eq!(body["code"], 200, "body: {body}");
-    assert_eq!(body["data"]["running"], true);
     assert_eq!(body["data"]["name"], "wind-mcp-skills");
+    assert_eq!(body["data"]["status"], "connected");
     let refs = body["data"]["ref_sessions"].as_array().unwrap();
     let topic_str = topic.to_string();
     assert!(

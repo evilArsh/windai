@@ -6,18 +6,16 @@ use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 use wind_http::app::app;
 use wind_http::config::AppConfig;
-use wind_http::routes::{agent, chat, health, mcp, model, prompt, provider, topic};
+use wind_http::routes::{agent, chat, mcp, model, prompt, provider, topic};
 use wind_http::state::AppState;
 
 async fn test_state() -> AppState {
-    AppState::new(AppConfig::default(), common::test_core().await, 0)
+    AppState::new(AppConfig::default(), common::test_core().await)
 }
 
-/// 直接拼装已存在的路由（本任务尚未有 `app()`——它在 Task 10 才建）。
-/// 后续 Task 8/9 在本函数里追加 `.merge(...)` 各自的 router。
+/// 拼装部分 router，用于只关心单条路由的用例
 async fn test_router() -> Router {
     Router::<AppState>::new()
-        .merge(health::router())
         .merge(topic::router())
         .merge(chat::router())
         .merge(provider::router())
@@ -26,16 +24,6 @@ async fn test_router() -> Router {
         .merge(prompt::router())
         .merge(agent::router())
         .with_state(test_state().await)
-}
-
-#[tokio::test]
-async fn healthz_returns_200() {
-    let app = test_router().await;
-    let res = app
-        .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
 }
 
 #[tokio::test]

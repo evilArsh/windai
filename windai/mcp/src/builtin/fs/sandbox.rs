@@ -10,7 +10,7 @@ use super::error::{FsError, Result};
 /// 符号链接解析深度上限
 const MAX_SYMLINK_DEPTH: u16 = 40;
 
-/// 文件操作沙箱：允许根集合 + 越界检查。
+/// 文件操作沙箱：允许根集合 + 越界检查
 #[derive(Debug, Clone)]
 pub struct Sandbox {
     roots: Vec<PathBuf>,
@@ -25,15 +25,15 @@ impl Sandbox {
         Self { roots }
     }
 
-    /// 解析路径为规范化绝对路径，并校验落在某个允许根内。
+    /// 解析路径为规范化绝对路径，并校验落在某个允许根内
     ///
     /// 已存在则 canonicalize（解 symlink）后复查；不存在则向上找到最近已存在祖先，
-    /// 校验其在允许根内后，逐段重放缺失段——软链接（含悬空）解析并复查，普通段直接拼回。
+    /// 校验其在允许根内后，逐段重放缺失段——软链接（含悬空）解析并复查，普通段直接拼回
     pub fn resolve(&self, path: &Path) -> Result<PathBuf> {
         self.resolve_inner(path, 0)
     }
 
-    /// 递归实现：`depth` 用于限制符号链接解析层数，防止符号链接环导致死循环。
+    /// 递归实现：`depth` 用于限制符号链接解析层数，防止符号链接环导致死循环
     fn resolve_inner(&self, path: &Path, depth: u16) -> Result<PathBuf> {
         if depth > MAX_SYMLINK_DEPTH {
             return Err(FsError::InvalidPath(format!(

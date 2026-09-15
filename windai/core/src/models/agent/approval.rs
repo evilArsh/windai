@@ -3,28 +3,28 @@ use crate::storage::utils;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
-/// 需要用户审批的 tool call 请求。
+/// 需要用户审批的 tool call 请求
 #[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct ToolApprovalRequest {
-    /// 唯一id
+    /// 唯一 id
     pub id: i64,
     /// agent 实例 id
     pub instance_id: i64,
-    /// 产生 tool request 的 topic id。
+    /// 产生 tool request 的 topic id
     pub topic_id: i64,
-    /// 包含 tool request 的 assistant message id。
+    /// 包含 tool request 的 assistant message id
     pub message_id: i64,
-    /// 模型生成的 tool call id。
+    /// 模型生成的 tool call id
     pub tool_call_id: String,
-    /// 请求调用的工具名称。
+    /// 请求调用的工具名称
     pub tool_name: String,
-    /// 工具调用参数。
+    /// 工具调用参数
     pub arguments: serde_json::Value,
-    /// 审批状态。
+    /// 审批状态
     pub status: ToolApprovalStatus,
-    /// 创建时间戳。
+    /// 创建时间戳
     pub created_at: i64,
-    /// 更新时间戳。
+    /// 更新时间戳
     pub updated_at: i64,
 }
 
@@ -49,7 +49,7 @@ impl<'s> sqlx::FromRow<'s, DbRow> for ToolApprovalRequest {
     }
 }
 
-/// ToolApprovalRequest 的审批状态。
+/// ToolApprovalRequest 的审批状态
 #[derive(
     utoipa::ToSchema,
     Debug,
@@ -65,11 +65,11 @@ impl<'s> sqlx::FromRow<'s, DbRow> for ToolApprovalRequest {
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum ToolApprovalStatus {
-    /// 等待用户处理。
+    /// 等待用户处理
     Pending,
-    /// 用户已批准。
+    /// 用户已批准
     Approved,
-    /// 用户已拒绝。
+    /// 用户已拒绝
     Denied,
 }
 
@@ -79,25 +79,25 @@ pub struct ApprovalRecord {
     pub status: ToolApprovalStatus,
 }
 
-/// 批量创建审批请求的输入。
+/// 批量创建审批请求的输入
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CreateToolApprovalRequests {
     pub instance_id: i64,
-    /// 产生 tool request 的 topic id。
+    /// 产生 tool request 的 topic id
     pub topic_id: i64,
-    /// 包含 tool request 的 assistant message id。
+    /// 包含 tool request 的 assistant message id
     pub message_id: i64,
-    /// 需要创建审批的 tool call 列表。
+    /// 需要创建审批的 tool call 列表
     pub calls: Vec<CreateToolApprovalCall>,
 }
 
-/// 单个 tool call 对应的审批创建参数。
+/// 单个 tool call 对应的审批创建参数
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CreateToolApprovalCall {
-    /// 模型生成的 tool call id。
+    /// 模型生成的 tool call id
     pub tool_call_id: String,
-    /// 请求调用的工具名称。
+    /// 请求调用的工具名称
     pub tool_name: String,
-    /// 工具调用参数。
+    /// 工具调用参数
     pub arguments: serde_json::Value,
 }

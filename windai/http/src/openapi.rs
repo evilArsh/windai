@@ -2,47 +2,42 @@ use axum::Json;
 use serde_json::Value;
 use std::sync::OnceLock;
 use utoipa::OpenApi;
-use wind_ai::message::ReqConfig;
 use wind_core::agent::event::TopicEvent;
 use wind_core::models::{
-    AgentInstance, AgentDefinition, ChatConfig, CreateInstance, CreateAgentDefinition,
-    CreateCredentials, CreateJsonRule, CreateMcpServer, CreateModel, CreatePromptModule,
-    CreateProvider, CreateTopic, Credentials, JsonRule, McpServerParam, Message, Model,
-    PromptModule, Provider, ToolApprovalRequest, Topic, UpdateInstance, UpdateAgentDefinition,
-    UpdateJsonRule, UpdateMcpServer, UpdateMessage, UpdateModel, UpdatePromptModule,
-    UpdateProvider, UpdateTopic,
+    AgentDefinition, AgentInstance, AgentRole, CreateAgentDefinition, CreateCredentials,
+    CreateJsonRule, CreateMcpServer, CreateModel, CreatePromptModule, CreateProvider, CreateTopic,
+    CreateTopicAgentMap, Credentials, JsonRule, McpServerParam, Message, Model, PromptModule,
+    Provider, ToolApprovalRequest, Topic, TopicAgentMap, UpdateAgentDefinition, UpdateJsonRule,
+    UpdateMcpServer, UpdateMessage, UpdateModel, UpdatePromptModule, UpdateProvider, UpdateTopic,
 };
 
-use crate::dto::agent::CloneAgentDefinitionRequest;
-use crate::dto::approval::ApproveToolCallsRequest;
-use crate::dto::envelope::ApiResponse;
-use crate::dto::mcp::{McpServerStatusDto, StartMcpServerResult};
-use crate::dto::message::{CreateChatRequest, SubmitChatResponse};
+use crate::dto::{ApiResponse, ApproveToolCallsRequest, CreateChatRequest};
 use wind_mcp::client::{
     ClientEvent, ClientSnapshot, ClientStatus, Prompt, PromptArgument, Resource, Tool,
 };
 
-/// 聚合 wind-http 全部公开路由与 schema 的 OpenAPI 文档。
+/// 聚合 wind-http 全部公开路由与 schema 的 OpenAPI 文档
 #[derive(OpenApi)]
 #[openapi(
     info(title = "wind-http API", version = "0.1.0"),
     paths(
-        crate::routes::health::health,
         // topic
         crate::routes::topic::list_topics,
         crate::routes::topic::create_topic,
-        crate::routes::topic::get_topic_by_binding,
         crate::routes::topic::list_child_topics,
         crate::routes::topic::get_topic,
         crate::routes::topic::update_topic,
         crate::routes::topic::delete_topic,
+        // topic agent map
+        crate::routes::topic_map::list_agent_maps,
+        crate::routes::topic_map::create_agent_map,
+        crate::routes::topic_map::delete_agent_map,
         // chat / message / SSE
-        crate::routes::chat::list_messages,
+        crate::routes::chat::list_topic_messages,
+        crate::routes::chat::list_instance_messages,
         crate::routes::chat::create_chat,
-        crate::routes::chat::list_context,
         crate::routes::chat::get_message,
         crate::routes::chat::update_message,
-        crate::routes::chat::get_message_from_message,
         crate::routes::chat::cancel_task,
         crate::routes::chat::approve_tool_calls,
         crate::routes::chat::subscribe_events,
@@ -78,7 +73,6 @@ use wind_mcp::client::{
         crate::routes::mcp::start_mcp_server,
         crate::routes::mcp::stop_mcp_server,
         crate::routes::mcp::attach_mcp_server,
-        crate::routes::mcp::get_mcp_server_status,
         crate::routes::mcp::list_mcp_clients,
         crate::routes::mcp::get_mcp_client,
         crate::routes::mcp::list_mcp_client_tools,
@@ -102,17 +96,9 @@ use wind_mcp::client::{
         crate::routes::agent::get_definition_by_key,
         crate::routes::agent::list_definitions_by_topic,
         crate::routes::agent::clone_definition,
-        crate::routes::agent::create_binding,
-        crate::routes::agent::get_binding_by_agent,
-        crate::routes::agent::get_binding,
-        crate::routes::agent::update_binding,
-        crate::routes::agent::delete_binding,
-        crate::routes::agent::get_chat_config,
-        crate::routes::agent::create_chat_config,
-        crate::routes::agent::update_chat_config,
-        crate::routes::agent::list_pending_by_binding,
-        crate::routes::agent::list_bindings_by_topic,
-        crate::routes::agent::get_main_binding,
+        crate::routes::agent::get_instance,
+        crate::routes::agent::list_pending_by_instance,
+        crate::routes::agent::list_instances_by_topic,
         crate::routes::agent::list_approvals_by_message,
         crate::routes::agent::list_pending_by_topic,
     ),
@@ -120,16 +106,14 @@ use wind_mcp::client::{
         ApiResponse<Value>,
         // 命令 DTO
         CreateChatRequest,
-        SubmitChatResponse,
         ApproveToolCallsRequest,
-        CloneAgentDefinitionRequest,
-        // topic / chat config
+        CreateTopicAgentMap,
+        // topic
         Topic,
         CreateTopic,
         UpdateTopic,
-        ChatConfig,
-        ReqConfig,
-        // provider / credentials / json rule
+        // topic agent map
+        TopicAgentMap,
         Provider,
         CreateProvider,
         UpdateProvider,
@@ -146,8 +130,6 @@ use wind_mcp::client::{
         McpServerParam,
         CreateMcpServer,
         UpdateMcpServer,
-        StartMcpServerResult,
-        McpServerStatusDto,
         ClientStatus,
         ClientSnapshot,
         ClientEvent,
@@ -167,8 +149,7 @@ use wind_mcp::client::{
         CreateAgentDefinition,
         UpdateAgentDefinition,
         AgentInstance,
-        CreateInstance,
-        UpdateInstance,
+        AgentRole,
         ToolApprovalRequest,
         // SSE 事件
         TopicEvent,

@@ -14,7 +14,7 @@ pub enum Tools {
 pub struct FunctionTool {
     /// 要调用的函数名称
     pub name: String,
-    /// 函数描述。模型根据此描述决定是否调用该函数。
+    /// 函数描述。模型根据此描述决定是否调用该函数
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// 描述函数参数的 JSON schema 对象
@@ -29,7 +29,7 @@ pub struct FunctionTool {
 /// 模型返回的函数调用信息
 #[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct FunctionCall {
-    /// 函数调用ID，由模型生成
+    /// 函数调用 ID，由模型生成
     pub id: String,
     /// 函数工具名称
     pub name: String,
@@ -40,7 +40,7 @@ pub struct FunctionCall {
 /// 函数调用结果
 #[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct FunctionCallOutput {
-    /// 函数调用ID，由模型生成
+    /// 函数调用 ID，由模型生成
     pub id: String,
     /// 本地函数调用结果
     pub content: Value,

@@ -46,7 +46,7 @@ impl ServerHandle {
         }
     }
 
-    /// 连接内建内存服务。
+    /// 连接内建内存服务
     pub async fn connect_builtin<H>(handler: H) -> Result<Self, McpError>
     where
         H: ServerHandler + Send + Sync + 'static,

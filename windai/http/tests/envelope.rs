@@ -1,6 +1,6 @@
 use serde_json::json;
 use wind_core::error::CoreError;
-use wind_http::dto::envelope::{ApiResponse, map_core_error};
+use wind_http::dto::{ApiResponse, map_core_error};
 
 #[test]
 fn ok_serializes_data() {

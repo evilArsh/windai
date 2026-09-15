@@ -18,6 +18,7 @@ use crate::{
     storage::TableName,
     update,
 };
+
 #[derive(Clone)]
 pub struct AgentStorage {
     executor: StorageExecutor,
@@ -103,25 +104,7 @@ impl AgentStorage {
         Ok(row)
     }
 
-    pub async fn batch_get_definitions(&self, ids: &[i64]) -> Result<Vec<AgentDefinition>> {
-        if ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut qb = Self::select_definitions();
-        qb.push(" WHERE id IN (");
-        let mut separated = qb.separated(", ");
-        for id in ids {
-            separated.push_bind(*id);
-        }
-        separated.push_unseparated(") ");
-        let rows = self
-            .executor
-            .fetch_all(qb.build_query_as::<AgentDefinition>())
-            .await?;
-        Ok(rows)
-    }
-
-    /// 删除 topic 特有的 agent 定义。
+    /// 删除 topic 特有的 agent 定义
     pub(crate) async fn batch_delete_definitions_by_topics(&self, topic_ids: &[i64]) -> Result<()> {
         utils::batch_delete_in(
             &self.executor,
@@ -157,15 +140,16 @@ impl AgentStorage {
         Ok(rows)
     }
 
-    /// 创建新的  Agent 实例
-    pub(crate) async fn create_instance(&self, data: CreateInstance) -> Result<AgentInstance> {
+    /// 创建新的 Agent 实例
+    pub async fn create_instance(&self, data: CreateInstance) -> Result<AgentInstance> {
         let id = next_id();
         let now = now_ts();
         let role = data.role.unwrap_or(AgentRole::Child);
-        let status = AgentStatus::Idle;
+        let status = data.status.unwrap_or(AgentStatus::Idle);
         let mut qb = insert!(
             TableName::AGENT_INSTANCES,
             ("id", id),
+            ("parent_id", data.parent_id),
             ("topic_id", data.topic_id),
             ("agent_id", data.agent_id),
             ("role", role.to_string()),
@@ -180,7 +164,7 @@ impl AgentStorage {
             parent_id: data.parent_id,
             topic_id: data.topic_id,
             agent_id: data.agent_id,
-            mode: None,
+            mode: data.mode,
             role,
             status,
             created_at: now,
@@ -188,7 +172,7 @@ impl AgentStorage {
     }
 
     /// 更新 Agent 实例
-    pub(crate) async fn update_instance(&self, id: i64, data: UpdateInstance) -> Result<()> {
+    pub async fn update_instance(&self, id: i64, data: UpdateInstance) -> Result<()> {
         let mut qb = update!(
             TableName::AGENT_INSTANCES,
             id,
@@ -199,7 +183,7 @@ impl AgentStorage {
         ensure_affected(self.executor.execute(qb.build()).await?)
     }
 
-    pub(crate) async fn delete_instances(&self, ids: &[i64]) -> Result<()> {
+    pub async fn delete_instances(&self, ids: &[i64]) -> Result<()> {
         if ids.is_empty() {
             return Ok(());
         }
@@ -219,7 +203,7 @@ impl AgentStorage {
             .await
     }
 
-    pub(crate) async fn get_instance(&self, id: i64) -> Result<Option<AgentInstance>> {
+    pub async fn get_instance(&self, id: i64) -> Result<Option<AgentInstance>> {
         let row = self
             .executor
             .fetch_optional(
@@ -254,7 +238,7 @@ impl AgentStorage {
     }
 
     /// 获取 topic 的主 Agent 实例
-    pub(crate) async fn get_main_instance(&self, topic_id: i64) -> Result<Option<AgentInstance>> {
+    pub async fn get_main_instance(&self, topic_id: i64) -> Result<Option<AgentInstance>> {
         ensure_lte_one(
             self.executor
                 .fetch_all(
@@ -287,36 +271,39 @@ impl AgentStorage {
         Ok(rows)
     }
 
-    /// TODO: 添加agent和topic映射表。删除topic时同时删除该表映射
-    /// 查找 topic 下绑定的所有 AgentDefinition。
-    ///
-    /// 过滤掉主 Agent 和已禁用的绑定。
+    /// 获取 topic 下的子 Agent 实例，不含主 Agent
+    pub async fn list_child_instances_by_topic(&self, topic_id: i64) -> Result<Vec<AgentInstance>> {
+        let rows = self
+            .executor
+            .fetch_all(
+                Self::select_instances()
+                    .push(" WHERE topic_id = ")
+                    .push_bind(topic_id)
+                    .push(" AND role <> ")
+                    .push_bind(AgentRole::Main.to_string())
+                    .push(" ORDER BY id ASC ")
+                    .build_query_as::<AgentInstance>(),
+            )
+            .await?;
+        Ok(rows)
+    }
+
+    /// 查找 topic 能力列表中的 AgentDefinition
     pub async fn list_sub_definitions_by_topic(
         &self,
         topic_id: i64,
     ) -> Result<Vec<AgentDefinition>> {
-        todo!()
-        // let mut qb = Self::select_definitions();
-        // qb.push(" WHERE id IN (SELECT agent_id FROM ")
-        //     .push(TableName::AGENT_INSTANCES)
-        //     .push(" WHERE ")
-        //     .push(TableName::AGENT_INSTANCES)
-        //     .push(".topic_id = ")
-        //     .push_bind(topic_id)
-        //     .push(" AND ")
-        //     .push(TableName::AGENT_INSTANCES)
-        //     .push(".role <> ")
-        //     .push_bind(AgentRole::Main.to_string())
-        //     .push(" AND ")
-        //     .push(TableName::AGENT_INSTANCES)
-        //     .push(".enabled = ")
-        //     .push_bind(true)
-        //     .push(") ORDER BY id ASC ");
-        // let rows = self
-        //     .executor
-        //     .fetch_all(qb.build_query_as::<AgentDefinition>())
-        //     .await?;
-        // Ok(rows)
+        let mut qb = Self::select_definitions();
+        qb.push(" WHERE id IN (SELECT agent_id FROM ")
+            .push(TableName::TOPIC_AGENT_MAPS)
+            .push(" WHERE topic_id = ")
+            .push_bind(topic_id)
+            .push(") ORDER BY id ASC ");
+        let rows = self
+            .executor
+            .fetch_all(qb.build_query_as::<AgentDefinition>())
+            .await?;
+        Ok(rows)
     }
 
     /// 复制一份 `agent_id` 给新的 `owner_topic_id`
@@ -346,8 +333,103 @@ impl AgentStorage {
         .await
     }
 
+    async fn get_agent_map_by_agent(
+        &self,
+        topic_id: i64,
+        agent_id: i64,
+    ) -> Result<Option<TopicAgentMap>> {
+        self.executor
+            .fetch_optional(
+                Self::select_agent_maps()
+                    .push(" WHERE topic_id = ")
+                    .push_bind(topic_id)
+                    .push(" AND agent_id = ")
+                    .push_bind(agent_id)
+                    .build_query_as::<TopicAgentMap>(),
+            )
+            .await
+    }
+
+    /// 创建 topic 与 AgentDefinition 的能力映射
     pub async fn create_topic_agent_map(&self, data: CreateTopicAgentMap) -> Result<TopicAgentMap> {
-        todo!()
+        if self.get_definition(data.agent_id).await?.is_none() {
+            return Err(CoreError::Validation(format!(
+                "Agent definition not found: {}",
+                data.agent_id
+            )));
+        }
+        if self
+            .get_agent_map_by_agent(data.topic_id, data.agent_id)
+            .await?
+            .is_some()
+        {
+            return Err(CoreError::Validation(format!(
+                "Agent {} is already mapped in topic {}",
+                data.agent_id, data.topic_id
+            )));
+        }
+
+        let id = next_id();
+        let now = now_ts();
+        let mut qb = insert!(
+            TableName::TOPIC_AGENT_MAPS,
+            ("id", id),
+            ("topic_id", data.topic_id),
+            ("agent_id", data.agent_id),
+            ("created_at", now)
+        );
+        self.executor.execute(qb.build()).await?;
+
+        Ok(TopicAgentMap {
+            id,
+            topic_id: data.topic_id,
+            agent_id: data.agent_id,
+            created_at: now,
+        })
+    }
+
+    /// 获取 topic 的能力映射列表
+    pub async fn list_agent_maps_by_topic(&self, topic_id: i64) -> Result<Vec<TopicAgentMap>> {
+        let rows = self
+            .executor
+            .fetch_all(
+                Self::select_agent_maps()
+                    .push(" WHERE topic_id = ")
+                    .push_bind(topic_id)
+                    .push(" ORDER BY id ASC ")
+                    .build_query_as::<TopicAgentMap>(),
+            )
+            .await?;
+        Ok(rows)
+    }
+
+    /// 获取单个 topic 能力映射
+    pub async fn get_agent_map(&self, id: i64) -> Result<Option<TopicAgentMap>> {
+        self.executor
+            .fetch_optional(
+                Self::select_agent_maps()
+                    .push(" WHERE id = ")
+                    .push_bind(id)
+                    .build_query_as::<TopicAgentMap>(),
+            )
+            .await
+    }
+
+    /// 删除 topic 能力映射
+    pub async fn delete_topic_agent_map(&self, id: i64) -> Result<()> {
+        let mut qb = delete_by_id!(TableName::TOPIC_AGENT_MAPS, id);
+        ensure_affected(self.executor.execute(qb.build()).await?)
+    }
+
+    /// 删除 topic 的能力映射，供删除 topic 时级联调用
+    pub(crate) async fn batch_delete_agent_maps_by_topics(&self, topic_ids: &[i64]) -> Result<()> {
+        utils::batch_delete_in(
+            &self.executor,
+            TableName::TOPIC_AGENT_MAPS,
+            "topic_id",
+            topic_ids,
+        )
+        .await
     }
 
     pub fn select_definitions<'a>() -> sqlx::QueryBuilder<'a, DbDriver> {
@@ -376,12 +458,8 @@ impl AgentStorage {
                 "topic_id",
                 "agent_id",
                 "role",
-                "model_id",
-                "chat_config_id",
                 "status",
                 "mode",
-                "tool_approval_policy",
-                "enabled",
                 "created_at"
             )
         )
@@ -390,7 +468,7 @@ impl AgentStorage {
     fn select_agent_maps<'a>() -> sqlx::QueryBuilder<'a, DbDriver> {
         select_fields!(
             TableName::TOPIC_AGENT_MAPS,
-            ("id", "topic_id", "agent_id", "role", "created_at")
+            ("id", "topic_id", "agent_id", "created_at")
         )
     }
 }

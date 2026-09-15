@@ -218,7 +218,7 @@ impl ChatRunner {
     }
     /// 找出待处理的工具调用
     /// ```text
-    /// [ 上一轮的tool_result ]
+    /// [ 上一轮的 tool_result ]
     /// [ 截断 ]
     /// [ tool_request 1 ] // 包含所有的请求数组
     /// [ tool_result  1-1 ]

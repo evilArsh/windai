@@ -73,10 +73,10 @@ pub enum CompiledCond {
 }
 
 impl CompiledCond {
-    /// 从原始 JSON value 中编译出条件语句。
+    /// 从原始 JSON value 中编译出条件语句
     ///
     /// JSON 格式: `{"op": args}`，如 `{"eq": ["$value", "deepseek"]}`
-    /// 每个条件对象恰好有一个 key。
+    /// 每个条件对象恰好有一个 key
     pub fn compile(raw: &Value) -> Result<Self> {
         let obj = raw
             .as_object()

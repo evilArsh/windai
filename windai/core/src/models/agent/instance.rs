@@ -39,7 +39,7 @@ pub enum AgentStatus {
 #[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct AgentInstance {
     pub id: i64,
-    /// 父实例id, 标识当前实例的派生源
+    /// 父实例 id, 标识当前实例的派生源
     pub parent_id: Option<i64>,
     /// 实例所属 topic id
     pub topic_id: i64,
@@ -47,7 +47,7 @@ pub struct AgentInstance {
     ///
     /// 实例没有绑定 Agent 能力时，回退成普通对话模式
     pub agent_id: Option<i64>,
-    /// 实例运行模式。
+    /// 实例运行模式
     pub mode: Option<AgentMode>,
     /// 实例在任务中的角色
     pub role: AgentRole,
@@ -79,7 +79,7 @@ impl<'s> sqlx::FromRow<'s, DbRow> for AgentInstance {
     }
 }
 
-/// 用于展示当前Agent运行模式
+/// 用于展示当前 Agent 运行模式
 #[derive(
     utoipa::ToSchema,
     Debug,
@@ -119,9 +119,9 @@ pub enum AgentMode {
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum AgentRole {
-    /// 主Agent标识
+    /// 主 Agent 标识
     Main,
-    /// 子Agent标识
+    /// 子 Agent 标识
     Child,
 }
 
@@ -134,7 +134,7 @@ pub struct CreateInstance {
     pub parent_id: Option<i64>,
     /// 绑定 AgentDefinition id
     pub agent_id: Option<i64>,
-    /// 实例运行模式。
+    /// 实例运行模式
     pub mode: Option<AgentMode>,
     /// 实例生命周期状态
     pub status: Option<AgentStatus>,
@@ -143,10 +143,10 @@ pub struct CreateInstance {
 }
 
 impl CreateInstance {
-    pub fn new_main(topic_id: i64) -> Self {
+    pub fn new_main(topic_id: i64, agent_id: Option<i64>) -> Self {
         Self {
             topic_id,
-            agent_id: None,
+            agent_id,
             parent_id: None,
             mode: Some(AgentMode::Sync),
             status: Some(AgentStatus::Idle),
@@ -155,12 +155,12 @@ impl CreateInstance {
     }
 }
 
-/// 更新 AgentInstance 的 DTO。
+/// 更新 AgentInstance 的 DTO
 #[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone, Default)]
 pub struct UpdateInstance {
     /// 实例生命周期状态
     pub status: Option<AgentStatus>,
-    /// 运行模式。
+    /// 运行模式
     pub mode: Option<AgentMode>,
     /// 绑定 AgentDefinition id
     pub agent_id: Option<i64>,

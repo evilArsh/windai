@@ -1,4 +1,4 @@
-//! 技能目录扫描。
+//! 技能目录扫描
 
 use std::{
     collections::HashSet,
@@ -7,15 +7,15 @@ use std::{
 
 use crate::{SKILL_NAME, SkillsMeta, from_path};
 
-/// 递归扫描目录，收集所有 skill 的元数据。
+/// 递归扫描目录，收集所有 skill 的元数据
 ///
 /// 深扫规则：目录含 `SKILL.md` 即命中为 skill 根，解析后不再向更深层找新 skill；
-/// 更深层内容均视为该 skill 的资源。
+/// 更深层内容均视为该 skill 的资源
 ///
-/// - `recursive`：是否递归子目录，默认 `true`。
-/// - `max_depth`：允许递归的子目录层数（`0` 只扫 `dir` 本身），默认不限。
-/// - 同名冲突：先到先得（目录按路径排序保证确定性），后到者跳过并告警。
-/// - 单个 skill 解析失败（坏 YAML / 缺字段）跳过，不中断整体扫描。
+/// - `recursive`：是否递归子目录，默认 `true`
+/// - `max_depth`：允许递归的子目录层数（`0` 只扫 `dir` 本身），默认不限
+/// - 同名冲突：先到先得（目录按路径排序保证确定性），后到者跳过并告警
+/// - 单个 skill 解析失败（坏 YAML / 缺字段）跳过，不中断整体扫描
 pub fn scan(dir: PathBuf, recursive: Option<bool>, max_depth: Option<u16>) -> Vec<SkillsMeta> {
     if !dir.is_dir() {
         return Vec::new();

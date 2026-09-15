@@ -1,12 +1,8 @@
-#[cfg(any(
-    all(feature = "sqlite", feature = "postgres"),
-    all(feature = "sqlite", feature = "mysql"),
-    all(feature = "postgres", feature = "mysql"),
-))]
+#[cfg(all(feature = "sqlite", feature = "postgres"))]
 compile_error!(
     "Multiple database drivers detected! You can only enable ONE driver at a time.\n\
-    Valid options: --features \"sqlite\", --features \"postgres\", or --features \"mysql\"\n\
-    Example: cargo build --no-default-features --features \"mysql\""
+    Valid options: --features \"sqlite\", or --features \"postgres\"\n\
+    Example: cargo build --no-default-features --features \"postgres\""
 );
 #[cfg(feature = "sqlite")]
 mod driver_impl {
@@ -31,7 +27,7 @@ mod driver_impl {
     }
 }
 
-// TODO:
+// TODO: postgres 驱动尚未验证，当前仅在 sqlite 下测试
 #[cfg(feature = "postgres")]
 mod driver_impl {
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -50,28 +46,9 @@ mod driver_impl {
     }
 }
 
-// TODO:
-#[cfg(feature = "mysql")]
-mod driver_impl {
-    use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
-    use std::str::FromStr;
-
-    pub type DbPool = sqlx::MySqlPool;
-    pub type DbRow = sqlx::mysql::MySqlRow;
-    pub type DbTransaction = sqlx::Transaction<'static, sqlx::MySql>;
-    pub type DbDriver = sqlx::MySql;
-    pub async fn create_pool(db_url: &str) -> Result<DbPool, sqlx::Error> {
-        let options = MySqlConnectOptions::from_str(db_url)?;
-        MySqlPoolOptions::new()
-            .max_connections(5)
-            .connect_with(options)
-            .await
-    }
-}
-
 pub use driver_impl::*;
 pub type DbQueryResult = <DbDriver as sqlx::Database>::QueryResult;
-/// 初始化SQL连接池
+/// 初始化 SQL 连接池
 pub async fn init_db(db_url: &str) -> Result<DbPool, sqlx::Error> {
     create_pool(db_url).await
 }

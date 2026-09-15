@@ -1,4 +1,4 @@
-use crate::dto::envelope::ApiResponse;
+use crate::dto::ApiResponse;
 use crate::extractor::{ApiPath, json_body};
 use crate::facade::storage::prompt::PromptStorageFacade;
 use crate::state::AppState;

@@ -5,7 +5,7 @@ use serde_json::Value;
 use sqlx::Row;
 use wind_ai::{JsonObject, model::AdapterType};
 
-/// 模态类型, 用于UI展示
+/// 模态类型, 用于 UI 展示
 #[derive(
     utoipa::ToSchema,
     Debug,
@@ -67,15 +67,15 @@ impl ModelConfig {
 /// 模型结构
 #[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct Model {
-    /// 唯一id
+    /// 唯一 id
     pub id: i64,
     /// 提供商提供的模型名称
     pub name: String,
-    /// 提供商id
+    /// 提供商 id
     pub provider_id: i64,
     /// 自定义模型别名
     pub alias: Option<String>,
-    /// 当前模型的适配器类型。
+    /// 当前模型的适配器类型
     /// 该类型决定了模型请求和响应结果的处理方式
     pub adapter: AdapterType,
     /// 标注模态类型
@@ -86,7 +86,7 @@ pub struct Model {
     pub icon: Option<String>,
     /// 模型专属端点地址
     ///
-    /// 默认使用[AdapterType]类型下的不同提供商的默认端点。
+    /// 默认使用[AdapterType]类型下的不同提供商的默认端点
     pub endpoint: Option<String>,
     /// 模型请求配置
     pub config: Option<ModelConfig>,
@@ -107,8 +107,10 @@ impl<'s> sqlx::FromRow<'s, DbRow> for Model {
                 .map_err(|e| sqlx::Error::Decode(e.into()))?,
             modalities: utils::de_str_to(&row.get::<String, _>("modalities"))
                 .map_err(|e| sqlx::Error::Decode(e.into()))?,
-            config: utils::de_str_to(&row.get::<String, _>("config"))
-                .map_err(|e| sqlx::Error::Decode(e.into()))?,
+            config: match row.get::<Option<String>, _>("config") {
+                Some(s) => utils::de_str_to(&s).map_err(|e| sqlx::Error::Decode(e.into()))?,
+                _ => None,
+            },
             active: row.get("active"),
             icon: row.get("icon"),
             endpoint: row.get("endpoint"),
@@ -123,7 +125,7 @@ impl<'s> sqlx::FromRow<'s, DbRow> for Model {
 pub struct CreateModel {
     /// 模型名称
     pub name: String,
-    /// 提供商id
+    /// 提供商 id
     pub provider_id: i64,
     /// 自定义模型别名
     pub alias: Option<String>,

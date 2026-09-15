@@ -1,7 +1,7 @@
-//! 子话题查询端点测试（GET /api/v1/topics/{topic_id}/children）。无 .env。
+//! 子话题查询端点测试（GET /api/v1/topics/{topic_id}/children）。无 .env
 //!
 //! 语义：返回 `parent_id == {topic_id}` 的直接子话题；父话题不存在返回 404；
-//! 现有 `GET /api/v1/topics`（根列表）保持不变。
+//! 现有 `GET /api/v1/topics`（根列表）保持不变
 mod common;
 
 use axum::Router;
@@ -16,7 +16,7 @@ use wind_http::routes::topic;
 use wind_http::state::AppState;
 
 fn test_router(core: Arc<WindCore>) -> Router {
-    let state = AppState::new(AppConfig::default(), core, 0);
+    let state = AppState::new(AppConfig::default(), core);
     Router::<AppState>::new()
         .merge(topic::router())
         .with_state(state)
@@ -29,6 +29,8 @@ async fn create_topic(core: &Arc<WindCore>, parent_id: Option<i64>, label: &str)
             parent_id,
             label: label.to_string(),
             icon: None,
+            model_id: None,
+            tool_approval_policy: None,
         })
         .await
         .unwrap()

@@ -229,7 +229,7 @@ pub struct Tool {
     /// 工具功能的描述
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// JSON Schema对象定义该工具接收的参数格式
+    /// JSON Schema 对象定义该工具接收的参数格式
     #[schema(value_type = Object)]
     pub input_schema: Arc<JsonObject>,
     #[serde(skip)]
@@ -237,7 +237,7 @@ pub struct Tool {
     _p: u8,
 }
 impl Tool {
-    /// 解析出MCP服务名和函数名
+    /// 解析出 MCP 服务名和函数名
     /// - (MCP server name, tool name)
     pub fn parse_name(tool_name: &str) -> Result<(String, String), McpError> {
         if let Some(pos) = tool_name.find(MCP_TOOL_IDENTIFIER) {
@@ -341,10 +341,10 @@ pub struct Resource {
     /// 资源内容的 MIME 类型（"text" 或 "blob"）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<String>,
-    /// 原始资源内容的大小（以字节为单位），如果已知的话。
+    /// 原始资源内容的大小（以字节为单位），如果已知的话
     ///
-    /// 此大小是在 base64 编码或任何分词处理之前计算的。
-    /// 主机（Hosts）可以使用此信息来显示文件大小并估算上下文窗口的使用情况。
+    /// 此大小是在 base64 编码或任何分词处理之前计算的
+    /// 主机（Hosts）可以使用此信息来显示文件大小并估算上下文窗口的使用情况
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
 }

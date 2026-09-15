@@ -4288,7 +4288,6 @@ name = "wind-http"
 version = "0.2.0"
 dependencies = [
  "axum",
- "chrono",
  "env_logger",
  "futures",
  "log",

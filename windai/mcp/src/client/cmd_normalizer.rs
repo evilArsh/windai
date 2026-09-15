@@ -1,6 +1,6 @@
 use super::StdioParams;
 
-/// 标准化后的命令，可用于进程启动和去重。
+/// 标准化后的命令，可用于进程启动和去重
 pub struct NormalizedCommand {
     /// 标准化后的可执行文件，如 "bun" 替代 "npx"
     pub command: String,
@@ -10,7 +10,7 @@ pub struct NormalizedCommand {
     pub dedup_key: String,
 }
 
-/// 可标准化并按包名去重的已知运行器命令。
+/// 可标准化并按包名去重的已知运行器命令
 pub fn normalize(params: &StdioParams) -> Option<NormalizedCommand> {
     match params.command.as_str() {
         "npx" => normalize_npx(&params.args),

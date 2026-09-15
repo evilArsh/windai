@@ -148,8 +148,9 @@ impl ProviderStorage {
         self.executor
             .with_tx(|executor| async move {
                 Self::delete_by_column(&executor, TableName::PROVIDERS, "id", id).await?;
-                Self::delete_by_column(&executor, "credentials", "provider_id", id).await?;
-                Self::delete_by_column(&executor, "json_rule", "provider_id", id).await?;
+                Self::delete_by_column(&executor, TableName::CREDENTIALS, "provider_id", id)
+                    .await?;
+                Self::delete_by_column(&executor, TableName::JSONRULE, "provider_id", id).await?;
                 Ok(())
             })
             .await

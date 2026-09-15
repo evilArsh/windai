@@ -20,8 +20,8 @@ pub fn next_id() -> i64 {
     id.to_raw() as i64
 }
 
-/// 将vec序列化为json字符串。
-/// 如果vec为None，则返回"[]"。
+/// 将 vec 序列化为 json 字符串
+/// 如果 vec 为 None，则返回"[]"
 pub fn vec_to_str_default<T>(vec: Option<&[T]>) -> Result<String>
 where
     T: Serialize,
@@ -32,7 +32,7 @@ where
     }
 }
 
-/// 将vec序列化为json字符串。
+/// 将 vec 序列化为 json 字符串
 pub fn vec_to_str_optional<T>(vec: Option<&[T]>) -> Result<Option<String>>
 where
     T: Serialize,
@@ -41,8 +41,8 @@ where
         .transpose()
 }
 
-/// 将map序列化为json字符串。
-/// 如果map为None，则返回"{}"。
+/// 将 map 序列化为 json 字符串
+/// 如果 map 为 None，则返回"{}"
 pub fn map_to_str_default<T>(map: Option<&T>) -> Result<String>
 where
     T: Serialize,
@@ -53,7 +53,7 @@ where
     }
 }
 
-/// 将map序列化为json字符串。
+/// 将 map 序列化为 json 字符串
 pub fn map_to_str_optional<T>(map: Option<&T>) -> Result<Option<String>>
 where
     T: Serialize,
@@ -62,7 +62,7 @@ where
         .transpose()
 }
 
-/// 将json字符串反序列化为 T。
+/// 将 json 字符串反序列化为 T
 pub fn de_str_to<T>(s: &str) -> Result<T>
 where
     T: DeserializeOwned,
@@ -85,7 +85,7 @@ pub fn ensure_affected(result: DbQueryResult) -> Result<()> {
     Ok(())
 }
 
-/// 确保数据数量`小于等于1`
+/// 确保数据数量`小于等于 1`
 pub fn ensure_lte_one<T>(result: Vec<T>, desc: Option<String>) -> Result<Option<T>> {
     let len = result.len();
     match len {
@@ -99,9 +99,9 @@ pub fn ensure_lte_one<T>(result: Vec<T>, desc: Option<String>) -> Result<Option<
 }
 
 /// 单行 UPDATE，自动追加 `updated_at`。
-/// 所有值必须使用 Option 包装。
-/// 值为 `None` 时，将忽略该字段。
-/// 全部字段为 None 时不生成任何 SQL。
+/// 所有值必须使用 Option 包装，
+/// 值为 `None` 时，将忽略该字段，
+/// 全部字段为 None 时不生成任何 SQL
 ///
 /// 用法:
 /// ```ignore
@@ -139,10 +139,43 @@ macro_rules! update {
     }};
 }
 
-/// UPDATE 语句拼接。
-/// 所有值必须使用 Option 包装。
-/// 值为 `None` 时，将忽略该字段。
-/// 全部字段为 None 时不生成任何 SQL。
+/// 单行 UPDATE，自动追加 `updated_at`
+/// 与 [`update!`] 不同：传入的值**不做 Option 解包**。
+///
+/// 用法:
+/// ```ignore
+/// let mut qb = update_strict!("table_name", id,
+///     ("name", data.name),                       // Option<String> -> NULL 或值
+///     ("type", data.r#type),                     // Option<i32> -> NULL 或值
+///     ("status", "active"),                      // 非 Option，始终拼入
+/// );
+/// assert_eq!(qb.sql(), "UPDATE table_name SET name = ?, type = ?, status = ?, updated_at = ? WHERE id = ?")
+/// ```
+#[macro_export]
+macro_rules! update_strict {
+    ($table:expr, $id:expr, $(($col:literal, $val:expr)),+ $(,)?) => {{
+        let mut __qb: sqlx::QueryBuilder<'_, $crate::db::DbDriver> = sqlx::QueryBuilder::new("");
+        let mut __first = true;
+        $(
+            if __first {
+                __qb.push("UPDATE ").push($table).push(" SET ");
+                __first = false;
+            } else {
+                __qb.push(", ");
+            }
+            __qb.push($col).push(" = ").push_bind($val);
+        )+
+        __qb.push(", updated_at = ");
+        __qb.push_bind($crate::storage::utils::now_ts());
+        __qb.push(" WHERE id = ").push_bind($id);
+        __qb
+    }};
+}
+
+/// UPDATE 语句拼接
+/// 所有值必须使用 Option 包装
+/// 值为 `None` 时，将忽略该字段
+/// 全部字段为 None 时不生成任何 SQL
 ///
 /// 用法:
 /// ```ignore
@@ -173,7 +206,7 @@ macro_rules! update_fields {
     }};
 }
 
-/// INSERT 语句拼接。
+/// INSERT 语句拼接
 ///
 /// 用法:
 /// ```ignore
@@ -196,7 +229,7 @@ macro_rules! insert_fields {
     }};
 }
 
-/// 单行 INSERT。
+/// 单行 INSERT
 ///
 /// 用法:
 /// ```ignore
@@ -310,7 +343,7 @@ macro_rules! get_by_id {
     }};
 }
 
-/// 按 `column IN (...)` 批量删除。
+/// 按 `column IN (...)` 批量删除
 ///
 /// column 为内部常量
 ///

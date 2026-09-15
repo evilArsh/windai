@@ -1,6 +1,6 @@
 use std::result::Result as StdResult;
 
-/// 能力层错误码。
+/// 能力层错误码
 #[derive(thiserror::Error, Debug, strum::AsRefStr)]
 #[strum(serialize_all = "SCREAMING_SNAKE_CASE")]
 pub enum FsError {

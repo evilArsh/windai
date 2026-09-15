@@ -1,4 +1,4 @@
-use crate::dto::envelope::{ApiResponse, map_core_error};
+use crate::dto::{ApiResponse, map_core_error};
 use std::sync::Arc;
 use wind_core::WindCore;
 use wind_core::models::{CreateModel, Model, UpdateModel};

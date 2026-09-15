@@ -1,5 +1,5 @@
 use super::function_call::build_tools_from_mcp;
-use super::tool::{self, AgentBindingView, ListAgentsResponse};
+use super::tool::{self, AgentCatalog, ListAgentsResponse};
 use crate::chat::runner::ChatContext;
 use crate::env::app_dirs;
 use crate::error::{CoreError, Result};
@@ -16,14 +16,14 @@ use wind_ai::tool::{FunctionCall, Tools};
 use wind_mcp::client::Tool;
 use wind_mcp::client::registry::RegistryHandle;
 
-/// 获取当前Topic下可用的子Agent列表（过滤掉主Agent和已禁用的绑定）
+/// 获取当前 Topic 能力列表中的全部 Agent
 pub async fn list_agents(storage: &Storage, topic_id: i64) -> Result<ListAgentsResponse> {
     let agents = storage
         .agent()
         .list_sub_definitions_by_topic(topic_id)
         .await?
         .into_iter()
-        .map(|agent| AgentBindingView {
+        .map(|agent| AgentCatalog {
             key: agent.key,
             alias: Some(agent.name),
             description: agent.description,
@@ -77,7 +77,7 @@ pub async fn create_fork_contexts(
     )
     .await
 }
-/// 为一次Agent对话创建完整的上下文：User消息、Assistant消息和历史消息列表
+/// 为一次 Agent 对话创建完整的上下文：User 消息、Assistant 消息和历史消息列表
 pub async fn create_contexts(
     storage: &Storage,
     cwd: &PathBuf,
@@ -90,48 +90,40 @@ pub async fn create_contexts(
     create_context_inner(cwd, storage, instance_id, user_input, raw, chat_ctx, agent).await
 }
 
-/// 创建主 Agent 实例
-///
-/// TODO: 默认没有 agent_id
+/// 获取主 Agent 实例，不存在时创建
 pub async fn get_or_create_main_instance(
     storage: &Storage,
     topic_id: i64,
 ) -> Result<AgentInstance> {
-    match storage.agent().get_main_instance(topic_id).await? {
-        Some(instance) => Ok(instance),
-        None => {
-            storage
-                .agent()
-                .create_instance(CreateInstance::new_main(topic_id))
-                .await
-        }
+    if let Some(instance) = storage.agent().get_main_instance(topic_id).await? {
+        return Ok(instance);
     }
+
+    storage
+        .agent()
+        .create_instance(CreateInstance::new_main(topic_id, None))
+        .await
 }
 
-/// 创建普通 Agent 实例
-pub async fn get_or_create_instance(
+/// 为子任务创建新的 Agent 实例
+pub async fn create_child_instance(
     storage: &Storage,
     topic_id: i64,
-    parent_id: Option<i64>,
-    agent_id: Option<i64>,
-    mode: Option<AgentMode>,
+    parent_id: i64,
+    agent_id: i64,
+    mode: AgentMode,
 ) -> Result<AgentInstance> {
-    match storage.agent().get_instance(topic_id).await? {
-        Some(instance) => Ok(instance),
-        None => {
-            storage
-                .agent()
-                .create_instance(CreateInstance {
-                    topic_id,
-                    parent_id,
-                    agent_id,
-                    mode,
-                    status: Some(AgentStatus::Idle),
-                    role: Some(AgentRole::Child),
-                })
-                .await
-        }
-    }
+    storage
+        .agent()
+        .create_instance(CreateInstance {
+            topic_id,
+            parent_id: Some(parent_id),
+            agent_id: Some(agent_id),
+            mode: Some(mode),
+            status: Some(AgentStatus::Idle),
+            role: Some(AgentRole::Child),
+        })
+        .await
 }
 
 pub async fn get_instance_by_id(storage: &Storage, instance_id: i64) -> Result<AgentInstance> {
@@ -142,7 +134,7 @@ pub async fn get_instance_by_id(storage: &Storage, instance_id: i64) -> Result<A
         .ok_or_else(|| CoreError::RowNotFound(format!("instance_id: {}", instance_id)))
 }
 
-/// 通过Agent ID获取Agent定义（会校验active状态）
+/// 通过 Agent ID 获取 Agent 定义（会校验 active 状态）
 pub async fn get_def_by_id(storage: &Storage, agent_id: i64) -> Result<AgentDefinition> {
     let agent = storage
         .agent()
@@ -158,7 +150,7 @@ pub async fn get_def_by_id(storage: &Storage, agent_id: i64) -> Result<AgentDefi
     Ok(agent)
 }
 
-/// 通过Agent Key获取Agent定义（会校验active状态）
+/// 通过 Agent Key 获取 Agent 定义（会校验 active 状态）
 pub async fn get_def_by_key(storage: &Storage, key: &str) -> Result<AgentDefinition> {
     let agent = storage
         .agent()
@@ -175,7 +167,7 @@ pub async fn get_def_by_key(storage: &Storage, key: &str) -> Result<AgentDefinit
     Ok(agent)
 }
 
-/// 加载Agent对话所需的全部基础信息：模型、提供商、凭证、JSON规则和MCP工具
+/// 加载 Agent 对话所需的全部基础信息：模型、提供商、凭证、JSON 规则和 MCP 工具
 pub async fn get_base_info(storage: &Storage, topic_id: i64) -> Result<ChatContext> {
     let topic = match storage.topic().get_topic(topic_id).await? {
         Some(topic) => topic,
@@ -262,8 +254,8 @@ pub async fn save_approval_state(
 pub fn transfer_contexts(raw: Vec<Message>) -> Result<Vec<AiMessage>> {
     raw.into_iter()
         .map(|m| {
-            // 无法找到 is_simple消息,
-            // 该消息未正常结束（用户未授权MCP调用或者模型未正常返回结果）
+            // 无法找到 is_simple 消息,
+            // 该消息未正常结束（用户未授权 MCP 调用或者模型未正常返回结果）
             if let Some(c) = m.content.into_iter().rev().find(|c| c.is_simple()) {
                 return Ok(c);
             } else {
@@ -298,7 +290,7 @@ async fn create_context_inner(
                     content: vec![content_cloned],
                     model_id: chat_ctx.model.id,
                     is_boundary: false,
-                    is_exclude: false,
+                    is_excluded: false,
                     input_tokens: 0,
                     output_tokens: 0,
                     instance_id,
@@ -312,7 +304,7 @@ async fn create_context_inner(
                     content: vec![],
                     model_id: chat_ctx.model.id,
                     is_boundary: false,
-                    is_exclude: false,
+                    is_excluded: false,
                     input_tokens: 0,
                     output_tokens: 0,
                     instance_id,
@@ -342,7 +334,7 @@ async fn create_context_inner(
     Ok((user_message, assistant_message, contexts))
 }
 
-/// 判断MCP工具是否被允许：allowed_tools为空则默认允许，denied_tools中存在则拒绝。
+/// 判断 MCP 工具是否被允许：allowed_tools 为空则默认允许，denied_tools 中存在则拒绝
 fn is_tool_allowed(tool: &Tool, gates: &[(&[String], &[String])]) -> bool {
     gates.iter().any(|(allowed, denied)| {
         // 为空默认允许，denied_tools 列表中存在时视为拒绝
@@ -354,8 +346,8 @@ fn is_tool_allowed(tool: &Tool, gates: &[(&[String], &[String])]) -> bool {
 /// 构建历史消息上下文
 ///
 /// 不校验消息上下文合理性，考虑以下情况：
-/// - (User, Assistant) 消息对缺失。比如User消息被删除后应该标记 Assistant 消息为`is_excluded`
-/// - 忽略MCP调用中间结果。历史消息上下文不会包含实时 MCP 调用产生的中间结果，只包含最终的结果，中间结果只在实时请求中包含
+/// - (User, Assistant) 消息对缺失。比如 User 消息被删除后应该标记 Assistant 消息为`is_excluded`
+/// - 忽略 MCP 调用中间结果。历史消息上下文不会包含实时 MCP 调用产生的中间结果，只包含最终的结果，中间结果只在实时请求中包含
 fn build_context(raw: Vec<Message>, agent: Option<&AgentDefinition>) -> Result<Vec<AiMessage>> {
     if raw.is_empty() {
         return Ok(Vec::new());
@@ -381,15 +373,15 @@ fn build_context(raw: Vec<Message>, agent: Option<&AgentDefinition>) -> Result<V
     Ok(contexts)
 }
 
-/// 组装Agent可用的工具列表：核心内建工具 + 过滤后的MCP工具
+/// 组装 Agent 可用的工具列表：核心内建工具 + 过滤后的 MCP 工具
 pub async fn build_agent_tools(
     storage: &Storage,
     mcp_registry: &RegistryHandle,
     instance: &AgentInstance,
     agent: Option<&AgentDefinition>,
 ) -> Result<Option<Vec<Tools>>> {
-    // 加载内建MCP工具，用于 Agent 调度
-    // FIXME: 避免递归创建Agent，仅主任务使用内建工具
+    // 加载内建 MCP 工具，用于 Agent 调度
+    // FIXME: 避免递归创建 Agent，仅主任务使用内建工具
     let mut tools = match instance.role {
         AgentRole::Main => tool::list_catalogs(),
         AgentRole::Child => vec![],
@@ -399,12 +391,12 @@ pub async fn build_agent_tools(
             .data
             .mcp_servers
             .iter()
-            .filter(|binding| binding.enabled)
+            .filter(|mcp_binding| mcp_binding.enabled)
             .collect::<Vec<&AgentMcpBinding>>();
         if !enabled.is_empty() {
             let ids = enabled
                 .iter()
-                .map(|binding| binding.mcp_server_id)
+                .map(|mcp_binding| mcp_binding.mcp_server_id)
                 .collect::<Vec<_>>();
             let servers = storage.mcp().batch_get_by_ids(&ids).await?;
             let mut server_names = servers
@@ -415,9 +407,9 @@ pub async fn build_agent_tools(
                 .data
                 .builtin_mcp_servers
                 .iter()
-                .filter_map(|binding| {
-                    if binding.enabled {
-                        Some(binding.name.clone())
+                .filter_map(|mcp_binding| {
+                    if mcp_binding.enabled {
+                        Some(mcp_binding.name.clone())
                     } else {
                         None
                     }
@@ -446,7 +438,7 @@ pub async fn build_agent_tools(
     Ok(Some(tools))
 }
 
-/// 组装Agent的系统提示词：按order排序加载已启用的prompt模块并拼接
+/// 组装 Agent 的系统提示词：加载已启用的 prompt 模块并拼接
 async fn assemble_prompt(
     storage: &Storage,
     agent: Option<&AgentDefinition>,
@@ -456,7 +448,7 @@ async fn assemble_prompt(
             .data
             .prompt_modules
             .iter()
-            .filter(|binding| binding.enabled)
+            .filter(|prompt_binding| prompt_binding.enabled)
             .collect::<Vec<_>>();
 
         let ids = bindings

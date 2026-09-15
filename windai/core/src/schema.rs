@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS models (
     active          BOOLEAN NOT NULL,
     icon            TEXT,
     endpoint        TEXT,
+    config          TEXT,
     frequency       BIGINT DEFAULT 0,
     created_at      BIGINT,
     updated_at      BIGINT
@@ -38,6 +39,8 @@ CREATE TABLE IF NOT EXISTS topics (
     id              BIGINT  PRIMARY KEY,
     parent_id       BIGINT,
     label           TEXT    NOT NULL,
+    model_id        BIGINT,
+    tool_approval_policy TEXT,
     icon            TEXT,
     created_at      BIGINT,
     updated_at      BIGINT
@@ -45,7 +48,6 @@ CREATE TABLE IF NOT EXISTS topics (
 CREATE TABLE IF NOT EXISTS messages (
     id              BIGINT  PRIMARY KEY,
     from_id         BIGINT,
-    stream          BOOLEAN NOT NULL DEFAULT 0,
     content         TEXT    NOT NULL DEFAULT '[]',
     model_id        BIGINT NOT NULL,
     instance_id     BIGINT NOT NULL,
@@ -79,7 +81,7 @@ CREATE TABLE IF NOT EXISTS json_rule (
 );
 CREATE TABLE IF NOT EXISTS prompt_modules (
     id              BIGINT  PRIMARY KEY,
-    name            TEXT    NOT NULL,
+    alias           TEXT    NOT NULL,
     description     TEXT    NOT NULL,
     content         TEXT    NOT NULL,
     active          BOOLEAN NOT NULL DEFAULT 1,
@@ -100,15 +102,12 @@ CREATE TABLE IF NOT EXISTS agent_definitions (
 );
 CREATE TABLE IF NOT EXISTS agent_instances (
     id              BIGINT  PRIMARY KEY,
+    parent_id       BIGINT,
     topic_id        BIGINT  NOT NULL,
-    agent_id        BIGINT  NOT NULL,
+    agent_id        BIGINT,
     role            TEXT    NOT NULL,
-    model_id        BIGINT,
-    chat_config_id  BIGINT,
-    status          TEXT    NOT NULL DEFAULT 'created',
+    status          TEXT    NOT NULL DEFAULT 'idle',
     mode            TEXT,
-    tool_approval_policy TEXT,
-    enabled         BOOLEAN NOT NULL DEFAULT 1,
     created_at      BIGINT,
     updated_at      BIGINT
 );
@@ -150,9 +149,12 @@ CREATE INDEX IF NOT EXISTS idx_agent_definitions_owner_topic ON agent_definition
 
 CREATE INDEX IF NOT EXISTS idx_agent_instances_topic ON agent_instances(topic_id);
 CREATE INDEX IF NOT EXISTS idx_agent_instances_agent ON agent_instances(agent_id);
+CREATE INDEX IF NOT EXISTS idx_agent_instances_parent ON agent_instances(parent_id);
 CREATE INDEX IF NOT EXISTS idx_agent_instances_role ON agent_instances(topic_id, role);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_instances_unique_agent ON agent_instances(topic_id, agent_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_instances_unique_main ON agent_instances(topic_id) WHERE role = 'main';
+
+CREATE INDEX IF NOT EXISTS idx_topic_agent_maps_topic ON topic_agent_maps(topic_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_topic_agent_maps_unique ON topic_agent_maps(topic_id, agent_id);
 
 CREATE INDEX IF NOT EXISTS idx_tool_approvals_topic ON tool_approval_requests(topic_id);
 CREATE INDEX IF NOT EXISTS idx_tool_approvals_message ON tool_approval_requests(message_id);

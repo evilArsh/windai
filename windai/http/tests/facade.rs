@@ -1,11 +1,13 @@
 mod common;
 
-use wind_ai::message::ReqConfig;
+use std::sync::Arc;
 use wind_ai::model::AdapterType;
-use wind_core::models::agent::{AgentDefinitionData, AgentRole, BuiltinMcpBinding};
+use wind_core::WindCore;
+use wind_core::agent::helper::{create_child_instance, get_or_create_main_instance};
+use wind_core::models::agent::{AgentDefinitionData, AgentMode, AgentRole, BuiltinMcpBinding};
 use wind_core::models::{
-    CreateInstance, CreateAgentDefinition, CreateCredentials, CreateMcpServer, CreateModel,
-    CreatePromptModule, CreateProvider, CreateTopic,
+    CreateAgentDefinition, CreateCredentials, CreateMcpServer, CreateModel, CreatePromptModule,
+    CreateProvider, CreateTopic, CreateTopicAgentMap,
 };
 use wind_http::facade::storage::agent::AgentStorageFacade;
 use wind_http::facade::storage::approval::ToolApprovalFacade;
@@ -13,18 +15,24 @@ use wind_http::facade::storage::mcp::McpStorageFacade;
 use wind_http::facade::storage::model::ModelStorageFacade;
 use wind_http::facade::storage::prompt::PromptStorageFacade;
 use wind_http::facade::storage::provider::ProviderStorageFacade;
-use wind_http::facade::system::SystemFacade;
 use wind_http::facade::topic::TopicFacade;
+use wind_http::facade::topic_map::TopicMapFacade;
 use wind_mcp::client::TransportType;
 
-#[tokio::test]
-async fn health_reports_ok() {
-    let core = common::test_core().await;
-    let facade = SystemFacade::new(core, 1234567890);
-    let r = facade.health();
-    assert_eq!(r.code, 200);
-    let data = r.data.unwrap();
-    assert_eq!(data["status"], "ok");
+/// 建一个话题并返回 id，供需要落库依赖的用例复用
+async fn create_topic(core: &Arc<WindCore>, label: &str) -> i64 {
+    TopicFacade::new(core.clone())
+        .create_topic(CreateTopic {
+            parent_id: None,
+            label: label.into(),
+            icon: None,
+            model_id: None,
+            tool_approval_policy: None,
+        })
+        .await
+        .data
+        .expect("创建话题应返回数据")
+        .id
 }
 
 #[tokio::test]
@@ -36,6 +44,8 @@ async fn create_topic_roundtrips() {
             parent_id: None,
             label: "hello".into(),
             icon: None,
+            model_id: None,
+            tool_approval_policy: None,
         })
         .await;
     assert_eq!(created.code, 200);
@@ -65,23 +75,6 @@ async fn cancel_task_missing_topic_returns_404() {
     let facade = TopicFacade::new(core);
     let r = facade.cancel_task(999_999, 1).await;
     assert_eq!(r.code, 404);
-}
-
-#[tokio::test]
-async fn create_chat_config_missing_binding_returns_404_without_insert() {
-    let (core, pool) = common::test_core_with_pool().await;
-    let facade = TopicFacade::new(core);
-    let r = facade
-        .create_chat_config(999_999, ReqConfig::default())
-        .await;
-    assert_eq!(r.code, 404);
-
-    // 预检查应阻止插入，chat_configs 无孤儿行。
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chat_configs")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(count, 0);
 }
 
 #[tokio::test]
@@ -128,6 +121,7 @@ async fn model_crud_roundtrips() {
             active: None,
             icon: None,
             endpoint: None,
+            config: None,
         })
         .await;
     assert_eq!(created.code, 200);
@@ -214,25 +208,79 @@ async fn agent_crud_roundtrips() {
     assert_eq!(cloned.code, 200);
     assert_eq!(cloned.data.unwrap().owner_topic_id, Some(42));
 
-    // binding
-    let binding = f
-        .create_agent_binding(CreateInstance {
-            topic_id: 42,
-            agent_id,
-            role: AgentRole::Main,
-            model_id: None,
-            chat_config_id: None,
-            enabled: None,
-        })
-        .await;
-    assert_eq!(binding.code, 200);
-    let binding_id = binding.data.unwrap().id;
-
-    assert_eq!(f.get_agent_binding(binding_id).await.code, 200);
-    assert_eq!(f.get_agent_binding_by_agent(agent_id, 42).await.code, 200);
-    assert_eq!(f.get_main_binding(42).await.code, 200);
-    assert_eq!(f.list_agent_bindings_by_topic(42).await.code, 200);
+    // 话题下的定义列表：42 尚无能力映射，返回空列表而非 404
     assert_eq!(f.list_agent_definitions_by_topic(42).await.code, 200);
+}
+
+#[tokio::test]
+async fn instance_facade_semantics() {
+    let core = common::test_core().await;
+    let topic_id = create_topic(&core, "instances").await;
+    let main = get_or_create_main_instance(core.storage(), topic_id)
+        .await
+        .expect("获取主实例");
+    let child = create_child_instance(core.storage(), topic_id, main.id, 1, AgentMode::Sync)
+        .await
+        .expect("创建子实例");
+    let f = AgentStorageFacade::new(core);
+
+    let read = f.get_instance(child.id).await;
+    assert_eq!(read.code, 200);
+    assert_eq!(
+        read.data.expect("读取实例应返回数据").role,
+        AgentRole::Child
+    );
+
+    // 主实例由话题级接口代表，单实例查询一律 404
+    assert_eq!(f.get_instance(main.id).await.code, 404);
+
+    let listed = f.list_instances_by_topic(topic_id).await;
+    assert_eq!(listed.code, 200);
+    assert_eq!(listed.data.expect("列表应返回数据").len(), 1);
+}
+
+#[tokio::test]
+async fn agent_map_facade_semantics() {
+    let core = common::test_core().await;
+    let topic_id = create_topic(&core, "maps").await;
+    let agent_id = AgentStorageFacade::new(core.clone())
+        .create_agent_definition(CreateAgentDefinition {
+            key: "map-agent".into(),
+            name: "Map Agent".into(),
+            description: "for map facade test".into(),
+            owner_topic_id: None,
+            cloned_from_id: None,
+            active: None,
+            data: AgentDefinitionData::default(),
+        })
+        .await
+        .data
+        .expect("创建 Agent 定义应返回数据")
+        .id;
+    let f = TopicMapFacade::new(core);
+
+    let created = f.create(CreateTopicAgentMap { topic_id, agent_id }).await;
+    assert_eq!(created.code, 200);
+    let map_id = created.data.expect("创建映射应返回数据").id;
+
+    let listed = f.list(topic_id).await;
+    assert_eq!(listed.code, 200);
+    assert_eq!(listed.data.expect("列表应返回数据").len(), 1);
+
+    assert_eq!(f.delete(map_id).await.code, 200);
+    let listed_after = f.list(topic_id).await;
+    assert_eq!(listed_after.code, 200);
+    assert!(listed_after.data.expect("列表应返回数据").is_empty());
+}
+
+#[tokio::test]
+async fn agent_map_unknown_id_returns_404() {
+    let core = common::test_core().await;
+    let f = TopicMapFacade::new(core);
+
+    let deleted = f.delete(999_999).await;
+    assert_eq!(deleted.code, 404);
+    assert!(deleted.data.is_none());
 }
 
 #[tokio::test]
@@ -254,28 +302,19 @@ async fn delete_prompt_module_missing_returns_404() {
 }
 
 #[tokio::test]
-async fn delete_agent_binding_missing_returns_404() {
+async fn get_instance_missing_returns_404() {
     let core = common::test_core().await;
     let f = AgentStorageFacade::new(core);
-    let r = f.delete_agent_binding(999_999).await;
+    let r = f.get_instance(999_999).await;
     assert_eq!(r.code, 404);
     assert!(r.data.is_none());
 }
 
 #[tokio::test]
-async fn list_binding_messages_returns_404_for_unknown_binding() {
+async fn list_instance_messages_returns_404_for_unknown_instance() {
     let core = common::test_core().await;
     let f = TopicFacade::new(core);
-    let r = f.list_binding_messages(999_999).await;
-    assert_eq!(r.code, 404);
-    assert!(r.data.is_none());
-}
-
-#[tokio::test]
-async fn list_binding_context_returns_404_for_unknown_binding() {
-    let core = common::test_core().await;
-    let f = TopicFacade::new(core);
-    let r = f.list_binding_context(999_999).await;
+    let r = f.list_instance_messages(999_999).await;
     assert_eq!(r.code, 404);
     assert!(r.data.is_none());
 }
@@ -286,7 +325,7 @@ async fn approval_lists_return_empty() {
     let f = ToolApprovalFacade::new(core);
     assert_eq!(f.list_by_message(1).await.code, 200);
     assert_eq!(f.list_pending_by_topic(1).await.code, 200);
-    assert_eq!(f.list_pending_by_binding(1).await.code, 200);
+    assert_eq!(f.list_pending_by_instance(1).await.code, 200);
 }
 
 #[tokio::test]
@@ -313,22 +352,4 @@ async fn agent_definition_accepts_valid_builtin_mcp_name() {
         })
         .await;
     assert_eq!(r.code, 200, "got: {r:?}");
-}
-
-#[tokio::test]
-async fn mcp_server_create_rejects_reserved_builtin_name() {
-    let core = common::test_core().await;
-    let f = McpStorageFacade::new(core);
-    let r = f
-        .create_mcp_server(CreateMcpServer {
-            r#type: TransportType::Stdio,
-            name: wind_mcp::builtin::BUILTIN_FS.name.to_string(),
-            url: None,
-            description: None,
-            command: Some("npx".into()),
-            args: None,
-            env: None,
-        })
-        .await;
-    assert_eq!(r.code, 400, "got: {r:?}");
 }

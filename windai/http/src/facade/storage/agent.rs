@@ -1,11 +1,10 @@
 use std::sync::Arc;
 use wind_core::WindCore;
 use wind_core::models::{
-    AgentDefinition, AgentInstance, CreateAgentDefinition, CreateInstance, UpdateAgentDefinition,
-    UpdateInstance,
+    AgentDefinition, AgentInstance, AgentRole, CreateAgentDefinition, UpdateAgentDefinition,
 };
 
-use crate::dto::envelope::{ApiResponse, map_core_error};
+use crate::dto::{ApiResponse, map_core_error};
 
 pub struct AgentStorageFacade {
     core: Arc<WindCore>,
@@ -112,89 +111,36 @@ impl AgentStorageFacade {
         }
     }
 
-    pub async fn create_agent_binding(&self, input: CreateInstance) -> ApiResponse<AgentInstance> {
-        match self.core.storage().agent().create_binding(input).await {
-            Ok(b) => ApiResponse::ok(b),
-            Err(e) => map_core_error(e),
-        }
-    }
-
-    pub async fn get_agent_binding(&self, id: i64) -> ApiResponse<AgentInstance> {
-        match self.core.storage().agent().get_instance(id).await {
-            Ok(Some(b)) => ApiResponse::ok(b),
-            Ok(None) => ApiResponse::not_found("agent binding not found"),
-            Err(e) => map_core_error(e),
-        }
-    }
-
-    pub async fn update_agent_binding(
-        &self,
-        id: i64,
-        input: UpdateInstance,
-    ) -> ApiResponse<AgentInstance> {
-        if let Err(e) = self.core.storage().agent().update_instance(id, input).await {
-            return map_core_error(e);
-        }
-        self.get_agent_binding(id).await
-    }
-
-    pub async fn delete_agent_binding(&self, id: i64) -> ApiResponse<()> {
-        match self.core.storage().agent().get_instance(id).await {
-            Ok(None) => return ApiResponse::not_found("agent binding not found"),
+    /// 列出话题下的子 Agent 实例
+    pub async fn list_instances_by_topic(&self, topic_id: i64) -> ApiResponse<Vec<AgentInstance>> {
+        // 先确认话题存在，与 agent-maps 保持同样的 404 语义
+        match self.core.storage().topic().get_topic(topic_id).await {
             Ok(Some(_)) => {}
-            Err(e) => return map_core_error(e),
+            Ok(None) => return ApiResponse::not_found("topic not found"),
+            Err(err) => return map_core_error(err),
         }
-        match self.core.storage().agent().delete_bindings(&[id]).await {
-            Ok(()) => ApiResponse::ok(()),
-            Err(e) => map_core_error(e),
-        }
-    }
-
-    pub async fn get_agent_binding_by_agent(
-        &self,
-        agent_id: i64,
-        topic_id: i64,
-    ) -> ApiResponse<AgentInstance> {
         match self
             .core
             .storage()
             .agent()
-            .get_binding_by_agent_id(topic_id, agent_id)
+            .list_child_instances_by_topic(topic_id)
             .await
         {
-            Ok(Some(b)) => ApiResponse::ok(b),
-            Ok(None) => ApiResponse::not_found("agent binding not found"),
-            Err(e) => map_core_error(e),
+            Ok(instances) => ApiResponse::ok(instances),
+            Err(err) => map_core_error(err),
         }
     }
 
-    pub async fn list_agent_bindings_by_topic(
-        &self,
-        topic_id: i64,
-    ) -> ApiResponse<Vec<AgentInstance>> {
-        match self
-            .core
-            .storage()
-            .agent()
-            .list_instances_by_topic(topic_id)
-            .await
-        {
-            Ok(rows) => ApiResponse::ok(rows),
-            Err(e) => map_core_error(e),
+    /// 获取单个子 Agent 实例，主实例不对外暴露
+    pub async fn get_instance(&self, instance_id: i64) -> ApiResponse<AgentInstance> {
+        let instance = match self.core.storage().agent().get_instance(instance_id).await {
+            Ok(Some(instance)) => instance,
+            Ok(None) => return ApiResponse::not_found("agent instance not found"),
+            Err(err) => return map_core_error(err),
+        };
+        if instance.role == AgentRole::Main {
+            return ApiResponse::not_found("agent instance not found");
         }
-    }
-
-    pub async fn get_main_binding(&self, topic_id: i64) -> ApiResponse<AgentInstance> {
-        match self
-            .core
-            .storage()
-            .agent()
-            .get_main_instance(topic_id)
-            .await
-        {
-            Ok(Some(b)) => ApiResponse::ok(b),
-            Ok(None) => ApiResponse::not_found("agent binding not found"),
-            Err(e) => map_core_error(e),
-        }
+        ApiResponse::ok(instance)
     }
 }

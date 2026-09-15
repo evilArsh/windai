@@ -6,7 +6,7 @@ use wind_core::models::{
     UpdateJsonRule, UpdateProvider,
 };
 
-use crate::dto::envelope::{ApiResponse, map_core_error};
+use crate::dto::{ApiResponse, map_core_error};
 
 pub struct ProviderStorageFacade {
     core: Arc<WindCore>,

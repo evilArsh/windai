@@ -1,5 +1,4 @@
 use axum::serve;
-use chrono::Utc;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::signal;
@@ -22,7 +21,7 @@ async fn main() {
     let core = Arc::new(WindCore::init_local().await.expect("init core failed"));
     let core_shutdown = core.clone();
     let cancel = CancellationToken::new();
-    let state = AppState::with_cancel(config.clone(), core, Utc::now().timestamp(), cancel.clone());
+    let state = AppState::with_cancel(config.clone(), core, cancel.clone());
 
     let listener = TcpListener::bind((config.host.as_str(), config.port))
         .await

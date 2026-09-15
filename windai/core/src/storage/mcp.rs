@@ -119,27 +119,7 @@ impl McpStorage {
         )
     }
 
-    /// 通过MCP服务名字批量查询
-    pub async fn batch_get_by_names(&self, names: &[String]) -> Result<Vec<McpServerParam>> {
-        if names.is_empty() {
-            return Err(CoreError::Validation("names are empty".into()));
-        }
-        let mut qb = Self::common_select();
-        qb.push(" WHERE name IN ( ");
-        let mut separated = qb.separated(", ");
-        for name in names {
-            separated.push_bind(name);
-        }
-        separated.push_unseparated(") ");
-
-        let rows = self
-            .executor
-            .fetch_all(qb.build_query_as::<McpServerParam>())
-            .await?;
-        Ok(rows)
-    }
-
-    /// 通过MCP服务ID批量查询
+    /// 通过 MCP 服务 ID 批量查询
     pub async fn batch_get_by_ids(&self, ids: &[i64]) -> Result<Vec<McpServerParam>> {
         if ids.is_empty() {
             return Err(CoreError::Validation("mcp ids are empty".into()));

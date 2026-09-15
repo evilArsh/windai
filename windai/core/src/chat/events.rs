@@ -2,7 +2,7 @@ use crate::{error::CoreError, models::Message};
 use serde::Serialize;
 use wind_ai::{message::Message as AiMessage, tool::FunctionCall};
 
-/// 统一对话事件，适用于流式和非流式模式。
+/// 统一对话事件，适用于流式和非流式模式
 #[derive(Debug, Serialize, strum::AsRefStr)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ChatEvent {

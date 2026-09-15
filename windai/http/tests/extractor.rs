@@ -6,12 +6,11 @@ use axum::http::{Request, StatusCode};
 use serde_json::Value;
 use tower::ServiceExt;
 use wind_http::config::AppConfig;
-use wind_http::routes::{agent, chat, health, mcp, model, prompt, provider, topic};
+use wind_http::routes::{agent, chat, mcp, model, prompt, provider, topic};
 use wind_http::state::AppState;
 
 async fn test_router() -> Router {
     Router::<AppState>::new()
-        .merge(health::router())
         .merge(topic::router())
         .merge(chat::router())
         .merge(provider::router())
@@ -22,11 +21,10 @@ async fn test_router() -> Router {
         .with_state(AppState::new(
             AppConfig::default(),
             common::test_core().await,
-            0,
         ))
 }
 
-/// 发送请求并解析统一信封响应（HTTP 200 + code=500）。
+/// 发送请求并解析统一信封响应（HTTP 200 + code=500）
 async fn assert_unified_error(router: &Router, req: Request<Body>, msg_contains: &str) {
     let res = router.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);

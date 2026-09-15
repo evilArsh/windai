@@ -71,9 +71,9 @@ pub fn remove(root: &mut Value, segs: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// 确保路径存在，返回最终位置的引用。
-/// 如果子路径不存在，则创建空对象。
-/// 如果子路径中间有非对象值则会被忽略。
+/// 确保路径存在，返回最终位置的引用
+/// 如果子路径不存在，则创建空对象
+/// 如果子路径中间有非对象值则会被忽略
 pub fn walk<'a>(root: &'a mut Value, segs: &[String]) -> Result<&'a mut Value> {
     let mut cur = root;
     for seg in segs {

@@ -68,7 +68,7 @@ impl AppDirs {
         &self.root
     }
 
-    /// topic目录
+    /// topic 目录
     pub fn topic_dir(&self) -> &Path {
         &self.topic
     }

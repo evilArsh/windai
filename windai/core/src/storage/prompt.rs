@@ -35,7 +35,7 @@ impl PromptStorage {
         let mut qb = insert!(
             TableName::PROMPT_MODULES,
             ("id", id),
-            ("name", data.alias.clone()),
+            ("alias", data.alias.clone()),
             ("description", data.description.clone()),
             ("content", data.content.clone()),
             ("active", active),
@@ -57,7 +57,7 @@ impl PromptStorage {
         let mut qb = update!(
             TableName::PROMPT_MODULES,
             id,
-            ("name", data.alias),
+            ("alias", data.alias),
             ("description", data.description),
             ("content", data.content),
             ("active", data.active)
@@ -116,7 +116,7 @@ impl PromptStorage {
             TableName::PROMPT_MODULES,
             (
                 "id",
-                "name",
+                "alias",
                 "description",
                 "content",
                 "active",

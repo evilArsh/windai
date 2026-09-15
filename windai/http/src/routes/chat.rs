@@ -1,6 +1,4 @@
-use crate::dto::approval::ApproveToolCallsRequest;
-use crate::dto::envelope::{ApiResponse, map_core_error};
-use crate::dto::message::{CreateChatRequest, SubmitChatResponse};
+use crate::dto::{ApiResponse, ApproveToolCallsRequest, CreateChatRequest, map_core_error};
 use crate::extractor::{ApiPath, json_body};
 use crate::facade::topic::TopicFacade;
 use crate::sse::event_stream;
@@ -21,25 +19,20 @@ use wind_core::models::{Message, UpdateMessage};
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/api/v1/topics/{topic_id}/messages", post(create_chat))
         .route(
-            "/api/v1/agent-bindings/{binding_id}/messages",
-            get(list_messages),
+            "/api/v1/topics/{topic_id}/messages",
+            get(list_topic_messages).post(create_chat),
         )
         .route(
-            "/api/v1/agent-bindings/{binding_id}/messages/context",
-            get(list_context),
+            "/api/v1/agent-instances/{instance_id}/messages",
+            get(list_instance_messages),
         )
         .route(
             "/api/v1/messages/{message_id}",
             get(get_message).put(update_message),
         )
         .route(
-            "/api/v1/messages/{message_id}/from-message",
-            get(get_message_from_message),
-        )
-        .route(
-            "/api/v1/topics/{topic_id}/bindings/{binding_id}/cancel",
+            "/api/v1/topics/{topic_id}/agent-instances/{instance_id}/cancel",
             post(cancel_task),
         )
         .route(
@@ -48,29 +41,49 @@ pub fn router() -> Router<AppState> {
         )
 }
 
-/// SSE 单独成 router，不套 TimeoutLayer。
+/// SSE 单独成 router，不套 TimeoutLayer
 pub fn sse_router() -> Router<AppState> {
     Router::new().route("/api/v1/topics/{topic_id}/events", get(subscribe_events))
 }
 
 #[utoipa::path(
     get,
-    summary = "获取 Agent 绑定的消息列表",
-    path = "/api/v1/agent-bindings/{binding_id}/messages",
+    summary = "获取话题主实例的消息列表",
+    path = "/api/v1/topics/{topic_id}/messages",
     params(
-        ("binding_id", Path, description = "Agent 绑定 ID"),
+        ("topic_id", Path, description = "话题 ID"),
     ),
     responses(
-        (status = 200, description = "获取 Agent 绑定的消息列表", body = ApiResponse<Vec<Message>>)
+        (status = 200, description = "获取话题主实例的消息列表", body = ApiResponse<Vec<Message>>),
+        (status = 404, description = "话题不存在", body = ApiResponse<Value>)
     )
 )]
-pub(crate) async fn list_messages(
+pub(crate) async fn list_topic_messages(
     State(core): State<Arc<WindCore>>,
-    ApiPath(binding_id): ApiPath<i64>,
+    ApiPath(topic_id): ApiPath<i64>,
+) -> Json<ApiResponse<Vec<Message>>> {
+    Json(TopicFacade::new(core).list_topic_messages(topic_id).await)
+}
+
+#[utoipa::path(
+    get,
+    summary = "获取 Agent 实例的消息列表",
+    path = "/api/v1/agent-instances/{instance_id}/messages",
+    params(
+        ("instance_id", Path, description = "Agent 实例 ID"),
+    ),
+    responses(
+        (status = 200, description = "获取 Agent 实例的消息列表", body = ApiResponse<Vec<Message>>),
+        (status = 404, description = "实例不存在", body = ApiResponse<Value>)
+    )
+)]
+pub(crate) async fn list_instance_messages(
+    State(core): State<Arc<WindCore>>,
+    ApiPath(instance_id): ApiPath<i64>,
 ) -> Json<ApiResponse<Vec<Message>>> {
     Json(
         TopicFacade::new(core)
-            .list_binding_messages(binding_id)
+            .list_instance_messages(instance_id)
             .await,
     )
 }
@@ -83,40 +96,20 @@ pub(crate) async fn list_messages(
         ("topic_id", Path, description = "话题 ID"),
     ),
     responses(
-        (status = 200, description = "提交对话消息（作用于该 topic 的主 Agent）", body = ApiResponse<SubmitChatResponse>)
+        (status = 200, description = "已受理，回答经 `GET /events` 推送", body = ApiResponse<Value>),
+        (status = 400, description = "话题未配置模型", body = ApiResponse<Value>),
+        (status = 404, description = "话题不存在", body = ApiResponse<Value>)
     )
 )]
 pub(crate) async fn create_chat(
     State(core): State<Arc<WindCore>>,
     ApiPath(topic_id): ApiPath<i64>,
     body: Result<Json<CreateChatRequest>, JsonRejection>,
-) -> Result<Json<ApiResponse<SubmitChatResponse>>, Json<ApiResponse<()>>> {
+) -> Result<Json<ApiResponse<()>>, Json<ApiResponse<()>>> {
     let input = json_body(body)?;
     Ok(Json(
         TopicFacade::new(core).create_chat(topic_id, input).await,
     ))
-}
-
-#[utoipa::path(
-    get,
-    summary = "获取 Agent 绑定的消息上下文",
-    path = "/api/v1/agent-bindings/{binding_id}/messages/context",
-    params(
-        ("binding_id", Path, description = "Agent 绑定 ID"),
-    ),
-    responses(
-        (status = 200, description = "获取 Agent 绑定的消息上下文", body = ApiResponse<Vec<Message>>)
-    )
-)]
-pub(crate) async fn list_context(
-    State(core): State<Arc<WindCore>>,
-    ApiPath(binding_id): ApiPath<i64>,
-) -> Json<ApiResponse<Vec<Message>>> {
-    Json(
-        TopicFacade::new(core)
-            .list_binding_context(binding_id)
-            .await,
-    )
 }
 
 #[utoipa::path(
@@ -162,46 +155,25 @@ pub(crate) async fn update_message(
 }
 
 #[utoipa::path(
-    get,
-    summary = "获取消息对应的源消息",
-    path = "/api/v1/messages/{message_id}/from-message",
-    params(
-        ("message_id", Path, description = "消息 ID"),
-    ),
-    responses(
-        (status = 200, description = "获取消息对应的源消息", body = ApiResponse<Message>)
-    )
-)]
-pub(crate) async fn get_message_from_message(
-    State(core): State<Arc<WindCore>>,
-    ApiPath(message_id): ApiPath<i64>,
-) -> Json<ApiResponse<Message>> {
-    Json(
-        TopicFacade::new(core)
-            .get_message_from_message(message_id)
-            .await,
-    )
-}
-
-#[utoipa::path(
     post,
-    summary = "取消 Agent 任务",
-    path = "/api/v1/topics/{topic_id}/bindings/{binding_id}/cancel",
+    summary = "取消 Agent 实例的任务",
+    path = "/api/v1/topics/{topic_id}/agent-instances/{instance_id}/cancel",
     params(
         ("topic_id", Path, description = "话题 ID"),
-        ("binding_id", Path, description = "Agent 绑定 ID"),
+        ("instance_id", Path, description = "Agent 实例 ID"),
     ),
     responses(
-        (status = 200, description = "取消 Agent 任务", body = ApiResponse<Value>)
+        (status = 200, description = "取消 Agent 实例的任务", body = ApiResponse<Value>),
+        (status = 404, description = "话题不存在", body = ApiResponse<Value>)
     )
 )]
 pub(crate) async fn cancel_task(
     State(core): State<Arc<WindCore>>,
-    ApiPath((topic_id, binding_id)): ApiPath<(i64, i64)>,
+    ApiPath((topic_id, instance_id)): ApiPath<(i64, i64)>,
 ) -> Json<ApiResponse<()>> {
     Json(
         TopicFacade::new(core)
-            .cancel_task(topic_id, binding_id)
+            .cancel_task(topic_id, instance_id)
             .await,
     )
 }

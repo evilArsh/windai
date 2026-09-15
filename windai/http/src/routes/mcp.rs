@@ -1,5 +1,4 @@
-use crate::dto::envelope::ApiResponse;
-use crate::dto::mcp::{McpServerStatusDto, StartMcpServerResult};
+use crate::dto::ApiResponse;
 use crate::extractor::{ApiPath, ApiQuery, json_body};
 use crate::facade::mcp_runtime::McpRuntimeFacade;
 use crate::facade::storage::mcp::McpStorageFacade;
@@ -36,10 +35,6 @@ pub fn router() -> Router<AppState> {
                 .delete(delete_mcp_server),
         )
         .route(
-            "/api/v1/mcp-servers/{mcp_server_id}/status",
-            get(get_mcp_server_status),
-        )
-        .route(
             "/api/v1/topics/{topic_id}/mcp-servers/{mcp_server_id}/start",
             post(start_mcp_server),
         )
@@ -73,7 +68,7 @@ pub fn router() -> Router<AppState> {
         )
 }
 
-/// SSE 单独成 router，不套 TimeoutLayer（与 chat::sse_router 一致）。
+/// SSE 单独成 router，不套 TimeoutLayer（与 chat::sse_router 一致）
 pub fn sse_router() -> Router<AppState> {
     Router::new().route("/api/v1/mcp-servers/events", get(subscribe_mcp_events))
 }
@@ -209,7 +204,7 @@ pub(crate) async fn get_mcp_server_by_name(
         ("mcp_server_id", Path, description = "MCP 服务 ID"),
     ),
     responses(
-        (status = 200, description = "已受理，连接在后台进行；结果经 `GET /events` 的 Connecting/Connected/Error 事件推送", body = ApiResponse<StartMcpServerResult>),
+        (status = 200, description = "已受理，连接在后台进行；结果经 `GET /events` 的 Connecting/Connected/Error 事件推送", body = ApiResponse<Value>),
         (status = 400, description = "参数校验失败", body = ApiResponse<Value>),
         (status = 404, description = "话题或服务不存在", body = ApiResponse<Value>),
         (status = 500, description = "内部错误", body = ApiResponse<Value>)
@@ -218,7 +213,7 @@ pub(crate) async fn get_mcp_server_by_name(
 pub(crate) async fn start_mcp_server(
     State(core): State<Arc<WindCore>>,
     ApiPath((topic_id, mcp_server_id)): ApiPath<(i64, i64)>,
-) -> Json<ApiResponse<StartMcpServerResult>> {
+) -> Json<ApiResponse<()>> {
     Json(
         McpRuntimeFacade::new(core)
             .start_server(topic_id, mcp_server_id)
@@ -235,7 +230,7 @@ pub(crate) async fn start_mcp_server(
         ("mcp_server_id", Path, description = "MCP 服务 ID"),
     ),
     responses(
-        (status = 200, description = "已释放该 topic 的引用（最后一个引用释放时服务停止）", body = ApiResponse<McpServerStatusDto>),
+        (status = 200, description = "已释放该 topic 的引用（最后一个引用释放时服务停止）", body = ApiResponse<ClientSnapshot>),
         (status = 404, description = "话题不存在、服务不存在或未被该 topic 引用", body = ApiResponse<Value>),
         (status = 500, description = "内部错误", body = ApiResponse<Value>)
     )
@@ -243,7 +238,7 @@ pub(crate) async fn start_mcp_server(
 pub(crate) async fn stop_mcp_server(
     State(core): State<Arc<WindCore>>,
     ApiPath((topic_id, mcp_server_id)): ApiPath<(i64, i64)>,
-) -> Json<ApiResponse<McpServerStatusDto>> {
+) -> Json<ApiResponse<ClientSnapshot>> {
     Json(
         McpRuntimeFacade::new(core)
             .stop_server(topic_id, mcp_server_id)
@@ -267,7 +262,7 @@ pub(crate) struct AttachMcpQuery {
         AttachMcpQuery,
     ),
     responses(
-        (status = 200, description = "已引用：只增加该 topic 的 ref_sessions，不发起连接", body = ApiResponse<McpServerStatusDto>),
+        (status = 200, description = "已引用：只增加该 topic 的 ref_sessions，不发起连接", body = ApiResponse<ClientSnapshot>),
         (status = 404, description = "话题不存在或服务未运行", body = ApiResponse<Value>),
         (status = 500, description = "内部错误", body = ApiResponse<Value>)
     )
@@ -276,34 +271,10 @@ pub(crate) async fn attach_mcp_server(
     State(core): State<Arc<WindCore>>,
     ApiPath(topic_id): ApiPath<i64>,
     ApiQuery(q): ApiQuery<AttachMcpQuery>,
-) -> Json<ApiResponse<McpServerStatusDto>> {
+) -> Json<ApiResponse<ClientSnapshot>> {
     Json(
         McpRuntimeFacade::new(core)
             .attach_server(topic_id, &q.name)
-            .await,
-    )
-}
-
-#[utoipa::path(
-    get,
-    summary = "查询 MCP 服务运行期状态",
-    path = "/api/v1/mcp-servers/{mcp_server_id}/status",
-    params(
-        ("mcp_server_id", Path, description = "MCP 服务 ID"),
-    ),
-    responses(
-        (status = 200, description = "运行期状态；未运行时 `running=false`", body = ApiResponse<McpServerStatusDto>),
-        (status = 404, description = "服务不存在", body = ApiResponse<Value>),
-        (status = 500, description = "内部错误", body = ApiResponse<Value>)
-    )
-)]
-pub(crate) async fn get_mcp_server_status(
-    State(core): State<Arc<WindCore>>,
-    ApiPath(mcp_server_id): ApiPath<i64>,
-) -> Json<ApiResponse<McpServerStatusDto>> {
-    Json(
-        McpRuntimeFacade::new(core)
-            .server_status(mcp_server_id)
             .await,
     )
 }

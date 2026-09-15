@@ -22,6 +22,6 @@ pub trait AgentHost: Send + Sync {
         request: SpawnAgentRequest,
     ) -> Result<SpawnAgentResponse>;
 
-    /// 执行MCP工具调用
+    /// 执行 MCP 工具调用
     async fn execute_tool_calls(&self, calls: &[FunctionCall]) -> Result<Message>;
 }

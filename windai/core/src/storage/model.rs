@@ -64,7 +64,7 @@ impl ModelStorage {
         let mut qb = update!(
             TableName::MODELS,
             id,
-            ("name", Some(data.name)),
+            ("name", data.name),
             ("alias", data.alias),
             ("adapter", data.adapter.map(|a| a.to_string())),
             (
@@ -75,6 +75,13 @@ impl ModelStorage {
             ("icon", data.icon),
             ("endpoint", data.endpoint),
             ("frequency", data.frequency),
+            (
+                "config",
+                data.config
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()?
+            ),
         );
         ensure_affected(self.executor.execute(qb.build()).await?)
     }
@@ -98,6 +105,7 @@ impl ModelStorage {
                 "active",
                 "icon",
                 "endpoint",
+                "config",
                 "frequency",
                 "created_at",
             )
@@ -123,6 +131,7 @@ impl ModelStorage {
                 "active",
                 "icon",
                 "endpoint",
+                "config",
                 "frequency",
                 "created_at",
             )

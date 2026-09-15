@@ -32,8 +32,8 @@ pub enum AgentOutput {
     },
     /// Agent 运行完成
     ///
-    /// 如果运行失败，error字段会保存错误信息；
-    /// 错误信息同时会保存至data的消息上下文中
+    /// 如果运行失败，error 字段会保存错误信息；
+    /// 错误信息同时会保存至 data 的消息上下文中
     Finish {
         data: Message,
         error: Option<String>,
@@ -127,11 +127,11 @@ pub struct TaskSpec {
     pub contexts: Vec<AiMessage>,
 }
 
-/// 待完成的子任务记录。
+/// 待完成的子任务记录
 ///
 /// 当父实例 spawn 出一个子实例后，会登记一条该记录，用于在子实例
-/// 完成任务时，通过 `reply` 通道把结果回传给等待中的父实例。
-/// 父实例（`parent_instance_id`）在此等待子实例（`instance_id`）完成。
+/// 完成任务时，通过 `reply` 通道把结果回传给等待中的父实例
+/// 父实例（`parent_instance_id`）在此等待子实例（`instance_id`）完成
 pub struct PendingChild {
     pub parent_instance_id: i64,
     pub instance_id: i64,
@@ -141,7 +141,7 @@ pub struct PendingChild {
     pub reply: oneshot::Sender<SpawnAgentResponse>,
 }
 
-/// 任务的运行时元数据旁表。
+/// 任务的运行时元数据旁表
 pub struct TaskEntry {
     instance_id: i64,
     pub role: AgentRole,
@@ -157,10 +157,6 @@ impl TaskEntry {
             handler,
         }
     }
-
-    pub fn instance_id(&self) -> i64 {
-        self.instance_id
-    }
 }
 
 pub struct TaskManager {
@@ -172,7 +168,6 @@ pub struct TaskManager {
     /// instance_id -> TaskEntry
     instance_map: HashMap<i64, TaskEntry>,
     pending: Vec<PendingChild>,
-    main_instance_id: Option<i64>,
 }
 
 impl TaskManager {
@@ -190,7 +185,6 @@ impl TaskManager {
 
             instance_map: Default::default(),
             pending: vec![],
-            main_instance_id: None,
         };
     }
 
@@ -233,7 +227,7 @@ impl TaskManager {
             .map(|i| self.pending.remove(i))
     }
 
-    /// 该任务是否仍有未完成的 pending 子任务。
+    /// 该任务是否仍有未完成的 pending 子任务
     pub fn has_pending_for(&self, instance_id: i64) -> bool {
         self.pending
             .iter()
@@ -241,9 +235,6 @@ impl TaskManager {
     }
 
     fn upsert_entry(&mut self, data: TaskEntry) -> &mut TaskEntry {
-        if data.role == AgentRole::Main {
-            self.main_instance_id = Some(data.instance_id);
-        }
         match self.instance_map.entry(data.instance_id) {
             Entry::Occupied(entry) => {
                 log::debug!("Task already exists, instance_id: {}", data.instance_id);
@@ -259,17 +250,6 @@ impl TaskManager {
 
     pub fn get_entry(&self, instance_id: i64) -> Option<&TaskEntry> {
         self.instance_map.get(&instance_id)
-    }
-
-    pub fn main_entry(&self) -> Option<&TaskEntry> {
-        self.main_instance_id
-            .and_then(|id| match self.get_entry(id) {
-                Some(entry) => Some(entry),
-                None => {
-                    log::warn!("Main instance id found, but entry not found, id: {id}");
-                    None
-                }
-            })
     }
 
     /// 初始化任务
@@ -301,7 +281,7 @@ impl TaskManager {
         )
         .await?;
 
-        // 创建主Agent工作空间
+        // 创建主 Agent 工作空间
         std::fs::create_dir_all(&self.cwd)?;
         tx.commit().await?;
 
@@ -318,23 +298,21 @@ impl TaskManager {
 
     /// 恢复任务执行
     pub async fn resume(&self, instance_id: i64) -> Result<Option<TaskSpec>> {
-        let tx = self.storage.begin().await?;
-
-        let mut instance = helper::get_instance_by_id(&tx.storage(), instance_id).await?;
+        let mut instance = helper::get_instance_by_id(&self.storage, instance_id).await?;
         instance.mode.get_or_insert(AgentMode::Sync);
 
         let agent = match instance.agent_id {
-            Some(agent_id) => Some(helper::get_def_by_id(&tx.storage(), agent_id).await?),
+            Some(agent_id) => Some(helper::get_def_by_id(&self.storage, agent_id).await?),
             None => None,
         };
 
-        let mut chat_ctx = helper::get_base_info(&tx.storage(), instance.topic_id).await?;
+        let mut chat_ctx = helper::get_base_info(&self.storage, instance.topic_id).await?;
         let tools =
-            helper::build_agent_tools(&tx.storage(), &self.mcp_registry, &instance, agent.as_ref())
+            helper::build_agent_tools(&self.storage, &self.mcp_registry, &instance, agent.as_ref())
                 .await?;
         chat_ctx.tools = tools;
 
-        let contexts = helper::get_message_contexts(&tx.storage(), instance.id).await?;
+        let contexts = helper::get_message_contexts(&self.storage, instance.id).await?;
 
         let mut it = contexts.iter().rev();
         let assistant = it.next().cloned().ok_or_else(|| {
@@ -359,9 +337,8 @@ impl TaskManager {
             instance,
             user,
         };
-
         if let Some(entry) = self.get_entry(instance_id) {
-            entry.handler.start(spec).await;
+            entry.handler.start(spec).await?;
             Ok(None)
         } else {
             Ok(Some(spec))
@@ -386,17 +363,23 @@ impl TaskManager {
         parent_instance_id: i64,
         request: SpawnAgentRequest,
     ) -> Result<TaskSpec> {
+        if request.mode == AgentMode::Background {
+            // TODO: 后台任务
+            return Err(CoreError::Validation(
+                "background mode is not supported yet".into(),
+            ));
+        }
+
         let tx = self.storage.begin().await?;
 
         let agent = helper::get_def_by_key(&tx.storage(), &request.agent_key).await?;
 
-        let mode = request.mode;
-        let instance = helper::get_or_create_instance(
+        let instance = helper::create_child_instance(
             &tx.storage(),
             topic_id,
-            Some(parent_instance_id),
-            Some(agent.id),
-            Some(mode),
+            parent_instance_id,
+            agent.id,
+            request.mode,
         )
         .await?;
         let instance_id = instance.id;
@@ -414,7 +397,7 @@ impl TaskManager {
         );
 
         let user_input = vec![Content::new_text(request.task)];
-        let (user, assistant, contexts) = match mode {
+        let (user, assistant, contexts) = match request.mode {
             AgentMode::Fork => match self.get_entry(parent_instance_id) {
                 Some(entry) => {
                     helper::create_fork_contexts(
@@ -462,7 +445,7 @@ impl TaskManager {
 
     /// 启动一个 SyncTask
     ///
-    /// TODO: 启动background 任务
+    /// TODO: 启动 background 任务
     pub async fn start(&mut self, spec: TaskSpec, topic_mailbox: TopicMailbox) -> Result<()> {
         let sync_handle = SyncTask::spawn(
             self.ctx.child_token(),
@@ -541,6 +524,5 @@ impl TaskManager {
     pub fn clear(&mut self) {
         self.instance_map.clear();
         self.pending.clear();
-        self.main_instance_id = None;
     }
 }

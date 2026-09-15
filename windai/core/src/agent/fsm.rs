@@ -52,9 +52,9 @@ impl TopicFsm {
             .unwrap_or(false)
     }
 
-    /// 归约事件并返回副作用。
+    /// 归约事件并返回副作用
     pub fn reduce(&mut self, event: FsmEvent) -> Vec<Effect> {
-        let mut effects: Vec<Effect> = vec![];
+        let mut effects: Vec<Effect> = Vec::with_capacity(5);
         match event {
             FsmEvent::Topic(topic_msg) => match topic_msg {
                 Command(topic_command) => self.reduce_topic_command(&mut effects, topic_command),
@@ -164,7 +164,7 @@ impl TopicFsm {
                 deny_ids,
                 allow_ids,
             } => {
-                // 只有 WaitingApproval 的任务才允许提交审批。
+                // 只有 WaitingApproval 的任务才允许提交审批
                 if self.task_state(instance_id) != Some(AgentStatus::WaitingApproval) {
                     log::warn!(
                         "[TopicCommand::Approval] approval rejected, task not waiting: {instance_id}"
@@ -190,10 +190,28 @@ impl TopicFsm {
     }
 
     fn apply_task(&mut self, effects: &mut Vec<Effect>, instance_id: i64, new_event: TaskEvent) {
+        let close_effect: Option<Effect> = self.close_main_stream_guard(&new_event, instance_id);
         if let Some(task) = self.tasks.get_mut(&instance_id) {
             effects.extend(task.reduce(new_event));
+            effects.extend(close_effect);
         } else {
             log::warn!("[TopicFsm] task not found: {instance_id}");
+        }
+    }
+
+    fn close_main_stream_guard(&mut self, event: &TaskEvent, instance_id: i64) -> Option<Effect> {
+        if self.is_main_instance(instance_id)
+            && matches!(
+                event,
+                TaskEvent::Cancelled
+                    | TaskEvent::ApprovalRequired { .. }
+                    | TaskEvent::Failed { .. }
+                    | TaskEvent::Finish { .. }
+            )
+        {
+            Some(Effect::CloseEventStream)
+        } else {
+            None
         }
     }
 }

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::env;
 
-/// 启动配置，从环境变量读取，带默认值。
+/// 启动配置，从环境变量读取，带默认值
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub host: String,

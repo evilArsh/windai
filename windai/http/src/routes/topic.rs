@@ -1,4 +1,4 @@
-use crate::dto::envelope::ApiResponse;
+use crate::dto::ApiResponse;
 use crate::extractor::{ApiPath, json_body};
 use crate::facade::topic::TopicFacade;
 use crate::state::AppState;
@@ -14,10 +14,6 @@ use wind_core::models::{CreateTopic, Topic, UpdateTopic};
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/topics", get(list_topics).post(create_topic))
-        .route(
-            "/api/v1/topics/by-binding/{binding_id}",
-            get(get_topic_by_binding),
-        )
         .route(
             "/api/v1/topics/{topic_id}",
             get(get_topic).put(update_topic).delete(delete_topic),
@@ -130,27 +126,4 @@ pub(crate) async fn delete_topic(
     ApiPath(topic_id): ApiPath<i64>,
 ) -> Json<ApiResponse<()>> {
     Json(TopicFacade::new(core).delete_topic(topic_id).await)
-}
-
-#[utoipa::path(
-    get,
-    summary = "按 binding 获取话题",
-    path = "/api/v1/topics/by-binding/{binding_id}",
-    params(
-        ("binding_id", Path, description = "Agent 绑定 ID"),
-    ),
-    responses(
-        (status = 200, description = "按 binding 获取话题", body = ApiResponse<Topic>),
-        (status = 404, description = "绑定不存在", body = ApiResponse<Value>)
-    )
-)]
-pub(crate) async fn get_topic_by_binding(
-    State(core): State<Arc<WindCore>>,
-    ApiPath(binding_id): ApiPath<i64>,
-) -> Json<ApiResponse<Topic>> {
-    Json(
-        TopicFacade::new(core)
-            .get_topic_by_binding(binding_id)
-            .await,
-    )
 }

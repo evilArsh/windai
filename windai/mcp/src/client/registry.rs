@@ -620,8 +620,8 @@ impl Registry {
         Ok(snapshot)
     }
 
-    /// 让 session 引用一个已运行的 client（内建等），只增加引用计数，不发起连接。
-    /// 仅对 `Connected` 生效（内建恒为 Connected）；未运行/连接中/断开中一律报 `ServerNotFound`。
+    /// 让 session 引用一个已运行的 client（内建等），只增加引用计数，不发起连接
+    /// 仅对 `Connected` 生效（内建恒为 Connected）；未运行/连接中/断开中一律报 `ServerNotFound`
     async fn attach_session(
         &mut self,
         session_id: &str,

@@ -9,9 +9,9 @@ pub trait BuiltinMcp {
 }
 
 pub async fn init_builtin(_registry: &mut Registry) {
-    // 特殊mcp，需要指定执行根目录
+    // 特殊 mcp，需要指定执行根目录
     // FsServer
     // SkillsServer
 
-    // 内建MCP server全局初始化
+    // 内建 MCP server 全局初始化
 }

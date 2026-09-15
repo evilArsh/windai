@@ -9,7 +9,7 @@ use wind_mcp::client::{ServerParams, TransportType};
 /// MCP 服务配置，(Stdio, Streamable-HTTP)
 #[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct McpServerParam {
-    /// 唯一id
+    /// 唯一 id
     pub id: i64,
     /// 传输类型
     pub r#type: TransportType,

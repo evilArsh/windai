@@ -65,7 +65,7 @@ impl From<reqwest::Error> for ClientError {
     }
 }
 
-/// 创建一个新的HTTP客户端
+/// 创建一个新的 HTTP 客户端
 /// # Panics
 /// 如果客户端创建失败则 Panic
 pub fn create_new() -> Client {
@@ -75,7 +75,7 @@ pub fn create_new() -> Client {
         .expect("create request client failed")
 }
 
-/// 获取全局HTTP客户端
+/// 获取全局 HTTP 客户端
 /// # Panics
 /// 如果客户端创建失败则 Panic
 pub fn get() -> Client {
@@ -112,7 +112,7 @@ where
     .await
 }
 
-/// 获取一次http响应body数据并返回bytes
+/// 获取一次 http 响应 body 数据并返回 bytes
 pub async fn handle_response(response: Response) -> Result<Bytes, ClientError> {
     match response.bytes().await {
         Ok(json_bytes) => Ok(json_bytes),

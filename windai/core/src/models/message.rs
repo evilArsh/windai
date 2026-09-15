@@ -7,17 +7,17 @@ use wind_ai::message;
 /// 消息结构
 #[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct Message {
-    /// 唯一id
+    /// 唯一 id
     pub id: i64,
-    /// 标识该响应所对应的原始用户消息ID
-    /// - 当为None时，该消息是用户消息
+    /// 标识该响应所对应的原始用户消息 ID
+    /// - 当为 None 时，该消息是用户消息
     pub from_id: Option<i64>,
-    /// 消息内容。
+    /// 消息内容
     /// - 在单次对话中，如果存在多轮工具调用，该字段按顺序记录所有的调用结果；
     /// 包含模型选择的工具列表，用户工具调用结果，以及模型自然语言回复
-    /// - 用户消息不存在多轮MCP对话，只有一个结果
+    /// - 用户消息不存在多轮 MCP 对话，只有一个结果
     pub content: Vec<message::Message>,
-    /// 模型ID
+    /// 模型 ID
     pub model_id: i64,
     /// 该消息属于指定 instance
     pub instance_id: i64,
@@ -25,11 +25,11 @@ pub struct Message {
     pub is_boundary: bool,
     /// 被排除的消息不会作为对话上下文
     ///
-    /// user-assistant消息对必须同时不被排除才能作为上下文
+    /// user-assistant 消息对必须同时不被排除才能作为上下文
     pub is_excluded: bool,
-    /// 用户输入的token数
+    /// 用户输入的 token 数
     pub input_tokens: i32,
-    /// 模型输出的token数
+    /// 模型输出的 token 数
     pub output_tokens: i32,
     /// 创建时间
     pub created_at: i64,
@@ -89,7 +89,7 @@ pub struct CreateMessage {
     pub model_id: i64,
     pub instance_id: i64,
     pub is_boundary: bool,
-    pub is_exclude: bool,
+    pub is_excluded: bool,
     pub input_tokens: i32,
     pub output_tokens: i32,
 }
@@ -99,11 +99,11 @@ pub struct CreateMessage {
 pub struct UpdateMessage {
     /// 消息内容
     pub content: Option<Vec<message::Message>>,
-    /// 模型ID
+    /// 模型 ID
     pub model_id: Option<i64>,
-    /// 用户输入的token数
+    /// 用户输入的 token 数
     pub input_tokens: Option<i32>,
-    /// 模型输出的token数
+    /// 模型输出的 token 数
     pub output_tokens: Option<i32>,
 }
 

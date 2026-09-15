@@ -8,7 +8,6 @@ use crate::{
     },
     select_fields,
     storage::TableName,
-    update,
 };
 
 use super::{
@@ -98,17 +97,7 @@ impl ToolApprovalStorage {
             .collect())
     }
 
-    /// 设置审批状态
-    pub async fn set_status(&self, id: i64, status: ToolApprovalStatus) -> Result<()> {
-        let mut qb = update!(
-            TableName::TOOL_APPROVAL_REQUESTS,
-            id,
-            ("status", Some(status.to_string()))
-        );
-        ensure_affected(self.executor.execute(qb.build()).await?)
-    }
-
-    /// 批量设置审批状态。
+    /// 批量设置审批状态
     pub async fn batch_set_status(&self, records: Vec<ApprovalRecord>) -> Result<()> {
         if records.is_empty() {
             return Ok(());

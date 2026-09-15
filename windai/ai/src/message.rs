@@ -106,8 +106,6 @@ impl Content {
 }
 
 /// 模型请求或响应信息
-///
-/// OpenAPI 中命名为 `AiMessage`，避免与 `wind_core::models::Message` 同名冲突。
 #[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone, Builder)]
 #[schema(as = AiMessage)]
 #[builder(setter(strip_option, into))]
@@ -124,9 +122,9 @@ pub struct Message {
     ///
     /// # 响应消息
     ///
-    /// 模型可能响应文本，图片，语音数据。
+    /// 模型可能响应文本，图片，语音数据
     ///
-    /// 模型为用户选择的 tool_calls 信息包含在单独的 [Self::tool_calls] 中。
+    /// 模型为用户选择的 tool_calls 信息包含在单独的 [Self::tool_calls] 中
     #[builder(default)]
     pub content: Vec<Content>,
     /// 推理消息
@@ -135,14 +133,14 @@ pub struct Message {
     /// 创建时间
     #[builder(default)]
     pub created_at: i64,
-    /// 用户输入的token数
+    /// 用户输入的 token 数
     #[builder(default)]
     pub input_tokens: i32,
-    /// 模型输出的token数
+    /// 模型输出的 token 数
     #[builder(default)]
     pub output_tokens: i32,
     /// 工具调用信息
-    /// - 模型为用户选择的工具调用信息，用户根据返回的信息调用MCP工具
+    /// - 模型为用户选择的工具调用信息，用户根据返回的信息调用 MCP 工具
     #[builder(default)]
     pub tool_calls: Option<Vec<FunctionCall>>,
 }

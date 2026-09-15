@@ -6,7 +6,7 @@ use std::{
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// 测试用临时目录，`Drop` 时自动清理。
+/// 测试用临时目录，`Drop` 时自动清理
 pub struct TempDir {
     path: PathBuf,
 }
@@ -20,7 +20,7 @@ impl TempDir {
         Self { path }
     }
 
-    /// 写入文件（自动创建父目录）。
+    /// 写入文件（自动创建父目录）
     pub fn write(&self, rel: &str, content: &str) {
         let path = self.path.join(rel_path(rel));
         if let Some(parent) = path.parent() {
@@ -34,7 +34,7 @@ impl TempDir {
     }
 }
 
-/// 把 `/` 分隔的相对路径按平台分隔符安全拼接，避免 Windows 上出现 `\` 与 `/` 混用。
+/// 把 `/` 分隔的相对路径按平台分隔符安全拼接，避免 Windows 上出现 `\` 与 `/` 混用
 pub fn rel_path(rel: &str) -> PathBuf {
     rel.split('/').collect()
 }

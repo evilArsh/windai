@@ -6,7 +6,7 @@ use wind_http::middleware::{request_id::request_id_layers, trace::trace_layer};
 async fn request_id_propagates() {
     let (set_id, propagate) = request_id_layers();
     // axum 链式 `.layer()` 自底向上执行，最后添加的层在最外层；
-    // 必须让 `set_id` 先执行（最外层）以生成请求头，`propagate` 随后读取并回传。
+    // 必须让 `set_id` 先执行（最外层）以生成请求头，`propagate` 随后读取并回传
     let app = Router::new()
         .route("/x", axum::routing::get(|| async { "ok" }))
         .layer(propagate)

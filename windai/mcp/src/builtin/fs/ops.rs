@@ -10,12 +10,12 @@ use std::{
 };
 use tokio::process::Command;
 
-/// 读文件单次默认上限（字节）。
+/// 读文件单次默认上限（字节）
 const MAX_READ_BYTES: usize = 1024 * 1024;
-/// 命令输出单流上限（字节）。
+/// 命令输出单流上限（字节）
 const MAX_OUTPUT_BYTES: usize = 32 * 1024;
 
-/// 扫描时忽略的目录名（语言特定依赖/构建产物，体积大）。
+/// 扫描时忽略的目录名（语言特定依赖/构建产物，体积大）
 const IGNORED_DIRS: &[&str] = &[
     "node_modules",
     "target",
@@ -28,10 +28,10 @@ const IGNORED_DIRS: &[&str] = &[
     "venv",
 ];
 
-/// 允许扫描的隐藏目录（以 `.` 开头）。
+/// 允许扫描的隐藏目录（以 `.` 开头）
 const ALLOWED_HIDDEN_DIRS: &[&str] = &[".skills", ".agents"];
 
-/// 判断目录是否应被忽略：隐藏目录（白名单除外）与语言特定大目录。
+/// 判断目录是否应被忽略：隐藏目录（白名单除外）与语言特定大目录
 fn is_ignored_dir(name: &str) -> bool {
     if name.starts_with('.') {
         return !ALLOWED_HIDDEN_DIRS.contains(&name);
@@ -163,9 +163,9 @@ pub enum EntryKind {
 pub struct ReadFileResult {
     pub path: String,
     pub content: String,
-    /// 实际读取的起始字节偏移。
+    /// 实际读取的起始字节偏移
     pub offset: u64,
-    /// 实际读取的字节数。
+    /// 实际读取的字节数
     pub limit: u64,
     pub truncated: bool,
     pub bytes: u64,
@@ -233,7 +233,7 @@ impl ExecResult {
     }
 }
 
-/// 扫描目录，返回根目录路径与文件/目录相对路径清单。
+/// 扫描目录，返回根目录路径与文件/目录相对路径清单
 pub fn list_dir(
     sandbox: &Sandbox,
     path: PathBuf,
@@ -276,10 +276,10 @@ pub fn list_dir(
     }
 }
 
-/// 读文本文件；按 `offset`/`limit` 分块读取，返回实际读取的偏移与字节数。
+/// 读文本文件；按 `offset`/`limit` 分块读取，返回实际读取的偏移与字节数
 ///
 /// `offset`/`limit` 均为字节。为避免 `limit` 在多字节 UTF-8 字符中间截断，
-/// 结束位置向下对齐到字符边界；`offset` 落在字符中间时同样向前对齐到字符边界。
+/// 结束位置向下对齐到字符边界；`offset` 落在字符中间时同样向前对齐到字符边界
 pub fn read_file(
     sandbox: &Sandbox,
     path: PathBuf,
@@ -319,7 +319,7 @@ pub fn read_file(
     }
 
     let file_meta = probe_file(&resolved);
-    // 向前多读 3 字节，以便 `offset` 落在多字节字符中间时能对齐到字符边界。
+    // 向前多读 3 字节，以便 `offset` 落在多字节字符中间时能对齐到字符边界
     let read_start = offset.saturating_sub(3);
     let read_end = offset.saturating_add(limit).min(total);
 
@@ -522,7 +522,7 @@ fn file_description(path: &Path) -> String {
     file_output(path, &[])
 }
 
-/// 返回不超过 `i` 的 UTF-8 字符边界（向下对齐）。
+/// 返回不超过 `i` 的 UTF-8 字符边界（向下对齐）
 fn char_boundary_down(buf: &[u8], i: usize) -> usize {
     let mut i = i.min(buf.len());
     while i > 0 {
@@ -534,7 +534,7 @@ fn char_boundary_down(buf: &[u8], i: usize) -> usize {
     i
 }
 
-/// 返回 `buf` 中最长的合法 UTF-8 前缀长度（去除末尾不完整的多字节字符）。
+/// 返回 `buf` 中最长的合法 UTF-8 前缀长度（去除末尾不完整的多字节字符）
 fn utf8_valid_prefix(buf: &[u8]) -> usize {
     match std::str::from_utf8(buf) {
         Ok(_) => buf.len(),
@@ -585,13 +585,13 @@ mod tests {
         }
     }
 
-    /// 把 `/` 分隔的相对路径按平台分隔符安全拼接，避免 Windows 上出现 `\` 与 `/` 混用。
+    /// 把 `/` 分隔的相对路径按平台分隔符安全拼接，避免 Windows 上出现 `\` 与 `/` 混用
     fn rel_path(rel: &str) -> PathBuf {
         rel.split('/').collect()
     }
 
     /// `rel_path` 的字符串形式，用于与 `list_dir` 返回的相对路径条目名比对
-    /// （`list_dir` 走的是 `strip_prefix`，返回平台原生分隔符）。
+    /// （`list_dir` 走的是 `strip_prefix`，返回平台原生分隔符）
     fn rel_name(rel: &str) -> String {
         rel_path(rel).to_string_lossy().into_owned()
     }
@@ -710,7 +710,7 @@ mod tests {
         dir.write("hello.txt", "你好世界".as_bytes());
 
         let sb = sandbox(&dir);
-        // limit=4 落在「好」（字节 3..6）中间，结束位置应裁剪到字符边界。
+        // limit=4 落在「好」（字节 3..6）中间，结束位置应裁剪到字符边界
         let result = read_file(&sb, dir.path().join("hello.txt"), None, Some(4));
 
         assert_eq!(result.content, "你");
@@ -725,7 +725,7 @@ mod tests {
         dir.write("hello.txt", "你好世界".as_bytes());
 
         let sb = sandbox(&dir);
-        // offset=4 落在「好」中间，起始位置应向前对齐到字符边界（字节 3）。
+        // offset=4 落在「好」中间，起始位置应向前对齐到字符边界（字节 3）
         let result = read_file(&sb, dir.path().join("hello.txt"), Some(4), None);
 
         assert_eq!(result.content, "好世界");

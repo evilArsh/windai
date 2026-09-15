@@ -34,7 +34,10 @@ impl TopicStorage {
             ("model_id", data.model_id),
             (
                 "tool_approval_policy",
-                serde_json::to_string(&data.tool_approval_policy)?
+                data.tool_approval_policy
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()?
             ),
             ("label", data.label.clone()),
             ("icon", data.icon.clone()),
@@ -60,13 +63,21 @@ impl TopicStorage {
             ("parent_id", data.parent_id),
             ("label", data.label),
             ("icon", data.icon),
+            ("model_id", data.model_id),
+            (
+                "tool_approval_policy",
+                data.tool_approval_policy
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()?
+            ),
         );
         ensure_affected(self.executor.execute(qb.build()).await?)
     }
 
     /// 获取所有 topic
     ///
-    /// 目前只获取根topic
+    /// 目前只获取根 topic
     pub async fn list_topics(&self) -> Result<Vec<Topic>> {
         let mut qb = Self::select_topic();
         qb.push(" WHERE parent_id IS NULL ");
@@ -104,10 +115,9 @@ impl TopicStorage {
         Ok(row)
     }
 
-    /// 删除 topic 及其直接关联数据。
+    /// 删除 topic 及其直接关联数据
     ///
-    /// 子 topic 不在此处级联，调用方需一并传入其 id。
-    /// TODO: 同时删除agent和topic映射表
+    /// 子 topic 不在此处级联，调用方需一并传入其 id
     pub async fn delete_topics(&self, ids: &[i64]) -> Result<()> {
         if ids.is_empty() {
             return Ok(());
@@ -124,8 +134,9 @@ impl TopicStorage {
 
                 // 删除只属于该 topic 的 agent_definitions
                 agent.batch_delete_definitions_by_topics(ids).await?;
-                // 删除该 topic 的 instance，连带 agent_instances / chat_configs /
-                // messages / tool_approval_requests
+                // 删除该 topic 的能力映射
+                agent.batch_delete_agent_maps_by_topics(ids).await?;
+                // 删除该 topic 的 instance，连带 messages / tool_approval_requests
                 agent.delete_instances(&instance_ids).await?;
                 // 兜底删除该 topic 下残留的审批记录
                 utils::batch_delete_in(
@@ -144,7 +155,15 @@ impl TopicStorage {
     fn select_topic<'a>() -> sqlx::QueryBuilder<'a, DbDriver> {
         select_fields!(
             TableName::TOPICS,
-            ("id", "parent_id", "label", "icon", "created_at")
+            (
+                "id",
+                "parent_id",
+                "label",
+                "icon",
+                "model_id",
+                "tool_approval_policy",
+                "created_at"
+            )
         )
     }
 }

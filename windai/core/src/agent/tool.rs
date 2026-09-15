@@ -8,21 +8,21 @@ pub const AGENT_TOOL_PREFIX: &str = "agent_";
 const LIST_AGENTS_NAME: &str = "agent_list_agents";
 const SPAWN_AGENT_NAME: &str = "agent_spawn_agent";
 
-/// list_agents 的响应。
+/// list_agents 的响应
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ListAgentsResponse {
-    /// 当前 Topic 中可见的 Agent 绑定视图。
-    pub agents: Vec<AgentBindingView>,
+    /// 当前 Topic 中可见的 Agent 能力清单
+    pub agents: Vec<AgentCatalog>,
 }
 
-/// 暴露给 LLM 的 Agent 绑定视图。
+/// 暴露给 LLM 的 Agent 能力视图
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct AgentBindingView {
-    /// AgentDefinition.key。
+pub struct AgentCatalog {
+    /// AgentDefinition.key
     pub key: String,
-    /// 当前 Topic 中配置的 Agent 别名。
+    /// 当前 Topic 中配置的 Agent 别名
     pub alias: Option<String>,
-    /// Agent 能力描述。
+    /// Agent 能力描述
     pub description: String,
 }
 
@@ -31,9 +31,9 @@ pub struct AgentBindingView {
 pub struct SpawnAgentRequest {
     /// AgentDefinition.key
     pub agent_key: String,
-    /// 子 Agent 运行模式。
+    /// 子 Agent 运行模式
     pub mode: AgentMode,
-    /// 分配给子 Agent 的任务描述。
+    /// 分配给子 Agent 的任务描述
     pub task: String,
 }
 impl std::fmt::Display for SpawnAgentRequest {
@@ -45,7 +45,7 @@ impl std::fmt::Display for SpawnAgentRequest {
         )
     }
 }
-/// 创建子 Agent 的响应。
+/// 创建子 Agent 的响应
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub struct SpawnAgentResponse {
@@ -56,13 +56,13 @@ pub struct SpawnAgentResponse {
 }
 
 pub struct AgentActionPlan {
-    /// 合并后的 list_agents 。
+    /// 合并后的 list_agents
     pub list_agents: Option<Vec<String>>,
-    /// 独立的 spawn_agent 调用。
+    /// 独立的 spawn_agent 调用
     pub spawn_agents: Vec<SpawnAgentAction>,
 }
 
-/// 单个 spawn_agent 调用。
+/// 单个 spawn_agent 调用
 pub struct SpawnAgentAction {
     pub call_id: String,
     pub data: SpawnAgentRequest,
@@ -92,8 +92,8 @@ pub fn list_catalogs() -> Vec<Tools> {
                     },
                     "mode": {
                         "type": "string",
-                        "enum": ["sync", "background", "fork"],
-                        "description": "Operating mode after agent creation"
+                        "enum": ["sync", "fork"],
+                        "description": "Agent run mode."
                     },
                     "task": {
                         "type": "string",
@@ -107,10 +107,10 @@ pub fn list_catalogs() -> Vec<Tools> {
     ]
 }
 
-/// 解析并合并 Agent 工具调用。
+/// 解析并合并 Agent 工具调用
 ///
 /// 多个 `list_agents` 调用会被合并为一次查询，`call_ids` 收集所有原始 call ID；
-/// 无 `list_agents` 调用时返回 `None`。
+/// 无 `list_agents` 调用时返回 `None`
 pub fn parse_agent_action(calls: &[FunctionCall]) -> Result<AgentActionPlan> {
     let mut list_call_ids: Vec<String> = Vec::new();
     let mut spawn_agents: Vec<SpawnAgentAction> = Vec::new();

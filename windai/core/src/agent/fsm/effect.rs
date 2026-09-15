@@ -22,9 +22,9 @@ pub enum Effect {
     Emit(TopicEvent),
     /// 启动 AgentRuntime
     Start { spec: TaskSpec },
-    /// 审批后恢复运行。
+    /// 审批后恢复运行
     Resume { instance_id: i64 },
-    /// 取消 Agent 任务。
+    /// 取消 Agent 任务
     Cancel { instance_id: i64 },
     /// 创建子 Agent
     SpawnChild {
@@ -40,8 +40,10 @@ pub enum Effect {
         allow_ids: Vec<i64>,
         deny_ids: Vec<i64>,
     },
-    /// 终止整个 topic runtime。
+    /// 终止整个 topic runtime
     StopRuntime,
+    /// 关闭 topic 任务事件流
+    CloseEventStream,
     /// 初始化任务
     Init { user_input: Vec<Content> },
     /// agent 发出审批请求
@@ -124,6 +126,7 @@ impl std::fmt::Display for Effect {
                 (name_ref, format!("(instance_id = {instance_id})"))
             }
             Effect::StopRuntime => (name_ref, String::new()),
+            Effect::CloseEventStream => (name_ref, String::new()),
             Effect::Init { .. } => (name_ref, String::new()),
             Effect::ApprovalRequest { .. } => (name_ref, String::new()),
             Effect::Completed { instance_id, .. } => {

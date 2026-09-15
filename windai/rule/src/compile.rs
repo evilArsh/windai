@@ -33,6 +33,9 @@ impl RuleSet {
             ops: Self::parse(json)?,
         })
     }
+    /// 把一段规则 JSON 解析出的指令追加到当前指令集末尾
+    ///
+    /// 供调用方分多次拼装规则；目前仓库内暂无调用方
     pub fn append_rule_str(&mut self, json: &str) -> Result<()> {
         self.ops.append(&mut Self::parse(json)?);
         Ok(())
@@ -162,7 +165,7 @@ impl CompiledOp {
     /// 1. [CompiledOp::Set]
     ///
     /// 如果路径不存在，将会在 body 上创建对象并设置值,
-    /// 如果子路径存在非 Object 值，则此次操作将失败。
+    /// 如果子路径存在非 Object 值，则此次操作将失败
     /// 比如在以下 body 中设置路径 `foo.bar.zoo` 的值会失败：
     /// ```json
     /// {
@@ -179,13 +182,13 @@ impl CompiledOp {
     ///
     /// 3. [CompiledOp::MapValue]
     ///
-    /// 根据指定字段值的条件，映射出新的字段值。
+    /// 根据指定字段值的条件，映射出新的字段值
     ///
     /// 如果指定的字段值不存在，则跳过
     ///
     /// 4. [CompiledOp::Compute]
     ///
-    /// 对一个指定的路径求值。
+    /// 对一个指定的路径求值
     ///
     /// 内建函数参考： [https://crates.io/crates/evalexpr]
     /// 5. [CompiledOp::When]
@@ -393,7 +396,7 @@ fn evalexpr_to_json(v: evalexpr::Value) -> Value {
     }
 }
 
-/// 将 map_value 产生的目标对象合并到 body 根级别。
+/// 将 map_value 产生的目标对象合并到 body 根级别
 /// TODO: 考虑以下情况
 ///
 /// ```json
@@ -407,7 +410,7 @@ fn evalexpr_to_json(v: evalexpr::Value) -> Value {
 /// {"thinking": {"type": "disabled", foo: "bar"}}
 /// ```
 ///
-/// 可以考虑是否 skip 已有字段，skip后
+/// 可以考虑是否 skip 已有字段，skip 后
 ///
 /// ```json
 /// {"thinking": {"type": "enabled",foo: "bar"}}

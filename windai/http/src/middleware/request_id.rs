@@ -3,7 +3,7 @@ use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetReques
 
 pub const X_REQUEST_ID: &str = "x-request-id";
 
-/// 返回 (set_id, propagate)。set_id 生成 UUID，propagate 回传请求头。
+/// 返回 (set_id, propagate)。set_id 生成 UUID，propagate 回传请求头
 pub fn request_id_layers() -> (SetRequestIdLayer<MakeRequestUuid>, PropagateRequestIdLayer) {
     let header = HeaderName::from_static(X_REQUEST_ID);
     (

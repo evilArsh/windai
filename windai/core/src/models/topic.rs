@@ -5,9 +5,9 @@ use sqlx::Row;
 /// 对话话题
 #[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone)]
 pub struct Topic {
-    /// 唯一id
+    /// 唯一 id
     pub id: i64,
-    /// 父话题id
+    /// 父话题 id
     pub parent_id: Option<i64>,
     /// 话题标签
     pub label: String,
@@ -59,7 +59,7 @@ impl Default for ToolApprovalPolicy {
 /// 新增话题
 #[derive(utoipa::ToSchema, Serialize, Deserialize, Debug, Clone)]
 pub struct CreateTopic {
-    /// 父话题id
+    /// 父话题 id
     pub parent_id: Option<i64>,
     /// 话题标签
     pub label: String,
@@ -67,22 +67,22 @@ pub struct CreateTopic {
     pub icon: Option<String>,
     /// 使用的模型 id
     pub model_id: Option<i64>,
-    /// 工具审批策略。
+    /// 工具审批策略
     pub tool_approval_policy: Option<ToolApprovalPolicy>,
 }
 
 /// 更新话题
 #[derive(utoipa::ToSchema, Serialize, Deserialize, Debug, Clone)]
 pub struct UpdateTopic {
-    /// 父话题id
+    /// 父话题 id
     pub parent_id: Option<i64>,
     /// 话题标签
     pub label: Option<String>,
     /// 话题图标
     pub icon: Option<String>,
-    /// 新的模型 id。
+    /// 新的模型 id
     pub model_id: Option<i64>,
-    /// 工具审批策略。
+    /// 工具审批策略
     pub tool_approval_policy: Option<ToolApprovalPolicy>,
 }
 

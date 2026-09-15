@@ -78,10 +78,6 @@ impl TaskFsm {
         }
     }
 
-    pub fn instance_id(&self) -> i64 {
-        self.instance_id
-    }
-
     pub fn state(&self) -> AgentStatus {
         self.state
     }

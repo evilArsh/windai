@@ -11,12 +11,10 @@ license.workspace = true
 default = [
     "sqlite",
     # "postgres",
-    # "mysql",
 ]
 
 sqlite = ["sqlx/sqlite"]
 postgres = ["sqlx/postgres"]
-mysql = ["sqlx/mysql"]
 
 [dependencies]
 wind-mcp = { path = "../mcp" }

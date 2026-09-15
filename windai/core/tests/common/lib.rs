@@ -87,11 +87,18 @@ fn var(name: &str) -> Result<String, std::env::VarError> {
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use std::str::FromStr;
-use wind_core::WindCore;
+use wind_core::{
+    WindCore,
+    models::{
+        AgentDefinition, AgentDefinitionData, CreateAgentDefinition, CreateCredentials,
+        CreateModel, CreateProvider, CreateTopic, Model, ModelConfig, ModelType,
+        ToolApprovalPolicy, Topic,
+    },
+};
 use wind_mcp::client::registry::RegistryHandle;
 
 #[allow(dead_code)]
-async fn init_test_pool() -> sqlx::SqlitePool {
+pub async fn init_test_pool() -> sqlx::SqlitePool {
     let options = SqliteConnectOptions::from_str("sqlite::memory:")
         .unwrap()
         .shared_cache(true)
@@ -120,6 +127,85 @@ pub async fn init_test_core_with_registry(registry: RegistryHandle) -> WindCore 
     WindCore::init_with_pool_and_registry(pool, registry)
         .await
         .unwrap()
+}
+
+/// 播种一个启用的 AgentDefinition
+#[allow(dead_code)]
+pub async fn seed_definition(core: &WindCore, key: &str) -> AgentDefinition {
+    core.storage()
+        .agent()
+        .create_definition(CreateAgentDefinition {
+            name: key.to_string(),
+            key: key.to_string(),
+            description: format!("{key} description"),
+            owner_topic_id: None,
+            cloned_from_id: None,
+            active: Some(true),
+            data: AgentDefinitionData::default(),
+        })
+        .await
+        .expect("create fixture definition")
+}
+
+/// 播种 provider + credential + model + topic，供不发起真实请求的测试复用
+#[allow(dead_code)]
+pub async fn seed_chat_fixture(core: &WindCore, label: &str) -> (Model, Topic) {
+    let provider = core
+        .storage()
+        .provider()
+        .create(CreateProvider {
+            name: format!("fixture-{label}"),
+            description: None,
+            base_url: "https://example.invalid".into(),
+            doc: None,
+            alias: None,
+        })
+        .await
+        .expect("create fixture provider");
+
+    core.storage()
+        .provider()
+        .create_credentials(CreateCredentials {
+            provider_id: provider.id,
+            key: "fixture-key".into(),
+        })
+        .await
+        .expect("create fixture credentials");
+
+    let model = core
+        .storage()
+        .model()
+        .create(CreateModel {
+            name: "fixture-model".into(),
+            provider_id: provider.id,
+            alias: None,
+            adapter: AdapterType::OpenAICompletion,
+            modalities: Some(vec![ModelType::Chat]),
+            active: Some(true),
+            icon: None,
+            endpoint: None,
+            config: Some(ModelConfig {
+                stream: Some(false),
+                reasoning: None,
+            }),
+        })
+        .await
+        .expect("create fixture model");
+
+    let topic = core
+        .storage()
+        .topic()
+        .create(CreateTopic {
+            parent_id: None,
+            label: format!("fixture-topic-{label}"),
+            icon: None,
+            model_id: Some(model.id),
+            tool_approval_policy: Some(ToolApprovalPolicy::AllowAll),
+        })
+        .await
+        .expect("create fixture topic");
+
+    (model, topic)
 }
 
 // ---------------------------------------------------------------------------

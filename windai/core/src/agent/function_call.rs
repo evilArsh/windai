@@ -20,7 +20,7 @@ pub fn build_tools_from_mcp(mcp_tools: Vec<McpTool>) -> Vec<Tools> {
         })
         .collect()
 }
-/// 并发执行函数调用。
+/// 并发执行函数调用
 pub async fn execute_tool_calls(
     mcp_registry: &RegistryHandle,
     tool_calls: &[FunctionCall],
@@ -71,8 +71,9 @@ pub async fn execute_tool_calls(
     ))
 }
 
-/// 根据审批策略拆分可自动执行和需要人工审批的工具调用。
-/// 当不存在审批策略时，所有工具调用都自动执行。
+/// 根据审批策略拆分可自动执行和需要人工审批的工具调用
+///
+/// 当不存在审批策略时，所有工具调用都自动执行
 ///
 /// (自动审批, 手动审批)
 pub fn partition_tool_calls_by_policy(

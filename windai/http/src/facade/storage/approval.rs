@@ -1,4 +1,4 @@
-use crate::dto::envelope::{ApiResponse, map_core_error};
+use crate::dto::{ApiResponse, map_core_error};
 use std::sync::Arc;
 use wind_core::WindCore;
 use wind_core::models::ToolApprovalRequest;
@@ -41,15 +41,15 @@ impl ToolApprovalFacade {
         }
     }
 
-    pub async fn list_pending_by_binding(
+    pub async fn list_pending_by_instance(
         &self,
-        binding_id: i64,
+        instance_id: i64,
     ) -> ApiResponse<Vec<ToolApprovalRequest>> {
         match self
             .core
             .storage()
             .approval()
-            .list_pending_by_instance(binding_id)
+            .list_pending_by_instance(instance_id)
             .await
         {
             Ok(rows) => ApiResponse::ok(rows),

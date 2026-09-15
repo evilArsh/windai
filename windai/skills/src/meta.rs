@@ -1,4 +1,4 @@
-//! SKILL.md 解析与元数据。
+//! SKILL.md 解析与元数据
 
 use crate::{Error, Result, SKILL_NAME};
 use schemars::JsonSchema;
@@ -48,12 +48,12 @@ pub struct SkillsMeta {
     pub allowed_tools: Option<String>,
 }
 
-/// 从 skill 根目录读取并解析 `SKILL.md` 的 frontmatter。
+/// 从 skill 根目录读取并解析 `SKILL.md` 的 frontmatter
 ///
 /// `dir` 是 skill 根目录路径（`SKILL.md` 的父目录）；函数读取 `dir/SKILL.md`，
-/// 解析其 YAML frontmatter，并将 `skill_dir` 设为该目录的绝对路径。
+/// 解析其 YAML frontmatter，并将 `skill_dir` 设为该目录的绝对路径
 ///
-/// 宽松模式：超长字段截断、非字符串字段值忽略；但 `name`/`description` 必须存在且非空。
+/// 宽松模式：超长字段截断、非字符串字段值忽略；但 `name`/`description` 必须存在且非空
 pub fn from_path(dir: PathBuf) -> Result<SkillsMeta> {
     let skill_file = dir.join(SKILL_NAME);
     if !skill_file.is_file() {
@@ -69,7 +69,7 @@ pub fn from_path(dir: PathBuf) -> Result<SkillsMeta> {
     Ok(meta)
 }
 
-/// 解析 frontmatter YAML 为 [`SkillsMeta`]（`skill_dir` 留空，由调用方填充）。
+/// 解析 frontmatter YAML 为 [`SkillsMeta`]（`skill_dir` 留空，由调用方填充）
 fn parse_frontmatter(frontmatter: &str) -> Result<SkillsMeta> {
     let docs = YamlLoader::load_from_str(frontmatter).map_err(|e| Error::Yaml(e.to_string()))?;
     let doc = docs
@@ -101,13 +101,13 @@ fn parse_frontmatter(frontmatter: &str) -> Result<SkillsMeta> {
     })
 }
 
-/// 从 mapping 取字符串字段值。
+/// 从 mapping 取字符串字段值
 fn get_str<'a>(hash: &'a Hash, key: &str) -> Option<&'a str> {
     hash.get(&Yaml::String(key.to_string()))
         .and_then(Yaml::as_str)
 }
 
-/// 提取 `metadata` 映射；仅保留字符串值，非字符串值忽略。
+/// 提取 `metadata` 映射；仅保留字符串值，非字符串值忽略
 fn get_metadata(hash: &Hash) -> Option<HashMap<String, String>> {
     let md = hash.get(&Yaml::String("metadata".to_string()))?.as_hash()?;
     let map = md
@@ -117,7 +117,7 @@ fn get_metadata(hash: &Hash) -> Option<HashMap<String, String>> {
     Some(map)
 }
 
-/// 提取 frontmatter：以顶格 `---` 起始、以顶格 `---` 结束之间的内容。
+/// 提取 frontmatter：以顶格 `---` 起始、以顶格 `---` 结束之间的内容
 fn extract_frontmatter(content: &str) -> Result<String> {
     let content = content.strip_prefix('\u{feff}').unwrap_or(content);
     let mut lines = content.lines();
@@ -137,7 +137,7 @@ fn extract_frontmatter(content: &str) -> Result<String> {
     Err(Error::FrontmatterNotFound)
 }
 
-/// 按字符数截断，避免切断 UTF-8 多字节字符。
+/// 按字符数截断，避免切断 UTF-8 多字节字符
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() > max {
         s.chars().take(max).collect()
@@ -146,7 +146,7 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-/// 返回目录的规范化绝对路径。
+/// 返回目录的规范化绝对路径
 fn absolute_dir(dir: &PathBuf) -> Result<String> {
     std::fs::canonicalize(dir)
         .map(|p| p.to_string_lossy().into_owned())

@@ -1,5 +1,4 @@
 use crate::{
-    JsonObject,
     eventsource::Event,
     message::Message,
     model::{AdapterType, Model},

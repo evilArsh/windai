@@ -4,7 +4,7 @@ use serde_json::Value;
 use wind_ai::{model::AdapterType, provider::adapter::get_default_endpoint};
 use wind_rule::{EvalContext, RuleSet};
 
-/// 构建传递给JsonRule转换函数的上下文对象。
+/// 构建传递给 JsonRule 转换函数的上下文对象
 fn build_context(
     provider_name: &str,
     model_name: &str,
@@ -27,7 +27,7 @@ pub fn build_rule(rule: Option<&JsonRule>) -> Result<Option<RuleSet>> {
     Ok(rule)
 }
 
-/// 执行 Json规则 转换
+/// 执行 Json 规则 转换
 /// - rule 为空时，不做处理
 pub fn apply_json_rule(
     rule: Option<&RuleSet>,
@@ -56,6 +56,7 @@ pub fn apply_json_rule(
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::models::{ModelConfig, ReasonEffort};
     use serde_json::json;
     use wind_ai::{
         JsonObject, chat::build_request, model::Model, provider::adapter::get_chat_adapter,
@@ -97,6 +98,13 @@ mod test {
             config: Some(config),
         };
         build_request(&*chat_adapter, &model, &[], Some(&[])).unwrap()
+    }
+
+    /// 按生产路径（`ModelConfig`）生成请求配置
+    fn model_config(stream: Option<bool>, reasoning: Option<ReasonEffort>) -> JsonObject {
+        ModelConfig { stream, reasoning }
+            .to_json_obj()
+            .expect("model config to json")
     }
 
     /// 编译 JSON 规则字符串并应用到请求体上（等价于生产路径）
@@ -172,8 +180,7 @@ mod test {
 
     #[test]
     fn test_json_rule_reasoning_enabled() {
-        let mut config = JsonObject::new();
-        config.insert("reasoning".to_string(), serde_json::json!(true));
+        let config = model_config(None, Some(ReasonEffort::Medium));
 
         let mut req_body = build_body(AdapterType::OpenAICompletion, config);
         // 前置：adapter 生成了可被规则消费的 reasoning_effort 字段
@@ -197,8 +204,7 @@ mod test {
     #[test]
     fn test_json_rule_reasoning_disabled() {
         // reasoning 未开启时 adapter 不生成 reasoning_effort
-        let mut config = JsonObject::new();
-        config.insert("reasoning".to_string(), serde_json::json!(false));
+        let config = model_config(None, None);
 
         let mut req_body = build_body(AdapterType::OpenAICompletion, config);
         assert!(req_body.get("reasoning_effort").is_none());
@@ -218,11 +224,10 @@ mod test {
 
     #[test]
     fn completion_compute_caps_max_tokens() {
-        let mut config = JsonObject::new();
-        config.insert("max_tokens".to_string(), serde_json::json!(8192));
-
-        let mut req_body = build_body(AdapterType::OpenAICompletion, config);
-        assert_eq!(req_body["max_completion_tokens"], 8192);
+        let mut req_body = build_body(AdapterType::OpenAICompletion, model_config(None, None));
+        // adapter 尚未把 model.config 的其余字段并入请求体（见 provider/adapter/openai_completion.rs
+        // 的 `merge model.config` TODO），这里直接注入规则作用的目标字段
+        req_body["max_completion_tokens"] = json!(8192);
 
         apply_rule_json(
             &mut req_body,
@@ -238,12 +243,14 @@ mod test {
 
     #[test]
     fn completion_set_and_remove_fields() {
-        let mut config = JsonObject::new();
-        config.insert("stream".to_string(), serde_json::json!(false));
-        config.insert("temperature".to_string(), serde_json::json!(0.5));
-
-        let mut req_body = build_body(AdapterType::OpenAICompletion, config);
+        let mut req_body = build_body(
+            AdapterType::OpenAICompletion,
+            model_config(Some(false), None),
+        );
         assert_eq!(req_body["stream"], false);
+        // adapter 尚未把 model.config 的其余字段并入请求体（见 provider/adapter/openai_completion.rs
+        // 的 `merge model.config` TODO），这里注入一个待移除的调优字段
+        req_body["temperature"] = json!(0.5);
         assert_eq!(req_body["temperature"], 0.5);
 
         // 真实调优场景：强制流式输出 + 去掉 temperature
@@ -267,8 +274,7 @@ mod test {
 
     #[test]
     fn responses_set_reasoning_effort() {
-        let mut config = JsonObject::new();
-        config.insert("reasoning".to_string(), serde_json::json!(true));
+        let config = model_config(None, Some(ReasonEffort::Medium));
 
         let mut req_body = build_body(AdapterType::OpenAIResponse, config);
         // responses API 用嵌套对象 reasoning.effort，而非 completion 的 reasoning_effort 字符串
@@ -288,10 +294,11 @@ mod test {
 
     #[test]
     fn responses_compute_caps_max_output_tokens() {
-        let mut config = JsonObject::new();
-        config.insert("max_tokens".to_string(), serde_json::json!(4096));
-        let mut req_body = build_body(AdapterType::OpenAIResponse, config);
-        assert_eq!(req_body["max_output_tokens"], 4096);
+        let mut req_body = build_body(AdapterType::OpenAIResponse, model_config(None, None));
+        // responses adapter 把 max_output_tokens 硬编码为 None、尚未从 model.config 透传
+        // （provider/adapter/openai_responses.rs 的请求构造处无 TODO 标注），
+        // 这里直接注入规则作用的目标字段
+        req_body["max_output_tokens"] = json!(4096);
 
         apply_rule_json(
             &mut req_body,

@@ -40,8 +40,8 @@ impl TopicRuntimeHandle {
 
     /// 订阅当前对话的事件流
     ///
-    /// 主任务进入 Idle 或 runtime 停止时，该 channel 被关闭。
-    /// 每次新对话需重新订阅
+    /// 主任务进入终态（Finished / Failed / Cancelled）、等待审批，或 runtime 停止时，
+    /// 该 channel 被关闭。每次新对话需重新订阅
     pub async fn subscribe(&self) -> Result<broadcast::Receiver<TopicEvent>> {
         self.ensure_alive()?;
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -107,7 +107,7 @@ pub struct TopicRuntime {
 }
 
 impl TopicRuntime {
-    /// 创建顶层Topic运行时
+    /// 创建顶层 Topic 运行时
     pub fn spawn(
         ctx: CancellationToken,
         topic_id: i64,
@@ -160,14 +160,12 @@ impl TopicRuntime {
         }
     }
 
-    /// 归约 FSM 事件并执行副作用。
+    /// 归约 FSM 事件并执行副作用
     ///
-    /// 副作用执行过程中可能产生新的 FSM 事件。
+    /// 副作用执行过程中可能产生新的 FSM 事件
     ///
     /// 采用深度优先策略：一个 effect 执行后产生的 follow_up 事件会立即归约
-    /// 执行，直到其副作用链全部完成，才继续处理下一个同级 effect。这保证每个
-    /// effect 的完整副作用（含广播事件）都在后续 effect（如 CloseEventStream）
-    /// 生效前全部发出。
+    /// 执行，直到其副作用链全部完成，才继续处理下一个同级 effect
     async fn apply(&mut self, event: FsmEvent) {
         let mut queue = VecDeque::new();
         queue.push_back(event);
@@ -195,7 +193,7 @@ impl TopicRuntime {
         }
     }
 
-    /// 执行副作用seam
+    /// 执行副作用 seam
     async fn execute(&mut self, effect: Effect) -> Option<Vec<FsmEvent>> {
         log::debug!("{}", effect);
         match effect {
@@ -245,7 +243,7 @@ impl TopicRuntime {
                 calls,
             } => {
                 let message_id = data.id;
-                let res = match self
+                let event = match self
                     .task_mgr
                     .persist_approval_state(self.topic_id, instance_id, data.clone(), calls)
                     .await
@@ -264,10 +262,7 @@ impl TopicRuntime {
                         },
                     }]),
                 };
-                if self.fsm.is_main_instance(instance_id) {
-                    self.close_event_stream();
-                }
-                res
+                event
             }
             Effect::Completed {
                 instance_id,
@@ -290,9 +285,6 @@ impl TopicRuntime {
                             data: Some(data),
                         },
                     }),
-                }
-                if self.fsm.is_main_instance(instance_id) {
-                    self.close_event_stream();
                 }
                 Some(event)
             }
@@ -321,9 +313,6 @@ impl TopicRuntime {
                     message_id,
                     error: error.clone(),
                 }));
-                if self.fsm.is_main_instance(instance_id) {
-                    self.close_event_stream();
-                }
                 Some(event)
             }
             Effect::Canceled {
@@ -333,13 +322,14 @@ impl TopicRuntime {
             } => {
                 let event =
                     self.handle_pending(instance_id, status, vec![Content::new_text(error)]);
-                if self.fsm.is_main_instance(instance_id) {
-                    self.close_event_stream();
-                }
                 Some(event)
             }
             Effect::StopRuntime => {
                 self.cancel_all();
+                None
+            }
+            Effect::CloseEventStream => {
+                self.close_event_stream();
                 None
             }
             Effect::Cancel { instance_id } => match self.task_mgr.cancel(instance_id).await {

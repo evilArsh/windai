@@ -28,7 +28,7 @@ pub struct WindCore {
 }
 
 impl WindCore {
-    /// 使用本地SQLite数据库初始化。
+    /// 使用本地 SQLite 数据库初始化
     ///
     /// 使用 `WIND_ROOT_DIR` 环境变量设置根路径
     ///
@@ -42,12 +42,12 @@ impl WindCore {
     pub async fn init_memory() -> Result<Self> {
         Self::init("sqlite::memory:").await
     }
-    /// 使用外部构建的连接池初始化，供测试使用。
+    /// 使用外部构建的连接池初始化，供测试使用
     pub async fn init_with_pool(pool: DbPool) -> Result<Self> {
         Self::init_with_pool_and_registry(pool, Registry::new()).await
     }
 
-    /// 使用外部构建的连接池和 MCP registry 初始化，供测试复用 MCP 服务。
+    /// 使用外部构建的连接池和 MCP registry 初始化，供测试复用 MCP 服务
     pub async fn init_with_pool_and_registry(pool: DbPool, mcp: RegistryHandle) -> Result<Self> {
         storage::init_id_generator(0);
         schema::init_schema(&pool).await?;
@@ -96,19 +96,28 @@ impl WindCore {
 
         let mut map = self.topic_handler.lock().unwrap();
         match map.entry(topic_id) {
+            Entry::Occupied(mut entry) if entry.get().is_stopped() => {
+                let handler = self.spawn_topic_handler(topic_id);
+                entry.insert(handler.clone());
+                handler
+            }
             Entry::Occupied(entry) => entry.get().clone(),
             Entry::Vacant(entry) => {
-                let handler = TopicRuntime::spawn(
-                    self.ctx.child_token(),
-                    topic_id,
-                    self.mcp.clone(),
-                    self.storage.clone(),
-                );
-                let cloned = handler.clone();
-                entry.insert(handler);
-                cloned
+                let handler = self.spawn_topic_handler(topic_id);
+                entry.insert(handler.clone());
+                handler
             }
         }
+    }
+
+    /// 生成 topic 运行时
+    fn spawn_topic_handler(&self, topic_id: i64) -> TopicRuntimeHandle {
+        TopicRuntime::spawn(
+            self.ctx.child_token(),
+            topic_id,
+            self.mcp.clone(),
+            self.storage.clone(),
+        )
     }
     /// 关闭所有服务
     /// - 关闭所有 MCP 客户端

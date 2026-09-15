@@ -1,5 +1,5 @@
 use std::sync::OnceLock;
-use wind_ai::message::{Content, ReqConfig};
+use wind_ai::message::Content;
 use wind_core::WindCore;
 use wind_core::models::*;
 use wind_mcp::client::registry::{Registry, RegistryHandle};
@@ -102,7 +102,7 @@ async fn seed_chat_data(core: &WindCore, label: &str) -> TestContext {
         .provider()
         .get_by_name(&provider_name)
         .await
-        .unwrap()
+        .expect("get provider by name")
     {
         Some(p) => p,
         None => core
@@ -116,7 +116,7 @@ async fn seed_chat_data(core: &WindCore, label: &str) -> TestContext {
                 alias: None,
             })
             .await
-            .unwrap(),
+            .expect("create provider"),
     };
 
     core.storage()
@@ -126,7 +126,7 @@ async fn seed_chat_data(core: &WindCore, label: &str) -> TestContext {
             key: env.test_key.clone(),
         })
         .await
-        .unwrap();
+        .expect("create credentials");
 
     let model = core
         .storage()
@@ -140,9 +140,13 @@ async fn seed_chat_data(core: &WindCore, label: &str) -> TestContext {
             active: Some(true),
             icon: None,
             endpoint: env.test_endpoint.clone(),
+            config: Some(ModelConfig {
+                stream: Some(false),
+                reasoning: None,
+            }),
         })
         .await
-        .unwrap();
+        .expect("create model");
 
     let topic = core
         .storage()
@@ -151,9 +155,11 @@ async fn seed_chat_data(core: &WindCore, label: &str) -> TestContext {
             parent_id: None,
             label: format!("test-chat-{}", label),
             icon: None,
+            model_id: Some(model.id),
+            tool_approval_policy: Some(ToolApprovalPolicy::AllowAll),
         })
         .await
-        .unwrap();
+        .expect("create topic");
 
     TestContext {
         provider,
@@ -176,36 +182,25 @@ async fn test_agent_chat() {
 
     let mut agents = vec![];
     for a in test_agent_group1() {
-        let agent_def = wc.storage().agent().create_definition(a).await.unwrap();
-        agents.push(agent_def);
+        agents.push(
+            wc.storage()
+                .agent()
+                .create_definition(a)
+                .await
+                .expect("create definition"),
+        );
     }
 
-    let conf = wc
-        .storage()
-        .topic()
-        .create_chat_config(ReqConfig {
-            stream: Some(false),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-
-    for (i, agent) in agents.iter().enumerate() {
+    // 全部 agent 进入 topic 能力映射
+    for agent in agents.iter() {
         wc.storage()
             .agent()
-            .create_instance(CreateInstance {
+            .create_topic_agent_map(CreateTopicAgentMap {
                 topic_id: ctx.topic.id,
                 agent_id: agent.id,
-                role: match i {
-                    0 => AgentRole::Main,
-                    _ => AgentRole::Child,
-                },
-                model_id: Some(ctx.model.id),
-                chat_config_id: Some(conf.id),
-                enabled: Some(true),
             })
             .await
-            .unwrap();
+            .expect("create agent map");
     }
 
     let defs = wc
@@ -213,12 +208,12 @@ async fn test_agent_chat() {
         .agent()
         .list_sub_definitions_by_topic(ctx.topic.id)
         .await
-        .unwrap();
-    // 除开主agent
-    assert!(defs.len() == agents.len() - 1);
+        .expect("list sub definitions");
+    // 不过滤任何 agent：主 Agent 偏好与禁用项同样返回
+    assert_eq!(defs.len(), agents.len());
 
     let engine = wc.fetch_topic(ctx.topic.id);
-    let mut event_rx = engine.subscribe().await.unwrap();
+    let mut event_rx = engine.subscribe().await.expect("subscribe topic events");
     let hdl = tokio::spawn(async move {
         loop {
             match event_rx.recv().await {
@@ -227,7 +222,7 @@ async fn test_agent_chat() {
             }
         }
     });
-    engine.create_task(user_input).await.unwrap();
-    hdl.await.unwrap();
+    engine.create_task(user_input).await.expect("create task");
+    hdl.await.expect("event logger task");
     let _ = engine.shutdown().await;
 }

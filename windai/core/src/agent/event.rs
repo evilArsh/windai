@@ -19,9 +19,9 @@ pub enum TopicEvent {
     Error {
         /// 来自 Agent 实例的错误
         instance_id: Option<i64>,
-        /// 话题id
+        /// 话题 id
         topic_id: i64,
-        /// 消息id
+        /// 消息 id
         message_id: Option<i64>,
         /// 错误信息
         error: String,
@@ -30,14 +30,14 @@ pub enum TopicEvent {
     Snapshot {
         /// agent 实例 id
         instance_id: i64,
-        /// 话题id
+        /// 话题 id
         topic_id: i64,
         /// 全量消息
         messages: Vec<Message>,
     },
     /// 消息已创建
     MessageCreated {
-        /// 话题id
+        /// 话题 id
         topic_id: i64,
         /// instance id
         instance_id: i64,
@@ -48,9 +48,9 @@ pub enum TopicEvent {
     Message {
         /// agent 实例 id
         instance_id: i64,
-        /// 话题id
+        /// 话题 id
         topic_id: i64,
-        /// 消息id
+        /// 消息 id
         message_id: i64,
         /// 消息索引，用于标识消息顺序
         index: i32,
@@ -61,16 +61,16 @@ pub enum TopicEvent {
     MessageFinished {
         /// agent 实例 id
         instance_id: i64,
-        /// 话题id
+        /// 话题 id
         topic_id: i64,
-        // 消息id
+        // 消息 id
         message_id: i64,
     },
     /// 任务状态变更
     TaskStatusChanged {
         /// agent 实例 id
         instance_id: i64,
-        /// 话题id
+        /// 话题 id
         topic_id: i64,
         /// 任务状态
         status: AgentStatus,
@@ -81,9 +81,9 @@ pub enum TopicEvent {
     ApprovalRequired {
         /// agent 实例 id
         instance_id: i64,
-        /// 话题id
+        /// 话题 id
         topic_id: i64,
-        /// 消息id
+        /// 消息 id
         message_id: i64,
         /// 审批请求
         requests: Vec<ToolApprovalRequest>,
