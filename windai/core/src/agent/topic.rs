@@ -56,11 +56,18 @@ impl TopicRuntimeHandle {
     }
 
     /// 创建新的任务
-    pub async fn create_task(&self, user_input: Vec<Content>) -> Result<()> {
+    pub async fn create_task(&self, user_input: Vec<Content>) -> Result<Result<()>> {
         self.ensure_alive()?;
+        let (reply_tx, reply_rx) = oneshot::channel();
         self.mailbox
-            .send(TopicMsg::Command(TopicCommand::Start { user_input }))
+            .send(TopicMsg::Command(TopicCommand::Start {
+                user_input,
+                reply: reply_tx,
+            }))
+            .await?;
+        reply_rx
             .await
+            .map_err(|err| CoreError::Internal(err.to_string()))
     }
     /// 取消任务
     pub async fn cancel_task(&self, instance_id: i64) -> Result<()> {

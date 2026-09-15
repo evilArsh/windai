@@ -8,7 +8,7 @@ use super::{
     },
     task::{SupervisorRequest, TaskNotification},
 };
-use crate::models::AgentStatus;
+use crate::{error::CoreError, models::AgentStatus};
 pub use effect::*;
 pub use event::*;
 use std::collections::HashMap;
@@ -155,7 +155,17 @@ impl TopicFsm {
 
     fn reduce_topic_command(&mut self, effects: &mut Vec<Effect>, cmd: TopicCommand) {
         match cmd {
-            TopicCommand::Start { user_input } => effects.push(Effect::Init { user_input }),
+            TopicCommand::Start { user_input, reply } => {
+                if self.is_main_busy() {
+                    let _ = reply.send(Err(CoreError::Internal(format!(
+                        "Instance {:?} is busy",
+                        self.main_instance_id()
+                    ))));
+                } else {
+                    effects.push(Effect::Init { user_input });
+                    let _ = reply.send(Ok(()));
+                }
+            }
             TopicCommand::Cancel { instance_id } => {
                 self.apply_task(effects, instance_id, TaskEvent::Cancel);
             }

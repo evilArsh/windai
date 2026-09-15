@@ -188,7 +188,10 @@ impl TopicFacade {
         }
         let handle = self.core.fetch_topic(topic_id);
         match handle.create_task(input.content).await {
-            Ok(()) => ApiResponse::ok(()),
+            Ok(data) => match data {
+                Ok(_) => ApiResponse::ok(()),
+                Err(e) => map_core_error(e),
+            },
             Err(e) => map_core_error(e),
         }
     }

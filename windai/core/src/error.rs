@@ -37,4 +37,10 @@ pub enum CoreError {
     IO(#[from] std::io::Error),
 }
 
+impl Into<std::string::String> for CoreError {
+    fn into(self) -> std::string::String {
+        self.to_string()
+    }
+}
+
 pub type Result<T> = std::result::Result<T, CoreError>;

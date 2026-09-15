@@ -96,6 +96,7 @@ pub enum TopicCommand {
     /// 启动一个对话
     Start {
         user_input: Vec<Content>,
+        reply: oneshot::Sender<Result<()>>,
     },
     Cancel {
         instance_id: i64,

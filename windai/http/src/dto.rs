@@ -65,8 +65,8 @@ pub fn map_core_error<T>(e: CoreError) -> ApiResponse<T> {
         CoreError::RowNotFound(_) => ApiResponse::not_found("not found"),
         CoreError::Validation(msg) => ApiResponse::bad_request(msg),
         other => {
-            log::error!("core error: {other:?}");
-            ApiResponse::internal("internal error")
+            // log::error!("core error: {other:?}");
+            ApiResponse::internal(other)
         }
     }
 }

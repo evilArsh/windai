@@ -222,7 +222,11 @@ async fn test_agent_chat() {
             }
         }
     });
-    engine.create_task(user_input).await.expect("create task");
+    engine
+        .create_task(user_input)
+        .await
+        .expect("create task")
+        .unwrap();
     hdl.await.expect("event logger task");
     let _ = engine.shutdown().await;
 }
