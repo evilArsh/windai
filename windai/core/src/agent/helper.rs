@@ -381,7 +381,7 @@ pub async fn build_agent_tools(
     agent: Option<&AgentDefinition>,
 ) -> Result<Option<Vec<Tools>>> {
     // 加载内建 MCP 工具，用于 Agent 调度
-    // FIXME: 避免递归创建 Agent，仅主任务使用内建工具
+    // FIXME: 避免递归创建 Agent
     let mut tools = match instance.role {
         AgentRole::Main => tool::list_catalogs(),
         AgentRole::Child => vec![],
