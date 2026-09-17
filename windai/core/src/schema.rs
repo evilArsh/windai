@@ -1,8 +1,10 @@
 use crate::{db::DbPool, error::Result};
 
+/// SQLite 表结构。
+#[cfg(feature = "sqlite")]
 const SCHEMA_SQLITE: &str = r#"
 CREATE TABLE IF NOT EXISTS providers (
-    id              BIGINT  PRIMARY KEY,
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
     name            TEXT    NOT NULL UNIQUE,
     alias           TEXT,
     description     TEXT,
@@ -13,7 +15,7 @@ CREATE TABLE IF NOT EXISTS providers (
     updated_at      BIGINT
 );
 CREATE TABLE IF NOT EXISTS models (
-    id              BIGINT  PRIMARY KEY,
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
     name            TEXT    NOT NULL,
     provider_id     BIGINT  NOT NULL,
     alias           TEXT,
@@ -28,7 +30,7 @@ CREATE TABLE IF NOT EXISTS models (
     updated_at      BIGINT
 );
 CREATE TABLE IF NOT EXISTS credentials (
-    id              BIGINT  PRIMARY KEY,
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
     provider_id     BIGINT  NOT NULL,
     key             TEXT    NOT NULL,
     active          BOOLEAN NOT NULL,
@@ -36,7 +38,7 @@ CREATE TABLE IF NOT EXISTS credentials (
     updated_at      BIGINT
 );
 CREATE TABLE IF NOT EXISTS topics (
-    id              BIGINT  PRIMARY KEY,
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
     parent_id       BIGINT,
     label           TEXT    NOT NULL,
     model_id        BIGINT,
@@ -46,7 +48,7 @@ CREATE TABLE IF NOT EXISTS topics (
     updated_at      BIGINT
 );
 CREATE TABLE IF NOT EXISTS messages (
-    id              BIGINT  PRIMARY KEY,
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
     from_id         BIGINT,
     content         TEXT    NOT NULL DEFAULT '[]',
     model_id        BIGINT NOT NULL,
@@ -59,7 +61,7 @@ CREATE TABLE IF NOT EXISTS messages (
     updated_at      BIGINT
 );
 CREATE TABLE IF NOT EXISTS mcp_servers ( 
-    id              BIGINT  PRIMARY KEY,
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
     type            TEXT NOT NULL,
     name            TEXT NOT NULL UNIQUE,
     url             TEXT,
@@ -71,7 +73,7 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
     updated_at      BIGINT
 );
 CREATE TABLE IF NOT EXISTS json_rule (
-    id          BIGINT  PRIMARY KEY,
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
     provider_id BIGINT  NOT NULL,
     adapter     TEXT    NOT NULL,
     json_rule   TEXT    NOT NULL,
@@ -80,28 +82,28 @@ CREATE TABLE IF NOT EXISTS json_rule (
     updated_at  BIGINT
 );
 CREATE TABLE IF NOT EXISTS prompt_modules (
-    id              BIGINT  PRIMARY KEY,
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
     alias           TEXT    NOT NULL,
     description     TEXT    NOT NULL,
     content         TEXT    NOT NULL,
-    active          BOOLEAN NOT NULL DEFAULT 1,
+    active          BOOLEAN NOT NULL DEFAULT TRUE,
     created_at      BIGINT,
     updated_at      BIGINT
 );
 CREATE TABLE IF NOT EXISTS agent_definitions (
-    id                      BIGINT  PRIMARY KEY,
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
     key                     TEXT    NOT NULL UNIQUE,
     name                    TEXT    NOT NULL,
     description             TEXT    NOT NULL,
     owner_topic_id          BIGINT,
     cloned_from_id          BIGINT,
-    active                  BOOLEAN NOT NULL DEFAULT 1,
+    active                  BOOLEAN NOT NULL DEFAULT TRUE,
     data                    TEXT    NOT NULL DEFAULT '{}',
     created_at              BIGINT,
     updated_at              BIGINT
 );
 CREATE TABLE IF NOT EXISTS agent_instances (
-    id              BIGINT  PRIMARY KEY,
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
     parent_id       BIGINT,
     topic_id        BIGINT  NOT NULL,
     agent_id        BIGINT,
@@ -112,14 +114,14 @@ CREATE TABLE IF NOT EXISTS agent_instances (
     updated_at      BIGINT
 );
 CREATE TABLE IF NOT EXISTS topic_agent_maps (
-    id              BIGINT  PRIMARY KEY,
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
     topic_id        BIGINT  NOT NULL,
     agent_id        BIGINT  NOT NULL,
     created_at      BIGINT,
     updated_at      BIGINT
 );
 CREATE TABLE IF NOT EXISTS tool_approval_requests (
-    id                  BIGINT  PRIMARY KEY,
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     topic_id            BIGINT  NOT NULL,
     message_id          BIGINT  NOT NULL,
     instance_id         BIGINT  NOT NULL,
@@ -163,7 +165,16 @@ CREATE INDEX IF NOT EXISTS idx_tool_approvals_status ON tool_approval_requests(s
 "#;
 
 /// 初始化数据库表结构
+#[cfg(feature = "sqlite")]
 pub async fn init_schema(pool: &DbPool) -> Result<()> {
     sqlx::raw_sql(SCHEMA_SQLITE).execute(pool).await?;
     Ok(())
+}
+
+/// PostgreSQL 表结构尚未实现。
+#[cfg(feature = "postgres")]
+pub async fn init_schema(_pool: &DbPool) -> Result<()> {
+    Err(crate::error::CoreError::Internal(
+        "postgres schema is not implemented yet".into(),
+    ))
 }

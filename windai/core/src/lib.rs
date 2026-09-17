@@ -49,7 +49,6 @@ impl WindCore {
 
     /// 使用外部构建的连接池和 MCP registry 初始化，供测试复用 MCP 服务
     pub async fn init_with_pool_and_registry(pool: DbPool, mcp: RegistryHandle) -> Result<Self> {
-        storage::init_id_generator(0);
         schema::init_schema(&pool).await?;
 
         let app_dir = env::app_dirs();

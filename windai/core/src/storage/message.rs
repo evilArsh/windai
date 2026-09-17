@@ -1,6 +1,6 @@
 use super::{
     executor::StorageExecutor,
-    utils::{self, ensure_affected, next_id, now_ts},
+    utils::{self, ensure_affected, now_ts},
 };
 use crate::{
     db::DbDriver,
@@ -43,11 +43,9 @@ impl MessageStorage {
 
     /// 保存一条消息
     pub async fn create(&self, data: CreateMessage) -> Result<Message> {
-        let id = next_id();
         let now = now_ts();
         let mut qb = insert!(
             TableName::MESSAGES,
-            ("id", id),
             ("from_id", data.from_id),
             ("content", utils::vec_to_str_default(Some(&data.content))?),
             ("model_id", data.model_id),
@@ -58,7 +56,11 @@ impl MessageStorage {
             ("output_tokens", data.output_tokens),
             ("created_at", now),
         );
-        self.executor.execute(qb.build()).await?;
+        qb.push(" RETURNING id");
+        let id: i64 = self
+            .executor
+            .fetch_one_scalar(qb.build_query_scalar::<i64>())
+            .await?;
 
         Ok(Message {
             id,
@@ -186,10 +188,10 @@ impl MessageStorage {
                     .push(" WHERE instance_id = ")
                     .push_bind(instance_id)
                     .push(" AND is_excluded = ")
-                    .push_bind(0)
+                    .push_bind(false)
                     .push(" AND id > COALESCE((SELECT MAX(id) FROM ")
                     .push(TableName::MESSAGES)
-                    .push(" WHERE is_boundary = 1 AND instance_id = ")
+                    .push(" WHERE is_boundary = TRUE AND instance_id = ")
                     .push_bind(instance_id)
                     .push("), 0)")
                     .push(" ORDER BY id ASC ")
@@ -201,13 +203,14 @@ impl MessageStorage {
     }
 }
 
-#[cfg(test)]
+/// 这些用例直接构造 SQLite 连接池，因此只在 sqlite feature 下运行
+#[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
     use crate::{
         models::{CreateInstance, CreateTopic},
         schema::init_schema,
-        storage::{Storage, init_id_generator},
+        storage::Storage,
     };
     use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
     use std::str::FromStr;
@@ -215,7 +218,7 @@ mod tests {
 
     const MODEL_ID: i64 = 1;
 
-    /// 单连接内存池 + 初始化 schema 与 id 生成器
+    /// 单连接内存池 + 初始化 schema
     async fn setup() -> Storage {
         let options = SqliteConnectOptions::from_str("sqlite::memory:")
             .expect("parse sqlite url")
@@ -228,7 +231,6 @@ mod tests {
             .await
             .expect("connect sqlite");
         init_schema(&pool).await.expect("init schema");
-        init_id_generator(0);
         Storage::new(pool)
     }
 

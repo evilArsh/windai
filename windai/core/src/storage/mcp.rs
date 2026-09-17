@@ -1,6 +1,6 @@
 use super::{
     executor::StorageExecutor,
-    utils::{self, ensure_affected, ensure_lte_one, next_id, now_ts},
+    utils::{self, ensure_affected, ensure_lte_one, now_ts},
 };
 use crate::{
     db::DbDriver,
@@ -28,13 +28,11 @@ impl McpStorage {
                 "mcp server name cannot be empty".into(),
             ));
         }
-        let id = next_id();
         let now = now_ts();
         let args = utils::vec_to_str_default(data.args.as_deref())?;
         let env = utils::map_to_str_default(data.env.as_ref())?;
         let mut qb = insert!(
             TableName::MCP_SERVERS,
-            ("id", id),
             ("type", data.r#type.to_string()),
             ("name", data.name.clone()),
             ("url", data.url.clone()),
@@ -44,7 +42,11 @@ impl McpStorage {
             ("env", env),
             ("created_at", now),
         );
-        self.executor.execute(qb.build()).await?;
+        qb.push(" RETURNING id");
+        let id: i64 = self
+            .executor
+            .fetch_one_scalar(qb.build_query_scalar::<i64>())
+            .await?;
         Ok(McpServerParam {
             id,
             r#type: data.r#type,

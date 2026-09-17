@@ -40,7 +40,6 @@ tokio-util.workspace = true
 sqlx.workspace = true
 # rquickjs.workspace = true
 dirs.workspace = true
-ferroid.workspace = true
 async-trait.workspace = true
 [dev-dependencies]
 dotenvy.workspace = true

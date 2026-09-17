@@ -1,6 +1,6 @@
 use crate::{
     db::DbDriver,
-    error::Result,
+    error::{CoreError, Result},
     insert_fields,
     models::{
         ApprovalRecord,
@@ -9,10 +9,12 @@ use crate::{
     select_fields,
     storage::TableName,
 };
+use sqlx::Row;
+use std::collections::HashMap;
 
 use super::{
     executor::StorageExecutor,
-    utils::{self, ensure_affected, next_id, now_ts},
+    utils::{self, ensure_affected, now_ts},
 };
 
 #[derive(Clone)]
@@ -24,7 +26,7 @@ impl ToolApprovalStorage {
         Self { executor }
     }
 
-    /// 创建新的审批请求，
+    /// 创建新的审批请求
     pub async fn create_requests(
         &self,
         input: CreateToolApprovalRequests,
@@ -32,61 +34,89 @@ impl ToolApprovalStorage {
         if input.calls.is_empty() {
             return Ok(Vec::new());
         }
+
+        let CreateToolApprovalRequests {
+            instance_id,
+            topic_id,
+            message_id,
+            calls,
+        } = input;
+        let now = now_ts();
+        let status = ToolApprovalStatus::Pending;
+
         struct PreparedApproval {
-            id: i64,
             tool_call_id: String,
             tool_name: String,
             arguments: String,
         }
 
-        let now = now_ts();
-        let status = ToolApprovalStatus::Pending;
-        let mut rows = Vec::with_capacity(input.calls.len());
-        for call in input.calls {
-            rows.push(PreparedApproval {
-                id: next_id(),
-                tool_call_id: call.tool_call_id,
-                tool_name: call.tool_name,
-                arguments: utils::map_to_str_default(Some(&call.arguments))?,
-            });
-        }
+        let rows = calls
+            .into_iter()
+            .map(|call| {
+                Ok(PreparedApproval {
+                    tool_call_id: call.tool_call_id,
+                    tool_name: call.tool_name,
+                    arguments: utils::map_to_str_default(Some(&call.arguments))?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
 
-        let mut qb = insert_fields!(
-            TableName::TOOL_APPROVAL_REQUESTS,
-            (
-                "id",
-                "topic_id",
-                "message_id",
-                "instance_id",
-                "tool_call_id",
-                "tool_name",
-                "arguments",
-                "status",
-                "created_at",
-                "updated_at"
-            )
-        );
-        qb.push_values(rows.iter(), |mut b, item| {
-            b.push_bind(item.id);
-            b.push_bind(input.topic_id);
-            b.push_bind(input.message_id);
-            b.push_bind(input.instance_id);
-            b.push_bind(&item.tool_call_id);
-            b.push_bind(&item.tool_name);
-            b.push_bind(&item.arguments);
-            b.push_bind(status.to_string());
-            b.push_bind(now);
-            b.push_bind(now);
-        });
-        self.executor.execute(qb.build()).await?;
+        const CHUNK: usize = 3000;
+        let rows_ref = &rows;
+
+        let id_by_call: HashMap<String, i64> = self
+            .executor
+            .with_tx(|executor| async move {
+                let mut map = HashMap::with_capacity(rows_ref.len());
+                for chunk in rows_ref.chunks(CHUNK) {
+                    let mut qb = insert_fields!(
+                        TableName::TOOL_APPROVAL_REQUESTS,
+                        (
+                            "topic_id",
+                            "message_id",
+                            "instance_id",
+                            "tool_call_id",
+                            "tool_name",
+                            "arguments",
+                            "status",
+                            "created_at",
+                            "updated_at"
+                        )
+                    );
+                    qb.push_values(chunk.iter(), |mut b, item| {
+                        b.push_bind(topic_id);
+                        b.push_bind(message_id);
+                        b.push_bind(instance_id);
+                        b.push_bind(&item.tool_call_id);
+                        b.push_bind(&item.tool_name);
+                        b.push_bind(&item.arguments);
+                        b.push_bind(status.to_string());
+                        b.push_bind(now);
+                        b.push_bind(now);
+                    });
+                    qb.push(" RETURNING id, tool_call_id");
+
+                    for row in executor.fetch_all_rows(qb.build()).await? {
+                        map.insert(row.get("tool_call_id"), row.get("id"));
+                    }
+                }
+                Ok(map)
+            })
+            .await?;
+
+        if id_by_call.len() != rows.len() {
+            return Err(CoreError::Validation(
+                "duplicated tool_call_id in approval requests".into(),
+            ));
+        }
 
         Ok(rows
             .into_iter()
             .map(|row| ToolApprovalRequest {
-                id: row.id,
-                instance_id: input.instance_id,
-                topic_id: input.topic_id,
-                message_id: input.message_id,
+                id: id_by_call[&row.tool_call_id],
+                instance_id,
+                topic_id,
+                message_id,
                 tool_call_id: row.tool_call_id,
                 tool_name: row.tool_name,
                 arguments: serde_json::Value::String(row.arguments),

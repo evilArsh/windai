@@ -1,6 +1,6 @@
 use super::{
     executor::StorageExecutor,
-    utils::{ensure_affected, next_id, now_ts},
+    utils::{ensure_affected, now_ts},
 };
 use crate::{
     delete_by_id,
@@ -86,11 +86,9 @@ impl ProviderStorage {
             return Err(CoreError::Validation("provider name already exists".into()));
         }
 
-        let id = next_id();
         let now = now_ts();
         let mut qb = insert!(
             TableName::PROVIDERS,
-            ("id", id),
             ("name", data.name.clone()),
             ("alias", data.alias.clone()),
             ("description", data.description.clone()),
@@ -99,7 +97,11 @@ impl ProviderStorage {
             ("active", true),
             ("created_at", now),
         );
-        self.executor.execute(qb.build()).await?;
+        qb.push(" RETURNING id");
+        let id: i64 = self
+            .executor
+            .fetch_one_scalar(qb.build_query_scalar::<i64>())
+            .await?;
         Ok(Provider {
             id,
             name: data.name,
@@ -206,17 +208,19 @@ impl ProviderStorage {
 
     /// 创建一条提供商凭证
     pub async fn create_credentials(&self, data: CreateCredentials) -> Result<Credentials> {
-        let id = next_id();
         let now = now_ts();
         let mut qb = insert!(
             TableName::CREDENTIALS,
-            ("id", id),
             ("provider_id", data.provider_id),
             ("key", data.key.clone()),
             ("active", true),
             ("created_at", now),
         );
-        self.executor.execute(qb.build()).await?;
+        qb.push(" RETURNING id");
+        let id: i64 = self
+            .executor
+            .fetch_one_scalar(qb.build_query_scalar::<i64>())
+            .await?;
         Ok(Credentials {
             id,
             provider_id: data.provider_id,
@@ -249,18 +253,20 @@ impl ProviderStorage {
     }
 
     pub async fn create_json_rule(&self, data: CreateJsonRule) -> Result<JsonRule> {
-        let id = next_id();
         let now = now_ts();
         let mut qb = insert!(
             TableName::JSONRULE,
-            ("id", id),
             ("provider_id", data.provider_id),
             ("adapter", data.adapter.to_string()),
             ("active", true),
             ("json_rule", data.json_rule.clone()),
             ("created_at", now),
         );
-        self.executor.execute(qb.build()).await?;
+        qb.push(" RETURNING id");
+        let id: i64 = self
+            .executor
+            .fetch_one_scalar(qb.build_query_scalar::<i64>())
+            .await?;
         Ok(JsonRule {
             id,
             provider_id: data.provider_id,

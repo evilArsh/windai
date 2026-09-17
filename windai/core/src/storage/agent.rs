@@ -1,6 +1,6 @@
 use super::{
     executor::StorageExecutor,
-    utils::{self, ensure_affected, ensure_lte_one, next_id, now_ts},
+    utils::{self, ensure_affected, ensure_lte_one, now_ts},
 };
 use crate::{
     db::DbDriver,
@@ -37,12 +37,10 @@ impl AgentStorage {
         if data.name.trim().is_empty() {
             return Err(CoreError::Validation("agent name cannot be empty".into()));
         }
-        let id = next_id();
         let now = now_ts();
         let active = data.active.unwrap_or(true);
         let mut qb = insert!(
             TableName::AGENT_DEFINITION,
-            ("id", id),
             ("key", data.key.clone()),
             ("name", data.name.clone()),
             ("description", data.description.clone()),
@@ -52,7 +50,11 @@ impl AgentStorage {
             ("data", utils::map_to_str_default(Some(&data.data))?),
             ("created_at", now)
         );
-        self.executor.execute(qb.build()).await?;
+        qb.push(" RETURNING id");
+        let id: i64 = self
+            .executor
+            .fetch_one_scalar(qb.build_query_scalar::<i64>())
+            .await?;
 
         Ok(AgentDefinition {
             id,
@@ -142,13 +144,11 @@ impl AgentStorage {
 
     /// 创建新的 Agent 实例
     pub async fn create_instance(&self, data: CreateInstance) -> Result<AgentInstance> {
-        let id = next_id();
         let now = now_ts();
         let role = data.role.unwrap_or(AgentRole::Child);
         let status = data.status.unwrap_or(AgentStatus::Idle);
         let mut qb = insert!(
             TableName::AGENT_INSTANCES,
-            ("id", id),
             ("parent_id", data.parent_id),
             ("topic_id", data.topic_id),
             ("agent_id", data.agent_id),
@@ -157,7 +157,11 @@ impl AgentStorage {
             ("status", status.to_string()),
             ("created_at", now)
         );
-        self.executor.execute(qb.build()).await?;
+        qb.push(" RETURNING id");
+        let id: i64 = self
+            .executor
+            .fetch_one_scalar(qb.build_query_scalar::<i64>())
+            .await?;
 
         Ok(AgentInstance {
             id,
@@ -369,16 +373,18 @@ impl AgentStorage {
             )));
         }
 
-        let id = next_id();
         let now = now_ts();
         let mut qb = insert!(
             TableName::TOPIC_AGENT_MAPS,
-            ("id", id),
             ("topic_id", data.topic_id),
             ("agent_id", data.agent_id),
             ("created_at", now)
         );
-        self.executor.execute(qb.build()).await?;
+        qb.push(" RETURNING id");
+        let id: i64 = self
+            .executor
+            .fetch_one_scalar(qb.build_query_scalar::<i64>())
+            .await?;
 
         Ok(TopicAgentMap {
             id,

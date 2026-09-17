@@ -1,6 +1,6 @@
 use super::{
     executor::StorageExecutor,
-    utils::{ensure_affected, next_id, now_ts},
+    utils::{ensure_affected, now_ts},
 };
 use crate::{
     db::DbDriver,
@@ -29,19 +29,21 @@ impl PromptStorage {
             return Err(CoreError::Validation("prompt name cannot be empty".into()));
         }
 
-        let id = next_id();
         let now = now_ts();
         let active = data.active.unwrap_or(true);
         let mut qb = insert!(
             TableName::PROMPT_MODULES,
-            ("id", id),
             ("alias", data.alias.clone()),
             ("description", data.description.clone()),
             ("content", data.content.clone()),
             ("active", active),
             ("created_at", now)
         );
-        self.executor.execute(qb.build()).await?;
+        qb.push(" RETURNING id");
+        let id: i64 = self
+            .executor
+            .fetch_one_scalar(qb.build_query_scalar::<i64>())
+            .await?;
 
         Ok(PromptModule {
             id,

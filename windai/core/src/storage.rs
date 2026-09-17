@@ -16,12 +16,7 @@ use self::{
 };
 use super::db::DbPool;
 use crate::error::Result;
-use ferroid::{
-    generator::AtomicSnowflakeGenerator,
-    id::SnowflakeTwitterId,
-    time::{MonotonicClock, TWITTER_EPOCH},
-};
-use std::{future::Future, sync::OnceLock};
+use std::future::Future;
 
 #[derive(Clone)]
 pub struct Storage {
@@ -142,16 +137,4 @@ impl StorageTx {
     pub async fn rollback(self) -> Result<()> {
         self.storage.executor.rollback().await
     }
-}
-
-type SnowflakeGen = AtomicSnowflakeGenerator<SnowflakeTwitterId, MonotonicClock<1>>;
-static ID_GENERATOR: OnceLock<SnowflakeGen> = OnceLock::new();
-
-/// 初始化 ID 生成器
-pub fn init_id_generator(machine_id: u16) {
-    let clock = MonotonicClock::<1>::with_epoch(TWITTER_EPOCH);
-    let generator = AtomicSnowflakeGenerator::new(machine_id as u64, clock);
-    let _ = ID_GENERATOR.set(generator).map_err(|_| {
-        log::warn!("ID generator has already been initialized");
-    });
 }

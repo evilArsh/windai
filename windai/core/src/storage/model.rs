@@ -1,6 +1,6 @@
 use super::{
     executor::StorageExecutor,
-    utils::{self, ensure_affected, next_id, now_ts},
+    utils::{self, ensure_affected, now_ts},
 };
 use crate::{
     delete_by_id,
@@ -25,13 +25,11 @@ impl ModelStorage {
         if data.name.is_empty() {
             return Err(CoreError::Validation("model name cannot be empty".into()));
         }
-        let id = next_id();
         let now = now_ts();
         let active = data.active.unwrap_or(true);
         let modalities = utils::vec_to_str_default(data.modalities.as_deref())?;
         let mut qb = insert!(
             TableName::MODELS,
-            ("id", id),
             ("name", data.name.clone()),
             ("provider_id", data.provider_id),
             ("alias", data.alias.clone()),
@@ -43,7 +41,11 @@ impl ModelStorage {
             ("config", serde_json::to_string(&data.config)?),
             ("created_at", now),
         );
-        self.executor.execute(qb.build()).await?;
+        qb.push(" RETURNING id");
+        let id: i64 = self
+            .executor
+            .fetch_one_scalar(qb.build_query_scalar::<i64>())
+            .await?;
         Ok(Model {
             id,
             name: data.name,

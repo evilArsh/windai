@@ -3,8 +3,8 @@ use crate::{
     error::Result,
 };
 use sqlx::{
-    Database, FromRow, IntoArguments,
-    query::{Query, QueryAs},
+    Database, Decode, FromRow, IntoArguments, Type,
+    query::{Query, QueryAs, QueryScalar},
 };
 use std::{future::Future, sync::Arc};
 use tokio::sync::Mutex;
@@ -130,6 +130,32 @@ impl StorageExecutor {
         with_connection!(self, executor, {
             Ok(query.fetch_optional(executor).await?)
         })
+    }
+
+    /// 查询多行原始结果。
+    /// 用于需要按列名取值、而不是映射到某个 `FromRow` 类型的场景
+    /// （例如 `INSERT ... RETURNING id, tool_call_id` 后按自然键组装）
+    pub(crate) async fn fetch_all_rows<'q>(
+        &self,
+        query: Query<'q, DbDriver, <DbDriver as Database>::Arguments<'q>>,
+    ) -> Result<Vec<DbRow>>
+    where
+        <DbDriver as Database>::Arguments<'q>: IntoArguments<'q, DbDriver> + Send,
+    {
+        with_connection!(self, executor, Ok(query.fetch_all(executor).await?))
+    }
+
+    /// 查询单个标量值，无结果或结果多于一行时报错。
+    /// 用于 `INSERT ... RETURNING id` 这类必然返回一行的场景
+    pub(crate) async fn fetch_one_scalar<'q, O>(
+        &self,
+        query: QueryScalar<'q, DbDriver, O, <DbDriver as Database>::Arguments<'q>>,
+    ) -> Result<O>
+    where
+        O: for<'r> Decode<'r, DbDriver> + Type<DbDriver> + Send + Unpin,
+        <DbDriver as Database>::Arguments<'q>: IntoArguments<'q, DbDriver> + Send,
+    {
+        with_connection!(self, executor, Ok(query.fetch_one(executor).await?))
     }
 
     pub(crate) async fn fetch_all<'q, O>(

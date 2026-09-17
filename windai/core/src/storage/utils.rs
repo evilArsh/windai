@@ -1,23 +1,13 @@
-use super::ID_GENERATOR;
 use super::executor::StorageExecutor;
 use crate::{
     db::DbQueryResult,
     error::{CoreError, Result},
 };
 use chrono::Utc;
-use ferroid::id::SnowflakeTwitterId;
 use serde::{Serialize, de::DeserializeOwned};
 
 pub fn now_ts() -> i64 {
     Utc::now().timestamp()
-}
-
-pub fn next_id() -> i64 {
-    let generator = ID_GENERATOR
-        .get()
-        .expect("ID generator not initialized. Please init first.");
-    let id: SnowflakeTwitterId = generator.next_id(|_| std::thread::yield_now());
-    id.to_raw() as i64
 }
 
 /// 将 vec 序列化为 json 字符串
@@ -372,7 +362,9 @@ pub(crate) async fn batch_delete_in(
     Ok(())
 }
 
-#[cfg(test)]
+/// 这些用例断言 `QueryBuilder::sql()` 的产物，而占位符按驱动变化：
+/// SQLite 是 `?`，PostgreSQL 是 `$1, $2…`。因此只在 sqlite feature 下运行
+#[cfg(all(test, feature = "sqlite"))]
 mod tests {
     // ==================== insert! ====================
 

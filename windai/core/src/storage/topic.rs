@@ -1,7 +1,7 @@
 use super::{
     agent::AgentStorage,
     executor::StorageExecutor,
-    utils::{self, ensure_affected, next_id, now_ts},
+    utils::{self, ensure_affected, now_ts},
 };
 use crate::{
     db::DbDriver,
@@ -24,12 +24,10 @@ impl TopicStorage {
     }
 
     pub async fn create(&self, data: CreateTopic) -> Result<Topic> {
-        let id = next_id();
         let parent_id = data.parent_id;
         let now = now_ts();
         let mut qb = insert!(
             TableName::TOPICS,
-            ("id", id),
             ("parent_id", parent_id),
             ("model_id", data.model_id),
             (
@@ -43,7 +41,11 @@ impl TopicStorage {
             ("icon", data.icon.clone()),
             ("created_at", now),
         );
-        self.executor.execute(qb.build()).await?;
+        qb.push(" RETURNING id");
+        let id: i64 = self
+            .executor
+            .fetch_one_scalar(qb.build_query_scalar::<i64>())
+            .await?;
 
         Ok(Topic {
             id,

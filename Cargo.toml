@@ -46,13 +46,6 @@ rmcp = { version = "3.1", features = [
     "transport-streamable-http-client-reqwest",
     "transport-streamable-http-server",
 ] }
-ferroid = { version = "2.0", features = [
-    "std",
-    "alloc",
-    "snowflake",
-    "atomic",
-    "async-tokio",
-] }
 
 # rquickjs = { version = "0.11" }
 evalexpr = { version = "13.0" }

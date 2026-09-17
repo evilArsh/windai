@@ -97,7 +97,6 @@ async fn setup_file_pool(file: &TempDbFile) -> SqlitePool {
         .await
         .unwrap();
     init_schema(&pool).await.unwrap();
-    wind_core::storage::init_id_generator(0);
     pool
 }
 

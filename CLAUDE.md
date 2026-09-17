@@ -21,6 +21,7 @@ Copy `.env.example` to `.env` and fill in `TEST_*` values for the `.env`-gated t
 **Test file status** (so you don't expect dead tests to run)。下面的数字是当前快照，会随代码变化：
 - `windai/core/tests/storage.rs` — 27 tests, active, no `.env` needed
 - `windai/core/tests/schema.rs` — 14 tests, the schema↔model contract（12 张表各一条列断言 + `dropped_columns_are_absent` + `dropped_tables_are_absent`），no `.env`
+- `windai/core/tests/autoincrement.rs` — 7 tests, 自增主键的回归测试（12 张表自增生效 / 不复用 / 严格递增 / `create()` 返回值落库一致 / 批量插入的自然键关联与分块 / 布尔列往返），no `.env`
 - `windai/core/src/storage/message.rs` (cfg test) — 3 tests：`list_contexts` 的排除/删除/boundary 语义（`list_contexts` 是 crate 内部 API，集成测试访问不到）
 - `windai/core/tests/agent_runtime.rs` — 2 tests: runtime 生命周期与「终态事件先于关流到达订阅者」
 - `windai/core/tests/core_chat.rs` — active; its one test is `#[ignore]`d behind `.env`
@@ -61,7 +62,7 @@ core.fetch_topic(id)        // TopicRuntimeHandle — get-or-create；缓存句�
 core.shutdown().await
 ```
 
-All four init methods converge on `init_with_pool_and_registry`, which runs `schema::init_schema` + `storage::init_id_generator` and registers the two builtin MCP servers (`FsServer`, `SkillsServer`) onto the registry. The private `init(db_url)` is only used by `init_local`/`init_memory`. There is **no `core.chat()`** anymore — the old public `ChatEngine` is gone; use `fetch_topic()` + `TopicRuntimeHandle::create_task()`.
+All four init methods converge on `init_with_pool_and_registry`, which runs `schema::init_schema` and registers the two builtin MCP servers (`FsServer`, `SkillsServer`) onto the registry. The private `init(db_url)` is only used by `init_local`/`init_memory`. There is **no `core.chat()`** anymore — the old public `ChatEngine` is gone; use `fetch_topic()` + `TopicRuntimeHandle::create_task()`.
 
 ### Storage
 
@@ -80,13 +81,13 @@ core.storage().approval()   // &ToolApprovalStorage
 
 `TableName` (`storage.rs`, `pub(crate)`) centralises the 12 table names as associated constants, and the `*Storage` files build queries from them；列名仍以字面量传入 `select_fields!` / `insert!` 等宏
 
-All `create()` methods return the **full record** (`Result<Topic>`, `Result<Model>`, `Result<AgentInstance>`, …) — read `.id` off the result (older docs that say they return `i64` are stale). IDs are Snowflake via `ferroid`; never rely on SQLite auto-increment.
+All `create()` methods return the **full record** (`Result<Topic>`, `Result<Model>`, `Result<AgentInstance>`, …) — read `.id` off the result (older docs that say they return `i64` are stale). **id 由数据库自增生成**：SQLite 侧是 `INTEGER PRIMARY KEY AUTOINCREMENT`，`create()` 用 `INSERT ... RETURNING id`（`executor.fetch_one_scalar`）取回；不再有应用层的 id 生成器（`ferroid` / `next_id()` / `init_id_generator` 已全部移除）。自增 id 保证「id 顺序 = 插入顺序」，这正是 `ORDER BY id`（17 处）与 `list_contexts` 的 `id > MAX(id)` 所依赖的
 
 **Messages hang off an instance, not a topic**: `MessageStorage` queries by instance — `list_by_instance(instance_id)` (all messages of an instance, ordered). `list_contexts(instance_id)` (the subset usable as chat context: not `is_excluded`, and only messages after the last `is_boundary = true` row) is **`pub(crate)`** —— 只供 core 内部（`helper::get_message_contexts`）使用，不对外暴露
 
 **Transactions**: `storage.with_tx(|inner| async { ... }).await` (NOT `.tx()`). For multi-step transactions: `storage.begin().await` → `StorageTx` (a `Storage` bound to a transaction) with `.storage()` / `.commit()` / `.rollback()`.
 
-**`init_id_generator(machine_id)`** must run before any `create()` — `next_id()` panics otherwise. `WindCore::init_*()` does this automatically; standalone `XxxStorage` tests must call it in setup.
+**取回自增 id 一律用 `INSERT ... RETURNING id`**，不要用 `last_insert_rowid()`（SQLite 驱动专有，PostgreSQL 无对应物）。批量插入时 **不要依赖 `RETURNING` 的返回顺序**（两个驱动都不承诺），而要用自然键关联 —— 见 `ToolApprovalStorage::create_requests` 用 `tool_call_id` 回填 id，并按 `input.calls` 原始顺序组装返回值
 
 **SQL macros** (`storage/utils.rs`): `insert!`, `update!`, `update_fields!`, `insert_fields!`, `delete_by_id!`, `delete_from!`, `select_fields!`, `get_by_id!`. Values are `Option`-wrapped; `None` fields are skipped. `update!` appends `updated_at` and `WHERE id = ?`. (`executor.rs`'s `with_transaction!`/`with_connection!` are the pool plumbing.)
 
@@ -280,6 +281,12 @@ Axum service exposing the core via REST + SSE. **Read `arch.md` for the full des
 
 Column notes: `topics` 有 `parent_id`（tree structure is kept, but **no code currently creates child topics**）、`model_id` 与 `tool_approval_policy`；`messages` is scoped by its own `instance_id` (there is no `topic_id` column on it)，排除标志的列名与模型字段同名 `is_excluded`；`agent_instances` is scoped by `topic_id`；`topic_agent_maps` is scoped by `topic_id` 且**没有 `role` 列**；`prompt_modules` 的展示名列名是 `alias`（与 `PromptModule.alias` 同名）；`tool_approval_requests` carries `topic_id` + `message_id` + `instance_id` (no topic-parent column).
 
+**主键 DDL**：12 张表的 `id` 一律是 `INTEGER PRIMARY KEY AUTOINCREMENT`（SQLite 侧）。必须是 `INTEGER` 而非 `BIGINT` —— 只有前者才是 rowid 别名，用 `BIGINT` 时省略 id 插入**不报错、而是静默写入 NULL**；必须带 `AUTOINCREMENT` —— 否则删除最大 id 行后新行会复用该 id，破坏「id 顺序 = 插入顺序」
+
+**驱动分支**：`init_schema` 按 feature 分支。`sqlite` 执行 `SCHEMA_SQLITE`；`postgres` 目前返回 `CoreError::Internal("postgres schema is not implemented yet")` —— 接入时新增一份**独立的** `SCHEMA_POSTGRES`（主键 `BIGINT GENERATED BY DEFAULT AS IDENTITY`），不要复用 SQLite 的 DDL。存储层无需改动：`INSERT ... RETURNING`、`push_bind(bool)`、`BOOLEAN` 列在两个驱动上均已实测成立
+
+**布尔列**：一律 `BOOLEAN`，比较用 `push_bind(bool)` 或 `= TRUE` 字面量，**不要写 `= 0` / `= 1`** —— SQLite 的 BOOLEAN 只有 NUMERIC 亲和性所以能跑，PostgreSQL 会报 `operator does not exist: boolean = integer`
+
 **No migrations**: `schema.rs` runs only `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS`. An existing DB file is never altered, so after any column/index change you must delete the local DB file (`~/.windai/windai.db`, or the file under `WIND_ROOT_DIR`) and let it be re-created — otherwise queries fail against the stale schema.
 
 **Key constraints**: `agent_instances` 有 topic / agent / parent / (topic, role) 普通索引，以及 `UNIQUE (topic_id) WHERE role = 'main'` ——「一个 topic 至多一个主实例」由 partial unique index 与应用层 `get_main_instance` 的 `ensure_lte_one` 共同保证；`topic_agent_maps` 只有 `UNIQUE (topic_id, agent_id)` ——「一个定义在一个 topic 至多映射一次」。**`topic_agent_maps` 没有 `role` 列**，能力映射不表达主 Agent 偏好
@@ -308,6 +315,7 @@ Column notes: `topics` 有 `parent_id`（tree structure is kept, but **no code c
 |------|---------|
 | `windai/core/tests/storage.rs` | 27 tests — integration tests for all `*Storage` structs: CRUD, validation, cascade, batch |
 | `windai/core/tests/schema.rs` | 14 tests — the schema↔model contract: 12 张表各一条列断言（`assert_table_columns`），加 `dropped_columns_are_absent` 与 `dropped_tables_are_absent` |
+| `windai/core/tests/autoincrement.rs` | 7 tests — 自增主键契约：12 张表 id 非空且落在 JS 安全整数内、不复用（守护 `AUTOINCREMENT`）、严格递增、`RETURNING id` 与库中一致、`create_requests` 的自然键关联与超限分块、布尔列往返 |
 | `windai/core/tests/agent_runtime.rs` | 2 tests — runtime 生命周期与 `terminal_event_is_delivered_before_stream_closes`（`Effect::CloseEventStream` 的时序） |
 | `windai/core/tests/core_chat.rs` | Non-MCP chat test (`test_agent_chat`, `#[ignore]` behind `.env`): seeds providers/agents/topic 能力映射, subscribes to topic events, drives `create_task` |
 | `windai/core/tests/chat.rs` | AI adapter tests (needs `.env`) |
