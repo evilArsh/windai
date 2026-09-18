@@ -1587,7 +1587,7 @@ async fn model_config_readable_from_update_and_list() {
     let listed = core
         .storage()
         .model()
-        .list_by_provider()
+        .list_by_provider(provider.id)
         .await
         .expect("list models");
     let loaded = listed

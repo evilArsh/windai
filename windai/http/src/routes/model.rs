@@ -4,7 +4,7 @@ use crate::facade::storage::model::ModelStorageFacade;
 use crate::state::AppState;
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::Value;
 use std::sync::Arc;
@@ -13,7 +13,8 @@ use wind_core::models::{CreateModel, Model, UpdateModel};
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/api/v1/models", get(list_models).post(create_model))
+        .route("/api/v1/models", post(create_model))
+        .route("/api/v1/models/provider/{provider_id}", get(list_models))
         .route(
             "/api/v1/models/{model_id}",
             get(get_model).put(update_model).delete(delete_model),
@@ -22,16 +23,20 @@ pub fn router() -> Router<AppState> {
 
 #[utoipa::path(
     get,
-    summary = "获取模型列表",
-    path = "/api/v1/models",
+    summary = "获取提供商模型列表",
+    path = "/api/v1/models/provider/{provider_id}",
+    params(
+        ("provider_id", Path, description = "提供商 ID"),
+    ),
     responses(
-        (status = 200, description = "获取模型列表", body = ApiResponse<Vec<Model>>)
+        (status = 200, description = "根据提供商id获取模型列表", body = ApiResponse<Vec<Model>>)
     )
 )]
 pub(crate) async fn list_models(
     State(core): State<Arc<WindCore>>,
+    ApiPath(provider_id): ApiPath<i64>,
 ) -> Json<ApiResponse<Vec<Model>>> {
-    Json(ModelStorageFacade::new(core).list_models().await)
+    Json(ModelStorageFacade::new(core).list_models(provider_id).await)
 }
 
 #[utoipa::path(

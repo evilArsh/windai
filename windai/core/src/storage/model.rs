@@ -120,7 +120,7 @@ impl ModelStorage {
         Ok(row)
     }
 
-    pub async fn list_by_provider(&self) -> Result<Vec<Model>> {
+    pub async fn list_by_provider(&self, provider_id: i64) -> Result<Vec<Model>> {
         let mut qb = select_fields!(
             TableName::MODELS,
             (
@@ -138,6 +138,8 @@ impl ModelStorage {
                 "created_at",
             )
         );
+        qb.push(" WHERE provider_id = ");
+        qb.push_bind(provider_id);
         qb.push(" ORDER BY id DESC ");
         let rows = self
             .executor

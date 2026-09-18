@@ -12,8 +12,14 @@ impl ModelStorageFacade {
         Self { core }
     }
 
-    pub async fn list_models(&self) -> ApiResponse<Vec<Model>> {
-        match self.core.storage().model().list_by_provider().await {
+    pub async fn list_models(&self, provider_id: i64) -> ApiResponse<Vec<Model>> {
+        match self
+            .core
+            .storage()
+            .model()
+            .list_by_provider(provider_id)
+            .await
+        {
             Ok(rows) => ApiResponse::ok(rows),
             Err(e) => map_core_error(e),
         }
