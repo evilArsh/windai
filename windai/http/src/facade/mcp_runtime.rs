@@ -1,8 +1,11 @@
 use crate::dto::{ApiResponse, map_core_error};
+use std::borrow::Cow;
 use std::sync::Arc;
 use wind_core::WindCore;
 use wind_core::models::{McpServerParam, Topic};
-use wind_mcp::client::{ClientSnapshot, McpError, Prompt, Resource, ServerParams, Tool};
+use wind_mcp::client::{
+    BUILTIN_SESSION, ClientSnapshot, McpError, Prompt, Resource, ServerParams, Tool,
+};
 
 /// MCP 服务运行时 facade：启动 / 停止 / 查询运行期状态
 ///
@@ -18,6 +21,19 @@ pub struct McpRuntimeFacade {
 impl McpRuntimeFacade {
     pub fn new(core: Arc<WindCore>) -> Self {
         Self { core }
+    }
+
+    async fn resolve_session_id(
+        &self,
+        topic_id: i64,
+    ) -> Result<Cow<'static, str>, ApiResponse<()>> {
+        match topic_id {
+            0 => Ok(Cow::Borrowed(BUILTIN_SESSION)),
+            id => match self.load_topic(id).await {
+                Ok(_) => Ok(Cow::Owned(topic_id.to_string())),
+                Err(e) => Err(e),
+            },
+        }
     }
 
     /// 加载 topic，不存在时返回 ApiResponse 错误（调用方直接 return）
@@ -39,12 +55,9 @@ impl McpRuntimeFacade {
     }
 
     /// 启动 MCP 服务（供 topic 使用）：立即返回 accepted，连接在后台任务中进行
-    ///
-    /// `session_id = topic_id`；`Connecting → Connected | Error` 事件由 registry 广播（见 `GET /events`）
-    /// `acquire` 按名幂等：同一 topic 重复 start 只增加引用或等待既有连接，不会重复拉起进程
     pub async fn start_server(&self, topic_id: i64, id: i64) -> ApiResponse<()> {
-        let _topic = match self.load_topic(topic_id).await {
-            Ok(t) => t,
+        let session_id = match self.resolve_session_id(topic_id).await {
+            Ok(s) => s,
             Err(e) => return erase(e),
         };
         let param = match self.load_param(id).await {
@@ -57,10 +70,9 @@ impl McpRuntimeFacade {
         };
         let name = param.name.clone();
         let task_name = name.clone();
-        let session = topic_id.to_string();
         let registry = self.core.registry().clone();
         tokio::spawn(async move {
-            match registry.acquire(&session, params).await {
+            match registry.acquire(&session_id, params).await {
                 Ok(snapshot) => log::info!("mcp server '{task_name}' connected: {snapshot:?}"),
                 Err(e) => log::error!("mcp server '{task_name}' failed to connect: {e}"),
             }
@@ -71,8 +83,8 @@ impl McpRuntimeFacade {
     /// 停止 MCP 服务：移除该 topic 的引用，最后一个 topic 释放时服务停止
     /// 服务未被该 topic 引用（未启动 / 已停止）时返回 404
     pub async fn stop_server(&self, topic_id: i64, id: i64) -> ApiResponse<ClientSnapshot> {
-        let _topic = match self.load_topic(topic_id).await {
-            Ok(t) => t,
+        let session_id = match self.resolve_session_id(topic_id).await {
+            Ok(s) => s,
             Err(e) => return erase(e),
         };
         let param = match self.load_param(id).await {
@@ -80,8 +92,15 @@ impl McpRuntimeFacade {
             Err(e) => return erase(e),
         };
         let name = param.name;
-        let session = topic_id.to_string();
-        match self.core.registry().release(&session, &name).await {
+        match self.core.registry().release(&session_id, &name).await {
+            Ok(snapshot) => ApiResponse::ok(snapshot),
+            Err(e) => map_mcp_error(e),
+        }
+    }
+
+    /// 彻底终止mcp服务，删除所有引用
+    pub(crate) async fn terminate_server(&self, name: &str) -> ApiResponse<ClientSnapshot> {
+        match self.core.registry().terminate(name).await {
             Ok(snapshot) => ApiResponse::ok(snapshot),
             Err(e) => map_mcp_error(e),
         }
@@ -90,12 +109,11 @@ impl McpRuntimeFacade {
     /// 按 server name 让 topic 引用一个已运行的 client（内建即此场景）
     /// 服务已启动则只加引用计数（幂等），不发起连接；服务未运行返回 404
     pub async fn attach_server(&self, topic_id: i64, name: &str) -> ApiResponse<ClientSnapshot> {
-        match self.load_topic(topic_id).await {
-            Ok(_) => {}
+        let session_id = match self.resolve_session_id(topic_id).await {
+            Ok(s) => s,
             Err(e) => return erase(e),
-        }
-        let session = topic_id.to_string();
-        match self.core.registry().attach_session(&session, name).await {
+        };
+        match self.core.registry().attach_session(&session_id, name).await {
             Ok(snapshot) => ApiResponse::ok(snapshot),
             Err(e) => map_mcp_error(e),
         }

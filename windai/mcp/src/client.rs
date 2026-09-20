@@ -13,7 +13,7 @@ pub mod registry;
 pub type JsonObject<F = Value> = serde_json::Map<String, F>;
 
 const MCP_TOOL_IDENTIFIER: &str = "0m0";
-pub const BUILTID_SESSION: &str = "builtin_session";
+pub const BUILTIN_SESSION: &str = "builtin_session";
 
 #[derive(
     utoipa::ToSchema,

@@ -1,7 +1,9 @@
 use crate::dto::{ApiResponse, map_core_error};
+use crate::facade::mcp_runtime::McpRuntimeFacade;
 use std::sync::Arc;
 use wind_core::WindCore;
 use wind_core::models::{CreateMcpServer, McpServerParam, UpdateMcpServer};
+use wind_mcp::client::ClientSnapshot;
 
 pub struct McpStorageFacade {
     core: Arc<WindCore>,
@@ -45,9 +47,19 @@ impl McpStorageFacade {
         self.get_mcp_server(id).await
     }
 
-    pub async fn delete_mcp_server(&self, id: i64) -> ApiResponse<()> {
-        match self.core.storage().mcp().delete(id).await {
-            Ok(()) => ApiResponse::ok(()),
+    pub async fn delete_mcp_server(&self, id: i64) -> ApiResponse<ClientSnapshot> {
+        let res = self.get_mcp_server(id).await;
+        let server = match res.data {
+            Some(server) => server,
+            None => return res.without_data(),
+        };
+
+        match self.core.storage().mcp().delete(server.id).await {
+            Ok(_) => {
+                McpRuntimeFacade::new(self.core.clone())
+                    .terminate_server(&server.name)
+                    .await
+            }
             Err(e) => map_core_error(e),
         }
     }

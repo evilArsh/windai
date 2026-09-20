@@ -153,19 +153,19 @@ pub(crate) async fn update_mcp_server(
 
 #[utoipa::path(
     delete,
-    summary = "删除 MCP 服务",
+    summary = "删除 MCP 服务，并停止 MCP 客户端实例",
     path = "/api/v1/mcp-servers/{mcp_server_id}",
     params(
         ("mcp_server_id", Path, description = "MCP 服务 ID"),
     ),
     responses(
-        (status = 200, description = "删除 MCP 服务", body = ApiResponse<Value>)
+        (status = 200, description = "删除 MCP 服务，并停止 MCP 客户端实例", body = ApiResponse<Value>)
     )
 )]
 pub(crate) async fn delete_mcp_server(
     State(core): State<Arc<WindCore>>,
     ApiPath(mcp_server_id): ApiPath<i64>,
-) -> Json<ApiResponse<()>> {
+) -> Json<ApiResponse<ClientSnapshot>> {
     Json(
         McpStorageFacade::new(core)
             .delete_mcp_server(mcp_server_id)

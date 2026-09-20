@@ -1,5 +1,5 @@
 use super::connector::ServerHandle;
-use super::{BUILTID_SESSION, McpError, StdioParams};
+use super::{BUILTIN_SESSION, McpError, StdioParams};
 use super::{
     CallToolParam, CallToolResult, ClientEvent, ClientSnapshot, ClientStatus, Prompt, Resource,
     ServerParams, Tool,
@@ -66,6 +66,10 @@ enum RegistryRequest {
     },
     Release {
         session_id: String,
+        name: String,
+        reply: oneshot::Sender<Result<ClientSnapshot, McpError>>,
+    },
+    Terminate {
         name: String,
         reply: oneshot::Sender<Result<ClientSnapshot, McpError>>,
     },
@@ -171,6 +175,19 @@ impl RegistryHandle {
         self.tx
             .send(RegistryRequest::Release {
                 session_id: session_id.to_string(),
+                name: name.to_string(),
+                reply,
+            })
+            .await
+            .map_err(|_| McpError::ManagerShutdown)?;
+        rx.await.map_err(|_| McpError::ManagerShutdown)?
+    }
+
+    /// 彻底终止一个 MCP 服务，移除所有引用
+    pub async fn terminate(&self, name: &str) -> Result<ClientSnapshot, McpError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(RegistryRequest::Terminate {
                 name: name.to_string(),
                 reply,
             })
@@ -387,6 +404,10 @@ impl Registry {
                     let result = self.release(&session_id, &name).await;
                     let _ = reply.send(result);
                 }
+                RegistryRequest::Terminate { name, reply } => {
+                    let result = self.terminate(&name).await;
+                    let _ = reply.send(result);
+                }
                 RegistryRequest::Attach {
                     session_id,
                     name,
@@ -443,7 +464,7 @@ impl Registry {
             name.clone(),
             ServerEntry {
                 state: ServerState::Connected,
-                ref_sessions: HashSet::from([BUILTID_SESSION.to_owned()]),
+                ref_sessions: HashSet::from([BUILTIN_SESSION.to_owned()]),
                 params: ServerParams::Stdio(StdioParams::new_builtin(name, description)),
                 handle: Some(handle),
             },
@@ -596,6 +617,9 @@ impl Registry {
     async fn release(&mut self, session_id: &str, name: &str) -> Result<ClientSnapshot, McpError> {
         let entry = self.get_entry_mut(name)?;
         entry.ref_sessions.remove(session_id);
+        if entry.ref_sessions.len() == 1 && entry.ref_sessions.contains(BUILTIN_SESSION) {
+            entry.ref_sessions.remove(BUILTIN_SESSION);
+        }
         log::info!(
             "[RegistryRequest::Release] session_id {} removed, left: {}",
             session_id,
@@ -609,11 +633,26 @@ impl Registry {
             handle.disconnect().await;
         }
         let snapshot = entry.snapshot();
-        let name = entry.params.get_name().into_owned();
-        self.servers.remove(&name);
-
+        self.servers.remove(name);
         self.broadcast(ClientEvent::Disconnected {
-            name,
+            name: name.to_owned(),
+            reason: "normal shutdown".to_string(),
+        });
+
+        Ok(snapshot)
+    }
+
+    async fn terminate(&mut self, name: &str) -> Result<ClientSnapshot, McpError> {
+        let entry = self.get_entry_mut(name)?;
+        entry.ref_sessions.clear();
+        entry.state = ServerState::Disconnecting;
+        if let Some(handle) = entry.handle.take() {
+            handle.disconnect().await;
+        }
+        let snapshot = entry.snapshot();
+        self.servers.remove(name);
+        self.broadcast(ClientEvent::Disconnected {
+            name: name.to_owned(),
             reason: "normal shutdown".to_string(),
         });
 
@@ -800,7 +839,7 @@ mod test {
             .await
             .expect("attach session");
         assert!(snapshot.ref_sessions.contains("topic-1"));
-        assert!(snapshot.ref_sessions.contains(BUILTID_SESSION));
+        assert!(snapshot.ref_sessions.contains(BUILTIN_SESSION));
 
         // 幂等：同一 session 重复 attach 不重复计数
         handle
