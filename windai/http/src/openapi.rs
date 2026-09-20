@@ -43,6 +43,7 @@ use wind_mcp::client::{
         crate::routes::chat::subscribe_events,
         // provider
         crate::routes::provider::list_providers,
+        crate::routes::provider::list_adapters,
         crate::routes::provider::create_provider,
         crate::routes::provider::get_provider,
         crate::routes::provider::update_provider,

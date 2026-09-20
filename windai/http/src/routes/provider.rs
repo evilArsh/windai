@@ -23,6 +23,7 @@ pub fn router() -> Router<AppState> {
             "/api/v1/providers",
             get(list_providers).post(create_provider),
         )
+        .route("/api/v1/adapters", get(list_adapters))
         .route(
             "/api/v1/providers/by-name/{name}",
             get(get_provider_by_name),
@@ -105,6 +106,20 @@ pub(crate) async fn create_provider(
             .create_provider(input)
             .await,
     ))
+}
+
+#[utoipa::path(
+    get,
+    summary = "获取所有可用适配器",
+    path = "/api/v1/adapters",
+    responses(
+        (status = 200, description = "获取所有可用适配器", body = ApiResponse<Vec<AdapterType>>)
+    )
+)]
+pub(crate) async fn list_adapters() -> Json<ApiResponse<Vec<AdapterType>>> {
+    use strum::IntoEnumIterator;
+    let all: Vec<AdapterType> = AdapterType::iter().collect();
+    Json(ApiResponse::ok(all))
 }
 
 #[utoipa::path(

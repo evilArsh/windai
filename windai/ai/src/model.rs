@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
     Clone,
     strum::EnumString,
     strum::Display,
+    strum::EnumIter
 )]
 pub enum AdapterType {
     /// OpenAI chat completion API 适配器
