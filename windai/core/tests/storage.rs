@@ -212,17 +212,17 @@ async fn create_root_topic(
         .unwrap()
 }
 
-/// 创建一个 AgentDefinition；`owner_topic_id` 为 `Some` 表示 topic 专属 Agent
+/// 创建一个 AgentDefinition；`label` 只用于 name / description，`key` 由系统生成；
+/// `owner_topic_id` 为 `Some` 表示 topic 专属 Agent
 async fn create_agent_def(
     agent: &wind_core::storage::agent::AgentStorage,
-    key: &str,
+    label: &str,
     owner_topic_id: Option<i64>,
 ) -> AgentDefinition {
     agent
         .create_definition(CreateAgentDefinition {
-            key: key.into(),
-            name: key.into(),
-            description: key.into(),
+            name: label.into(),
+            description: label.into(),
             owner_topic_id,
             cloned_from_id: None,
             active: Some(true),
@@ -266,7 +266,6 @@ async fn agent_instance_crud() {
     // create_definition：创建三个随机的 AgentDefinition
     let def_a = agent
         .create_definition(CreateAgentDefinition {
-            key: "agent-a".into(),
             name: "Agent A".into(),
             description: "first agent".into(),
             owner_topic_id: None,
@@ -278,7 +277,6 @@ async fn agent_instance_crud() {
         .unwrap();
     let def_b = agent
         .create_definition(CreateAgentDefinition {
-            key: "agent-b".into(),
             name: "Agent B".into(),
             description: "second agent".into(),
             owner_topic_id: None,
@@ -290,7 +288,6 @@ async fn agent_instance_crud() {
         .unwrap();
     let def_c = agent
         .create_definition(CreateAgentDefinition {
-            key: "agent-c".into(),
             name: "Agent C".into(),
             description: "third agent".into(),
             owner_topic_id: None,
@@ -348,7 +345,7 @@ async fn agent_instance_crud() {
 
     let got_def = agent.get_definition(def_b.id).await.unwrap().unwrap();
     assert_eq!(got_def.id, def_b.id);
-    assert_eq!(got_def.key, "agent-b");
+    assert_eq!(got_def.key, def_b.key);
     assert_eq!(got_def.name, "Agent B");
 
     // get_main_instance：按 role 取回 topic 的主实例
@@ -373,9 +370,9 @@ async fn agent_instance_crud() {
     let def_ids: Vec<i64> = defs.iter().map(|d| d.id).collect();
     assert_eq!(def_ids, vec![def_a.id, def_b.id, def_c.id]);
 
-    // get_definition_by_key：通过 key 查找 definition
+    // get_definition_by_key：通过系统生成的 key 查找 definition
     let by_key = agent
-        .get_definition_by_key("agent-c")
+        .get_definition_by_key(&def_c.key)
         .await
         .unwrap()
         .unwrap();
@@ -459,6 +456,83 @@ async fn topic_child_listing() {
 }
 
 // ---------------------------------------------------------------------------
+// Agent key 生成契约
+// ---------------------------------------------------------------------------
+
+/// key 由系统生成：12 字符、首字符为小写字母、其余取自 `[A-Za-z0-9_-]`，且互不相同
+#[tokio::test]
+async fn agent_definition_key_is_generated() {
+    let core = setup().await;
+    let agent = core.storage().agent();
+
+    let mut keys = Vec::new();
+    for label in ["one", "two", "three"] {
+        keys.push(create_agent_def(agent, label, None).await.key);
+    }
+
+    for key in &keys {
+        assert_eq!(key.len(), 12, "key: {key}");
+        let mut chars = key.chars();
+        let head = chars.next().expect("key is not empty");
+        assert!(head.is_ascii_lowercase(), "key: {key}");
+        assert!(
+            chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+            "key: {key}"
+        );
+    }
+
+    let unique: std::collections::HashSet<&String> = keys.iter().collect();
+    assert_eq!(unique.len(), keys.len(), "keys: {keys:?}");
+}
+
+/// key 生成后不可修改：update_definition 不带 key 参数，改完仍是原 key
+#[tokio::test]
+async fn agent_definition_key_is_immutable() {
+    let core = setup().await;
+    let agent = core.storage().agent();
+    let created = create_agent_def(agent, "immutable", None).await;
+
+    agent
+        .update_definition(
+            created.id,
+            UpdateAgentDefinition {
+                name: Some("renamed".into()),
+                active: Some(false),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("update definition");
+
+    let loaded = agent
+        .get_definition(created.id)
+        .await
+        .expect("get definition")
+        .expect("definition exists");
+    assert_eq!(loaded.key, created.key);
+    assert_eq!(loaded.name, "renamed");
+}
+
+/// clone 生成全新 key，与源 key 无关；来源关系由 cloned_from_id 记录
+#[tokio::test]
+async fn clone_definition_generates_fresh_key() {
+    let core = setup().await;
+    let agent = core.storage().agent();
+    let topic = create_root_topic(core.storage().topic(), "clone-key").await;
+    let source = create_agent_def(agent, "clone-source", None).await;
+
+    let cloned = agent
+        .clone_definition_for_topic(source.id, topic.id)
+        .await
+        .expect("clone definition");
+
+    assert_eq!(cloned.key.len(), 12, "key: {}", cloned.key);
+    assert_ne!(cloned.key, source.key);
+    assert_eq!(cloned.cloned_from_id, Some(source.id));
+    assert_eq!(cloned.owner_topic_id, Some(topic.id));
+}
+
+// ---------------------------------------------------------------------------
 // 内建 MCP 绑定（builtin_mcp_servers）
 // ---------------------------------------------------------------------------
 
@@ -468,10 +542,9 @@ async fn agent_definition_accepts_builtin_binding_names() {
     let core = setup().await;
     let agent = core.storage().agent();
 
-    fn build_def(key: &str, builtins: Vec<BuiltinMcpBinding>) -> CreateAgentDefinition {
+    fn build_def(label: &str, builtins: Vec<BuiltinMcpBinding>) -> CreateAgentDefinition {
         CreateAgentDefinition {
-            key: key.into(),
-            name: key.into(),
+            name: label.into(),
             description: "d".into(),
             owner_topic_id: None,
             cloned_from_id: None,
@@ -532,7 +605,6 @@ async fn topic_delete_cascades() {
     // owner_topic_id 指向该 topic 的 definition 属于"专属 definition"
     let def = agent
         .create_definition(CreateAgentDefinition {
-            key: "owned-agent".into(),
             name: "Owned".into(),
             description: "owned by topic".into(),
             owner_topic_id: Some(root.id),
@@ -605,7 +677,6 @@ async fn instance_delete_cascades_messages_and_approvals() {
     let root = create_root_topic(topics, "instance-cascade").await;
     let def = agent
         .create_definition(CreateAgentDefinition {
-            key: "keep-me".into(),
             name: "KeepMe".into(),
             description: "global agent".into(),
             owner_topic_id: None,
@@ -1082,7 +1153,7 @@ async fn main_instance_binds_no_agent() {
     let topics = core.storage().topic();
 
     let root = create_root_topic(topics, "main-no-agent").await;
-    let planner = create_agent_def(agent, "main-no-agent-planner", None).await;
+    let planner = create_agent_def(agent, "no-agent-planner", None).await;
 
     // 即便 topic 已映射了能力，主实例也不采用它
     agent
@@ -1213,15 +1284,15 @@ async fn topic_agent_map_crud_and_sub_definitions() {
         .await
         .expect("create frontend map");
 
-    // 能力列表按 definition key 升序返回全部映射，不做任何过滤
-    let keys: Vec<String> = agent
+    // 能力列表按 definition id 升序返回全部映射，不做任何过滤
+    let def_ids: Vec<i64> = agent
         .list_sub_definitions_by_topic(root.id)
         .await
         .expect("list sub definitions")
         .into_iter()
-        .map(|d| d.key)
+        .map(|d| d.id)
         .collect();
-    assert_eq!(keys, vec!["map-backend", "map-frontend", "map-planner"]);
+    assert_eq!(def_ids, vec![backend.id, frontend.id, planner.id]);
 
     // 删除
     agent
@@ -1270,14 +1341,14 @@ async fn list_sub_definitions_returns_all_mapped() {
             .expect("create map");
     }
 
-    let keys: Vec<String> = agent
+    let def_ids: Vec<i64> = agent
         .list_sub_definitions_by_topic(root.id)
         .await
         .expect("list sub definitions")
         .into_iter()
-        .map(|d| d.key)
+        .map(|d| d.id)
         .collect();
-    assert_eq!(keys, vec!["sub-disabled", "sub-main"]);
+    assert_eq!(def_ids, vec![disabled.id, enabled.id]);
 
     let disabled_now = agent
         .get_definition(disabled.id)

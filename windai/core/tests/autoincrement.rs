@@ -179,7 +179,6 @@ async fn create_one_per_table(core: &WindCore) -> Vec<(&'static str, i64)> {
         .agent()
         .create_definition(CreateAgentDefinition {
             name: "a1".into(),
-            key: "a1".into(),
             description: "d".into(),
             owner_topic_id: None,
             cloned_from_id: None,

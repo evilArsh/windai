@@ -41,6 +41,7 @@ sqlx.workspace = true
 # rquickjs.workspace = true
 dirs.workspace = true
 async-trait.workspace = true
+nanoid.workspace = true
 [dev-dependencies]
 dotenvy.workspace = true
 env_logger.workspace = true

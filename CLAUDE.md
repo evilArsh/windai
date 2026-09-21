@@ -19,7 +19,7 @@ cargo test -p wind-core --test core_chat -- --include-ignored --test-threads=1  
 Copy `.env.example` to `.env` and fill in `TEST_*` values for the `.env`-gated tests.
 
 **Test file status** (so you don't expect dead tests to run)。下面的数字是当前快照，会随代码变化：
-- `windai/core/tests/storage.rs` — 27 tests, active, no `.env` needed
+- `windai/core/tests/storage.rs` — 30 tests, active, no `.env` needed
 - `windai/core/tests/schema.rs` — 14 tests, the schema↔model contract（12 张表各一条列断言 + `dropped_columns_are_absent` + `dropped_tables_are_absent`），no `.env`
 - `windai/core/tests/autoincrement.rs` — 7 tests, 自增主键的回归测试（12 张表自增生效 / 不复用 / 严格递增 / `create()` 返回值落库一致 / 批量插入的自然键关联与分块 / 布尔列往返），no `.env`
 - `windai/core/src/storage/message.rs` (cfg test) — 3 tests：`list_contexts` 的排除/删除/boundary 语义（`list_contexts` 是 crate 内部 API，集成测试访问不到）
@@ -297,6 +297,8 @@ Column notes: `topics` 有 `parent_id`（tree structure is kept, but **no code c
 
 **`AgentDefinition`** (`models/agent/definition.rs`) — what an agent *can do*: `key`, `name`, `description`, `owner_topic_id` (`None` = global), `cloned_from_id`, `active`, `data: AgentDefinitionData` (prompt_modules, mcp_servers via `AgentMcpBinding`, builtin_mcp_servers via `BuiltinMcpBinding`, context_policy, permission_policy, runtime_limits). There is no `scope` field — global vs. topic-local is expressed by `owner_topic_id`, and "cloned from" is `cloned_from_id`.
 
+**`key` 由系统生成，调用方无法指定**：`CreateAgentDefinition` 不含 `key` 字段，`AgentStorage::generate_key`（`KEY_LEN = 12`）取首字符小写字母 + 其余 nanoid 的 URL 安全字母表。`UpdateAgentDefinition` 与 `update_definition` 都不含 key，生成后不可修改；`clone_definition_for_topic` 同样走 `create_definition` 生成全新 key，来源关系由 `cloned_from_id` 记录
+
 **`AgentInstance`** (`models/agent/instance.rs`) — an agent *instance* in a topic: `id`, `parent_id` (`None` 即主实例), `topic_id`, `agent_id` (`None` = 回退为普通对话), `mode: Option<AgentMode>`, `role: AgentRole` (`Main`/`Child`), `status: AgentStatus`, `created_at`. **`model_id` 与 `tool_approval_policy` 不在实例上 —— 它们在 `Topic` 上**；实例也不再有 `enabled` / `chat_config_id` 字段
 
 **`TopicAgentMap`** (`models/agent/topic_map.rs`) — topic 能力映射（`topic_agent_maps`）: `id`, `topic_id`, `agent_id`, `created_at`（无 `role`，`CreateTopicAgentMap` 同形，没有 `UpdateTopicAgentMap`）。映射只表达「这个 topic 拥有该 AgentDefinition 能力」，用户只能添加或删除。`helper::get_or_create_main_instance` 创建的主实例**不绑定任何定义**（`agent_id = None`）—— 主实例只负责调度，`agent_list_agents` / `agent_spawn_agent` 让它从 `topic_agent_maps` 里选能力。`AgentStorage::list_sub_definitions_by_topic(topic_id)` 返回该 topic 映射到的**全部**定义，**不做任何过滤** —— `active = false` 的定义同样返回
@@ -313,7 +315,7 @@ Column notes: `topics` 有 `parent_id`（tree structure is kept, but **no code c
 
 | File | Content |
 |------|---------|
-| `windai/core/tests/storage.rs` | 27 tests — integration tests for all `*Storage` structs: CRUD, validation, cascade, batch |
+| `windai/core/tests/storage.rs` | 30 tests — integration tests for all `*Storage` structs: CRUD, validation, cascade, batch |
 | `windai/core/tests/schema.rs` | 14 tests — the schema↔model contract: 12 张表各一条列断言（`assert_table_columns`），加 `dropped_columns_are_absent` 与 `dropped_tables_are_absent` |
 | `windai/core/tests/autoincrement.rs` | 7 tests — 自增主键契约：12 张表 id 非空且落在 JS 安全整数内、不复用（守护 `AUTOINCREMENT`）、严格递增、`RETURNING id` 与库中一致、`create_requests` 的自然键关联与超限分块、布尔列往返 |
 | `windai/core/tests/agent_runtime.rs` | 2 tests — runtime 生命周期与 `terminal_event_is_delivered_before_stream_closes`（`Effect::CloseEventStream` 的时序） |

@@ -107,7 +107,6 @@ let tid = topic.id;
 // 2. Define a reusable agent (what the agent *can* do)
 let agent_def = storage.agent().create_definition(CreateAgentDefinition {
     name: "assistant".into(),
-    key: "assistant".into(),
     description: "Default assistant".into(),
     owner_topic_id: None,     // None = global definition
     cloned_from_id: None,
@@ -179,7 +178,6 @@ let sid = mcp.id;
 // Give the agent access to that MCP server
 storage.agent().create_definition(CreateAgentDefinition {
     name: "tool-user".into(),
-    key: "tool-user".into(),
     description: "Assistant with MCP tools".into(),
     owner_topic_id: None,
     cloned_from_id: None,
@@ -198,6 +196,8 @@ storage.agent().create_definition(CreateAgentDefinition {
 ```
 
 Agent definition data also carries `prompt_modules`, `builtin_mcp_servers`, `context_policy`, `permission_policy`, and `runtime_limits` — see the `AgentDefinitionData` type for the full surface。（其中只有 `context_policy.max_context` 目前被真正使用。）
+
+`AgentDefinition.key` 是唯一短标识，**由系统在创建时生成、生成后不可修改**（12 字符，首字符为小写字母）。`create_definition` 不接受调用方指定 key；`clone_definition_for_topic` 会生成全新 key，来源关系记录在 `cloned_from_id`。
 
 ### Tool Approval Flow
 

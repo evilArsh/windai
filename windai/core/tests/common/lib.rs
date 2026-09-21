@@ -131,13 +131,12 @@ pub async fn init_test_core_with_registry(registry: RegistryHandle) -> WindCore 
 
 /// 播种一个启用的 AgentDefinition
 #[allow(dead_code)]
-pub async fn seed_definition(core: &WindCore, key: &str) -> AgentDefinition {
+pub async fn seed_definition(core: &WindCore, label: &str) -> AgentDefinition {
     core.storage()
         .agent()
         .create_definition(CreateAgentDefinition {
-            name: key.to_string(),
-            key: key.to_string(),
-            description: format!("{key} description"),
+            name: label.to_string(),
+            description: format!("{label} description"),
             owner_topic_id: None,
             cloned_from_id: None,
             active: Some(true),

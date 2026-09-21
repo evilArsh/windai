@@ -70,12 +70,11 @@ async fn create_topic(core: &Arc<WindCore>, label: &str) -> i64 {
         .id
 }
 
-async fn create_definition(core: &Arc<WindCore>, key: &str) -> i64 {
+async fn create_definition(core: &Arc<WindCore>, label: &str) -> i64 {
     core.storage()
         .agent()
         .create_definition(CreateAgentDefinition {
-            key: key.to_string(),
-            name: key.to_string(),
+            name: label.to_string(),
             description: "for http test".to_string(),
             owner_topic_id: None,
             cloned_from_id: None,

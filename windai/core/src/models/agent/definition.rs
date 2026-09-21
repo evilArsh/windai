@@ -10,7 +10,7 @@ use sqlx::Row;
 pub struct AgentDefinition {
     /// 唯一 id
     pub id: i64,
-    /// Agent 唯一短标识
+    /// Agent 唯一短标识，创建时由系统生成，生成后不可修改
     pub key: String,
     /// 用户可读名称
     pub name: String,
@@ -112,8 +112,6 @@ pub struct BuiltinMcpBinding {
 pub struct CreateAgentDefinition {
     /// 用户可读名称
     pub name: String,
-    /// Agent 唯一短标识
-    pub key: String,
     /// Agent 能力说明
     pub description: String,
     /// 该 Agent 专属的 Topic id；None 表示全局 Agent

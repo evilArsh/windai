@@ -25,23 +25,34 @@ pub struct AgentStorage {
 }
 
 impl AgentStorage {
+    const KEY_LEN: usize = 12;
+
+    const KEY_HEAD_ALPHABET: [char; 26] = [
+        'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r',
+        's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
+    ];
+
     pub(crate) fn new(executor: StorageExecutor) -> Self {
         Self { executor }
     }
 
+    fn generate_key() -> String {
+        let head = nanoid::nanoid!(1, &Self::KEY_HEAD_ALPHABET);
+        let tail = nanoid::nanoid!(Self::KEY_LEN - 1, &nanoid::alphabet::SAFE);
+        format!("{head}{tail}")
+    }
+
     /// 创建新的 AgentDefinition
     pub async fn create_definition(&self, data: CreateAgentDefinition) -> Result<AgentDefinition> {
-        if data.key.trim().is_empty() {
-            return Err(CoreError::Validation("agent key cannot be empty".into()));
-        }
         if data.name.trim().is_empty() {
             return Err(CoreError::Validation("agent name cannot be empty".into()));
         }
+        let key = Self::generate_key();
         let now = now_ts();
         let active = data.active.unwrap_or(true);
         let mut qb = insert!(
             TableName::AGENT_DEFINITION,
-            ("key", data.key.clone()),
+            ("key", key.clone()),
             ("name", data.name.clone()),
             ("description", data.description.clone()),
             ("owner_topic_id", data.owner_topic_id),
@@ -58,7 +69,7 @@ impl AgentStorage {
 
         Ok(AgentDefinition {
             id,
-            key: data.key,
+            key,
             name: data.name,
             description: data.description,
             owner_topic_id: data.owner_topic_id,
@@ -324,10 +335,8 @@ impl AgentStorage {
             return Ok(source);
         }
 
-        let cloned_key = format!("{}-topic-{}", source.key, owner_topic_id);
         self.create_definition(CreateAgentDefinition {
-            key: cloned_key,
-            name: source.name,
+            name: format!("{}_copy", source.name),
             description: source.description,
             owner_topic_id: Some(owner_topic_id),
             cloned_from_id: Some(source.id),

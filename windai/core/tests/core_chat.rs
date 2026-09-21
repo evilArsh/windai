@@ -46,7 +46,6 @@ fn test_agent_group1() -> Vec<CreateAgentDefinition> {
     vec![
         CreateAgentDefinition {
             name: "test-main-agent".into(),
-            key: "test-main-agent".into(),
             description: "专业的项目/产品经理，善于将用户需求拆分并将任务分配给团队".into(),
             owner_topic_id: None,
             cloned_from_id: None,
@@ -55,7 +54,6 @@ fn test_agent_group1() -> Vec<CreateAgentDefinition> {
         },
         CreateAgentDefinition {
             name: "test-frontend-agent".into(),
-            key: "test-frontend-agent".into(),
             description:
                 "一个专业的前端vue/react开发工程师,擅长前端开发和架构设计，以及各种疑难杂症解决"
                     .into(),
@@ -66,7 +64,6 @@ fn test_agent_group1() -> Vec<CreateAgentDefinition> {
         },
         CreateAgentDefinition {
             name: "test-law-agent".into(),
-            key: "test-law-agent".into(),
             description: "专业的计算机领域的律师，善于分析并规避项目中法律有关的问题".into(),
             owner_topic_id: None,
             cloned_from_id: None,
@@ -75,7 +72,6 @@ fn test_agent_group1() -> Vec<CreateAgentDefinition> {
         },
         CreateAgentDefinition {
             name: "test-backend-agent".into(),
-            key: "test-backend-agent".into(),
             description:
                 "一个专业的rust后端开发工程师,擅长后端开发和架构设计，以及解决各种疑难杂症".into(),
             owner_topic_id: None,

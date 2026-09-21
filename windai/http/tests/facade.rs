@@ -188,7 +188,6 @@ async fn agent_crud_roundtrips() {
 
     let created = f
         .create_agent_definition(CreateAgentDefinition {
-            key: "main".into(),
             name: "Main".into(),
             description: "main agent".into(),
             owner_topic_id: None,
@@ -198,10 +197,11 @@ async fn agent_crud_roundtrips() {
         })
         .await;
     assert_eq!(created.code, 200);
+    let agent_key = created.data.as_ref().unwrap().key.clone();
     let agent_id = created.data.unwrap().id;
 
     assert_eq!(f.get_agent_definition(agent_id).await.code, 200);
-    assert_eq!(f.get_agent_definition_by_key("main".into()).await.code, 200);
+    assert_eq!(f.get_agent_definition_by_key(agent_key).await.code, 200);
 
     // clone 到 topic 42，产生 owner_topic_id 指向 42 的副本
     let cloned = f.clone_agent_definition(agent_id, 42).await;
@@ -245,7 +245,6 @@ async fn agent_map_facade_semantics() {
     let topic_id = create_topic(&core, "maps").await;
     let agent_id = AgentStorageFacade::new(core.clone())
         .create_agent_definition(CreateAgentDefinition {
-            key: "map-agent".into(),
             name: "Map Agent".into(),
             description: "for map facade test".into(),
             owner_topic_id: None,
@@ -334,7 +333,6 @@ async fn agent_definition_accepts_valid_builtin_mcp_name() {
     let f = AgentStorageFacade::new(core);
     let r = f
         .create_agent_definition(CreateAgentDefinition {
-            key: "with-builtin".into(),
             name: "WithBuiltin".into(),
             description: "x".into(),
             owner_topic_id: None,
