@@ -85,6 +85,23 @@ async fn list_clients_returns_registered_builtin_clients() {
 }
 
 #[tokio::test]
+async fn list_builtin_returns_static_specs() {
+    let core = common::test_core().await;
+    let app = test_router(core);
+    let body = get(&app, "/api/v1/mcp-servers/builtin").await;
+    assert_eq!(body["code"], 200, "body: {body}");
+    let names: Vec<&str> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"wind-mcp-fs"), "names: {names:?}");
+    assert!(names.contains(&"wind-mcp-skills"), "names: {names:?}");
+    assert!(body["data"][0]["description"].is_string(), "body: {body}");
+}
+
+#[tokio::test]
 async fn get_client_running_builtin_returns_200() {
     let core = common::test_core().await;
     let app = test_router(core);

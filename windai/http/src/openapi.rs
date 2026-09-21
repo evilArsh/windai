@@ -12,6 +12,7 @@ use wind_core::models::{
 };
 
 use crate::dto::{ApiResponse, ApproveToolCallsRequest, CreateChatRequest};
+use wind_mcp::builtin::BuiltinSpec;
 use wind_mcp::client::{
     ClientEvent, ClientSnapshot, ClientStatus, Prompt, PromptArgument, Resource, Tool,
 };
@@ -71,6 +72,7 @@ use wind_mcp::client::{
         crate::routes::mcp::update_mcp_server,
         crate::routes::mcp::delete_mcp_server,
         crate::routes::mcp::get_mcp_server_by_name,
+        crate::routes::mcp::list_mcp_servers_builtin,
         crate::routes::mcp::start_mcp_server,
         crate::routes::mcp::stop_mcp_server,
         crate::routes::mcp::attach_mcp_server,
@@ -133,6 +135,7 @@ use wind_mcp::client::{
         UpdateMcpServer,
         ClientStatus,
         ClientSnapshot,
+        BuiltinSpec,
         ClientEvent,
         Tool,
         Prompt,

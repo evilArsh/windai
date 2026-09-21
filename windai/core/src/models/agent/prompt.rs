@@ -37,8 +37,6 @@ impl<'s> sqlx::FromRow<'s, DbRow> for PromptModule {
 pub struct PromptModuleBinding {
     /// 被引用的 PromptModule id
     pub prompt_module_id: i64,
-    /// 该模块是否为 Agent 运行必需
-    pub required: bool,
     /// 当前绑定是否启用
     pub enabled: bool,
 }

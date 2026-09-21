@@ -3,6 +3,7 @@ use crate::facade::mcp_runtime::McpRuntimeFacade;
 use std::sync::Arc;
 use wind_core::WindCore;
 use wind_core::models::{CreateMcpServer, McpServerParam, UpdateMcpServer};
+use wind_mcp::builtin::{BUILTIN_SERVERS, BuiltinSpec};
 use wind_mcp::client::ClientSnapshot;
 
 pub struct McpStorageFacade {
@@ -19,6 +20,10 @@ impl McpStorageFacade {
             Ok(rows) => ApiResponse::ok(rows),
             Err(e) => map_core_error(e),
         }
+    }
+
+    pub fn list_mcp_servers_builtin(&self) -> ApiResponse<Vec<BuiltinSpec>> {
+        ApiResponse::ok(BUILTIN_SERVERS.to_vec())
     }
 
     pub async fn create_mcp_server(&self, input: CreateMcpServer) -> ApiResponse<McpServerParam> {

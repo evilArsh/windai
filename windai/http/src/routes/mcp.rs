@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use wind_core::WindCore;
 use wind_core::models::{CreateMcpServer, McpServerParam, UpdateMcpServer};
+use wind_mcp::builtin::BuiltinSpec;
 use wind_mcp::client::{ClientEvent, ClientSnapshot, Prompt, Resource, Tool};
 
 pub fn router() -> Router<AppState> {
@@ -28,6 +29,7 @@ pub fn router() -> Router<AppState> {
             "/api/v1/mcp-servers/by-name/{name}",
             get(get_mcp_server_by_name),
         )
+        .route("/api/v1/mcp-servers/builtin", get(list_mcp_servers_builtin))
         .route(
             "/api/v1/mcp-servers/{mcp_server_id}",
             get(get_mcp_server)
@@ -85,6 +87,20 @@ pub(crate) async fn list_mcp_servers(
     State(core): State<Arc<WindCore>>,
 ) -> Json<ApiResponse<Vec<McpServerParam>>> {
     Json(McpStorageFacade::new(core).list_mcp_servers().await)
+}
+
+#[utoipa::path(
+    get,
+    summary = "获取系统内建 MCP 服务列表",
+    path = "/api/v1/mcp-servers/builtin",
+    responses(
+        (status = 200, description = "系统内建 MCP 服务列表", body = ApiResponse<Vec<BuiltinSpec>>)
+    )
+)]
+pub(crate) async fn list_mcp_servers_builtin(
+    State(core): State<Arc<WindCore>>,
+) -> Json<ApiResponse<Vec<BuiltinSpec>>> {
+    Json(McpStorageFacade::new(core).list_mcp_servers_builtin())
 }
 
 #[utoipa::path(

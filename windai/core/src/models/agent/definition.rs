@@ -82,8 +82,6 @@ impl Default for AgentDefinitionData {
 pub struct AgentMcpBinding {
     /// MCP server id
     pub mcp_server_id: i64,
-    /// Agent 内部使用该 MCP server 的别名
-    pub alias: Option<String>,
     /// 允许暴露给该 Agent 的工具名列表，空列表表示不额外限制
     ///
     /// 工具名包含完整的 server_name + tool_name 组合

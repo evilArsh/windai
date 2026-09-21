@@ -6,3 +6,5 @@
 /docs/agents/*
 /docs/superpowers/*
 .vscode
+.claude/skills/windai-*
+.superpowers

@@ -1,7 +1,9 @@
 pub mod fs;
 pub mod skills;
 
-#[derive(Debug, Clone, Copy)]
+use serde::Serialize;
+
+#[derive(utoipa::ToSchema, Debug, Serialize, Clone, Copy)]
 pub struct BuiltinSpec {
     /// registry 注册名
     pub name: &'static str,
@@ -14,7 +16,7 @@ pub const BUILTIN_FS: BuiltinSpec = BuiltinSpec {
 };
 pub const BUILTIN_SKILLS: BuiltinSpec = BuiltinSpec {
     name: "wind-mcp-skills",
-    description: "skill discovery",
+    description: "skill discovery capability",
 };
 pub const BUILTIN_SERVERS: &[BuiltinSpec] = &[BUILTIN_FS, BUILTIN_SKILLS];
 
