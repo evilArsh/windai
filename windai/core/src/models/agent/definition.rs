@@ -54,7 +54,6 @@ pub struct AgentDefinitionData {
     /// 该 Agent 拥有的 MCP server 和工具级约束
     pub mcp_servers: Vec<AgentMcpBinding>,
     /// 该 Agent 绑定的内建 MCP server 与工具级约束
-    #[serde(default)]
     pub builtin_mcp_servers: Vec<BuiltinMcpBinding>,
     /// 子 Agent 创建时的默认上下文策略
     pub context_policy: ContextPolicy,
