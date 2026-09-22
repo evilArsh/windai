@@ -169,6 +169,41 @@ async fn stop_unknown_topic_returns_404() {
 }
 
 #[tokio::test]
+async fn delete_never_started_server_returns_200() {
+    let core = common::test_core().await;
+    let srv = create_stdio_server(&core, "delete-never-started", Some("/nonexistent-cmd")).await;
+    let app = test_router(core);
+
+    let res = app
+        .clone()
+        .oneshot(
+            Request::delete(format!("/api/v1/mcp-servers/{}", srv.id))
+                .body(Body::empty())
+                .expect("build delete request"),
+        )
+        .await
+        .expect("send delete request");
+    let body = read_json::<()>(res).await;
+    // 删除从未启动过的 server：配置记录确实删掉了，不能因为 terminate
+    // 找不到运行中的 client 就把整个响应的 code 覆盖成 404
+    assert_eq!(body["code"], 200, "body: {body}");
+    assert_eq!(body["data"]["name"], "delete-never-started");
+    assert_eq!(body["data"]["status"], "disconnected");
+
+    // 记录确实已从库中消失
+    let res = app
+        .oneshot(
+            Request::get(format!("/api/v1/mcp-servers/{}", srv.id))
+                .body(Body::empty())
+                .expect("build get request"),
+        )
+        .await
+        .expect("send get request");
+    let body = read_json::<()>(res).await;
+    assert_eq!(body["code"], 404, "body: {body}");
+}
+
+#[tokio::test]
 async fn stop_not_running_returns_not_found() {
     let core = common::test_core().await;
     let topic = create_topic(&core).await;

@@ -1,10 +1,11 @@
 use crate::dto::{ApiResponse, map_core_error};
 use crate::facade::mcp_runtime::McpRuntimeFacade;
+use std::collections::HashSet;
 use std::sync::Arc;
 use wind_core::WindCore;
 use wind_core::models::{CreateMcpServer, McpServerParam, UpdateMcpServer};
 use wind_mcp::builtin::{BUILTIN_SERVERS, BuiltinSpec};
-use wind_mcp::client::ClientSnapshot;
+use wind_mcp::client::{ClientSnapshot, ClientStatus};
 
 pub struct McpStorageFacade {
     core: Arc<WindCore>,
@@ -59,13 +60,21 @@ impl McpStorageFacade {
             None => return res.without_data(),
         };
 
-        match self.core.storage().mcp().delete(server.id).await {
-            Ok(_) => {
-                McpRuntimeFacade::new(self.core.clone())
-                    .terminate_server(&server.name)
-                    .await
-            }
-            Err(e) => map_core_error(e),
+        if let Err(e) = self.core.storage().mcp().delete(server.id).await {
+            return map_core_error(e);
+        }
+
+        match McpRuntimeFacade::new(self.core.clone())
+            .terminate_server(&server.name)
+            .await
+        {
+            ApiResponse { code: 404, .. } => ApiResponse::ok(ClientSnapshot {
+                name: server.name,
+                transport: server.r#type,
+                status: ClientStatus::Disconnected,
+                ref_sessions: HashSet::new(),
+            }),
+            resp => resp,
         }
     }
 
