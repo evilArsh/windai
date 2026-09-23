@@ -2,6 +2,7 @@ use super::task::SupervisorRequest;
 use super::task::TaskNotification;
 use crate::error::CoreError;
 use crate::error::Result;
+use crate::models::AgentInstance;
 use crate::models::AgentMode;
 use crate::models::AgentStatus;
 use crate::models::Message;
@@ -87,6 +88,10 @@ pub enum TopicEvent {
         message_id: i64,
         /// 审批请求
         requests: Vec<ToolApprovalRequest>,
+    },
+    // 实例已创建
+    InstanceCreated {
+        data: AgentInstance,
     },
 }
 
@@ -199,6 +204,15 @@ impl std::fmt::Display for TopicEvent {
                     "(topic_id = {}, instance_id = {})",
                     topic_id.to_string(),
                     instance_id.to_string(),
+                ),
+            ),
+            TopicEvent::InstanceCreated { data } => (
+                self.as_ref(),
+                format!(
+                    "(topic_id = {}, instance_id = {}, parent_instance_id = {:?})",
+                    data.topic_id.to_string(),
+                    data.id.to_string(),
+                    data.parent_id
                 ),
             ),
         };

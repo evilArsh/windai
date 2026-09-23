@@ -215,6 +215,9 @@ impl TopicRuntime {
                     .await
                 {
                     Some(spec) => Some(vec![
+                        FsmEvent::Emit(TopicEvent::InstanceCreated {
+                            data: spec.instance.clone(),
+                        }),
                         FsmEvent::Emit(TopicEvent::MessageCreated {
                             data: spec.user.clone(),
                             topic_id: self.topic_id,
@@ -403,6 +406,9 @@ impl TopicRuntime {
             Effect::Init { user_input } => {
                 match self.task_mgr.init(self.topic_id, user_input).await {
                     Ok(spec) => Some(vec![
+                        FsmEvent::Emit(TopicEvent::InstanceCreated {
+                            data: spec.instance.clone(),
+                        }),
                         FsmEvent::Emit(TopicEvent::MessageCreated {
                             data: spec.user.clone(),
                             topic_id: self.topic_id,
