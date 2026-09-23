@@ -231,12 +231,21 @@ async fn instance_facade_semantics() {
         AgentRole::Child
     );
 
-    // 主实例由话题级接口代表，单实例查询一律 404
-    assert_eq!(f.get_instance(main.id).await.code, 404);
+    // 主实例与子实例同等对待，不做任何隐藏
+    let main_read = f.get_instance(main.id).await;
+    assert_eq!(main_read.code, 200);
+    assert_eq!(
+        main_read.data.expect("读取主实例应返回数据").role,
+        AgentRole::Main
+    );
 
     let listed = f.list_instances_by_topic(topic_id).await;
     assert_eq!(listed.code, 200);
-    assert_eq!(listed.data.expect("列表应返回数据").len(), 1);
+    assert_eq!(
+        listed.data.expect("列表应返回数据").len(),
+        2,
+        "列表含主实例与子实例"
+    );
 }
 
 #[tokio::test]

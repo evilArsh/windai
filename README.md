@@ -147,7 +147,7 @@ while let Ok(event) = events.recv().await {
 
 **Key points:**
 - `create_task` submits `Vec<Content>` (the full `wind_ai::message::Content` protocol) and returns immediately — the runtime accepts it asynchronously. You do **not** hand-build `Message` records; the engine creates the user/assistant messages bound to the main instance, plus tool results, internally.
-- A topic has one `TopicRuntime` and one main `AgentInstance` (plus children spawned by `agent_spawn_agent`). There is no per-agent sub-topic: isolation comes from `Message.instance_id`, so read an instance's history with `MessageStorage::list_by_instance`. HTTP 上主实例不直接暴露，用 `GET /api/v1/topics/{topic_id}/messages` 读它的对话
+- A topic has one `TopicRuntime` and one main `AgentInstance` (plus children spawned by `agent_spawn_agent`). There is no per-agent sub-topic: isolation comes from `Message.instance_id`, so read an instance's history with `MessageStorage::list_by_instance`. HTTP 上主实例与子实例同等对待，都用 `GET /api/v1/agent-instances/{instance_id}/messages` 读该实例的对话
 - 每次 spawn 都新建实例，不复用空闲实例
 - The event stream channel closes once the main instance reaches a terminal state (`Finished` / `Failed` / `Cancelled`) or waits for approval — re-subscribe per conversation.
 - `TopicEvent` variants: `Error`, `Snapshot`, `MessageCreated`, `Message` (streaming delta), `MessageFinished`, `TaskStatusChanged`, `ApprovalRequired`。（`Snapshot` 目前没有任何代码产出。）
@@ -278,7 +278,7 @@ s.provider().list_all().await?;
 s.model().list_by_provider().await?;
 s.topic().list_topics().await?;
 s.agent().list_instances_by_topic(tid).await?;      // 含主实例
-s.agent().list_child_instances_by_topic(tid).await?; // 仅子实例
+s.agent().get_main_instance(tid).await?;            // 单个主实例
 s.agent().list_agent_maps_by_topic(tid).await?;      // topic 能力映射
 
 // Messages belong to an instance, not a topic
@@ -328,8 +328,8 @@ A typical tool-call flow: `MessageCreated → Message (streaming) → ApprovalRe
 
 ## HTTP API 摘要
 
-- **消息**：`GET|POST /api/v1/topics/{topic_id}/messages`（GET 读主实例对话，POST 提交输入，受理返回 `ApiResponse<()>`：`code: 200` + `msg: "ok"`）、`GET /api/v1/agent-instances/{instance_id}/messages`（仅子实例）、`GET|PUT /api/v1/messages/{message_id}`。上下文路由与 `/topics/by-instance/*`、`/messages/{id}/from-message` 已删除
-- **实例**：只读 —— `/api/v1/agent-instances/*` 下全部是 GET —— `GET /api/v1/agent-instances/{instance_id}`、`GET /api/v1/agent-instances/{instance_id}/messages`、`.../tool-approvals/pending`，外加 `GET /api/v1/topics/{topic_id}/agent-instances`（不返回主实例）；实例由 core 内部创建
+- **消息**：`POST /api/v1/topics/{topic_id}/messages`（提交对话输入，受理返回 `ApiResponse<()>`：`code: 200` + `msg: "ok"`）、`GET /api/v1/agent-instances/{instance_id}/messages`（该实例的全部消息，主实例与子实例同等对待）、`GET|PUT /api/v1/messages/{message_id}`。话题级消息 GET 与上下文路由、`/topics/by-instance/*`、`/messages/{id}/from-message` 已删除
+- **实例**：只读，且不区分主实例与子实例 —— `/api/v1/agent-instances/*` 下全部是 GET —— `GET /api/v1/agent-instances/{instance_id}`、`GET /api/v1/agent-instances/{instance_id}/messages`、`.../tool-approvals/pending`，外加 `GET /api/v1/topics/{topic_id}/agent-instances`（含主实例）；实例由 core 内部创建
 - **能力映射**：`GET /api/v1/topics/{topic_id}/agent-maps`、`POST /api/v1/agent-maps`（请求体是 core 的 `CreateTopicAgentMap`，自带 `topic_id`）、`DELETE /api/v1/agent-maps/{map_id}`。映射只表达能力归属，没有角色概念，故没有 PUT
 - **事件流**：`GET /api/v1/topics/{topic_id}/events`（SSE）、`GET /api/v1/mcp-servers/events`（MCP 客户端状态 SSE）
 - **审批**：`POST /api/v1/topics/{topic_id}/tool-approvals/{message_id}/approve`、`POST /api/v1/topics/{topic_id}/agent-instances/{instance_id}/cancel`
@@ -340,7 +340,7 @@ A typical tool-call flow: `MessageCreated → Message (streaming) → ApprovalRe
 
 | File                                 | Content                                                                  |
 | ------------------------------------ | ------------------------------------------------------------------------ |
-| `windai/core/tests/storage.rs`       | 27 tests — storage CRUD, validation, cascades, batch operations (no `.env` needed) |
+| `windai/core/tests/storage.rs`       | 29 tests — storage CRUD, validation, cascades, batch operations (no `.env` needed) |
 | `windai/core/tests/schema.rs`        | 14 tests — schema↔model column contract for all 12 tables, plus `dropped_columns_are_absent` / `dropped_tables_are_absent` |
 | `windai/core/tests/agent_runtime.rs` | 2 tests — runtime lifecycle, and the terminal event must reach subscribers before the stream closes |
 | `windai/core/tests/core_chat.rs`     | One test (`test_agent_chat`, `#[ignore]` behind `.env`): seeds providers/agents/maps, subscribes to topic events, drives `create_task` |

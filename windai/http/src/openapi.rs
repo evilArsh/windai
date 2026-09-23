@@ -34,7 +34,6 @@ use wind_mcp::client::{
         crate::routes::topic_map::create_agent_map,
         crate::routes::topic_map::delete_agent_map,
         // chat / message / SSE
-        crate::routes::chat::list_topic_messages,
         crate::routes::chat::list_instance_messages,
         crate::routes::chat::create_chat,
         crate::routes::chat::get_message,

@@ -19,10 +19,7 @@ use wind_core::models::{Message, UpdateMessage};
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route(
-            "/api/v1/topics/{topic_id}/messages",
-            get(list_topic_messages).post(create_chat),
-        )
+        .route("/api/v1/topics/{topic_id}/messages", post(create_chat))
         .route(
             "/api/v1/agent-instances/{instance_id}/messages",
             get(list_instance_messages),
@@ -44,25 +41,6 @@ pub fn router() -> Router<AppState> {
 /// SSE 单独成 router，不套 TimeoutLayer
 pub fn sse_router() -> Router<AppState> {
     Router::new().route("/api/v1/topics/{topic_id}/events", get(subscribe_events))
-}
-
-#[utoipa::path(
-    get,
-    summary = "获取话题主实例的消息列表",
-    path = "/api/v1/topics/{topic_id}/messages",
-    params(
-        ("topic_id", Path, description = "话题 ID"),
-    ),
-    responses(
-        (status = 200, description = "获取话题主实例的消息列表", body = ApiResponse<Vec<Message>>),
-        (status = 404, description = "话题不存在", body = ApiResponse<Value>)
-    )
-)]
-pub(crate) async fn list_topic_messages(
-    State(core): State<Arc<WindCore>>,
-    ApiPath(topic_id): ApiPath<i64>,
-) -> Json<ApiResponse<Vec<Message>>> {
-    Json(TopicFacade::new(core).list_topic_messages(topic_id).await)
 }
 
 #[utoipa::path(
@@ -90,7 +68,7 @@ pub(crate) async fn list_instance_messages(
 
 #[utoipa::path(
     post,
-    summary = "提交对话消息（作用于该 topic 的主 Agent）",
+    summary = "提交用户任务",
     path = "/api/v1/topics/{topic_id}/messages",
     params(
         ("topic_id", Path, description = "话题 ID"),

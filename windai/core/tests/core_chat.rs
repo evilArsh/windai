@@ -202,7 +202,7 @@ async fn test_agent_chat() {
     let defs = wc
         .storage()
         .agent()
-        .list_sub_definitions_by_topic(ctx.topic.id)
+        .list_definitions_by_topic(ctx.topic.id)
         .await
         .expect("list sub definitions");
     // 不过滤任何 agent：主 Agent 偏好与禁用项同样返回

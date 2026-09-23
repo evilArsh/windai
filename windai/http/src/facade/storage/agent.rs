@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use wind_core::WindCore;
 use wind_core::models::{
-    AgentDefinition, AgentInstance, AgentRole, CreateAgentDefinition, UpdateAgentDefinition,
+    AgentDefinition, AgentInstance, CreateAgentDefinition, UpdateAgentDefinition,
 };
 
 use crate::dto::{ApiResponse, map_core_error};
@@ -78,6 +78,7 @@ impl AgentStorageFacade {
         }
     }
 
+    /// 列出话题下的所有 Agent 能力
     pub async fn list_agent_definitions_by_topic(
         &self,
         topic_id: i64,
@@ -86,7 +87,7 @@ impl AgentStorageFacade {
             .core
             .storage()
             .agent()
-            .list_sub_definitions_by_topic(topic_id)
+            .list_definitions_by_topic(topic_id)
             .await
         {
             Ok(rows) => ApiResponse::ok(rows),
@@ -111,7 +112,7 @@ impl AgentStorageFacade {
         }
     }
 
-    /// 列出话题下的子 Agent 实例
+    /// 列出话题下的所有 Agent 实例
     pub async fn list_instances_by_topic(&self, topic_id: i64) -> ApiResponse<Vec<AgentInstance>> {
         // 先确认话题存在，与 agent-maps 保持同样的 404 语义
         match self.core.storage().topic().get_topic(topic_id).await {
@@ -123,7 +124,7 @@ impl AgentStorageFacade {
             .core
             .storage()
             .agent()
-            .list_child_instances_by_topic(topic_id)
+            .list_instances_by_topic(topic_id)
             .await
         {
             Ok(instances) => ApiResponse::ok(instances),
@@ -131,16 +132,12 @@ impl AgentStorageFacade {
         }
     }
 
-    /// 获取单个子 Agent 实例，主实例不对外暴露
+    /// 获取单个 Agent 实例
     pub async fn get_instance(&self, instance_id: i64) -> ApiResponse<AgentInstance> {
-        let instance = match self.core.storage().agent().get_instance(instance_id).await {
-            Ok(Some(instance)) => instance,
-            Ok(None) => return ApiResponse::not_found("agent instance not found"),
-            Err(err) => return map_core_error(err),
-        };
-        if instance.role == AgentRole::Main {
-            return ApiResponse::not_found("agent instance not found");
+        match self.core.storage().agent().get_instance(instance_id).await {
+            Ok(Some(instance)) => ApiResponse::ok(instance),
+            Ok(None) => ApiResponse::not_found("agent instance not found"),
+            Err(err) => map_core_error(err),
         }
-        ApiResponse::ok(instance)
     }
 }

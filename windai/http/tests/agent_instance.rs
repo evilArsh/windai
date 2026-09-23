@@ -1,13 +1,13 @@
 //! Agent 实例 / 话题能力映射端点测试。无 .env
 //!
-//! 语义：消息按实例归属，话题级查询路由到该话题唯一的主实例；
-//! `/agent-instances` 只暴露子实例，主实例由话题级接口代表；
+//! 语义：消息按实例归属，`/agent-instances` 不区分主实例与子实例 ——
+//! 两者都按 id 查询实例本身与其消息；
 //! `/agent-maps` 是话题与 AgentDefinition 的能力映射，一个定义在一个话题下至多映射一次
 mod common;
 
 use axum::Router;
 use axum::body::Body;
-use axum::http::Request;
+use axum::http::{Request, StatusCode};
 use serde_json::Value;
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -43,6 +43,20 @@ async fn call(core: &Arc<WindCore>, method: &str, uri: &str, body: Option<&str>)
         .await
         .expect("读取响应体");
     serde_json::from_slice(&bytes).expect("解析响应 JSON")
+}
+
+/// 发一次请求只取 HTTP 状态码，供断言协议层错误（业务错误一律 200）
+async fn status_of(core: &Arc<WindCore>, method: &str, uri: &str) -> StatusCode {
+    let request = Request::builder()
+        .method(method)
+        .uri(uri)
+        .body(Body::empty())
+        .expect("构造请求");
+    test_router(core.clone())
+        .oneshot(request)
+        .await
+        .expect("请求执行")
+        .status()
 }
 
 /// 取 `data` 数组各元素的 id
@@ -115,37 +129,7 @@ async fn create_message(
 }
 
 #[tokio::test]
-async fn topic_messages_use_main_instance() {
-    let core = common::test_core().await;
-    let topic_id = create_topic(&core, "chat").await;
-    let main = get_or_create_main_instance(core.storage(), topic_id)
-        .await
-        .expect("获取主实例");
-    let child = create_child_instance(core.storage(), topic_id, main.id, 1, AgentMode::Sync)
-        .await
-        .expect("创建子实例");
-
-    let main_msg = create_message(&core, main.id, Role::User, "hello", None).await;
-    let child_msg = create_message(&core, child.id, Role::User, "from child", None).await;
-
-    let list = call(
-        &core,
-        "GET",
-        &format!("/api/v1/topics/{topic_id}/messages"),
-        None,
-    )
-    .await;
-    assert_eq!(list["code"], 200);
-    assert_eq!(ids_of(&list), vec![main_msg], "话题消息只取主实例");
-    assert!(!ids_of(&list).contains(&child_msg));
-
-    // 话题不存在时 404，而非空列表
-    let missing = call(&core, "GET", "/api/v1/topics/999999/messages", None).await;
-    assert_eq!(missing["code"], 404);
-}
-
-#[tokio::test]
-async fn topic_messages_returns_main_instance_messages() {
+async fn instance_messages_returns_full_history() {
     let core = common::test_core().await;
     let topic_id = create_topic(&core, "main-messages").await;
     let main = get_or_create_main_instance(core.storage(), topic_id)
@@ -158,37 +142,79 @@ async fn topic_messages_returns_main_instance_messages() {
     let list = call(
         &core,
         "GET",
-        &format!("/api/v1/topics/{topic_id}/messages"),
+        &format!("/api/v1/agent-instances/{}/messages", main.id),
         None,
     )
     .await;
     assert_eq!(list["code"], 200);
+    assert_eq!(ids_of(&list), vec![user_msg, reply_msg], "问答对完整返回");
+}
+
+#[tokio::test]
+async fn instance_messages_are_scoped_to_their_instance() {
+    let core = common::test_core().await;
+    let topic_id = create_topic(&core, "chat").await;
+    let main = get_or_create_main_instance(core.storage(), topic_id)
+        .await
+        .expect("获取主实例");
+    let child = create_child_instance(core.storage(), topic_id, main.id, 1, AgentMode::Sync)
+        .await
+        .expect("创建子实例");
+
+    let main_msg = create_message(&core, main.id, Role::User, "hello", None).await;
+    let child_msg = create_message(&core, child.id, Role::User, "from child", None).await;
+
+    let main_list = call(
+        &core,
+        "GET",
+        &format!("/api/v1/agent-instances/{}/messages", main.id),
+        None,
+    )
+    .await;
+    assert_eq!(main_list["code"], 200);
+    assert_eq!(ids_of(&main_list), vec![main_msg], "主实例只返回自己的消息");
+    assert!(!ids_of(&main_list).contains(&child_msg));
+
+    let child_list = call(
+        &core,
+        "GET",
+        &format!("/api/v1/agent-instances/{}/messages", child.id),
+        None,
+    )
+    .await;
     assert_eq!(
-        ids_of(&list),
-        vec![user_msg, reply_msg],
-        "问答对都在主实例下"
+        ids_of(&child_list),
+        vec![child_msg],
+        "子实例只返回自己的消息"
     );
 }
 
+/// 话题级消息 GET 已删除，对话输入仍由 POST 受理
 #[tokio::test]
-async fn topic_messages_without_main_instance_returns_empty() {
+async fn topic_messages_get_is_gone() {
     let core = common::test_core().await;
-    let topic_id = create_topic(&core, "not-started").await;
+    let topic_id = create_topic(&core, "no-topic-get").await;
 
-    // 尚未发起过对话：主实例不存在，返回空列表而非 404
-    let list = call(
-        &core,
-        "GET",
-        &format!("/api/v1/topics/{topic_id}/messages"),
-        None,
-    )
-    .await;
-    assert_eq!(list["code"], 200);
-    assert!(ids_of(&list).is_empty());
+    let status = status_of(&core, "GET", &format!("/api/v1/topics/{topic_id}/messages")).await;
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
 }
 
 #[tokio::test]
-async fn instance_list_excludes_main() {
+async fn instance_messages_unknown_id_returns_not_found() {
+    let core = common::test_core().await;
+    let read = call(
+        &core,
+        "GET",
+        "/api/v1/agent-instances/999999/messages",
+        None,
+    )
+    .await;
+    assert_eq!(read["code"], 404);
+    assert!(read["data"].is_null());
+}
+
+#[tokio::test]
+async fn instance_list_includes_main() {
     let core = common::test_core().await;
     let topic_id = create_topic(&core, "instances").await;
     let main = get_or_create_main_instance(core.storage(), topic_id)
@@ -206,9 +232,36 @@ async fn instance_list_excludes_main() {
     )
     .await;
     assert_eq!(list["code"], 200);
-    assert_eq!(ids_of(&list), vec![child.id], "话题实例列表只含子实例");
+    assert_eq!(
+        ids_of(&list),
+        vec![main.id, child.id],
+        "话题实例列表含主实例与子实例"
+    );
+}
 
-    // 子实例可单独查询
+#[tokio::test]
+async fn get_main_instance_via_http_returns_instance() {
+    let core = common::test_core().await;
+    let topic_id = create_topic(&core, "main-readable").await;
+    let main = get_or_create_main_instance(core.storage(), topic_id)
+        .await
+        .expect("获取主实例");
+    let child = create_child_instance(core.storage(), topic_id, main.id, 1, AgentMode::Sync)
+        .await
+        .expect("创建子实例");
+
+    // 主实例与子实例同等对待，都按 id 直接可查
+    let main_read = call(
+        &core,
+        "GET",
+        &format!("/api/v1/agent-instances/{}", main.id),
+        None,
+    )
+    .await;
+    assert_eq!(main_read["code"], 200);
+    assert_eq!(main_read["data"]["role"], "main");
+    assert_eq!(main_read["data"]["id"], main.id);
+
     let child_read = call(
         &core,
         "GET",
@@ -218,26 +271,6 @@ async fn instance_list_excludes_main() {
     .await;
     assert_eq!(child_read["code"], 200);
     assert_eq!(child_read["data"]["role"], "child");
-}
-
-#[tokio::test]
-async fn get_main_instance_via_http_returns_not_found() {
-    let core = common::test_core().await;
-    let topic_id = create_topic(&core, "main-hidden").await;
-    let main = get_or_create_main_instance(core.storage(), topic_id)
-        .await
-        .expect("获取主实例");
-
-    // 主实例由话题级接口代表，单实例查询一律 404
-    let read = call(
-        &core,
-        "GET",
-        &format!("/api/v1/agent-instances/{}", main.id),
-        None,
-    )
-    .await;
-    assert_eq!(read["code"], 404);
-    assert!(read["data"].is_null());
 }
 
 #[tokio::test]

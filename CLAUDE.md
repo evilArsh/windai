@@ -19,7 +19,7 @@ cargo test -p wind-core --test core_chat -- --include-ignored --test-threads=1  
 Copy `.env.example` to `.env` and fill in `TEST_*` values for the `.env`-gated tests.
 
 **Test file status** (so you don't expect dead tests to run)。下面的数字是当前快照，会随代码变化：
-- `windai/core/tests/storage.rs` — 30 tests, active, no `.env` needed
+- `windai/core/tests/storage.rs` — 29 tests, active, no `.env` needed
 - `windai/core/tests/schema.rs` — 14 tests, the schema↔model contract（12 张表各一条列断言 + `dropped_columns_are_absent` + `dropped_tables_are_absent`），no `.env`
 - `windai/core/tests/autoincrement.rs` — 7 tests, 自增主键的回归测试（12 张表自增生效 / 不复用 / 严格递增 / `create()` 返回值落库一致 / 批量插入的自然键关联与分块 / 布尔列往返），no `.env`
 - `windai/core/src/storage/message.rs` (cfg test) — 3 tests：`list_contexts` 的排除/删除/boundary 语义（`list_contexts` 是 crate 内部 API，集成测试访问不到）
@@ -97,7 +97,7 @@ All `create()` methods return the **full record** (`Result<Topic>`, `Result<Mode
 
 `UpdateMessage` has only `content`, `model_id`, `input_tokens`, `output_tokens` — tool approvals are no longer stored on messages (see Tool Approval Flow).
 
-**`AgentStorage` 的可见性**：`get_instance` / `get_main_instance` / `list_instances_by_topic` / `list_child_instances_by_topic` / `list_sub_definitions_by_topic`，以及 4 个面向调用方的能力映射方法（`create_topic_agent_map` / `list_agent_maps_by_topic` / `get_agent_map` / `delete_topic_agent_map`）都是 `pub`；`create_instance` / `update_instance` / `delete_instances` 同样是 `pub`，级联用的 `batch_delete_agent_maps_by_topics` 是 `pub(crate)`，`select_instances` / `select_agent_maps` 两个查询构造器是私有的（`select_definitions` 是 `pub`，供 facade 直接构造查询）
+**`AgentStorage` 的可见性**：`get_instance` / `get_main_instance` / `list_instances_by_topic` / `list_definitions_by_topic`，以及 4 个面向调用方的能力映射方法（`create_topic_agent_map` / `list_agent_maps_by_topic` / `get_agent_map` / `delete_topic_agent_map`）都是 `pub`；`create_instance` / `update_instance` / `delete_instances` 同样是 `pub`，级联用的 `batch_delete_agent_maps_by_topics` 是 `pub(crate)`，`select_instances` / `select_agent_maps` 两个查询构造器是私有的（`select_definitions` 是 `pub`，供 facade 直接构造查询）
 
 ### Agent system
 
@@ -266,11 +266,11 @@ Axum service exposing the core via REST + SSE. **Read `arch.md` for the full des
 - **Env vars**: `WIND_HTTP_HOST` (default 127.0.0.1), `WIND_HTTP_PORT` (7324). `main.rs` calls `WindCore::init_local()`, so the DB file comes from the core data dir: `WIND_ROOT_DIR` (default `~/.windai/`), file `windai.db`.
 - **SSE**: 两条路由都不套 `TimeoutLayer` —— `GET /api/v1/topics/{topic_id}/events`（订阅 `TopicEvent`，`event:` = 变体名 snake_case，`data:` = JSON；先检查 topic 存在，不做 get-or-create）与 `GET /api/v1/mcp-servers/events`（MCP 客户端状态）
 - **Message routes**:
-  - `GET|POST /api/v1/topics/{topic_id}/messages` — GET 列该 topic 主实例的消息，POST 提交对话输入（`CreateChatRequest`，路由层只把 `Vec<Content>` 交给 runtime，`Message` 记录由 `TaskManager::init` 在事务内创建，受理后返回 `ApiResponse<()>`：`code: 200` + `msg: "ok"`）
-  - `GET /api/v1/agent-instances/{instance_id}/messages` — 仅子实例，主实例按 404 处理
+  - `POST /api/v1/topics/{topic_id}/messages` — 提交对话输入（`CreateChatRequest`，路由层只把 `Vec<Content>` 交给 runtime，`Message` 记录由 `TaskManager::init` 在事务内创建，受理后返回 `ApiResponse<()>`：`code: 200` + `msg: "ok"`）
+  - `GET /api/v1/agent-instances/{instance_id}/messages` — 该实例的全部消息，主实例与子实例同等对待
   - `GET|PUT /api/v1/messages/{message_id}` — 取/改单条消息
   - 上下文路由（`.../messages/context`）与 `GET /topics/by-instance/{instance_id}`、`GET /messages/{id}/from-message` 已删除：`list_contexts` 只供 core 内部使用，对外一律返回完整消息
-- **Agent 实例只读**：`/api/v1/agent-instances/*` 下全部是 GET —— `GET /agent-instances/{instance_id}`、`GET /agent-instances/{instance_id}/messages`、`.../tool-approvals/pending`，外加 `GET /topics/{topic_id}/agent-instances`（底层 `list_child_instances_by_topic`，**不返回主实例**）。实例由 core 内部创建，HTTP 不提供任何 create/update/delete 路由；实例维度唯一的写操作是 `POST /topics/{topic_id}/agent-instances/{instance_id}/cancel`（挂在 topic 路径下）。旧的 `/agent-bindings/*` 家族已全部移除
+- **Agent 实例只读**：`/api/v1/agent-instances/*` 下全部是 GET —— `GET /agent-instances/{instance_id}`、`GET /agent-instances/{instance_id}/messages`、`.../tool-approvals/pending`，外加 `GET /topics/{topic_id}/agent-instances`（底层 `list_instances_by_topic`，**含主实例**）。实例由 core 内部创建，HTTP 不提供任何 create/update/delete 路由；实例维度唯一的写操作是 `POST /topics/{topic_id}/agent-instances/{instance_id}/cancel`（挂在 topic 路径下）。旧的 `/agent-bindings/*` 家族已全部移除
 - **Topic 能力映射路由**：`GET /api/v1/topics/{topic_id}/agent-maps`（列表）、`POST /api/v1/agent-maps`（请求体为 core 的 `CreateTopicAgentMap`，因 DTO 自带 `topic_id`，新增走集合资源）、`DELETE /api/v1/agent-maps/{map_id}`。映射只表达「topic 拥有该能力」，没有角色概念，故没有 PUT
 
 ### Database tables (SQLite, `schema.rs`)
@@ -301,7 +301,7 @@ Column notes: `topics` 有 `parent_id`（tree structure is kept, but **no code c
 
 **`AgentInstance`** (`models/agent/instance.rs`) — an agent *instance* in a topic: `id`, `parent_id` (`None` 即主实例), `topic_id`, `agent_id` (`None` = 回退为普通对话), `mode: Option<AgentMode>`, `role: AgentRole` (`Main`/`Child`), `status: AgentStatus`, `created_at`. **`model_id` 与 `tool_approval_policy` 不在实例上 —— 它们在 `Topic` 上**；实例也不再有 `enabled` / `chat_config_id` 字段
 
-**`TopicAgentMap`** (`models/agent/topic_map.rs`) — topic 能力映射（`topic_agent_maps`）: `id`, `topic_id`, `agent_id`, `created_at`（无 `role`，`CreateTopicAgentMap` 同形，没有 `UpdateTopicAgentMap`）。映射只表达「这个 topic 拥有该 AgentDefinition 能力」，用户只能添加或删除。`helper::get_or_create_main_instance` 创建的主实例**不绑定任何定义**（`agent_id = None`）—— 主实例只负责调度，`agent_list_agents` / `agent_spawn_agent` 让它从 `topic_agent_maps` 里选能力。`AgentStorage::list_sub_definitions_by_topic(topic_id)` 返回该 topic 映射到的**全部**定义，**不做任何过滤** —— `active = false` 的定义同样返回
+**`TopicAgentMap`** (`models/agent/topic_map.rs`) — topic 能力映射（`topic_agent_maps`）: `id`, `topic_id`, `agent_id`, `created_at`（无 `role`，`CreateTopicAgentMap` 同形，没有 `UpdateTopicAgentMap`）。映射只表达「这个 topic 拥有该 AgentDefinition 能力」，用户只能添加或删除。`helper::get_or_create_main_instance` 创建的主实例**不绑定任何定义**（`agent_id = None`）—— 主实例只负责调度，`agent_list_agents` / `agent_spawn_agent` 让它从 `topic_agent_maps` 里选能力。`AgentStorage::list_definitions_by_topic(topic_id)` 返回该 topic 映射到的**全部**定义，**不做任何过滤** —— `active = false` 的定义同样返回
 
 **`AgentStatus`**: `Idle → Running → (WaitingApproval | WaitingChild) → Finished | Failed | Cancelled`
 
@@ -315,7 +315,7 @@ Column notes: `topics` 有 `parent_id`（tree structure is kept, but **no code c
 
 | File | Content |
 |------|---------|
-| `windai/core/tests/storage.rs` | 30 tests — integration tests for all `*Storage` structs: CRUD, validation, cascade, batch |
+| `windai/core/tests/storage.rs` | 29 tests — integration tests for all `*Storage` structs: CRUD, validation, cascade, batch |
 | `windai/core/tests/schema.rs` | 14 tests — the schema↔model contract: 12 张表各一条列断言（`assert_table_columns`），加 `dropped_columns_are_absent` 与 `dropped_tables_are_absent` |
 | `windai/core/tests/autoincrement.rs` | 7 tests — 自增主键契约：12 张表 id 非空且落在 JS 安全整数内、不复用（守护 `AUTOINCREMENT`）、严格递增、`RETURNING id` 与库中一致、`create_requests` 的自然键关联与超限分块、布尔列往返 |
 | `windai/core/tests/agent_runtime.rs` | 2 tests — runtime 生命周期与 `terminal_event_is_delivered_before_stream_closes`（`Effect::CloseEventStream` 的时序） |
@@ -323,7 +323,7 @@ Column notes: `topics` 有 `parent_id`（tree structure is kept, but **no code c
 | `windai/core/tests/chat.rs` | AI adapter tests (needs `.env`) |
 | `windai/core/tests/common/lib.rs` | Shared helpers: `init_test_pool()`, `init_test_core()`, `init_test_core_with_registry()`, `seed_definition()`, `seed_chat_fixture()`, `McpTestEnv`, MCP server params |
 | `windai/http/tests/common/mod.rs` | `test_core()` / `test_core_with_pool()` — `Arc<WindCore>` over a single-connection in-memory pool |
-| `windai/http/tests/*` | Router/facade/DTO tests via `app(state)` + `tower::ServiceExt::oneshot`; `agent_instance.rs`（13 tests）覆盖主实例解析、子实例列表与 agent-map 增删查 |
+| `windai/http/tests/*` | Router/facade/DTO tests via `app(state)` + `tower::ServiceExt::oneshot`; `agent_instance.rs`（14 tests）覆盖实例列表与单体查询（主实例与子实例同等对待）、实例消息隔离、agent-map 增删查 |
 | `windai/core/src/storage/{utils,message}.rs` (cfg test) | `utils.rs`：SQL macro 单元测试；`message.rs`：`list_contexts` 语义（crate 内部 API） |
 
 **Shared-registry test architecture**: `core_chat.rs::shared_chat_registry()` parks one empty `RegistryHandle` in a dedicated long-lived tokio runtime thread (`OnceLock` + `mpsc::sync_channel`), and each test builds its **own** `WindCore` via `init_test_core_with_registry(shared)`. The per-test pool is `sqlite::memory:` with `max_connections(1)` (`common/lib.rs::init_test_pool`) so schema init and later queries always hit the same in-memory DB. A test that did need MCP servers would seed its own server record + provider/model/topic against that shared registry. `agent_runtime.rs` 用 `core` 侧的 `init_test_core()`；`windai/http/tests/*` 有自己的一份 `common/mod.rs`（`test_core()`），走 `WindCore::init_with_pool` 自建 registry

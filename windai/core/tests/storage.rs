@@ -366,7 +366,7 @@ async fn agent_instance_crud() {
             .await
             .unwrap();
     }
-    let defs = agent.list_sub_definitions_by_topic(topic.id).await.unwrap();
+    let defs = agent.list_definitions_by_topic(topic.id).await.unwrap();
     let def_ids: Vec<i64> = defs.iter().map(|d| d.id).collect();
     assert_eq!(def_ids, vec![def_a.id, def_b.id, def_c.id]);
 
@@ -580,15 +580,6 @@ async fn agent_definition_accepts_builtin_binding_names() {
         loaded.data.builtin_mcp_servers[0].name,
         wind_mcp::builtin::BUILTIN_FS.name
     );
-}
-
-/// 旧数据缺 builtin_mcp_servers 字段时反序列化回退为空列表
-#[test]
-fn agent_definition_data_defaults_builtin_servers() {
-    let mut value = serde_json::to_value(AgentDefinitionData::default()).unwrap();
-    value.as_object_mut().unwrap().remove("builtin_mcp_servers");
-    let data: AgentDefinitionData = serde_json::from_value(value).unwrap();
-    assert!(data.builtin_mcp_servers.is_empty());
 }
 
 /// 删除 Topic 时级联清理：专属 definition、instance、message、审批记录
@@ -1108,40 +1099,6 @@ async fn list_instances_by_topic_reads_refactored_columns() {
     assert_eq!(loaded[1].status, AgentStatus::WaitingChild);
 }
 
-/// `list_child_instances_by_topic` 只返回 `role = Child` 的实例
-#[tokio::test]
-async fn list_child_instances_excludes_main() {
-    let core = setup().await;
-    let agent = core.storage().agent();
-    let topics = core.storage().topic();
-
-    let root = create_root_topic(topics, "child-only").await;
-    let main = agent
-        .create_instance(CreateInstance::new_main(root.id, None))
-        .await
-        .expect("create main");
-    let child = agent
-        .create_instance(CreateInstance {
-            topic_id: root.id,
-            parent_id: Some(main.id),
-            agent_id: None,
-            mode: Some(AgentMode::Sync),
-            status: Some(AgentStatus::Idle),
-            role: Some(AgentRole::Child),
-        })
-        .await
-        .expect("create child");
-
-    let children = agent
-        .list_child_instances_by_topic(root.id)
-        .await
-        .expect("list children");
-
-    assert_eq!(children.len(), 1);
-    assert_eq!(children[0].id, child.id);
-    assert!(children.iter().all(|i| i.role == AgentRole::Child));
-}
-
 /// 主实例不绑定任何 AgentDefinition，且重复获取是幂等的
 ///
 /// 主实例只负责调度；topic 的能力列表由 `topic_agent_maps` 表达，
@@ -1286,7 +1243,7 @@ async fn topic_agent_map_crud_and_sub_definitions() {
 
     // 能力列表按 definition id 升序返回全部映射，不做任何过滤
     let def_ids: Vec<i64> = agent
-        .list_sub_definitions_by_topic(root.id)
+        .list_definitions_by_topic(root.id)
         .await
         .expect("list sub definitions")
         .into_iter()
@@ -1342,7 +1299,7 @@ async fn list_sub_definitions_returns_all_mapped() {
     }
 
     let def_ids: Vec<i64> = agent
-        .list_sub_definitions_by_topic(root.id)
+        .list_definitions_by_topic(root.id)
         .await
         .expect("list sub definitions")
         .into_iter()

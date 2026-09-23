@@ -1,8 +1,6 @@
 use std::sync::Arc;
 use wind_core::WindCore;
-use wind_core::models::{
-    AgentInstance, AgentRole, CreateTopic, Message, Topic, UpdateMessage, UpdateTopic,
-};
+use wind_core::models::{AgentInstance, CreateTopic, Message, Topic, UpdateMessage, UpdateTopic};
 
 use crate::dto::ApproveToolCallsRequest;
 use crate::dto::CreateChatRequest;
@@ -78,9 +76,9 @@ impl TopicFacade {
         }
     }
 
-    /// 获取实例的全部消息
+    /// 获取实例的全部消息，主实例与子实例同等对待
     pub async fn list_instance_messages(&self, instance_id: i64) -> ApiResponse<Vec<Message>> {
-        let instance = match self.require_child_instance(instance_id).await {
+        let instance = match self.require_instance(instance_id).await {
             Ok(instance) => instance,
             Err(err) => return err.without_data(),
         };
@@ -96,57 +94,15 @@ impl TopicFacade {
         }
     }
 
-    /// 获取话题的对话列表，内部解析该话题唯一的主实例
-    ///
-    /// 尚未发起过对话时主实例不存在，返回空列表
-    pub async fn list_topic_messages(&self, topic_id: i64) -> ApiResponse<Vec<Message>> {
-        // 先确认话题存在，避免「话题不存在」与「话题未对话」都返回空列表
-        match self.core.storage().topic().get_topic(topic_id).await {
-            Ok(Some(_)) => {}
-            Ok(None) => return ApiResponse::not_found("topic not found"),
-            Err(err) => return map_core_error(err),
-        }
-
-        let main_id = match self
-            .core
-            .storage()
-            .agent()
-            .get_main_instance(topic_id)
-            .await
-        {
-            Ok(Some(instance)) => instance.id,
-            Ok(None) => return ApiResponse::ok(Vec::new()),
-            Err(err) => return map_core_error(err),
-        };
-
-        match self
-            .core
-            .storage()
-            .message()
-            .list_by_instance(main_id)
-            .await
-        {
-            Ok(messages) => ApiResponse::ok(messages),
-            Err(err) => map_core_error(err),
-        }
-    }
-
-    /// 校验实例存在且不是主实例，主实例不对外暴露
+    /// 校验实例存在
     ///
     /// 错误载体用 `ApiResponse<()>`，调用方以 `without_data()` 转成自己的 data 类型
-    async fn require_child_instance(
-        &self,
-        instance_id: i64,
-    ) -> Result<AgentInstance, ApiResponse<()>> {
-        let instance = match self.core.storage().agent().get_instance(instance_id).await {
-            Ok(Some(instance)) => instance,
-            Ok(None) => return Err(ApiResponse::not_found("agent instance not found")),
-            Err(err) => return Err(map_core_error(err)),
-        };
-        if instance.role == AgentRole::Main {
-            return Err(ApiResponse::not_found("agent instance not found"));
+    async fn require_instance(&self, instance_id: i64) -> Result<AgentInstance, ApiResponse<()>> {
+        match self.core.storage().agent().get_instance(instance_id).await {
+            Ok(Some(instance)) => Ok(instance),
+            Ok(None) => Err(ApiResponse::not_found("agent instance not found")),
+            Err(err) => Err(map_core_error(err)),
         }
-        Ok(instance)
     }
 
     pub async fn get_message(&self, message_id: i64) -> ApiResponse<Message> {

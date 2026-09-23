@@ -272,6 +272,7 @@ impl AgentStorage {
         )
     }
 
+    /// 获取 topic 下的全部 Agent 实例，含主实例
     pub async fn list_instances_by_topic(&self, topic_id: i64) -> Result<Vec<AgentInstance>> {
         let rows = self
             .executor
@@ -286,28 +287,8 @@ impl AgentStorage {
         Ok(rows)
     }
 
-    /// 获取 topic 下的子 Agent 实例，不含主 Agent
-    pub async fn list_child_instances_by_topic(&self, topic_id: i64) -> Result<Vec<AgentInstance>> {
-        let rows = self
-            .executor
-            .fetch_all(
-                Self::select_instances()
-                    .push(" WHERE topic_id = ")
-                    .push_bind(topic_id)
-                    .push(" AND role <> ")
-                    .push_bind(AgentRole::Main.to_string())
-                    .push(" ORDER BY id ASC ")
-                    .build_query_as::<AgentInstance>(),
-            )
-            .await?;
-        Ok(rows)
-    }
-
-    /// 查找 topic 能力列表中的 AgentDefinition
-    pub async fn list_sub_definitions_by_topic(
-        &self,
-        topic_id: i64,
-    ) -> Result<Vec<AgentDefinition>> {
+    /// 查找 topic 能力列表中的所有 AgentDefinition
+    pub async fn list_definitions_by_topic(&self, topic_id: i64) -> Result<Vec<AgentDefinition>> {
         let mut qb = Self::select_definitions();
         qb.push(" WHERE id IN (SELECT agent_id FROM ")
             .push(TableName::TOPIC_AGENT_MAPS)

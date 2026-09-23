@@ -119,6 +119,13 @@ fn openapi_omits_removed_routes() {
             .is_none(),
         "能力映射不应再有 PUT"
     );
+    // 话题级消息 GET 已删除，读某一实例的对话一律走 `/agent-instances/{id}/messages`
+    assert!(
+        json["paths"]["/api/v1/topics/{topic_id}/messages"]
+            .get("get")
+            .is_none(),
+        "话题级消息不应再有 GET"
+    );
 }
 
 #[test]

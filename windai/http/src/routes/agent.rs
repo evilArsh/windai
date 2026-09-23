@@ -257,13 +257,13 @@ pub(crate) async fn get_instance(
 
 #[utoipa::path(
     get,
-    summary = "获取话题下的子 Agent 实例列表",
+    summary = "获取话题下的所有 Agent 实例列表",
     path = "/api/v1/topics/{topic_id}/agent-instances",
     params(
         ("topic_id", Path, description = "话题 ID"),
     ),
     responses(
-        (status = 200, description = "获取话题下的子 Agent 实例列表", body = ApiResponse<Vec<AgentInstance>>)
+        (status = 200, description = "获取话题下的所有 Agent 实例列表", body = ApiResponse<Vec<AgentInstance>>)
     )
 )]
 pub(crate) async fn list_instances_by_topic(
