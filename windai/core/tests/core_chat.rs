@@ -152,6 +152,7 @@ async fn seed_chat_data(core: &WindCore, label: &str) -> TestContext {
             label: format!("test-chat-{}", label),
             icon: None,
             model_id: Some(model.id),
+            agent_id: None,
             tool_approval_policy: Some(ToolApprovalPolicy::AllowAll),
         })
         .await

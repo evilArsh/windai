@@ -57,6 +57,8 @@ impl Default for ToolApprovalPolicy {
 }
 
 /// 新增话题
+///
+/// 指定 `agent_id` 时，会在创建话题的同一事务内创建绑定该 Agent 的主实例
 #[derive(utoipa::ToSchema, Serialize, Deserialize, Debug, Clone)]
 pub struct CreateTopic {
     /// 父话题 id
@@ -67,6 +69,10 @@ pub struct CreateTopic {
     pub icon: Option<String>,
     /// 使用的模型 id
     pub model_id: Option<i64>,
+    /// 指定一个 agent 作为该 topic 的主 Agent
+    ///
+    /// 不指定时不创建主实例，话题退为普通 chat 对话
+    pub agent_id: Option<i64>,
     /// 工具审批策略
     pub tool_approval_policy: Option<ToolApprovalPolicy>,
 }

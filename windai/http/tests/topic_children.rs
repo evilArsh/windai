@@ -30,6 +30,7 @@ async fn create_topic(core: &Arc<WindCore>, parent_id: Option<i64>, label: &str)
             label: label.to_string(),
             icon: None,
             model_id: None,
+            agent_id: None,
             tool_approval_policy: None,
         })
         .await

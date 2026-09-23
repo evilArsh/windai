@@ -35,6 +35,7 @@ async fn create_topic(core: &Arc<WindCore>) -> Topic {
             label: "mcp-runtime-test".to_string(),
             icon: None,
             model_id: None,
+            agent_id: None,
             tool_approval_policy: None,
         })
         .await

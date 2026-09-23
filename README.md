@@ -100,6 +100,7 @@ let topic = storage.topic().create(CreateTopic {
     label: "My Chat".into(),
     icon: None,
     model_id: Some(mid),
+    agent_id: None,               // Some(id) 则在同一事务内创建绑定该 Agent 的主实例
     tool_approval_policy: None,   // None 视同 AllowAll
 }).await?;
 let tid = topic.id;
@@ -121,7 +122,7 @@ storage.agent().create_topic_agent_map(CreateTopicAgentMap {
 }).await?;
 
 // 4. Submit user input, then consume the event stream
-//    首次 create_task 会自动创建该 topic 的主实例（不绑定任何定义）
+//    未指定 agent_id 时，首次 create_task 会懒创建该 topic 的主实例（不绑定任何定义）
 let handle = core.fetch_topic(tid);
 let mut events = handle.subscribe().await?;
 handle.create_task(vec![Content::new_text("Hello!".into())]).await?;

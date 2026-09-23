@@ -27,6 +27,7 @@ async fn create_topic(core: &Arc<WindCore>, label: &str) -> i64 {
             label: label.into(),
             icon: None,
             model_id: None,
+            agent_id: None,
             tool_approval_policy: None,
         })
         .await
@@ -45,6 +46,7 @@ async fn create_topic_roundtrips() {
             label: "hello".into(),
             icon: None,
             model_id: None,
+            agent_id: None,
             tool_approval_policy: None,
         })
         .await;

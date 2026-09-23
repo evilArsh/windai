@@ -5,9 +5,9 @@ use super::{
 };
 use crate::{
     db::DbDriver,
-    error::Result,
+    error::{CoreError, Result},
     insert,
-    models::{CreateTopic, Topic, UpdateTopic},
+    models::{CreateInstance, CreateTopic, Topic, UpdateTopic},
     select_fields,
     storage::TableName,
     update,
@@ -23,7 +23,44 @@ impl TopicStorage {
         Self { executor }
     }
 
+    /// 创建话题
+    ///
+    /// 指定 `agent_id` 时在同一事务内创建绑定该 Agent 的主实例，
+    /// Agent 不存在或已禁用则整体拒绝；未指定时不创建实例，主实例留给首次对话懒创建
     pub async fn create(&self, data: CreateTopic) -> Result<Topic> {
+        self.executor
+            .with_tx(|executor| async move {
+                if let Some(agent_id) = data.agent_id {
+                    let agent = AgentStorage::new(executor.clone());
+                    Self::ensure_agent_assignable(&agent, agent_id).await?;
+                    let topic = Self::insert_topic(&executor, data).await?;
+                    agent
+                        .create_instance(CreateInstance::new_main(topic.id, Some(agent_id)))
+                        .await?;
+                    return Ok(topic);
+                }
+
+                Self::insert_topic(&executor, data).await
+            })
+            .await
+    }
+
+    /// 校验 Agent 可用于绑定主实例
+    async fn ensure_agent_assignable(agent: &AgentStorage, agent_id: i64) -> Result<()> {
+        let definition = agent.get_definition(agent_id).await?.ok_or_else(|| {
+            CoreError::Validation(format!("Agent definition not found: {agent_id}"))
+        })?;
+        if !definition.active {
+            return Err(CoreError::Validation(format!(
+                "agent {} is disabled",
+                definition.key
+            )));
+        }
+        Ok(())
+    }
+
+    /// 插入话题行
+    async fn insert_topic(executor: &StorageExecutor, data: CreateTopic) -> Result<Topic> {
         let parent_id = data.parent_id;
         let now = now_ts();
         let mut qb = insert!(
@@ -42,8 +79,7 @@ impl TopicStorage {
             ("created_at", now),
         );
         qb.push(" RETURNING id");
-        let id: i64 = self
-            .executor
+        let id: i64 = executor
             .fetch_one_scalar(qb.build_query_scalar::<i64>())
             .await?;
 

@@ -206,6 +206,7 @@ async fn create_root_topic(
             label: label.into(),
             icon: None,
             model_id: None,
+            agent_id: None,
             tool_approval_policy: None,
         })
         .await
@@ -412,6 +413,7 @@ async fn topic_child_listing() {
             label: "child-a".into(),
             icon: None,
             model_id: None,
+            agent_id: None,
             tool_approval_policy: None,
         })
         .await
@@ -422,6 +424,7 @@ async fn topic_child_listing() {
             label: "child-b".into(),
             icon: None,
             model_id: None,
+            agent_id: None,
             tool_approval_policy: None,
         })
         .await
@@ -910,6 +913,7 @@ async fn topic_delete_handles_multiple_ids_and_keeps_child_topics() {
             label: "child".into(),
             icon: None,
             model_id: None,
+            agent_id: None,
             tool_approval_policy: None,
         })
         .await
@@ -1333,6 +1337,7 @@ async fn topic_delete_cascades_instances_definitions_and_maps() {
             label: "cascade-child".into(),
             icon: None,
             model_id: None,
+            agent_id: None,
             tool_approval_policy: None,
         })
         .await
@@ -1639,6 +1644,7 @@ async fn topic_model_and_policy_round_trip() {
             label: "topic-model-policy".into(),
             icon: None,
             model_id: Some(7),
+            agent_id: None,
             tool_approval_policy: Some(ToolApprovalPolicy::Manual),
         })
         .await
@@ -1677,4 +1683,110 @@ async fn topic_model_and_policy_round_trip() {
         loaded.tool_approval_policy,
         Some(ToolApprovalPolicy::AllowAll)
     );
+}
+
+/// 指定 agent_id 创建 topic 时，同事务内创建绑定该 Agent 的主实例
+#[tokio::test]
+async fn create_topic_with_agent_creates_bound_main_instance() {
+    let core = setup().await;
+    let agent = core.storage().agent();
+    let topics = core.storage().topic();
+
+    let definition = create_agent_def(agent, "topic-main-agent", None).await;
+    let topic = topics
+        .create(CreateTopic {
+            parent_id: None,
+            label: "bound-main".into(),
+            icon: None,
+            model_id: None,
+            agent_id: Some(definition.id),
+            tool_approval_policy: None,
+        })
+        .await
+        .expect("create topic with agent");
+
+    let main = agent
+        .get_main_instance(topic.id)
+        .await
+        .expect("get main instance")
+        .expect("main instance exists");
+    assert_eq!(main.role, AgentRole::Main);
+    assert_eq!(main.agent_id, Some(definition.id));
+    assert_eq!(main.parent_id, None);
+    assert_eq!(main.mode, Some(AgentMode::Sync));
+    assert_eq!(main.status, AgentStatus::Idle);
+}
+
+/// 未指定 agent_id 时不创建主实例，主实例仍由首次对话懒创建
+#[tokio::test]
+async fn create_topic_without_agent_creates_no_instance() {
+    let core = setup().await;
+    let topics = core.storage().topic();
+
+    let topic = create_root_topic(topics, "no-main").await;
+
+    let instances = core
+        .storage()
+        .agent()
+        .list_instances_by_topic(topic.id)
+        .await
+        .expect("list instances");
+    assert!(instances.is_empty());
+}
+
+/// agent_id 指向不存在的定义时拒绝创建，且话题不落库
+#[tokio::test]
+async fn create_topic_rejects_unknown_agent() {
+    let core = setup().await;
+    let topics = core.storage().topic();
+
+    let err = topics
+        .create(CreateTopic {
+            parent_id: None,
+            label: "unknown-agent-topic".into(),
+            icon: None,
+            model_id: None,
+            agent_id: Some(9999),
+            tool_approval_policy: None,
+        })
+        .await
+        .expect_err("unknown agent should be rejected");
+    assert!(matches!(err, CoreError::Validation(_)));
+
+    assert!(topics.list_topics().await.expect("list topics").is_empty());
+}
+
+/// agent_id 指向被禁用的定义时拒绝创建，且话题不落库
+#[tokio::test]
+async fn create_topic_rejects_inactive_agent() {
+    let core = setup().await;
+    let agent = core.storage().agent();
+    let topics = core.storage().topic();
+
+    let definition = create_agent_def(agent, "disabled-agent", None).await;
+    agent
+        .update_definition(
+            definition.id,
+            UpdateAgentDefinition {
+                active: Some(false),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("disable agent");
+
+    let err = topics
+        .create(CreateTopic {
+            parent_id: None,
+            label: "inactive-agent-topic".into(),
+            icon: None,
+            model_id: None,
+            agent_id: Some(definition.id),
+            tool_approval_policy: None,
+        })
+        .await
+        .expect_err("inactive agent should be rejected");
+    assert!(matches!(err, CoreError::Validation(_)));
+
+    assert!(topics.list_topics().await.expect("list topics").is_empty());
 }

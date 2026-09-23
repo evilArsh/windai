@@ -19,7 +19,7 @@ cargo test -p wind-core --test core_chat -- --include-ignored --test-threads=1  
 Copy `.env.example` to `.env` and fill in `TEST_*` values for the `.env`-gated tests.
 
 **Test file status** (so you don't expect dead tests to run)。下面的数字是当前快照，会随代码变化：
-- `windai/core/tests/storage.rs` — 29 tests, active, no `.env` needed
+- `windai/core/tests/storage.rs` — 32 tests, active, no `.env` needed
 - `windai/core/tests/schema.rs` — 14 tests, the schema↔model contract（12 张表各一条列断言 + `dropped_columns_are_absent` + `dropped_tables_are_absent`），no `.env`
 - `windai/core/tests/autoincrement.rs` — 7 tests, 自增主键的回归测试（12 张表自增生效 / 不复用 / 严格递增 / `create()` 返回值落库一致 / 批量插入的自然键关联与分块 / 布尔列往返），no `.env`
 - `windai/core/src/storage/message.rs` (cfg test) — 3 tests：`list_contexts` 的排除/删除/boundary 语义（`list_contexts` 是 crate 内部 API，集成测试访问不到）
@@ -136,9 +136,9 @@ The agent system replaces the old `ChatEngine`. Each `Topic` gets a `TopicRuntim
 TopicRuntimeHandle::create_task(user_input)
   → TopicCommand::Start { user_input }
   → TopicFsm::reduce → Effect::Init { user_input }
-  → TaskManager::init(): get_or_create_main_instance()（不存在时按 topic 的主偏好映射创建），
+  → TaskManager::init(): get_or_create_main_instance()（已存在则复用；不存在时以 agent_id = None 创建），
     在事务内创建绑定到主实例的 user + assistant 消息，
-    返回 Emit(MessageCreated ×2) + Effect::Start
+    返回 Emit(InstanceCreated) + Emit(MessageCreated ×2) + Effect::Start
   → TaskManager::start(): SyncTask::spawn → 登记 TaskEntry → handler.start(spec) 启动 AgentRuntime
   → AgentRuntime::run(): ChatRunner::run() → ChatEvent stream
       Partial       → TaskNotification::Message → Effect::Emit(TopicEvent::Message)
@@ -185,6 +185,7 @@ Only the main role gets these built-ins (`helper::build_agent_tools`; FIXME note
 - `MessageFinished` — message complete (topic + instance + message id)
 - `TaskStatusChanged` — instance status transition (topic + instance + `status` + `mode`)
 - `ApprovalRequired` — tool calls need user review (topic + instance + message id + requests)
+- `InstanceCreated` — 实例已被采用（`data: AgentInstance`）；在 `TaskManager::init` / `resume` 成功后与 `MessageCreated` 一同发出，因此创建 topic 时预先建好的主实例也经它下发给订阅方
 
 The broadcast channel is closed after the main instance reaches a terminal state or waits for approval, and when the runtime stops — re-subscribe per conversation.
 
@@ -301,7 +302,7 @@ Column notes: `topics` 有 `parent_id`（tree structure is kept, but **no code c
 
 **`AgentInstance`** (`models/agent/instance.rs`) — an agent *instance* in a topic: `id`, `parent_id` (`None` 即主实例), `topic_id`, `agent_id` (`None` = 回退为普通对话), `mode: Option<AgentMode>`, `role: AgentRole` (`Main`/`Child`), `status: AgentStatus`, `created_at`. **`model_id` 与 `tool_approval_policy` 不在实例上 —— 它们在 `Topic` 上**；实例也不再有 `enabled` / `chat_config_id` 字段
 
-**`TopicAgentMap`** (`models/agent/topic_map.rs`) — topic 能力映射（`topic_agent_maps`）: `id`, `topic_id`, `agent_id`, `created_at`（无 `role`，`CreateTopicAgentMap` 同形，没有 `UpdateTopicAgentMap`）。映射只表达「这个 topic 拥有该 AgentDefinition 能力」，用户只能添加或删除。`helper::get_or_create_main_instance` 创建的主实例**不绑定任何定义**（`agent_id = None`）—— 主实例只负责调度，`agent_list_agents` / `agent_spawn_agent` 让它从 `topic_agent_maps` 里选能力。`AgentStorage::list_definitions_by_topic(topic_id)` 返回该 topic 映射到的**全部**定义，**不做任何过滤** —— `active = false` 的定义同样返回
+**`TopicAgentMap`** (`models/agent/topic_map.rs`) — topic 能力映射（`topic_agent_maps`）: `id`, `topic_id`, `agent_id`, `created_at`（无 `role`，`CreateTopicAgentMap` 同形，没有 `UpdateTopicAgentMap`）。映射只表达「这个 topic 拥有该 AgentDefinition 能力」，用户只能添加或删除。`TopicStorage::create` 收到 `CreateTopic.agent_id` 时，会校验该定义存在且 `active`，并在同一事务内创建 `role = Main` 的实例（`CreateInstance::new_main`）；校验失败则整个创建被拒，不留孤儿 topic。未指定时**不创建实例**，主实例留给 `helper::get_or_create_main_instance` 在首次 `create_task` 时懒创建，此时 `agent_id = None`。主实例只负责调度，`agent_list_agents` / `agent_spawn_agent` 让它从 `topic_agent_maps` 里选能力。`AgentStorage::list_definitions_by_topic(topic_id)` 返回该 topic 映射到的**全部**定义，**不做任何过滤** —— `active = false` 的定义同样返回
 
 **`AgentStatus`**: `Idle → Running → (WaitingApproval | WaitingChild) → Finished | Failed | Cancelled`
 
@@ -315,7 +316,7 @@ Column notes: `topics` 有 `parent_id`（tree structure is kept, but **no code c
 
 | File | Content |
 |------|---------|
-| `windai/core/tests/storage.rs` | 29 tests — integration tests for all `*Storage` structs: CRUD, validation, cascade, batch |
+| `windai/core/tests/storage.rs` | 32 tests — integration tests for all `*Storage` structs: CRUD, validation, cascade, batch |
 | `windai/core/tests/schema.rs` | 14 tests — the schema↔model contract: 12 张表各一条列断言（`assert_table_columns`），加 `dropped_columns_are_absent` 与 `dropped_tables_are_absent` |
 | `windai/core/tests/autoincrement.rs` | 7 tests — 自增主键契约：12 张表 id 非空且落在 JS 安全整数内、不复用（守护 `AUTOINCREMENT`）、严格递增、`RETURNING id` 与库中一致、`create_requests` 的自然键关联与超限分块、布尔列往返 |
 | `windai/core/tests/agent_runtime.rs` | 2 tests — runtime 生命周期与 `terminal_event_is_delivered_before_stream_closes`（`Effect::CloseEventStream` 的时序） |

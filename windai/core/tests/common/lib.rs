@@ -199,6 +199,7 @@ pub async fn seed_chat_fixture(core: &WindCore, label: &str) -> (Model, Topic) {
             label: format!("fixture-topic-{label}"),
             icon: None,
             model_id: Some(model.id),
+            agent_id: None,
             tool_approval_policy: Some(ToolApprovalPolicy::AllowAll),
         })
         .await
