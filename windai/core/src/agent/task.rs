@@ -122,11 +122,13 @@ pub struct TaskSpec {
     pub instance: AgentInstance,
     pub agent: Option<AgentDefinition>,
     /// 用户任务
-    pub user: Message,
-    pub assistant: Message,
+    // pub user: Message,
+    // pub assistant: Message,
+    /// 用户原始任务
+    pub user_input: Vec<Content>,
+    pub assistant_id: i64,
     pub contexts: Vec<AiMessage>,
 }
-
 /// 待完成的子任务记录
 ///
 /// 当父实例 spawn 出一个子实例后，会登记一条该记录，用于在子实例
