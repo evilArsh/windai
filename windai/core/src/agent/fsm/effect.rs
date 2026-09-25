@@ -4,7 +4,7 @@ use crate::{
         task::TaskSpec,
         tool::{SpawnAgentRequest, SpawnAgentResponse},
     },
-    models::{AgentMode, AgentStatus, Message},
+    models::{AgentMode, AgentStatus},
 };
 use tokio::sync::oneshot;
 use wind_ai::{message::Content, tool::FunctionCall};
@@ -49,17 +49,17 @@ pub enum Effect {
     /// agent 发出审批请求
     ApprovalRequest {
         instance_id: i64,
-        data: Message,
+        message_id: i64,
         calls: Vec<FunctionCall>,
     },
     Completed {
         instance_id: i64,
-        data: Message,
+        message_id: i64,
         status: AgentStatus,
     },
     Failed {
         instance_id: i64,
-        data: Option<Message>,
+        message_id: Option<i64>,
         status: AgentStatus,
         error: String,
     },
@@ -92,8 +92,7 @@ impl std::fmt::Display for Effect {
                     name_ref,
                     format!(
                         "(instance_id = {instance_id}, spec = {})",
-                        spec.assistant
-                            .content
+                        spec.contexts
                             .last()
                             .and_then(|c| Some(Content::arr_to_string(&c.content)))
                             .unwrap_or_default()

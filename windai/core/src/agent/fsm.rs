@@ -112,7 +112,6 @@ impl TopicFsm {
                 delta,
             } => {
                 effects.push(Effect::Emit(TopicEvent::Message {
-                    topic_id: self.topic_id,
                     message_id,
                     index,
                     instance_id,
@@ -121,29 +120,32 @@ impl TopicFsm {
             }
             TaskNotification::ApprovalRequired {
                 instance_id,
-                data,
                 calls,
+                message_id,
             } => {
                 self.apply_task(
                     effects,
                     instance_id,
-                    TaskEvent::ApprovalRequired { data, calls },
+                    TaskEvent::ApprovalRequired { calls, message_id },
                 );
             }
-            TaskNotification::Finish { instance_id, data } => {
-                self.apply_task(effects, instance_id, TaskEvent::Finish { data });
+            TaskNotification::Finish {
+                instance_id,
+                message_id,
+            } => {
+                self.apply_task(effects, instance_id, TaskEvent::Finish { message_id });
             }
             TaskNotification::Failed {
                 instance_id,
-                data,
                 error,
+                message_id,
             } => {
                 self.apply_task(
                     effects,
                     instance_id,
                     TaskEvent::Failed {
-                        data: Some(data),
                         error,
+                        message_id: Some(message_id),
                     },
                 );
             }

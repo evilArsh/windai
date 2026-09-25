@@ -4,8 +4,7 @@ use super::tool::{SpawnAgentRequest, SpawnAgentResponse};
 use crate::error::Result;
 use crate::models::ToolApprovalRequest;
 use async_trait::async_trait;
-use wind_ai::message::Message;
-use wind_ai::tool::FunctionCall;
+use wind_ai::tool::{FunctionCall, FunctionCallOutput};
 
 #[async_trait]
 pub trait AgentHost: Send + Sync {
@@ -23,5 +22,5 @@ pub trait AgentHost: Send + Sync {
     ) -> Result<SpawnAgentResponse>;
 
     /// 执行 MCP 工具调用
-    async fn execute_tool_calls(&self, calls: &[FunctionCall]) -> Result<Message>;
+    async fn execute_tool_calls(&self, calls: &[FunctionCall]) -> Result<Vec<FunctionCallOutput>>;
 }

@@ -42,6 +42,7 @@ impl MessageStorage {
     }
 
     /// 保存一条消息
+    /// TODO: 消息本体和partial消息分离
     pub async fn create(&self, data: CreateMessage) -> Result<Message> {
         let now = now_ts();
         let mut qb = insert!(

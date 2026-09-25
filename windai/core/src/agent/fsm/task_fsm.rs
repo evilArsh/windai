@@ -1,6 +1,6 @@
 use super::super::task::TaskSpec;
 use super::effect::Effect;
-use crate::models::{AgentMode, AgentStatus, Message};
+use crate::models::{AgentMode, AgentStatus};
 use wind_ai::tool::FunctionCall;
 
 /// Agent 任务事件
@@ -8,17 +8,13 @@ use wind_ai::tool::FunctionCall;
 pub enum TaskEvent {
     /// 工具调用需要审批
     ApprovalRequired {
-        data: Message,
+        message_id: i64,
         calls: Vec<FunctionCall>,
     },
     /// 任务完成
-    Finish { data: Message },
+    Finish { message_id: i64 },
     /// 任务失败
-    Failed {
-        /// 任务失败时会携带原 Message
-        data: Option<Message>,
-        error: String,
-    },
+    Failed { message_id: Option<i64>, error: String },
     /// 任务已取消
     Cancelled,
     /// 启动任务
@@ -36,18 +32,16 @@ impl std::fmt::Display for TaskEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let name_ref = self.as_ref();
         let (name, args) = match self {
-            TaskEvent::ApprovalRequired { data, calls } => (
+            TaskEvent::ApprovalRequired { calls, message_id } => (
                 name_ref,
-                format!("(message_id = {}, calls_len = {})", data.id, calls.len()),
+                format!("(message_id = {}, calls_len = {})", message_id, calls.len()),
             ),
-            TaskEvent::Finish { data } => (name_ref, format!("(message_id = {})", data.id)),
-            TaskEvent::Failed { data, error } => (
+            TaskEvent::Finish { message_id } => {
+                (name_ref, format!("(message_id = {})", message_id))
+            }
+            TaskEvent::Failed { message_id, error } => (
                 name_ref,
-                format!(
-                    "(message_id = {}, error = {})",
-                    data.as_ref().map(|d| d.id).unwrap_or_default(),
-                    error
-                ),
+                format!("(message_id = {:?}, error = {})", message_id, error),
             ),
             TaskEvent::Cancelled => (name_ref, String::new()),
             TaskEvent::Start { spec, .. } => {
@@ -125,7 +119,7 @@ impl TaskFsm {
                     agent_id: None,
                 }]
             }
-            (S::Running, E::ApprovalRequired { data, calls }) => {
+            (S::Running, E::ApprovalRequired { calls, message_id }) => {
                 self.state = S::WaitingApproval;
                 vec![
                     Effect::PersistStatus {
@@ -136,8 +130,8 @@ impl TaskFsm {
                     },
                     Effect::ApprovalRequest {
                         instance_id: self.instance_id,
-                        data,
                         calls,
+                        message_id,
                     },
                 ]
             }
@@ -150,7 +144,7 @@ impl TaskFsm {
                     agent_id: None,
                 }]
             }
-            (S::Running, E::Finish { data }) => {
+            (S::Running, E::Finish { message_id }) => {
                 self.state = S::Finished;
                 vec![
                     Effect::PersistStatus {
@@ -161,12 +155,12 @@ impl TaskFsm {
                     },
                     Effect::Completed {
                         instance_id,
-                        data,
+                        message_id,
                         status: self.state,
                     },
                 ]
             }
-            (S::Running, E::Failed { data, error }) => {
+            (S::Running, E::Failed { error, message_id }) => {
                 self.state = S::Failed;
                 vec![
                     Effect::PersistStatus {
@@ -177,9 +171,9 @@ impl TaskFsm {
                     },
                     Effect::Failed {
                         instance_id,
-                        data,
-                        error: error.clone(),
+                        error,
                         status: self.state,
+                        message_id,
                     },
                 ]
             }

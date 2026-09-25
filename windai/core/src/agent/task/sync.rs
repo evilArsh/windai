@@ -16,10 +16,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
-use wind_ai::{
-    message::{Content, Message as AiMessage},
-    tool::{FunctionCall, FunctionCallOutput},
-};
+use wind_ai::tool::{FunctionCall, FunctionCallOutput};
 use wind_mcp::client::registry::RegistryHandle;
 
 struct SyncHost {
@@ -75,11 +72,11 @@ impl AgentHost for SyncHost {
                 })
                 .await;
             }
-            AgentOutput::Finish { data, error } => match error {
+            AgentOutput::Finish { error, message_id } => match error {
                 Some(err) => {
                     self.notify_task(TaskNotification::Failed {
                         instance_id: self.instance_id,
-                        data,
+                        message_id,
                         error: err.to_string(),
                     })
                     .await;
@@ -87,19 +84,21 @@ impl AgentHost for SyncHost {
                 None => {
                     self.notify_task(TaskNotification::Finish {
                         instance_id: self.instance_id,
-                        data,
+                        message_id,
                     })
                     .await;
                 }
             },
             AgentOutput::ApprovalRequired {
-                data,
                 contexts: _,
                 calls,
+                message_id,
+                index,
             } => {
                 self.notify_task(TaskNotification::ApprovalRequired {
                     instance_id: self.instance_id,
-                    data,
+                    index,
+                    message_id,
                     calls,
                 })
                 .await;
@@ -138,22 +137,8 @@ impl AgentHost for SyncHost {
         rx.await.map_err(|e| CoreError::Internal(e.to_string()))
     }
 
-    async fn execute_tool_calls(&self, calls: &[FunctionCall]) -> Result<AiMessage> {
-        let outputs = execute_tool_calls(&self.mcp_registry, calls)
-            .await?
-            .content
-            .into_iter()
-            .filter_map(|content| {
-                if let Content::FunctionCall { data } = content {
-                    return Some(data);
-                } else {
-                    log::warn!("Unexpected content type: {:?}", content);
-                }
-                None
-            })
-            .collect::<Vec<FunctionCallOutput>>();
-
-        Ok(AiMessage::new_tool_result(outputs))
+    async fn execute_tool_calls(&self, calls: &[FunctionCall]) -> Result<Vec<FunctionCallOutput>> {
+        Ok(execute_tool_calls(&self.mcp_registry, calls).await?)
     }
 }
 
@@ -235,10 +220,10 @@ impl SyncTask {
     fn start_agent(&self, task: TaskSpec) {
         let agent = AgentRuntime::new(self.host.clone());
         tokio::spawn(agent.run(
+            task.assistant_id,
             self.ctx.child_token(),
             task.chat_context,
             task.instance,
-            task.assistant,
             task.contexts,
         ));
     }

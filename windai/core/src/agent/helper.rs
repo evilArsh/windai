@@ -49,7 +49,7 @@ pub async fn create_fork_contexts(
     storage: &Storage,
     parent_instance_id: i64,
     instance_id: i64,
-    user_input: Vec<Content>,
+    user_input: &[Content],
     chat_ctx: &ChatContext,
     agent: Option<&AgentDefinition>,
 ) -> Result<(Message, Message, Vec<AiMessage>)> {
@@ -83,7 +83,7 @@ pub async fn create_contexts(
     cwd: &PathBuf,
     chat_ctx: &ChatContext,
     instance_id: i64,
-    user_input: Vec<Content>,
+    user_input: &[Content],
     agent: Option<&AgentDefinition>,
 ) -> Result<(Message, Message, Vec<AiMessage>)> {
     let raw = get_message_contexts(storage, instance_id).await?;
@@ -252,37 +252,39 @@ pub async fn save_approval_state(
 }
 
 pub fn transfer_contexts(raw: Vec<Message>) -> Result<Vec<AiMessage>> {
-    raw.into_iter()
-        .map(|m| {
-            // 无法找到 is_simple 消息,
-            // 该消息未正常结束（用户未授权 MCP 调用或者模型未正常返回结果）
-            if let Some(c) = m.content.into_iter().rev().find(|c| c.is_simple()) {
-                return Ok(c);
-            } else {
-                return Err(CoreError::Chat(format!(
-                    "Incomplete message found. messageId: {}",
-                    m.id
-                )));
-            }
-        })
-        .collect::<Result<Vec<AiMessage>>>()
+    todo!()
+    // raw.into_iter()
+    //     .map(|m| {
+    //         // 无法找到 is_simple 消息,
+    //         // 该消息未正常结束（用户未授权 MCP 调用或者模型未正常返回结果）
+    //         if let Some(c) = m.content.into_iter().rev().find(|c| c.is_simple()) {
+    //             return Ok(c);
+    //         } else {
+    //             return Err(CoreError::Chat(format!(
+    //                 "Incomplete message found. messageId: {}",
+    //                 m.id
+    //             )));
+    //         }
+    //     })
+    //     .collect::<Result<Vec<AiMessage>>>()
 }
 
+// TODO 需要重构
 async fn create_context_inner(
     cwd: &PathBuf,
     storage: &Storage,
     instance_id: i64,
-    user_input: Vec<Content>,
+    user_input: &[Content],
     raw_contexts: Vec<Message>,
     chat_ctx: &ChatContext,
     agent: Option<&AgentDefinition>,
 ) -> Result<(Message, Message, Vec<AiMessage>)> {
     let prompt = assemble_prompt(storage, agent).await?;
-    let user_content = AiMessage::new_simple(Role::User, user_input, None);
-
+    let user_content = AiMessage::new_simple(Role::User, user_input.to_vec(), None);
     let content_cloned = user_content.clone();
     let (user_message, assistant_message) = storage
         .with_tx(|storage| async move {
+            // TODO: 先创建Message，再插入索引为0的MessageContent
             let user = storage
                 .message()
                 .create(CreateMessage {
@@ -343,6 +345,7 @@ fn is_tool_allowed(tool: &Tool, gates: &[(&[String], &[String])]) -> bool {
         allowed && !denied
     })
 }
+/// TODO: 
 /// 构建历史消息上下文
 ///
 /// 不校验消息上下文合理性，考虑以下情况：

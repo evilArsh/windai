@@ -20,8 +20,6 @@ pub enum TopicEvent {
     Error {
         /// 来自 Agent 实例的错误
         instance_id: Option<i64>,
-        /// 话题 id
-        topic_id: i64,
         /// 消息 id
         message_id: Option<i64>,
         /// 错误信息
@@ -31,15 +29,11 @@ pub enum TopicEvent {
     Snapshot {
         /// agent 实例 id
         instance_id: i64,
-        /// 话题 id
-        topic_id: i64,
         /// 全量消息
         messages: Vec<Message>,
     },
     /// 消息已创建
     MessageCreated {
-        /// 话题 id
-        topic_id: i64,
         /// instance id
         instance_id: i64,
         /// 初始化消息
@@ -49,8 +43,6 @@ pub enum TopicEvent {
     Message {
         /// agent 实例 id
         instance_id: i64,
-        /// 话题 id
-        topic_id: i64,
         /// 消息 id
         message_id: i64,
         /// 消息索引，用于标识消息顺序
@@ -62,8 +54,6 @@ pub enum TopicEvent {
     MessageFinished {
         /// agent 实例 id
         instance_id: i64,
-        /// 话题 id
-        topic_id: i64,
         // 消息 id
         message_id: i64,
     },
@@ -71,19 +61,15 @@ pub enum TopicEvent {
     TaskStatusChanged {
         /// agent 实例 id
         instance_id: i64,
-        /// 话题 id
-        topic_id: i64,
         /// 任务状态
         status: AgentStatus,
         /// 任务模式
         mode: AgentMode,
     },
-    /// 需要用户审批
+    /// 需要用户审批的消息
     ApprovalRequired {
         /// agent 实例 id
         instance_id: i64,
-        /// 话题 id
-        topic_id: i64,
         /// 消息 id
         message_id: i64,
         /// 审批请求
@@ -121,96 +107,43 @@ impl std::fmt::Display for TopicEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let (name, args) = match self {
             TopicEvent::Error {
-                instance_id,
-                topic_id,
-                error,
-                ..
+                instance_id, error, ..
             } => (
                 self.as_ref(),
                 format!(
-                    "(topic_id = {}, instance_id = {}, error = {})",
-                    topic_id.to_string(),
+                    "(instance_id = {}, error = {})",
                     instance_id.map(|t| t.to_string()).unwrap_or_default(),
                     error
                 ),
             ),
-            TopicEvent::Snapshot {
-                instance_id,
-                topic_id,
-                ..
-            } => (
+            TopicEvent::Snapshot { instance_id, .. } => (
                 self.as_ref(),
-                format!(
-                    "(topic_id = {}, instance_id = {})",
-                    topic_id.to_string(),
-                    instance_id.to_string(),
-                ),
+                format!("(instance_id = {})", instance_id.to_string(),),
             ),
-            TopicEvent::MessageCreated {
-                instance_id,
-                topic_id,
-                ..
-            } => (
+            TopicEvent::MessageCreated { instance_id, .. } => (
                 self.as_ref(),
-                format!(
-                    "(topic_id = {}, instance_id = {})",
-                    topic_id.to_string(),
-                    instance_id.to_string(),
-                ),
+                format!("(instance_id = {})", instance_id.to_string(),),
             ),
-            TopicEvent::Message {
-                instance_id,
-                topic_id,
-                ..
-            } => (
+            TopicEvent::Message { instance_id, .. } => (
                 self.as_ref(),
-                format!(
-                    "(topic_id = {}, instance_id = {})",
-                    topic_id.to_string(),
-                    instance_id.to_string(),
-                ),
+                format!("(instance_id = {})", instance_id.to_string(),),
             ),
-            TopicEvent::MessageFinished {
-                instance_id,
-                topic_id,
-                ..
-            } => (
+            TopicEvent::MessageFinished { instance_id, .. } => (
                 self.as_ref(),
-                format!(
-                    "(topic_id = {}, instance_id = {})",
-                    topic_id.to_string(),
-                    instance_id.to_string(),
-                ),
+                format!("(instance_id = {})", instance_id.to_string(),),
             ),
-            TopicEvent::TaskStatusChanged {
-                instance_id,
-                topic_id,
-                ..
-            } => (
+            TopicEvent::TaskStatusChanged { instance_id, .. } => (
                 self.as_ref(),
-                format!(
-                    "(topic_id = {}, instance_id = {})",
-                    topic_id.to_string(),
-                    instance_id.to_string(),
-                ),
+                format!("(instance_id = {})", instance_id.to_string(),),
             ),
-            TopicEvent::ApprovalRequired {
-                instance_id,
-                topic_id,
-                ..
-            } => (
+            TopicEvent::ApprovalRequired { instance_id, .. } => (
                 self.as_ref(),
-                format!(
-                    "(topic_id = {}, instance_id = {})",
-                    topic_id.to_string(),
-                    instance_id.to_string(),
-                ),
+                format!("(instance_id = {})", instance_id.to_string(),),
             ),
             TopicEvent::InstanceCreated { data } => (
                 self.as_ref(),
                 format!(
-                    "(topic_id = {}, instance_id = {}, parent_instance_id = {:?})",
-                    data.topic_id.to_string(),
+                    "(instance_id = {}, parent_instance_id = {:?})",
                     data.id.to_string(),
                     data.parent_id
                 ),

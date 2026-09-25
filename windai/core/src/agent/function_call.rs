@@ -24,7 +24,7 @@ pub fn build_tools_from_mcp(mcp_tools: Vec<McpTool>) -> Vec<Tools> {
 pub async fn execute_tool_calls(
     mcp_registry: &RegistryHandle,
     tool_calls: &[FunctionCall],
-) -> Result<AiMessage> {
+) -> Result<Vec<FunctionCallOutput>> {
     let params = tool_calls
         .iter()
         .map(|tool| match McpTool::parse_name(&tool.name) {
@@ -52,23 +52,21 @@ pub async fn execute_tool_calls(
         )));
     }
 
-    Ok(AiMessage::new_tool_result(
-        results
-            .into_iter()
-            .enumerate()
-            .map(|(index, res)| {
-                log::debug!(
-                    "[tool call result] id: {}, res: {:?}",
-                    &tool_calls[index].id,
-                    &res
-                );
-                return FunctionCallOutput {
-                    id: tool_calls[index].id.clone(),
-                    content: res.content,
-                };
-            })
-            .collect(),
-    ))
+    Ok(results
+        .into_iter()
+        .enumerate()
+        .map(|(index, res)| {
+            log::debug!(
+                "[tool call result] id: {}, res: {:?}",
+                &tool_calls[index].id,
+                &res
+            );
+            return FunctionCallOutput {
+                id: tool_calls[index].id.clone(),
+                content: res.content,
+            };
+        })
+        .collect())
 }
 
 /// 根据审批策略拆分可自动执行和需要人工审批的工具调用

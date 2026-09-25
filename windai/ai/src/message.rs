@@ -147,8 +147,8 @@ pub struct Message {
 
 impl Message {
     /// 追加流式数据
-    pub fn append_chunk(&mut self, partial: Message) {
-        if let Some(content) = partial.content.into_iter().next() {
+    pub fn append_chunk(&mut self, partial: &Message) {
+        if let Some(content) = partial.content.iter().next() {
             if let Some(self_content) = self.content.last_mut() {
                 match (self_content, content) {
                     (Content::Text { data }, Content::Text { data: data_new }) => {
@@ -166,27 +166,27 @@ impl Message {
                     _ => {}
                 }
             } else {
-                self.content.push(content);
+                self.content.push(content.clone());
             }
         }
 
-        if let Some(new_reasoning) = partial.reasoning_content
+        if let Some(new_reasoning) = partial.reasoning_content.as_deref()
             && !new_reasoning.is_empty()
         {
             match self.reasoning_content.as_mut() {
                 Some(self_reasoning) => *self_reasoning += &new_reasoning,
-                None => self.reasoning_content = Some(new_reasoning),
+                None => self.reasoning_content = Some(new_reasoning.to_string()),
             }
         }
 
-        if let Some(new_tool_calls) = partial.tool_calls {
+        if let Some(new_tool_calls) = partial.tool_calls.as_deref() {
             for new_tool_call in new_tool_calls {
                 if !new_tool_call.id.is_empty() {
                     match self.tool_calls.as_mut() {
                         Some(self_tool_calls) => {
-                            self_tool_calls.push(new_tool_call);
+                            self_tool_calls.push(new_tool_call.clone());
                         }
-                        None => self.tool_calls = Some(vec![new_tool_call]),
+                        None => self.tool_calls = Some(vec![new_tool_call.clone()]),
                     }
                 } else {
                     match self.tool_calls.as_mut() {

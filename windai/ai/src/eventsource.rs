@@ -57,7 +57,7 @@ mod tests {
 
         for ev in &res {
             if let Some(chunk) = chat_adapter.parse_stream_chunk(ev).unwrap() {
-                msg.append_chunk(chunk);
+                msg.append_chunk(&chunk);
             }
         }
 
@@ -90,7 +90,7 @@ data: [DONE]"#
 
         for ev in &res {
             if let Some(chunk) = chat_adapter.parse_stream_chunk(ev).unwrap() {
-                msg.append_chunk(chunk);
+                msg.append_chunk(&chunk);
             }
         }
 
@@ -135,7 +135,7 @@ data: {"type":"response.completed","response":{"id":"resp_03c724975b1dc3ab0169f9
         let mut msg = Message::default();
         for ev in &res {
             if let Some(chunk) = chat_adapter.parse_stream_chunk(ev).unwrap() {
-                msg.append_chunk(chunk);
+                msg.append_chunk(&chunk);
             }
         }
         assert!(msg.tool_calls.is_some());

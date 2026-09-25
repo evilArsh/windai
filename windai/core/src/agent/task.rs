@@ -33,14 +33,13 @@ pub enum AgentOutput {
     /// Agent 运行完成
     ///
     /// 如果运行失败，error 字段会保存错误信息；
-    /// 错误信息同时会保存至 data 的消息上下文中
     Finish {
-        data: Message,
+        message_id: i64,
         error: Option<String>,
     },
     /// 该轮对话的部分调用需要审批
     ApprovalRequired {
-        data: Message,
+        message_id: i64,
         contexts: Vec<AiMessage>,
         calls: Vec<FunctionCall>,
     },
@@ -75,16 +74,16 @@ pub enum TaskNotification {
     },
     ApprovalRequired {
         instance_id: i64,
-        data: Message,
+        message_id: i64,
         calls: Vec<FunctionCall>,
     },
     Finish {
         instance_id: i64,
-        data: Message,
+        message_id: i64,
     },
     Failed {
         instance_id: i64,
-        data: Message,
+        message_id: i64,
         error: String,
     },
     Cancelled {
@@ -122,10 +121,8 @@ pub struct TaskSpec {
     pub instance: AgentInstance,
     pub agent: Option<AgentDefinition>,
     /// 用户任务
-    // pub user: Message,
-    // pub assistant: Message,
-    /// 用户原始任务
     pub user_input: Vec<Content>,
+    /// 当前任务对应的消息 id
     pub assistant_id: i64,
     pub contexts: Vec<AiMessage>,
 }
@@ -191,16 +188,17 @@ impl TaskManager {
     }
 
     pub fn get_output(src: &Message) -> Vec<Content> {
-        src.content
-            .last()
-            .and_then(|c| {
-                if c.is_simple() && c.role == Role::Assistant {
-                    Some(c.content.clone())
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_else(|| vec![Content::new_text("Task has no valid result".to_string())])
+        todo!()
+        // src.content
+        //     .last()
+        //     .and_then(|c| {
+        //         if c.is_simple() && c.role == Role::Assistant {
+        //             Some(c.content.clone())
+        //         } else {
+        //             None
+        //         }
+        //     })
+        //     .unwrap_or_else(|| vec![Content::new_text("Task has no valid result".to_string())])
     }
 
     /// 登记子任务记录
@@ -255,7 +253,11 @@ impl TaskManager {
     }
 
     /// 初始化任务
-    pub async fn init(&self, topic_id: i64, user_input: Vec<Content>) -> Result<TaskSpec> {
+    pub async fn init(
+        &self,
+        topic_id: i64,
+        user_input: Vec<Content>,
+    ) -> Result<(Message, Message, TaskSpec)> {
         let tx = self.storage.begin().await?;
         let mut instance = helper::get_or_create_main_instance(&tx.storage(), topic_id).await?;
         instance.mode = Some(AgentMode::Sync);
@@ -278,7 +280,7 @@ impl TaskManager {
             &self.cwd,
             &chat_ctx,
             instance.id,
-            user_input,
+            &user_input,
             agent.as_ref(),
         )
         .await?;
@@ -291,11 +293,11 @@ impl TaskManager {
             chat_context: chat_ctx,
             instance,
             agent,
-            user,
-            assistant,
+            user_input,
+            assistant_id: assistant.id,
             contexts,
         };
-        Ok(spec)
+        Ok((user, assistant, spec))
     }
 
     /// 恢复任务执行
@@ -314,6 +316,7 @@ impl TaskManager {
                 .await?;
         chat_ctx.tools = tools;
 
+        // TODO 上下文获取方法已经改变
         let contexts = helper::get_message_contexts(&self.storage, instance.id).await?;
 
         let mut it = contexts.iter().rev();
@@ -334,10 +337,11 @@ impl TaskManager {
         let spec = TaskSpec {
             chat_context: chat_ctx,
             agent,
-            assistant,
+            assistant_id: assistant.id,
             contexts: helper::transfer_contexts(contexts)?,
             instance,
-            user,
+            // TODO 根据user.id找到MessageContent中的用户任务
+            user_input: vec![],
         };
         if let Some(entry) = self.get_entry(instance_id) {
             entry.handler.start(spec).await?;
@@ -364,7 +368,7 @@ impl TaskManager {
         topic_id: i64,
         parent_instance_id: i64,
         request: SpawnAgentRequest,
-    ) -> Result<TaskSpec> {
+    ) -> Result<(Message, Message, TaskSpec)> {
         if request.mode == AgentMode::Background {
             // TODO: 后台任务
             return Err(CoreError::Validation(
@@ -407,7 +411,7 @@ impl TaskManager {
                         &tx.storage(),
                         entry.instance_id,
                         instance_id,
-                        user_input,
+                        user_input.as_slice(),
                         &chat_ctx,
                         Some(&agent),
                     )
@@ -425,7 +429,7 @@ impl TaskManager {
                     &self.cwd,
                     &chat_ctx,
                     instance_id,
-                    user_input,
+                    user_input.as_slice(),
                     Some(&agent),
                 )
                 .await?
@@ -435,14 +439,14 @@ impl TaskManager {
 
         let spec = TaskSpec {
             chat_context: chat_ctx,
-            assistant: assistant.clone(),
+            assistant_id: assistant.id,
             contexts,
             instance,
             agent: Some(agent),
-            user,
+            user_input,
         };
 
-        Ok(spec)
+        Ok((user, assistant, spec))
     }
 
     /// 启动一个 SyncTask
