@@ -13,17 +13,16 @@ pub use effect::*;
 pub use event::*;
 use std::collections::HashMap;
 pub use task_fsm::*;
+use wind_ai::message::Content;
 
 pub struct TopicFsm {
-    topic_id: i64,
     main_instance_id: Option<i64>,
     tasks: HashMap<i64, TaskFsm>,
 }
 
 impl TopicFsm {
-    pub fn new(topic_id: i64) -> Self {
+    pub fn new() -> Self {
         Self {
-            topic_id,
             main_instance_id: None,
             tasks: HashMap::new(),
         }
@@ -110,13 +109,21 @@ impl TopicFsm {
                 message_id,
                 index,
                 delta,
+                partial,
             } => {
-                effects.push(Effect::Emit(TopicEvent::Message {
-                    message_id,
-                    index,
-                    instance_id,
-                    data: delta,
-                }));
+                if partial {
+                    effects.push(Effect::Emit(TopicEvent::Message {
+                        message_id,
+                        index,
+                        instance_id,
+                        data: delta,
+                    }));
+                } else {
+                    effects.push(Effect::PersistContent {
+                        message_id,
+                        data: delta,
+                    });
+                }
             }
             TaskNotification::ApprovalRequired {
                 instance_id,
@@ -132,23 +139,22 @@ impl TopicFsm {
             TaskNotification::Finish {
                 instance_id,
                 message_id,
-            } => {
-                self.apply_task(effects, instance_id, TaskEvent::Finish { message_id });
-            }
-            TaskNotification::Failed {
-                instance_id,
                 error,
-                message_id,
             } => {
-                self.apply_task(
-                    effects,
-                    instance_id,
-                    TaskEvent::Failed {
-                        error,
-                        message_id: Some(message_id),
-                    },
-                );
+                if let Some(error) = error {
+                    self.apply_task(
+                        effects,
+                        instance_id,
+                        TaskEvent::Failed {
+                            error: Content::arr_to_string(&error.content),
+                            message_id: Some(message_id),
+                        },
+                    );
+                } else {
+                    self.apply_task(effects, instance_id, TaskEvent::Finish { message_id });
+                }
             }
+
             TaskNotification::Cancelled { instance_id } => {
                 self.apply_task(effects, instance_id, TaskEvent::Cancelled);
             }

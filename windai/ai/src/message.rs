@@ -18,6 +18,7 @@ use serde_json::Value;
     strum::Display,
 )]
 #[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
 pub enum Role {
     /// 系统角色
     System,

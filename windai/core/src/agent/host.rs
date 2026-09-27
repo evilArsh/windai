@@ -1,4 +1,4 @@
-use super::task::AgentOutput;
+use super::task::TaskNotification;
 use super::tool::ListAgentsResponse;
 use super::tool::{SpawnAgentRequest, SpawnAgentResponse};
 use crate::error::Result;
@@ -8,7 +8,7 @@ use wind_ai::tool::{FunctionCall, FunctionCallOutput};
 
 #[async_trait]
 pub trait AgentHost: Send + Sync {
-    async fn emit(&self, output: AgentOutput);
+    async fn emit(&self, output: TaskNotification);
 
     async fn list_agents(&self) -> Result<ListAgentsResponse>;
 

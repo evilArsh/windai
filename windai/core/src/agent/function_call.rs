@@ -1,7 +1,6 @@
 use crate::error::{CoreError, Result};
 use crate::models::ToolApprovalPolicy;
 use serde_json::Value;
-use wind_ai::message::Message as AiMessage;
 use wind_ai::tool::{FunctionCall, FunctionCallOutput, FunctionTool, Tools};
 use wind_mcp::client::registry::RegistryHandle;
 use wind_mcp::client::{CallToolParam, Tool as McpTool};

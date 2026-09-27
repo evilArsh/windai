@@ -5,11 +5,12 @@ use crate::env::app_dirs;
 use crate::error::{CoreError, Result};
 use crate::models::{
     AgentDefinition, AgentInstance, AgentMcpBinding, AgentMode, AgentRole, AgentStatus,
-    CreateInstance, CreateMessage, CreateToolApprovalCall, CreateToolApprovalRequests, Message,
-    ToolApprovalRequest,
+    CreateInstance, CreateMessage, CreateMessageContent, CreateToolApprovalCall,
+    CreateToolApprovalRequests, Message, MessageContent, ToolApprovalRequest,
 };
 use crate::storage::Storage;
 use futures::future::{try_join, try_join3};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use wind_ai::message::{Content, Message as AiMessage, Role};
 use wind_ai::tool::{FunctionCall, Tools};
@@ -40,8 +41,92 @@ pub async fn list_approval_requests(
     storage.approval().list_by_message(message_id).await
 }
 
-pub async fn get_message_contexts(storage: &Storage, instance_id: i64) -> Result<Vec<Message>> {
-    storage.message().list_contexts(instance_id).await
+/// 一条消息的全部正文内容块（按 id 升序）
+///
+/// 组在 `Vec` 中的顺序即消息顺序；无内容的消息不会成组
+struct MessageGroup {
+    contents: Vec<AiMessage>,
+}
+
+/// 加载实例的上下文消息组
+///
+/// 消息顺序由 `MessageStorage::list_contexts` 的 id 升序决定，
+/// 消息内部的块顺序由 `message_contents` 的自增 id 升序决定
+async fn load_contexts(storage: &Storage, instance_id: i64) -> Result<Vec<MessageGroup>> {
+    let messages = storage.message().list_contexts(instance_id).await?;
+    if messages.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let ids = messages.iter().map(|m| m.id).collect::<Vec<i64>>();
+    let mut contents: HashMap<i64, Vec<AiMessage>> = HashMap::new();
+    for content in storage.message_content().list_by_messages(&ids).await? {
+        contents
+            .entry(content.message_id)
+            .or_default()
+            .push(content.data);
+    }
+
+    // 组顺序以消息顺序为唯一来源，无内容的消息不进入上下文
+    Ok(messages
+        .into_iter()
+        .filter_map(|message| {
+            Some(MessageGroup {
+                contents: contents.remove(&message.id)?,
+            })
+        })
+        .collect())
+}
+
+/// 按 `max_context` 截断消息条数，再从第一条用户消息开始展平为模型上下文
+fn flatten_contexts(groups: Vec<MessageGroup>, agent: Option<&AgentDefinition>) -> Vec<AiMessage> {
+    if groups.is_empty() {
+        return Vec::new();
+    }
+
+    let max_context = match agent.and_then(|a| a.data.context_policy.max_context) {
+        Some(c) => c.max(1) as usize,
+        None => groups.len(),
+    };
+    let sliced = &groups[groups.len().saturating_sub(max_context)..];
+    // 截断后窗口可能以助手消息开头，前移到第一条用户消息，保证上下文从用户轮开始
+    let start = sliced
+        .iter()
+        .position(|group| {
+            group
+                .contents
+                .iter()
+                .any(|m| m.is_simple() && m.role == Role::User)
+        })
+        .unwrap_or(0);
+    sliced[start..]
+        .iter()
+        .flat_map(|group| group.contents.iter().cloned())
+        .collect()
+}
+
+/// 实例的完整对话上下文
+pub async fn get_message_contexts(
+    storage: &Storage,
+    instance_id: i64,
+    agent: Option<&AgentDefinition>,
+) -> Result<Vec<AiMessage>> {
+    Ok(flatten_contexts(
+        load_contexts(storage, instance_id).await?,
+        agent,
+    ))
+}
+
+/// 一次上下文创建出来的消息与用户内容块
+///
+/// 交给模型的初始上下文由创建函数作为第二个返回值单独交出，不在这里
+pub struct CreatedContexts {
+    /// 用户消息
+    pub user: Message,
+    /// 助手消息，正文留给运行时逐块写入
+    pub assistant: Message,
+    /// 用户输入落库的内容块，需要经 SSE 下发给前端
+    pub user_content: MessageContent,
 }
 
 pub async fn create_fork_contexts(
@@ -52,18 +137,12 @@ pub async fn create_fork_contexts(
     user_input: &[Content],
     chat_ctx: &ChatContext,
     agent: Option<&AgentDefinition>,
-) -> Result<(Message, Message, Vec<AiMessage>)> {
-    let (mut main_raw, mut raw) = match try_join(
-        get_message_contexts(storage, parent_instance_id),
-        get_message_contexts(storage, instance_id),
+) -> Result<(CreatedContexts, Vec<AiMessage>)> {
+    let (mut main_raw, mut raw) = try_join(
+        load_contexts(storage, parent_instance_id),
+        load_contexts(storage, instance_id),
     )
-    .await
-    {
-        Ok(res) => res,
-        Err(e) => {
-            return Err(e);
-        }
-    };
+    .await?;
 
     main_raw.append(&mut raw);
     create_context_inner(
@@ -85,8 +164,8 @@ pub async fn create_contexts(
     instance_id: i64,
     user_input: &[Content],
     agent: Option<&AgentDefinition>,
-) -> Result<(Message, Message, Vec<AiMessage>)> {
-    let raw = get_message_contexts(storage, instance_id).await?;
+) -> Result<(CreatedContexts, Vec<AiMessage>)> {
+    let raw = load_contexts(storage, instance_id).await?;
     create_context_inner(cwd, storage, instance_id, user_input, raw, chat_ctx, agent).await
 }
 
@@ -213,83 +292,50 @@ pub async fn get_base_info(storage: &Storage, topic_id: i64) -> Result<ChatConte
     })
 }
 
-/// 保存 Assistant 消息和工具审批请求
+/// 保存一次工具审批请求
 pub async fn save_approval_state(
     storage: &Storage,
     topic_id: i64,
     instance_id: i64,
-    assistant: Message,
+    message_id: i64,
     calls: Vec<FunctionCall>,
 ) -> Result<Vec<ToolApprovalRequest>> {
-    let message_id = assistant.id;
-    let ((), requests) = storage
-        .with_tx(|storage| async move {
-            storage
-                .message()
-                .update(message_id, assistant.into())
-                .await?;
-            let requests = storage
-                .approval()
-                .create_requests(CreateToolApprovalRequests {
-                    topic_id,
-                    message_id,
-                    instance_id,
-                    calls: calls
-                        .into_iter()
-                        .map(|call| CreateToolApprovalCall {
-                            tool_call_id: call.id,
-                            tool_name: call.name,
-                            arguments: serde_json::Value::String(call.arguments),
-                        })
-                        .collect(),
+    storage
+        .approval()
+        .create_requests(CreateToolApprovalRequests {
+            topic_id,
+            message_id,
+            instance_id,
+            calls: calls
+                .into_iter()
+                .map(|call| CreateToolApprovalCall {
+                    tool_call_id: call.id,
+                    tool_name: call.name,
+                    arguments: serde_json::Value::String(call.arguments),
                 })
-                .await?;
-            Ok(((), requests))
+                .collect(),
         })
-        .await?;
-
-    return Ok(requests);
+        .await
 }
 
-pub fn transfer_contexts(raw: Vec<Message>) -> Result<Vec<AiMessage>> {
-    todo!()
-    // raw.into_iter()
-    //     .map(|m| {
-    //         // 无法找到 is_simple 消息,
-    //         // 该消息未正常结束（用户未授权 MCP 调用或者模型未正常返回结果）
-    //         if let Some(c) = m.content.into_iter().rev().find(|c| c.is_simple()) {
-    //             return Ok(c);
-    //         } else {
-    //             return Err(CoreError::Chat(format!(
-    //                 "Incomplete message found. messageId: {}",
-    //                 m.id
-    //             )));
-    //         }
-    //     })
-    //     .collect::<Result<Vec<AiMessage>>>()
-}
-
-// TODO 需要重构
 async fn create_context_inner(
     cwd: &PathBuf,
     storage: &Storage,
     instance_id: i64,
     user_input: &[Content],
-    raw_contexts: Vec<Message>,
+    raw_contexts: Vec<MessageGroup>,
     chat_ctx: &ChatContext,
     agent: Option<&AgentDefinition>,
-) -> Result<(Message, Message, Vec<AiMessage>)> {
+) -> Result<(CreatedContexts, Vec<AiMessage>)> {
     let prompt = assemble_prompt(storage, agent).await?;
-    let user_content = AiMessage::new_simple(Role::User, user_input.to_vec(), None);
-    let content_cloned = user_content.clone();
-    let (user_message, assistant_message) = storage
+    let user_ctx = AiMessage::new_simple(Role::User, user_input.to_vec(), None);
+    let content_cloned = user_ctx.clone();
+    let (user_message, assistant_message, user_content) = storage
         .with_tx(|storage| async move {
-            // TODO: 先创建Message，再插入索引为0的MessageContent
             let user = storage
                 .message()
                 .create(CreateMessage {
                     from_id: None,
-                    content: vec![content_cloned],
                     model_id: chat_ctx.model.id,
                     is_boundary: false,
                     is_excluded: false,
@@ -299,11 +345,20 @@ async fn create_context_inner(
                 })
                 .await?;
 
+            // 用户输入就是该消息的第一块内容
+            let user_content = storage
+                .message_content()
+                .create(CreateMessageContent {
+                    message_id: user.id,
+                    data: content_cloned,
+                })
+                .await?;
+
+            // 助手消息的正文由 Agent 运行时逐轮写入
             let assistant = storage
                 .message()
                 .create(CreateMessage {
                     from_id: Some(user.id),
-                    content: vec![],
                     model_id: chat_ctx.model.id,
                     is_boundary: false,
                     is_excluded: false,
@@ -313,12 +368,12 @@ async fn create_context_inner(
                 })
                 .await?;
 
-            Ok((user, assistant))
+            Ok((user, assistant, user_content))
         })
         .await?;
 
-    let mut contexts = build_context(raw_contexts, agent)?;
-    contexts.push(user_content);
+    let mut contexts = flatten_contexts(raw_contexts, agent);
+    contexts.push(user_ctx);
 
     let mut sys_p = vec![Content::new_text(format!(
         "<AppDataDirectory>\n{}\n</AppDataDirectory>\n
@@ -333,7 +388,14 @@ async fn create_context_inner(
     }
     contexts.insert(0, AiMessage::new_simple(Role::System, sys_p, None));
 
-    Ok((user_message, assistant_message, contexts))
+    Ok((
+        CreatedContexts {
+            user: user_message,
+            assistant: assistant_message,
+            user_content,
+        },
+        contexts,
+    ))
 }
 
 /// 判断 MCP 工具是否被允许：allowed_tools 为空则默认允许，denied_tools 中存在则拒绝
@@ -344,36 +406,6 @@ fn is_tool_allowed(tool: &Tool, gates: &[(&[String], &[String])]) -> bool {
         let denied = denied.iter().any(|name| name == &tool.name);
         allowed && !denied
     })
-}
-/// TODO: 
-/// 构建历史消息上下文
-///
-/// 不校验消息上下文合理性，考虑以下情况：
-/// - (User, Assistant) 消息对缺失。比如 User 消息被删除后应该标记 Assistant 消息为`is_excluded`
-/// - 忽略 MCP 调用中间结果。历史消息上下文不会包含实时 MCP 调用产生的中间结果，只包含最终的结果，中间结果只在实时请求中包含
-fn build_context(raw: Vec<Message>, agent: Option<&AgentDefinition>) -> Result<Vec<AiMessage>> {
-    if raw.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let start_index = match agent.and_then(|a| a.data.context_policy.max_context) {
-        Some(c) => raw.len().saturating_sub(c.max(1) as usize),
-        None => 0,
-    };
-
-    let start = start_index
-        + raw[start_index..]
-            .iter()
-            .position(|slice| {
-                slice
-                    .content
-                    .iter()
-                    .any(|c| c.is_simple() && c.role == Role::User)
-            })
-            .unwrap_or(0);
-
-    let contexts = transfer_contexts(raw.into_iter().skip(start).collect())?;
-    Ok(contexts)
 }
 
 /// 组装 Agent 可用的工具列表：核心内建工具 + 过滤后的 MCP 工具

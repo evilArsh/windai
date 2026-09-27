@@ -1,5 +1,6 @@
 use super::{
     executor::StorageExecutor,
+    message_content::MessageContentStorage,
     utils::{self, ensure_affected, ensure_lte_one, now_ts},
 };
 use crate::{
@@ -211,6 +212,9 @@ impl AgentStorage {
                     ids,
                 )
                 .await?;
+                MessageContentStorage::new(executor.clone())
+                    .delete_by_instances(ids)
+                    .await?;
                 utils::batch_delete_in(&executor, TableName::MESSAGES, "instance_id", ids).await?;
                 utils::batch_delete_in(&executor, TableName::AGENT_INSTANCES, "id", ids).await?;
                 Ok(())

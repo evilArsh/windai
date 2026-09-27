@@ -1,6 +1,6 @@
 //! schema 与模型的契约回归测试
 //!
-//! 每张表断言一次它对应的模型实际读写到的列，覆盖 `schema.rs` 的全部 12 张表：
+//! 每张表断言一次它对应的模型实际读写到的列，覆盖 `schema.rs` 的全部 13 张表：
 //! 列名被改名或删除而模型未同步时，这里会先于运行期报错
 //!
 //! 只探测列是否存在，不依赖 SQLite 专有语法，可在 SQLite 与 PostgreSQL 上共用
@@ -26,8 +26,12 @@ async fn assert_table_columns(table: &str, cols: &[&str]) {
 }
 
 /// 断言 `table.col` 已不存在
+///
+/// 列名必须写成 `table."col"` 的限定形式：裸双引号标识符解析不到列时，SQLite 会
+/// 兜底当成字符串字面量而不再报错，`index` 这类关键字更是无论列是否存在都直接语法错误 ——
+/// 两者都会让断言恒真；限定形式下缺列在 prepare 阶段报 no such column，两驱动都成立
 async fn assert_column_dropped(pool: &DbPool, table: &str, col: &str) {
-    let sql = format!("SELECT {col} FROM {table} WHERE 1 = 0");
+    let sql = format!("SELECT {table}.\"{col}\" FROM {table} WHERE 1 = 0");
     assert!(
         sqlx::query(&sql).execute(pool).await.is_err(),
         "column `{table}.{col}` should have been dropped"
@@ -107,11 +111,30 @@ async fn messages_columns_match_model() {
         &[
             "id",
             "from_id",
-            "content",
             "model_id",
             "instance_id",
             "is_boundary",
             "is_excluded",
+            "input_tokens",
+            "output_tokens",
+            "created_at",
+        ],
+    )
+    .await;
+}
+
+/// `message_contents` 的列与模型字段一一对应
+#[tokio::test]
+async fn message_contents_columns_match_model() {
+    assert_table_columns(
+        "message_contents",
+        &[
+            "id",
+            "message_id",
+            "role",
+            "content",
+            "reasoning_content",
+            "tool_calls",
             "input_tokens",
             "output_tokens",
             "created_at",
@@ -247,6 +270,7 @@ async fn dropped_columns_are_absent() {
         .expect("init schema");
 
     for (table, col) in [
+        ("messages", "content"),
         ("messages", "stream"),
         ("agent_instances", "chat_config_id"),
         ("agent_instances", "tool_approval_policy"),
@@ -254,6 +278,8 @@ async fn dropped_columns_are_absent() {
         ("agent_instances", "model_id"),
         // 主 Agent 偏好已废弃：映射只表达「topic 拥有该能力」
         ("topic_agent_maps", "role"),
+        // 块顺序改由自增 id 决定，索引列不再存在
+        ("message_contents", "index"),
     ] {
         assert_column_dropped(&pool, table, col).await;
     }

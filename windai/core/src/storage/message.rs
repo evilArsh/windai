@@ -1,6 +1,7 @@
 use super::{
     executor::StorageExecutor,
-    utils::{self, ensure_affected, now_ts},
+    message_content::MessageContentStorage,
+    utils::{ensure_affected, now_ts},
 };
 use crate::{
     db::DbDriver,
@@ -29,7 +30,6 @@ impl MessageStorage {
             (
                 "id",
                 "from_id",
-                "content",
                 "model_id",
                 "instance_id",
                 "is_boundary",
@@ -42,13 +42,13 @@ impl MessageStorage {
     }
 
     /// 保存一条消息
-    /// TODO: 消息本体和partial消息分离
+    ///
+    /// 正文由 [`MessageContentStorage::create`] 单独写入
     pub async fn create(&self, data: CreateMessage) -> Result<Message> {
         let now = now_ts();
         let mut qb = insert!(
             TableName::MESSAGES,
             ("from_id", data.from_id),
-            ("content", utils::vec_to_str_default(Some(&data.content))?),
             ("model_id", data.model_id),
             ("instance_id", data.instance_id),
             ("is_boundary", data.is_boundary),
@@ -66,7 +66,6 @@ impl MessageStorage {
         Ok(Message {
             id,
             from_id: data.from_id,
-            content: data.content,
             model_id: data.model_id,
             instance_id: data.instance_id,
             is_boundary: data.is_boundary,
@@ -78,18 +77,13 @@ impl MessageStorage {
     }
 
     /// 更新消息
+    ///
+    /// 全部字段为空时视为无改动，直接返回成功
     pub async fn update(&self, id: i64, data: UpdateMessage) -> Result<()> {
-        let mut qb = update!(
-            TableName::MESSAGES,
-            id,
-            (
-                "content",
-                utils::vec_to_str_optional(data.content.as_deref())?
-            ),
-            ("model_id", data.model_id),
-            ("input_tokens", data.input_tokens),
-            ("output_tokens", data.output_tokens),
-        );
+        let mut qb = update!(TableName::MESSAGES, id, ("model_id", data.model_id),);
+        if qb.sql().is_empty() {
+            return Ok(());
+        }
         ensure_affected(self.executor.execute(qb.build()).await?)
     }
 
@@ -151,6 +145,10 @@ impl MessageStorage {
                         if let Some(mut qb) = exclude_qb {
                             executor.execute(qb.build()).await?;
                         }
+                        // 正文随消息一并删除
+                        MessageContentStorage::new(executor.clone())
+                            .delete_by_messages(&[id])
+                            .await?;
                         executor
                             .execute(delete_by_id!(TableName::MESSAGES, id).build())
                             .await?;
@@ -215,7 +213,6 @@ mod tests {
     };
     use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
     use std::str::FromStr;
-    use wind_ai::message::{Content, Message as AiMessage, Role};
 
     const MODEL_ID: i64 = 1;
 
@@ -257,19 +254,9 @@ mod tests {
             .id
     }
 
-    fn user_msg(
-        instance_id: i64,
-        text: &str,
-        is_boundary: bool,
-        is_excluded: bool,
-    ) -> CreateMessage {
+    fn user_msg(instance_id: i64, is_boundary: bool, is_excluded: bool) -> CreateMessage {
         CreateMessage {
             from_id: None,
-            content: vec![AiMessage::new_simple(
-                Role::User,
-                vec![Content::new_text(text.into())],
-                None,
-            )],
             model_id: MODEL_ID,
             instance_id,
             is_boundary,
@@ -282,17 +269,11 @@ mod tests {
     fn asst_msg(
         instance_id: i64,
         from_id: i64,
-        text: &str,
         is_boundary: bool,
         is_excluded: bool,
     ) -> CreateMessage {
         CreateMessage {
             from_id: Some(from_id),
-            content: vec![AiMessage::new_simple(
-                Role::Assistant,
-                vec![Content::new_text(text.into())],
-                None,
-            )],
             model_id: MODEL_ID,
             instance_id,
             is_boundary,
@@ -310,17 +291,11 @@ mod tests {
         assistant_exclude: bool,
     ) -> (i64, i64) {
         let user = msg
-            .create(user_msg(instance_id, "q", false, user_exclude))
+            .create(user_msg(instance_id, false, user_exclude))
             .await
             .expect("create user message");
         let assistant = msg
-            .create(asst_msg(
-                instance_id,
-                user.id,
-                "a",
-                false,
-                assistant_exclude,
-            ))
+            .create(asst_msg(instance_id, user.id, false, assistant_exclude))
             .await
             .expect("create assistant message");
         (user.id, assistant.id)
@@ -337,21 +312,21 @@ mod tests {
     }
 
     async fn create_boundary(msg: &MessageStorage, instance_id: i64) -> i64 {
-        msg.create(user_msg(instance_id, "boundary", true, false))
+        msg.create(user_msg(instance_id, true, false))
             .await
             .expect("create boundary")
             .id
     }
 
     async fn create_user(msg: &MessageStorage, instance_id: i64) -> i64 {
-        msg.create(user_msg(instance_id, "q", false, false))
+        msg.create(user_msg(instance_id, false, false))
             .await
             .expect("create user message")
             .id
     }
 
     async fn create_assistant(msg: &MessageStorage, instance_id: i64, from_id: i64) -> i64 {
-        msg.create(asst_msg(instance_id, from_id, "a", false, false))
+        msg.create(asst_msg(instance_id, from_id, false, false))
             .await
             .expect("create assistant message")
             .id

@@ -39,14 +39,14 @@ pub enum TopicEvent {
         /// 初始化消息
         data: Message,
     },
-    /// 流式分片消息
+    /// 内容块消息
     Message {
         /// agent 实例 id
         instance_id: i64,
         /// 消息 id
         message_id: i64,
-        /// 消息索引，用于标识消息顺序
-        index: i32,
+        /// 本次运行内的块序号
+        index: i64,
         /// 消息内容
         data: AiMessage,
     },

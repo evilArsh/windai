@@ -7,7 +7,10 @@ use crate::{
     models::{AgentMode, AgentStatus},
 };
 use tokio::sync::oneshot;
-use wind_ai::{message::Content, tool::FunctionCall};
+use wind_ai::{
+    message::{Content, Message as AiMessage},
+    tool::FunctionCall,
+};
 
 #[derive(Debug, strum::AsRefStr)]
 pub enum Effect {
@@ -18,6 +21,8 @@ pub enum Effect {
         mode: AgentMode,
         agent_id: Option<i64>,
     },
+    /// 保存一块消息内容
+    PersistContent { message_id: i64, data: AiMessage },
     /// 广播业务事件
     Emit(TopicEvent),
     /// 启动 AgentRuntime
@@ -127,6 +132,9 @@ impl std::fmt::Display for Effect {
             Effect::StopRuntime => (name_ref, String::new()),
             Effect::CloseEventStream => (name_ref, String::new()),
             Effect::Init { .. } => (name_ref, String::new()),
+            Effect::PersistContent { message_id, .. } => {
+                (name_ref, format!("(message_id = {message_id})"))
+            }
             Effect::ApprovalRequest { .. } => (name_ref, String::new()),
             Effect::Completed { instance_id, .. } => {
                 (name_ref, format!("(instance_id = {instance_id})"))

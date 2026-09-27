@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use wind_core::WindCore;
 use wind_core::agent::event::TopicEvent;
-use wind_core::models::{Message, UpdateMessage};
+use wind_core::models::{Message, MessageContent, UpdateMessage};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -25,8 +25,16 @@ pub fn router() -> Router<AppState> {
             get(list_instance_messages),
         )
         .route(
+            "/api/v1/agent-instances/{instance_id}/contents",
+            get(list_instance_contents),
+        )
+        .route(
             "/api/v1/messages/{message_id}",
             get(get_message).put(update_message),
+        )
+        .route(
+            "/api/v1/messages/{message_id}/contents",
+            get(list_message_contents),
         )
         .route(
             "/api/v1/topics/{topic_id}/agent-instances/{instance_id}/cancel",
@@ -88,6 +96,52 @@ pub(crate) async fn create_chat(
     Ok(Json(
         TopicFacade::new(core).create_chat(topic_id, input).await,
     ))
+}
+
+#[utoipa::path(
+    get,
+    summary = "获取 Agent 实例的全部消息内容块",
+    path = "/api/v1/agent-instances/{instance_id}/contents",
+    params(
+        ("instance_id", Path, description = "Agent 实例 ID"),
+    ),
+    responses(
+        (status = 200, description = "该实例全部消息的正文内容块，按消息顺序、块插入顺序返回", body = ApiResponse<Vec<MessageContent>>),
+        (status = 404, description = "实例不存在", body = ApiResponse<Value>)
+    )
+)]
+pub(crate) async fn list_instance_contents(
+    State(core): State<Arc<WindCore>>,
+    ApiPath(instance_id): ApiPath<i64>,
+) -> Json<ApiResponse<Vec<MessageContent>>> {
+    Json(
+        TopicFacade::new(core)
+            .list_instance_contents(instance_id)
+            .await,
+    )
+}
+
+#[utoipa::path(
+    get,
+    summary = "获取单条消息的内容块",
+    path = "/api/v1/messages/{message_id}/contents",
+    params(
+        ("message_id", Path, description = "消息 ID"),
+    ),
+    responses(
+        (status = 200, description = "消息的正文内容块，按块插入顺序返回", body = ApiResponse<Vec<MessageContent>>),
+        (status = 404, description = "消息不存在", body = ApiResponse<Value>)
+    )
+)]
+pub(crate) async fn list_message_contents(
+    State(core): State<Arc<WindCore>>,
+    ApiPath(message_id): ApiPath<i64>,
+) -> Json<ApiResponse<Vec<MessageContent>>> {
+    Json(
+        TopicFacade::new(core)
+            .list_message_contents(message_id)
+            .await,
+    )
 }
 
 #[utoipa::path(

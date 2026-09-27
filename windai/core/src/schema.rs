@@ -50,7 +50,6 @@ CREATE TABLE IF NOT EXISTS topics (
 CREATE TABLE IF NOT EXISTS messages (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     from_id         BIGINT,
-    content         TEXT    NOT NULL DEFAULT '[]',
     model_id        BIGINT NOT NULL,
     instance_id     BIGINT NOT NULL,
     is_boundary     BOOLEAN NOT NULL,
@@ -58,6 +57,18 @@ CREATE TABLE IF NOT EXISTS messages (
     input_tokens    BIGINT NOT NULL DEFAULT 0,
     output_tokens   BIGINT NOT NULL DEFAULT 0,
     created_at      BIGINT,
+    updated_at      BIGINT
+);
+CREATE TABLE IF NOT EXISTS message_contents (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id      BIGINT  NOT NULL,
+    role            TEXT    NOT NULL,
+    content         TEXT    NOT NULL DEFAULT '[]',
+    reasoning_content TEXT,
+    tool_calls      TEXT,
+    input_tokens    BIGINT  NOT NULL DEFAULT 0,
+    output_tokens   BIGINT  NOT NULL DEFAULT 0,
+    created_at      BIGINT  NOT NULL DEFAULT 0,
     updated_at      BIGINT
 );
 CREATE TABLE IF NOT EXISTS mcp_servers ( 
@@ -142,6 +153,8 @@ CREATE INDEX IF NOT EXISTS idx_models_provider ON models(provider_id);
 CREATE INDEX IF NOT EXISTS idx_credentials_provider ON credentials(provider_id);
 
 CREATE INDEX IF NOT EXISTS idx_messages_instance ON messages(instance_id, id);
+
+CREATE INDEX IF NOT EXISTS idx_message_contents_message ON message_contents(message_id, id);
 
 CREATE INDEX IF NOT EXISTS idx_mcp_servers_name ON mcp_servers(name);
 

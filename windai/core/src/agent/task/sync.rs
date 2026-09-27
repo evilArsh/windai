@@ -1,4 +1,4 @@
-use super::{AgentOutput, SupervisorRequest, TaskCommand, TaskNotification, TaskSpec};
+use super::{SupervisorRequest, TaskCommand, TaskNotification, TaskSpec};
 use crate::{
     agent::{
         event::TopicMailbox,
@@ -51,59 +51,8 @@ impl SyncHost {
 }
 #[async_trait]
 impl AgentHost for SyncHost {
-    async fn emit(&self, output: AgentOutput) {
-        match output {
-            AgentOutput::Started => {
-                self.notify_task(TaskNotification::Started {
-                    instance_id: self.instance_id,
-                })
-                .await;
-            }
-            AgentOutput::Message {
-                message_id,
-                index,
-                delta,
-            } => {
-                self.notify_task(TaskNotification::Message {
-                    instance_id: self.instance_id,
-                    message_id,
-                    index,
-                    delta,
-                })
-                .await;
-            }
-            AgentOutput::Finish { error, message_id } => match error {
-                Some(err) => {
-                    self.notify_task(TaskNotification::Failed {
-                        instance_id: self.instance_id,
-                        message_id,
-                        error: err.to_string(),
-                    })
-                    .await;
-                }
-                None => {
-                    self.notify_task(TaskNotification::Finish {
-                        instance_id: self.instance_id,
-                        message_id,
-                    })
-                    .await;
-                }
-            },
-            AgentOutput::ApprovalRequired {
-                contexts: _,
-                calls,
-                message_id,
-                index,
-            } => {
-                self.notify_task(TaskNotification::ApprovalRequired {
-                    instance_id: self.instance_id,
-                    index,
-                    message_id,
-                    calls,
-                })
-                .await;
-            }
-        }
+    async fn emit(&self, output: TaskNotification) {
+        self.notify_task(output).await;
     }
 
     async fn list_agents(&self) -> Result<ListAgentsResponse> {
@@ -218,14 +167,8 @@ impl SyncTask {
     }
 
     fn start_agent(&self, task: TaskSpec) {
-        let agent = AgentRuntime::new(self.host.clone());
-        tokio::spawn(agent.run(
-            task.assistant_id,
-            self.ctx.child_token(),
-            task.chat_context,
-            task.instance,
-            task.contexts,
-        ));
+        let agent = AgentRuntime::new(self.ctx.child_token(), self.host.clone(), task);
+        tokio::spawn(agent.run());
     }
     async fn run(mut self) {
         loop {

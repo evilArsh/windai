@@ -5,8 +5,8 @@ use crate::agent::helper;
 use crate::chat::runner::ChatContext;
 use crate::error::{CoreError, Result};
 use crate::models::{
-    AgentDefinition, AgentInstance, AgentMode, AgentRole, AgentStatus, ApprovalRecord, Message,
-    ToolApprovalRequest, ToolApprovalStatus, UpdateInstance,
+    AgentDefinition, AgentInstance, AgentMode, AgentRole, AgentStatus, ApprovalRecord,
+    CreateMessageContent, ToolApprovalRequest, ToolApprovalStatus, UpdateInstance,
 };
 use crate::storage::Storage;
 use std::collections::HashMap;
@@ -20,30 +20,6 @@ use wind_mcp::client::registry::RegistryHandle;
 
 pub mod background;
 pub mod sync;
-
-#[derive(Debug)]
-pub enum AgentOutput {
-    Started,
-    /// 流式分片消息
-    Message {
-        message_id: i64,
-        index: i32,
-        delta: AiMessage,
-    },
-    /// Agent 运行完成
-    ///
-    /// 如果运行失败，error 字段会保存错误信息；
-    Finish {
-        message_id: i64,
-        error: Option<String>,
-    },
-    /// 该轮对话的部分调用需要审批
-    ApprovalRequired {
-        message_id: i64,
-        contexts: Vec<AiMessage>,
-        calls: Vec<FunctionCall>,
-    },
-}
 
 pub enum SupervisorRequest {
     SpawnAgent {
@@ -69,8 +45,9 @@ pub enum TaskNotification {
     Message {
         instance_id: i64,
         message_id: i64,
-        index: i32,
+        index: i64,
         delta: AiMessage,
+        partial: bool,
     },
     ApprovalRequired {
         instance_id: i64,
@@ -80,11 +57,7 @@ pub enum TaskNotification {
     Finish {
         instance_id: i64,
         message_id: i64,
-    },
-    Failed {
-        instance_id: i64,
-        message_id: i64,
-        error: String,
+        error: Option<String>,
     },
     Cancelled {
         instance_id: i64,
@@ -95,12 +68,11 @@ impl std::fmt::Display for TaskNotification {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let name = self.as_ref();
         let instance_id = match self {
-            TaskNotification::Started { instance_id } => instance_id,
-            TaskNotification::Message { instance_id, .. } => instance_id,
-            TaskNotification::ApprovalRequired { instance_id, .. } => instance_id,
-            TaskNotification::Finish { instance_id, .. } => instance_id,
-            TaskNotification::Failed { instance_id, .. } => instance_id,
-            TaskNotification::Cancelled { instance_id } => instance_id,
+            TaskNotification::Started { instance_id }
+            | TaskNotification::Message { instance_id, .. }
+            | TaskNotification::ApprovalRequired { instance_id, .. }
+            | TaskNotification::Finish { instance_id, .. }
+            | TaskNotification::Cancelled { instance_id } => instance_id,
         };
         write!(f, "[TaskNotification {name}] (instance_id = {instance_id})")
     }
@@ -123,7 +95,7 @@ pub struct TaskSpec {
     /// 用户任务
     pub user_input: Vec<Content>,
     /// 当前任务对应的消息 id
-    pub assistant_id: i64,
+    pub message_id: i64,
     pub contexts: Vec<AiMessage>,
 }
 /// 待完成的子任务记录
@@ -187,18 +159,22 @@ impl TaskManager {
         };
     }
 
-    pub fn get_output(src: &Message) -> Vec<Content> {
-        todo!()
-        // src.content
-        //     .last()
-        //     .and_then(|c| {
-        //         if c.is_simple() && c.role == Role::Assistant {
-        //             Some(c.content.clone())
-        //         } else {
-        //             None
-        //         }
-        //     })
-        //     .unwrap_or_else(|| vec![Content::new_text("Task has no valid result".to_string())])
+    /// 取任务输出：该消息最后一块 assistant 简单内容
+    ///
+    /// 内容块粒度下消息的最后一块很可能是工具调用结果，因此需要向前扫描
+    pub async fn get_output(&self, message_id: i64) -> Result<Vec<Content>> {
+        let contents = self
+            .storage
+            .message_content()
+            .list_by_message(message_id)
+            .await?;
+        let output = contents
+            .into_iter()
+            .rev()
+            .find(|content| content.data.is_simple() && content.data.role == Role::Assistant)
+            .map(|content| content.data.content)
+            .unwrap_or_else(|| vec![Content::new_text("Task has no valid result".to_string())]);
+        Ok(output)
     }
 
     /// 登记子任务记录
@@ -257,7 +233,7 @@ impl TaskManager {
         &self,
         topic_id: i64,
         user_input: Vec<Content>,
-    ) -> Result<(Message, Message, TaskSpec)> {
+    ) -> Result<(helper::CreatedContexts, TaskSpec)> {
         let tx = self.storage.begin().await?;
         let mut instance = helper::get_or_create_main_instance(&tx.storage(), topic_id).await?;
         instance.mode = Some(AgentMode::Sync);
@@ -275,7 +251,7 @@ impl TaskManager {
         chat_ctx.tools = tools;
         log::debug!("Task init, chat_ctx: {:#?}", chat_ctx);
 
-        let (user, assistant, contexts) = helper::create_contexts(
+        let (created, contexts) = helper::create_contexts(
             &tx.storage(),
             &self.cwd,
             &chat_ctx,
@@ -294,10 +270,10 @@ impl TaskManager {
             instance,
             agent,
             user_input,
-            assistant_id: assistant.id,
+            message_id: created.assistant.id,
             contexts,
         };
-        Ok((user, assistant, spec))
+        Ok((created, spec))
     }
 
     /// 恢复任务执行
@@ -316,32 +292,44 @@ impl TaskManager {
                 .await?;
         chat_ctx.tools = tools;
 
-        // TODO 上下文获取方法已经改变
-        let contexts = helper::get_message_contexts(&self.storage, instance.id).await?;
-
-        let mut it = contexts.iter().rev();
-        let assistant = it.next().cloned().ok_or_else(|| {
+        // 待恢复的任务以最后两条消息构成一对 user-assistant
+        let messages = self.storage.message().list_by_instance(instance.id).await?;
+        let mut it = messages.iter().rev();
+        let assistant = it.next().ok_or_else(|| {
             CoreError::Validation(format!("Assistant message not found: {}", instance.id))
         })?;
-        let user = it.next().cloned().ok_or_else(|| {
+        let user = it.next().ok_or_else(|| {
             CoreError::Validation(format!("User message not found: {}", instance.id))
         })?;
 
-        if !matches!(&assistant.from_id, Some(id) if id == &user.id) {
+        if assistant.from_id != Some(user.id) {
             return Err(CoreError::Validation(format!(
                 "Mismatched user-assistant pair: instance={}, user_id={}, assistant_from_id={:?}",
                 instance.id, user.id, assistant.from_id
             )));
         }
 
+        // 用户任务就是该用户消息的第一块内容
+        let user_input = self
+            .storage
+            .message_content()
+            .list_by_message(user.id)
+            .await?
+            .into_iter()
+            .next()
+            .map(|content| content.data.content)
+            .unwrap_or_default();
+
+        let message_id = assistant.id;
+        let contexts =
+            helper::get_message_contexts(&self.storage, instance.id, agent.as_ref()).await?;
         let spec = TaskSpec {
             chat_context: chat_ctx,
             agent,
-            assistant_id: assistant.id,
-            contexts: helper::transfer_contexts(contexts)?,
+            message_id,
+            contexts,
             instance,
-            // TODO 根据user.id找到MessageContent中的用户任务
-            user_input: vec![],
+            user_input,
         };
         if let Some(entry) = self.get_entry(instance_id) {
             entry.handler.start(spec).await?;
@@ -368,7 +356,7 @@ impl TaskManager {
         topic_id: i64,
         parent_instance_id: i64,
         request: SpawnAgentRequest,
-    ) -> Result<(Message, Message, TaskSpec)> {
+    ) -> Result<(helper::CreatedContexts, TaskSpec)> {
         if request.mode == AgentMode::Background {
             // TODO: 后台任务
             return Err(CoreError::Validation(
@@ -403,7 +391,7 @@ impl TaskManager {
         );
 
         let user_input = vec![Content::new_text(request.task)];
-        let (user, assistant, contexts) = match request.mode {
+        let (created, contexts) = match request.mode {
             AgentMode::Fork => match self.get_entry(parent_instance_id) {
                 Some(entry) => {
                     helper::create_fork_contexts(
@@ -439,14 +427,14 @@ impl TaskManager {
 
         let spec = TaskSpec {
             chat_context: chat_ctx,
-            assistant_id: assistant.id,
+            message_id: created.assistant.id,
             contexts,
             instance,
             agent: Some(agent),
             user_input,
         };
 
-        Ok((user, assistant, spec))
+        Ok((created, spec))
     }
 
     /// 启动一个 SyncTask
@@ -491,19 +479,35 @@ impl TaskManager {
             .await
     }
 
-    /// 持久化任务执行结果
-    pub async fn persist_message(&mut self, data: Message) -> Result<()> {
-        self.storage.message().update(data.id, data.into()).await
+    /// 保存一块消息内容
+    pub async fn persist_content(&self, message_id: i64, data: AiMessage) -> Result<()> {
+        self.storage
+            .message_content()
+            .create(CreateMessageContent { message_id, data })
+            .await?;
+        Ok(())
     }
 
+    // /// 在消息末尾追加一条错误内容块
+    // ///
+    // /// 任务失败或取消时让模型与用户都能看到中断原因
+    // pub async fn persist_error_content(&self, message_id: i64, error: &str) -> Result<()> {
+    //     let data = AiMessage::new_simple(
+    //         Role::Assistant,
+    //         vec![Content::new_text(error.to_string())],
+    //         None,
+    //     );
+    //     self.persist_content(message_id, data).await
+    // }
+
     pub async fn persist_approval_state(
-        &mut self,
+        &self,
         topic_id: i64,
         instance_id: i64,
-        assistant: Message,
+        message_id: i64,
         calls: Vec<FunctionCall>,
     ) -> Result<Vec<ToolApprovalRequest>> {
-        helper::save_approval_state(&self.storage, topic_id, instance_id, assistant, calls).await
+        helper::save_approval_state(&self.storage, topic_id, instance_id, message_id, calls).await
     }
 
     pub async fn persist_approval_record(

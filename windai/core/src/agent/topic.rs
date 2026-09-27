@@ -2,14 +2,15 @@ use super::event::{TopicCommand, TopicEvent, TopicMailbox, TopicMsg};
 use super::fsm::{Effect, FsmEvent, TaskEvent, TopicFsm};
 use super::task::{PendingChild, TaskManager, TaskSpec};
 use super::tool::{SpawnAgentRequest, SpawnAgentResponse};
+use crate::agent::helper;
 use crate::env::app_dirs;
 use crate::error::{CoreError, Result};
-use crate::models::{AgentStatus, Message};
+use crate::models::AgentStatus;
 use crate::storage::Storage;
 use std::collections::VecDeque;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
-use wind_ai::message::Content;
+use wind_ai::message::{Content, Message, Role};
 use wind_mcp::client::registry::RegistryHandle;
 
 macro_rules! try_send_log {
@@ -129,7 +130,7 @@ impl TopicRuntime {
             mailbox: mailbox.clone(),
             mailbox_rx: rx,
             app_rx: None,
-            fsm: TopicFsm::new(topic_id),
+            fsm: TopicFsm::new(),
             task_mgr: TaskManager::new(
                 ctx.child_token(),
                 storage,
@@ -214,20 +215,7 @@ impl TopicRuntime {
                     .handle_spawn_child(instance_id, call_id, request, reply)
                     .await
                 {
-                    Some((user, assistant, spec)) => Some(vec![
-                        FsmEvent::Emit(TopicEvent::InstanceCreated {
-                            data: spec.instance.clone(),
-                        }),
-                        FsmEvent::Emit(TopicEvent::MessageCreated {
-                            data: user,
-                            instance_id: spec.instance.id,
-                        }),
-                        FsmEvent::Emit(TopicEvent::MessageCreated {
-                            data: assistant,
-                            instance_id: spec.instance.id,
-                        }),
-                        FsmEvent::Start { spec },
-                    ]),
+                    Some((created, spec)) => Some(launch_events(&created, spec)),
                     None => None,
                 }
             }
@@ -245,6 +233,16 @@ impl TopicRuntime {
                     },
                 }]),
             },
+            Effect::PersistContent { message_id, data } => {
+                match self.task_mgr.persist_content(message_id, data).await {
+                    Ok(_) => None,
+                    Err(err) => Some(vec![FsmEvent::Emit(TopicEvent::Error {
+                        instance_id: None,
+                        message_id: Some(message_id),
+                        error: err.to_string(),
+                    })]),
+                }
+            }
             Effect::ApprovalRequest {
                 instance_id,
                 calls,
@@ -252,7 +250,7 @@ impl TopicRuntime {
             } => {
                 let event = match self
                     .task_mgr
-                    .persist_approval_state(self.topic_id, instance_id, data.clone(), calls)
+                    .persist_approval_state(self.topic_id, instance_id, message_id, calls)
                     .await
                 {
                     Ok(requests) => Some(vec![FsmEvent::Emit(TopicEvent::ApprovalRequired {
@@ -275,46 +273,38 @@ impl TopicRuntime {
                 status,
                 message_id,
             } => {
-                let mut event =
-                    self.handle_pending(instance_id, status, TaskManager::get_output(&data));
-                match self.task_mgr.persist_message(data.clone()).await {
-                    Ok(_) => event.push(FsmEvent::Emit(TopicEvent::MessageFinished {
-                        instance_id,
-                        message_id,
-                    })),
-                    Err(err) => event.push(FsmEvent::Signal {
-                        instance_id,
-                        event: TaskEvent::Failed {
-                            error: err.to_string(),
-                            message_id: Some(message_id),
-                        },
-                    }),
-                }
+                let output = match self.task_mgr.get_output(message_id).await {
+                    Ok(output) => output,
+                    Err(err) => vec![Content::new_text(err.to_string())],
+                };
+                let mut event = self.handle_pending(instance_id, status, output);
+                event.push(FsmEvent::Emit(TopicEvent::MessageFinished {
+                    instance_id,
+                    message_id,
+                }));
                 Some(event)
             }
             Effect::Failed {
                 instance_id,
                 message_id,
                 status,
-                error,
+                mut error,
             } => {
-                let mut event = self.handle_pending(
-                    instance_id,
-                    status,
-                    vec![Content::new_text(error.clone())],
+                let msg = Message::new_simple(
+                    Role::Assistant,
+                    vec![Content::new_text(error.to_string())],
+                    None,
                 );
-                let mut error = error;
-                let message_id = data.as_ref().map(|d| d.id);
-                if let Some(data) = data {
-                    error = match self.task_mgr.persist_message(data).await {
-                        Ok(_) => error,
-                        Err(e) => format!("{error}: {e}"),
-                    };
+                let mut event = self.handle_pending(instance_id, status, msg.content.clone());
+                if let Some(message_id) = message_id {
+                    if let Err(err) = self.task_mgr.persist_content(message_id, msg).await {
+                        error = err.to_string()
+                    }
                 }
                 event.push(FsmEvent::Emit(TopicEvent::Error {
                     instance_id: Some(instance_id),
                     message_id,
-                    error: error.clone(),
+                    error,
                 }));
                 Some(event)
             }
@@ -323,8 +313,11 @@ impl TopicRuntime {
                 status,
                 error,
             } => {
-                let event =
-                    self.handle_pending(instance_id, status, vec![Content::new_text(error)]);
+                let event = self.handle_pending(
+                    instance_id,
+                    status,
+                    vec![Content::new_text(error.to_string())],
+                );
                 Some(event)
             }
             Effect::StopRuntime => {
@@ -396,20 +389,7 @@ impl TopicRuntime {
             },
             Effect::Init { user_input } => {
                 match self.task_mgr.init(self.topic_id, user_input).await {
-                    Ok((user, assistant, spec)) => Some(vec![
-                        FsmEvent::Emit(TopicEvent::InstanceCreated {
-                            data: spec.instance.clone(),
-                        }),
-                        FsmEvent::Emit(TopicEvent::MessageCreated {
-                            data: user,
-                            instance_id: spec.instance.id,
-                        }),
-                        FsmEvent::Emit(TopicEvent::MessageCreated {
-                            data: assistant,
-                            instance_id: spec.instance.id,
-                        }),
-                        FsmEvent::Start { spec },
-                    ]),
+                    Ok((created, spec)) => Some(launch_events(&created, spec)),
                     Err(err) => Some(vec![
                         FsmEvent::Emit(TopicEvent::Error {
                             instance_id: None,
@@ -458,22 +438,22 @@ impl TopicRuntime {
         call_id: String,
         request: SpawnAgentRequest,
         reply: oneshot::Sender<SpawnAgentResponse>,
-    ) -> Option<(Message, Message, TaskSpec)> {
+    ) -> Option<(helper::CreatedContexts, TaskSpec)> {
         let mode = request.mode;
         match self
             .task_mgr
             .spawn_child(self.topic_id, parent_instance_id, request)
             .await
         {
-            Ok(res) => {
+            Ok((created, spec)) => {
                 self.task_mgr.insert_pending(PendingChild {
                     call_id,
                     mode,
                     reply,
-                    instance_id: res.2.instance.id,
+                    instance_id: spec.instance.id,
                     parent_instance_id,
                 });
-                Some(res)
+                Some((created, spec))
             }
             Err(err) => {
                 try_send_log!(
@@ -542,6 +522,33 @@ impl TopicRuntime {
     fn cancel_all(&self) {
         self.ctx.cancel();
     }
+}
+
+/// 新任务启动时的固定事件序列
+///
+/// 用户内容块紧跟它所属消息的 `MessageCreated`，保证前端拿到的是已落库的块
+fn launch_events(created: &helper::CreatedContexts, spec: TaskSpec) -> Vec<FsmEvent> {
+    let instance_id = spec.instance.id;
+    vec![
+        FsmEvent::Emit(TopicEvent::InstanceCreated {
+            data: spec.instance.clone(),
+        }),
+        FsmEvent::Emit(TopicEvent::MessageCreated {
+            instance_id,
+            data: created.user.clone(),
+        }),
+        FsmEvent::Emit(TopicEvent::Message {
+            instance_id,
+            message_id: created.user.id,
+            index: 0,
+            data: created.user_content.data.clone(),
+        }),
+        FsmEvent::Emit(TopicEvent::MessageCreated {
+            instance_id,
+            data: created.assistant.clone(),
+        }),
+        FsmEvent::Start { spec },
+    ]
 }
 
 impl Drop for TopicRuntime {

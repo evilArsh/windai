@@ -8,13 +8,16 @@
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use std::str::FromStr;
-use wind_ai::model::AdapterType;
+use wind_ai::{
+    message::{Content, Message as AiMessage, Role},
+    model::AdapterType,
+};
 use wind_core::{
     WindCore,
     models::{
         CreateAgentDefinition, CreateCredentials, CreateInstance, CreateJsonRule, CreateMcpServer,
-        CreateMessage, CreateModel, CreatePromptModule, CreateProvider, CreateToolApprovalCall,
-        CreateToolApprovalRequests, CreateTopic, CreateTopicAgentMap,
+        CreateMessage, CreateMessageContent, CreateModel, CreatePromptModule, CreateProvider,
+        CreateToolApprovalCall, CreateToolApprovalRequests, CreateTopic, CreateTopicAgentMap,
     },
 };
 use wind_mcp::client::TransportType;
@@ -47,7 +50,7 @@ fn topic(label: &str) -> CreateTopic {
     }
 }
 
-/// 在全部 12 张表各创建一行，返回 `(表名, id)`
+/// 在全部 13 张表各创建一行，返回 `(表名, id)`
 async fn create_one_per_table(core: &WindCore) -> Vec<(&'static str, i64)> {
     let s = core.storage();
     let mut ids = Vec::new();
@@ -118,20 +121,34 @@ async fn create_one_per_table(core: &WindCore) -> Vec<(&'static str, i64)> {
         .id;
     ids.push(("agent_instances", instance_id));
 
-    ids.push(("messages", {
-        s.message()
-            .create(CreateMessage {
-                from_id: None,
-                content: vec![],
-                model_id: 1,
-                instance_id,
-                is_boundary: false,
-                is_excluded: false,
-                input_tokens: 0,
-                output_tokens: 0,
+    let message_id = s
+        .message()
+        .create(CreateMessage {
+            from_id: None,
+            model_id: 1,
+            instance_id,
+            is_boundary: false,
+            is_excluded: false,
+            input_tokens: 0,
+            output_tokens: 0,
+        })
+        .await
+        .expect("create message")
+        .id;
+    ids.push(("messages", message_id));
+
+    ids.push(("message_contents", {
+        s.message_content()
+            .create(CreateMessageContent {
+                message_id,
+                data: AiMessage::new_simple(
+                    Role::User,
+                    vec![Content::new_text("hello".into())],
+                    None,
+                ),
             })
             .await
-            .expect("create message")
+            .expect("create message content")
             .id
     }));
 
@@ -223,13 +240,13 @@ async fn create_one_per_table(core: &WindCore) -> Vec<(&'static str, i64)> {
     ids
 }
 
-/// 12 张表都必须由数据库分配 id：非 NULL、> 0、且落在 JS 安全整数内
+/// 13 张表都必须由数据库分配 id：非 NULL、> 0、且落在 JS 安全整数内
 #[tokio::test]
 async fn all_tables_assign_ids_automatically() {
     let core = setup().await;
     let ids = create_one_per_table(&core).await;
 
-    assert_eq!(ids.len(), 12, "应覆盖全部 12 张表");
+    assert_eq!(ids.len(), 13, "应覆盖全部 13 张表");
     for (table, id) in &ids {
         assert!(
             *id > 0,
@@ -436,7 +453,6 @@ async fn boolean_columns_roundtrip() {
     let kept = msg
         .create(CreateMessage {
             from_id: None,
-            content: vec![],
             model_id: 1,
             instance_id: instance.id,
             is_boundary: true,

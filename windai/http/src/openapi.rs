@@ -6,9 +6,10 @@ use wind_core::agent::event::TopicEvent;
 use wind_core::models::{
     AgentDefinition, AgentInstance, AgentRole, CreateAgentDefinition, CreateCredentials,
     CreateJsonRule, CreateMcpServer, CreateModel, CreatePromptModule, CreateProvider, CreateTopic,
-    CreateTopicAgentMap, Credentials, JsonRule, McpServerParam, Message, Model, PromptModule,
-    Provider, ToolApprovalRequest, Topic, TopicAgentMap, UpdateAgentDefinition, UpdateJsonRule,
-    UpdateMcpServer, UpdateMessage, UpdateModel, UpdatePromptModule, UpdateProvider, UpdateTopic,
+    CreateTopicAgentMap, Credentials, JsonRule, McpServerParam, Message, MessageContent, Model,
+    PromptModule, Provider, ToolApprovalRequest, Topic, TopicAgentMap, UpdateAgentDefinition,
+    UpdateJsonRule, UpdateMcpServer, UpdateMessage, UpdateModel, UpdatePromptModule,
+    UpdateProvider, UpdateTopic,
 };
 
 use crate::dto::{ApiResponse, ApproveToolCallsRequest, CreateChatRequest};
@@ -35,9 +36,11 @@ use wind_mcp::client::{
         crate::routes::topic_map::delete_agent_map,
         // chat / message / SSE
         crate::routes::chat::list_instance_messages,
+        crate::routes::chat::list_instance_contents,
         crate::routes::chat::create_chat,
         crate::routes::chat::get_message,
         crate::routes::chat::update_message,
+        crate::routes::chat::list_message_contents,
         crate::routes::chat::cancel_task,
         crate::routes::chat::approve_tool_calls,
         crate::routes::chat::subscribe_events,
@@ -146,6 +149,7 @@ use wind_mcp::client::{
         UpdatePromptModule,
         // message
         Message,
+        MessageContent,
         UpdateMessage,
         // agent
         AgentDefinition,

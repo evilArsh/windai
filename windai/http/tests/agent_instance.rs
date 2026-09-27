@@ -15,7 +15,8 @@ use wind_ai::message::{Content, Message as AiMessage, Role};
 use wind_core::WindCore;
 use wind_core::agent::helper::{create_child_instance, get_or_create_main_instance};
 use wind_core::models::{
-    AgentDefinitionData, AgentMode, CreateAgentDefinition, CreateMessage, CreateTopic,
+    AgentDefinitionData, AgentMode, CreateAgentDefinition, CreateMessage, CreateMessageContent,
+    CreateTopic,
 };
 use wind_http::app::app;
 use wind_http::config::AppConfig;
@@ -108,25 +109,29 @@ async fn create_message(
     text: &str,
     from_id: Option<i64>,
 ) -> i64 {
-    core.storage()
+    let message = core
+        .storage()
         .message()
         .create(CreateMessage {
             from_id,
-            content: vec![AiMessage::new_simple(
-                role,
-                vec![Content::new_text(text.to_string())],
-                None,
-            )],
             model_id: 1,
             instance_id,
             is_boundary: false,
             is_excluded: false,
-            input_tokens: 1,
+            input_tokens: 0,
             output_tokens: 0,
         })
         .await
-        .expect("创建消息")
-        .id
+        .expect("创建消息");
+    core.storage()
+        .message_content()
+        .create(CreateMessageContent {
+            message_id: message.id,
+            data: AiMessage::new_simple(role, vec![Content::new_text(text.to_string())], None),
+        })
+        .await
+        .expect("创建消息内容");
+    message.id
 }
 
 #[tokio::test]
@@ -446,4 +451,111 @@ async fn instance_list_requires_existing_topic() {
     .await;
     assert_eq!(listed["code"], 404, "不存在的话题应 404 而非空列表");
     assert!(listed["data"].is_null());
+}
+
+// ---------------------------------------------------------------------------
+// 消息正文（message_contents）
+// ---------------------------------------------------------------------------
+
+/// 实例正文集合路由按消息顺序返回该实例全部内容块，且不串到别的实例
+#[tokio::test]
+async fn instance_contents_returns_all_blocks_in_message_order() {
+    let core = common::test_core().await;
+    let topic_id = create_topic(&core, "instance-contents").await;
+    let main = get_or_create_main_instance(core.storage(), topic_id)
+        .await
+        .expect("获取主实例");
+    let other_topic = create_topic(&core, "instance-contents-other").await;
+    let other = get_or_create_main_instance(core.storage(), other_topic)
+        .await
+        .expect("获取另一个主实例");
+
+    let user_msg = create_message(&core, main.id, Role::User, "hello", None).await;
+    let reply_msg = create_message(&core, main.id, Role::Assistant, "hi", Some(user_msg)).await;
+    // 助手消息的第二块内容
+    core.storage()
+        .message_content()
+        .create(CreateMessageContent {
+            message_id: reply_msg,
+            data: AiMessage::new_simple(
+                Role::Assistant,
+                vec![Content::new_text("again".into())],
+                None,
+            ),
+        })
+        .await
+        .expect("写入第二块内容");
+    create_message(&core, other.id, Role::User, "unrelated", None).await;
+
+    let body = call(
+        &core,
+        "GET",
+        &format!("/api/v1/agent-instances/{}/contents", main.id),
+        None,
+    )
+    .await;
+    assert_eq!(body["code"], 200);
+    let rows = body["data"].as_array().expect("data 应为数组");
+    let texts = rows
+        .iter()
+        .map(|row| {
+            row["data"]["content"][0]["data"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect::<Vec<String>>();
+    assert_eq!(
+        texts,
+        vec!["hello".to_string(), "hi".to_string(), "again".to_string()],
+        "应按消息顺序、块插入顺序返回本实例的内容"
+    );
+    // AiMessage 字段平铺后可还原回 data
+    assert_eq!(rows[0]["data"]["role"], "user");
+}
+
+/// 单条消息的正文路由：存在返回内容，消息不存在返回 404 业务码
+#[tokio::test]
+async fn message_contents_route_reports_missing_message() {
+    let core = common::test_core().await;
+    let topic_id = create_topic(&core, "message-contents").await;
+    let main = get_or_create_main_instance(core.storage(), topic_id)
+        .await
+        .expect("获取主实例");
+    let message = create_message(&core, main.id, Role::User, "hello", None).await;
+
+    let found = call(
+        &core,
+        "GET",
+        &format!("/api/v1/messages/{message}/contents"),
+        None,
+    )
+    .await;
+    assert_eq!(found["code"], 200);
+    assert_eq!(ids_of(&found).len(), 1);
+    assert!(found["data"][0]["id"].as_i64().is_some());
+
+    let missing = call(&core, "GET", "/api/v1/messages/999999/contents", None).await;
+    assert_eq!(missing["code"], 404);
+}
+
+/// PUT /messages/{id} 传空 body 不应报错：`model_id` 是唯一可改字段，空更新即无改动
+#[tokio::test]
+async fn update_message_accepts_empty_body() {
+    let core = common::test_core().await;
+    let topic_id = create_topic(&core, "empty-update").await;
+    let main = get_or_create_main_instance(core.storage(), topic_id)
+        .await
+        .expect("获取主实例");
+    let message = create_message(&core, main.id, Role::User, "hello", None).await;
+
+    let body = call(
+        &core,
+        "PUT",
+        &format!("/api/v1/messages/{message}"),
+        Some("{}"),
+    )
+    .await;
+    assert_eq!(body["code"], 200, "空更新应视为无改动：{body}");
+    assert_eq!(body["data"]["id"], message);
 }

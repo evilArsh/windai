@@ -89,7 +89,7 @@ use wind_core::models::{
     AgentDefinitionData,
     CreateAgentDefinition, CreateTopic, CreateTopicAgentMap,
 };
-use wind_ai::message::Content;
+use wind_ai::message::{Content, Role};
 
 let storage = core.storage();
 
@@ -129,7 +129,8 @@ handle.create_task(vec![Content::new_text("Hello!".into())]).await?;
 
 while let Ok(event) = events.recv().await {
     match event {
-        TopicEvent::Message { data, .. } => {
+        // 用户输入落库后也会以 Message 下发（完整块，index: 0），这里只打印模型输出
+        TopicEvent::Message { data, .. } if data.role != Role::User => {
             for c in &data.content {
                 if let Content::Text { data } = c {
                     print!("{data}");
@@ -148,10 +149,10 @@ while let Ok(event) = events.recv().await {
 
 **Key points:**
 - `create_task` submits `Vec<Content>` (the full `wind_ai::message::Content` protocol) and returns immediately — the runtime accepts it asynchronously. You do **not** hand-build `Message` records; the engine creates the user/assistant messages bound to the main instance, plus tool results, internally.
-- A topic has one `TopicRuntime` and one main `AgentInstance` (plus children spawned by `agent_spawn_agent`). There is no per-agent sub-topic: isolation comes from `Message.instance_id`, so read an instance's history with `MessageStorage::list_by_instance`. HTTP 上主实例与子实例同等对待，都用 `GET /api/v1/agent-instances/{instance_id}/messages` 读该实例的对话
+- A topic has one `TopicRuntime` and one main `AgentInstance` (plus children spawned by `agent_spawn_agent`). There is no per-agent sub-topic: isolation comes from `Message.instance_id`, so read an instance's history with `MessageStorage::list_by_instance`. HTTP 上主实例与子实例同等对待：`GET /api/v1/agent-instances/{instance_id}/messages` 取消息结构，`GET /api/v1/agent-instances/{instance_id}/contents` 取正文内容块（按 `message_id` 分组）
 - 每次 spawn 都新建实例，不复用空闲实例
 - The event stream channel closes once the main instance reaches a terminal state (`Finished` / `Failed` / `Cancelled`) or waits for approval — re-subscribe per conversation.
-- `TopicEvent` variants: `Error`, `Snapshot`, `MessageCreated`, `Message` (streaming delta), `MessageFinished`, `TaskStatusChanged`, `ApprovalRequired`。（`Snapshot` 目前没有任何代码产出。）
+- `TopicEvent` variants: `Error`, `Snapshot`, `MessageCreated`, `Message` (streaming delta 或用户输入这种已落库的完整块), `MessageFinished`, `TaskStatusChanged`, `ApprovalRequired`。（`Snapshot` 目前没有任何代码产出。）
 
 ### MCP Tool Calling
 
@@ -318,18 +319,19 @@ The public event contract is `TopicEvent`, consumed via `TopicRuntimeHandle::sub
 | Event              | When                                                    |
 | ------------------ | ------------------------------------------------------- |
 | `MessageCreated`   | A user or assistant message was persisted                |
-| `Message`          | Streaming content delta                                  |
+| `Message`          | Streaming content delta, 或用户输入落库后的完整块（`index: 0`） |
 | `ApprovalRequired` | Tool calls require manual approval before execution      |
 | `MessageFinished`  | A message is complete                                    |
 | `TaskStatusChanged`| An agent task changed status (`Idle`/`Running`/`Finished`/…) |
 | `Error`            | A task or the runtime failed                             |
 | `Snapshot`         | 某个实例的全量消息（变体已定义，目前无代码产出）          |
 
-A typical tool-call flow: `MessageCreated → Message (streaming) → ApprovalRequired → [approve] → Message (tool results + text) → MessageFinished`. The low-level `ChatEvent` (`Partial`/`AwaitToolCall`/`Finish`) is an internal detail of `AgentRuntime` — external code consumes `TopicEvent`.
+A typical tool-call flow: `InstanceCreated → MessageCreated(user) → Message (user content, index: 0) → MessageCreated(assistant) → Message (streaming) → ApprovalRequired → [approve] → Message (tool results + text) → MessageFinished`. `Effect::Init` 与 `Effect::SpawnChild` 都会下发这条用户内容块，前端因此不必再走 HTTP 拉取自己刚提交的输入。The low-level `ChatEvent` (`Partial`/`AwaitToolCall`/`Finish`) is an internal detail of `AgentRuntime` — external code consumes `TopicEvent`.
 
 ## HTTP API 摘要
 
-- **消息**：`POST /api/v1/topics/{topic_id}/messages`（提交对话输入，受理返回 `ApiResponse<()>`：`code: 200` + `msg: "ok"`）、`GET /api/v1/agent-instances/{instance_id}/messages`（该实例的全部消息，主实例与子实例同等对待）、`GET|PUT /api/v1/messages/{message_id}`。话题级消息 GET 与上下文路由、`/topics/by-instance/*`、`/messages/{id}/from-message` 已删除
+- **消息**：`POST /api/v1/topics/{topic_id}/messages`（提交对话输入，受理返回 `ApiResponse<()>`：`code: 200` + `msg: "ok"`）、`GET /api/v1/agent-instances/{instance_id}/messages`（该实例的全部消息，不含正文）、`GET|PUT /api/v1/messages/{message_id}`（PUT 只改 `model_id`）。话题级消息 GET 与上下文路由、`/topics/by-instance/*`、`/messages/{id}/from-message` 已删除
+- **消息正文**：消息结构（`Message`）与正文（`MessageContent`）分表存放 —— `GET /api/v1/agent-instances/{instance_id}/contents`（该实例全部内容块，按消息顺序与块插入顺序返回）、`GET /api/v1/messages/{message_id}/contents`（单条消息的内容块）。块顺序由自增 `id` 决定，`create` 只追加 —— 响应里的每个块**不再有 `index` 字段**，客户端必须改用数组顺序标识块在消息中的位置；`TopicEvent::Message` 的 `index` 是**本次运行内的块序号**（同一块的分片共用，跨运行不连续），同索引分片按增量拼接，重订阅后先拉一次 `/contents`。该事件也用于用户输入这种已落库的完整块：`Effect::Init` / `Effect::SpawnChild` 在 user 消息的 `MessageCreated` 之后以 `index: 0` 下发一次，`message_id` 指向 user 消息，消费方按完整块处理而非增量拼接
 - **实例**：只读，且不区分主实例与子实例 —— `/api/v1/agent-instances/*` 下全部是 GET —— `GET /api/v1/agent-instances/{instance_id}`、`GET /api/v1/agent-instances/{instance_id}/messages`、`.../tool-approvals/pending`，外加 `GET /api/v1/topics/{topic_id}/agent-instances`（含主实例）；实例由 core 内部创建
 - **能力映射**：`GET /api/v1/topics/{topic_id}/agent-maps`、`POST /api/v1/agent-maps`（请求体是 core 的 `CreateTopicAgentMap`，自带 `topic_id`）、`DELETE /api/v1/agent-maps/{map_id}`。映射只表达能力归属，没有角色概念，故没有 PUT
 - **事件流**：`GET /api/v1/topics/{topic_id}/events`（SSE）、`GET /api/v1/mcp-servers/events`（MCP 客户端状态 SSE）
@@ -341,9 +343,13 @@ A typical tool-call flow: `MessageCreated → Message (streaming) → ApprovalRe
 
 | File                                 | Content                                                                  |
 | ------------------------------------ | ------------------------------------------------------------------------ |
-| `windai/core/tests/storage.rs`       | 29 tests — storage CRUD, validation, cascades, batch operations (no `.env` needed) |
-| `windai/core/tests/schema.rs`        | 14 tests — schema↔model column contract for all 12 tables, plus `dropped_columns_are_absent` / `dropped_tables_are_absent` |
-| `windai/core/tests/agent_runtime.rs` | 2 tests — runtime lifecycle, and the terminal event must reach subscribers before the stream closes |
+| `windai/core/tests/storage.rs`       | 32 tests — storage CRUD, validation, cascades, batch operations (no `.env` needed) |
+| `windai/core/tests/schema.rs`        | 15 tests — schema↔model column contract for all 13 tables, plus `dropped_columns_are_absent` / `dropped_tables_are_absent` |
+| `windai/core/tests/agent_runtime.rs` | 3 tests — runtime lifecycle, the terminal event must reach subscribers before the stream closes, and terminal content is persisted as `MessageContent` |
+| `windai/core/tests/autoincrement.rs` | 7 tests — autoincrement primary keys across all 13 tables |
+| `windai/core/tests/message_content.rs` | 11 tests — `message_contents` contract (`create` append, id ordering, token rollup, cascade, missing parent, stale schema write fails loudly) and context assembly (flatten order, `max_context` truncation, `is_excluded` isolation) |
+| `windai/core/tests/agent_flow.rs` | 8 tests — full agent flow driven by a local fake SSE server: blocks appended in id order after resume, SSE `index` as the per-run block sequence, cancel error block, no stale tool-call replay, non-JSON error text, blank block skipped, plus `user_input_content_is_pushed_over_sse` / `child_user_input_content_is_pushed_over_sse` (user input blocks pushed over SSE, main and child) |
+| `windai/core/src/agent/runtime.rs` (cfg test) | 7 tests — `find_pending_calls` pending tool-call detection |
 | `windai/core/tests/core_chat.rs`     | One test (`test_agent_chat`, `#[ignore]` behind `.env`): seeds providers/agents/maps, subscribes to topic events, drives `create_task` |
 | `windai/core/tests/chat.rs`          | AI adapter tests (needs `.env`)                                          |
 | `windai/core/tests/common/lib.rs`    | Shared helpers: `init_test_pool()`, `init_test_core()`, `init_test_core_with_registry()`, `seed_definition()`, `seed_chat_fixture()`, `McpTestEnv`, MCP server params |

@@ -1,6 +1,8 @@
 use std::sync::Arc;
 use wind_core::WindCore;
-use wind_core::models::{AgentInstance, CreateTopic, Message, Topic, UpdateMessage, UpdateTopic};
+use wind_core::models::{
+    AgentInstance, CreateTopic, Message, MessageContent, Topic, UpdateMessage, UpdateTopic,
+};
 
 use crate::dto::ApproveToolCallsRequest;
 use crate::dto::CreateChatRequest;
@@ -102,6 +104,60 @@ impl TopicFacade {
             Ok(Some(instance)) => Ok(instance),
             Ok(None) => Err(ApiResponse::not_found("agent instance not found")),
             Err(err) => Err(map_core_error(err)),
+        }
+    }
+
+    /// 获取实例全部消息的正文内容块
+    ///
+    /// 正文与消息分表存放，因此这里按消息顺序、块插入顺序返回，
+    /// 调用方按 `message_id` 分组即可还原每条消息
+    pub async fn list_instance_contents(
+        &self,
+        instance_id: i64,
+    ) -> ApiResponse<Vec<MessageContent>> {
+        let instance = match self.require_instance(instance_id).await {
+            Ok(instance) => instance,
+            Err(err) => return err.without_data(),
+        };
+        let messages = match self
+            .core
+            .storage()
+            .message()
+            .list_by_instance(instance.id)
+            .await
+        {
+            Ok(messages) => messages,
+            Err(err) => return map_core_error(err),
+        };
+        let ids = messages.iter().map(|m| m.id).collect::<Vec<i64>>();
+        match self
+            .core
+            .storage()
+            .message_content()
+            .list_by_messages(&ids)
+            .await
+        {
+            Ok(contents) => ApiResponse::ok(contents),
+            Err(err) => map_core_error(err),
+        }
+    }
+
+    /// 获取单条消息的正文内容块
+    pub async fn list_message_contents(&self, message_id: i64) -> ApiResponse<Vec<MessageContent>> {
+        match self.core.storage().message().get(message_id).await {
+            Ok(None) => return ApiResponse::not_found("message not found"),
+            Ok(Some(_)) => {}
+            Err(e) => return map_core_error(e),
+        }
+        match self
+            .core
+            .storage()
+            .message_content()
+            .list_by_message(message_id)
+            .await
+        {
+            Ok(contents) => ApiResponse::ok(contents),
+            Err(err) => map_core_error(err),
         }
     }
 

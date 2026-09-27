@@ -10,7 +10,7 @@ use wind_ai::{
 };
 use wind_core::{
     WindCore, agent::helper::get_or_create_main_instance, error::CoreError, models::*,
-    schema::init_schema, storage::message::MessageStorage,
+    schema::init_schema,
 };
 
 /// 临时文件数据库，用于需要真实文件持久化的并发/跨连接测试
@@ -116,17 +116,11 @@ fn assert_not_found<T: std::fmt::Debug>(result: wind_core::error::Result<T>) {
 fn user_msg(
     instance_id: i64,
     model_id: i64,
-    text: &str,
     is_boundary: bool,
     is_excluded: bool,
 ) -> CreateMessage {
     CreateMessage {
         from_id: None,
-        content: vec![AiMessage::new_simple(
-            Role::User,
-            vec![Content::new_text(text.into())],
-            None,
-        )],
         model_id,
         instance_id,
         is_boundary,
@@ -141,17 +135,11 @@ fn asst_msg(
     instance_id: i64,
     model_id: i64,
     from_id: i64,
-    text: &str,
     is_boundary: bool,
     is_excluded: bool,
 ) -> CreateMessage {
     CreateMessage {
         from_id: Some(from_id),
-        content: vec![AiMessage::new_simple(
-            Role::Assistant,
-            vec![Content::new_text(text.into())],
-            None,
-        )],
         model_id,
         instance_id,
         is_boundary,
@@ -161,9 +149,22 @@ fn asst_msg(
     }
 }
 
+/// 写入一条消息的正文内容块
+async fn create_content(storage: &WindCore, message_id: i64, role: Role, text: &str) {
+    storage
+        .storage()
+        .message_content()
+        .create(CreateMessageContent {
+            message_id,
+            data: AiMessage::new_simple(role, vec![Content::new_text(text.into())], None),
+        })
+        .await
+        .unwrap();
+}
+
 /// 在 `instance_id` 作用域下创建一对 user-assistant 消息，返回 (user_id, assistant_id)
 async fn create_pair(
-    msg: &MessageStorage,
+    storage: &WindCore,
     instance_id: i64,
     model_id: i64,
     user_text: &str,
@@ -171,27 +172,26 @@ async fn create_pair(
     user_exclude: bool,
     assistant_exclude: bool,
 ) -> (i64, i64) {
-    let user = msg
-        .create(user_msg(
-            instance_id,
-            model_id,
-            user_text,
-            false,
-            user_exclude,
-        ))
+    let user = storage
+        .storage()
+        .message()
+        .create(user_msg(instance_id, model_id, false, user_exclude))
         .await
         .unwrap();
-    let assistant = msg
+    let assistant = storage
+        .storage()
+        .message()
         .create(asst_msg(
             instance_id,
             model_id,
             user.id,
-            assistant_text,
             false,
             assistant_exclude,
         ))
         .await
         .unwrap();
+    create_content(storage, user.id, Role::User, user_text).await;
+    create_content(storage, assistant.id, Role::Assistant, assistant_text).await;
     (user.id, assistant.id)
 }
 
@@ -611,7 +611,7 @@ async fn topic_delete_cascades() {
 
     let instance = create_agent_instance(agent, root.id, def.id, AgentRole::Main).await;
 
-    let (u1, a1) = create_pair(msg, instance.id, model_id, "q1", "a1", false, false).await;
+    let (u1, a1) = create_pair(&core, instance.id, model_id, "q1", "a1", false, false).await;
     let approvals = core
         .storage()
         .approval()
@@ -650,6 +650,15 @@ async fn topic_delete_cascades() {
     );
     assert!(
         core.storage()
+            .message_content()
+            .list_by_messages(&[u1, a1])
+            .await
+            .unwrap()
+            .is_empty(),
+        "消息正文应随 topic 一并级联删除"
+    );
+    assert!(
+        core.storage()
             .approval()
             .list_by_message(a1)
             .await
@@ -683,7 +692,7 @@ async fn instance_delete_cascades_messages_and_approvals() {
 
     let instance = create_agent_instance(agent, root.id, def.id, AgentRole::Main).await;
 
-    let (u1, a1) = create_pair(msg, instance.id, model_id, "q1", "a1", false, false).await;
+    let (u1, a1) = create_pair(&core, instance.id, model_id, "q1", "a1", false, false).await;
     core.storage()
         .approval()
         .create_requests(CreateToolApprovalRequests {
@@ -709,6 +718,15 @@ async fn instance_delete_cascades_messages_and_approvals() {
     assert!(
         msg.get(a1).await.unwrap().is_none(),
         "assistant 消息应被删除"
+    );
+    assert!(
+        core.storage()
+            .message_content()
+            .list_by_messages(&[u1, a1])
+            .await
+            .unwrap()
+            .is_empty(),
+        "消息正文应随 topic 一并级联删除"
     );
     assert!(
         core.storage()
@@ -811,7 +829,7 @@ async fn topic_delete_succeeds_without_owned_definitions() {
     let root = create_root_topic(topics, "no-owned-def").await;
     let def = create_agent_def(agent, "global-agent", None).await;
     let instance = create_agent_instance(agent, root.id, def.id, AgentRole::Main).await;
-    let (u1, a1) = create_pair(msg, instance.id, model_id, "q1", "a1", false, false).await;
+    let (u1, a1) = create_pair(&core, instance.id, model_id, "q1", "a1", false, false).await;
 
     topics.delete_topics(&[root.id]).await.unwrap();
 
@@ -827,6 +845,15 @@ async fn topic_delete_succeeds_without_owned_definitions() {
     assert!(
         msg.get(a1).await.unwrap().is_none(),
         "assistant 消息应被删除"
+    );
+    assert!(
+        core.storage()
+            .message_content()
+            .list_by_messages(&[u1, a1])
+            .await
+            .unwrap()
+            .is_empty(),
+        "消息正文应随 topic 一并级联删除"
     );
     assert!(
         agent.get_definition(def.id).await.unwrap().is_some(),
@@ -850,8 +877,8 @@ async fn topic_delete_does_not_touch_other_topics() {
     let def_b = create_agent_def(agent, "keep-b-b", Some(root_b.id)).await;
     let instance_a = create_agent_instance(agent, root_a.id, def_a.id, AgentRole::Main).await;
     let instance_b = create_agent_instance(agent, root_b.id, def_b.id, AgentRole::Main).await;
-    let (ua, aa) = create_pair(msg, instance_a.id, model_id, "qa", "aa", false, false).await;
-    let (ub, ab) = create_pair(msg, instance_b.id, model_id, "qb", "ab", false, false).await;
+    let (ua, aa) = create_pair(&core, instance_a.id, model_id, "qa", "aa", false, false).await;
+    let (ub, ab) = create_pair(&core, instance_b.id, model_id, "qb", "ab", false, false).await;
 
     topics.delete_topics(&[root_a.id]).await.unwrap();
 
