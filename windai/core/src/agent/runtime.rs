@@ -11,7 +11,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
-use wind_ai::message::{Content, Message, Role};
+use wind_ai::message::{Content, Message};
 use wind_ai::tool::{FunctionCall, FunctionCallOutput};
 
 struct ToolPlan {
@@ -41,10 +41,20 @@ enum Action {
     Stop,
 }
 
-/// 找出本轮待处理的工具调用
-fn find_pending_calls(contexts: &[Message]) -> Result<Vec<&FunctionCall>> {
-    pending_tool_calls(contexts)
-        .ok_or_else(|| CoreError::Chat("No tool_request found in assistant content".into()))
+/// 消息是否为空块：无文本、无工具调用、无推理内容
+fn is_blank(message: &Message) -> bool {
+    message
+        .content
+        .iter()
+        .all(|content| matches!(content, Content::Text { data } if data.is_empty()))
+        && message
+            .tool_calls
+            .as_ref()
+            .is_none_or(|calls| calls.is_empty())
+        && message
+            .reasoning_content
+            .as_ref()
+            .is_none_or(String::is_empty)
 }
 
 struct BlockState {
@@ -141,9 +151,8 @@ impl AgentRuntime {
         .await;
     }
 
-    /// 拼接内容块，并且向上发送消息
-    async fn push_chunk(&self, block: &mut BlockState, delta: Message) {
-        block.data.append_chunk(&delta);
+    /// 下发一个内容分片
+    async fn broadcast_chunk(&self, block: &BlockState, delta: Message) {
         self.send_event(TaskNotification::Message {
             message_id: self.task.message_id,
             instance_id: self.task.instance.id,
@@ -154,11 +163,20 @@ impl AgentRuntime {
         .await;
     }
 
-    /// 结束当前内容块，递增块索引
-    async fn close_block(&self, block: &mut BlockState) -> Message {
+    /// 拼接内容块，并且向上发送消息
+    async fn push_chunk(&self, block: &mut BlockState, delta: Message) {
+        block.data.append_chunk(&delta);
+        self.broadcast_chunk(block, delta).await;
+    }
+
+    /// 结束当前内容块，递增块索引；跳过空块
+    async fn close_block(&self, block: &mut BlockState) -> Option<Message> {
         let data = std::mem::take(&mut block.data);
+        if is_blank(&data) {
+            return None;
+        }
         self.persist_block(block, data.clone()).await;
-        data
+        Some(data)
     }
 
     async fn persist_block(&self, block: &mut BlockState, data: Message) {
@@ -181,12 +199,14 @@ impl AgentRuntime {
     /// 1. 新一轮对话需要执行调用和请求审批
     ///
     /// 2. 上一轮对话中工具审批完毕，处理审批结果
+    ///
+    /// 返回 `false` 表示仍有调用在等待审批，本轮到此为止
     async fn handle_await_tool_call(
         &self,
         block: &mut BlockState,
         contexts: &mut Vec<Message>,
         tools: Vec<FunctionCall>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let plan = self.make_tool_plan(tools).await?;
         let mut call_results: Vec<FunctionCallOutput> = vec![];
         log::debug!("{}", plan);
@@ -244,6 +264,8 @@ impl AgentRuntime {
         if !call_results.is_empty() {
             let tool_result = Message::new_tool_result(call_results);
             contexts.push(tool_result.clone());
+            // 工具结果整块下发后落库
+            self.broadcast_chunk(block, tool_result.clone()).await;
             self.persist_block(block, tool_result).await;
         }
 
@@ -255,8 +277,9 @@ impl AgentRuntime {
                 instance_id: self.task.instance.id,
             })
             .await;
+            return Ok(false);
         }
-        Ok(())
+        Ok(true)
     }
 
     async fn handle_chat_event(&self, block: &mut BlockState, event: ChatEvent) -> Action {
@@ -271,53 +294,35 @@ impl AgentRuntime {
                 error,
             } => {
                 if let Some(error) = error {
-                    self.push_chunk(
-                        block,
-                        Message::new_simple(
-                            Role::Assistant,
-                            vec![Content::new_text(error.clone())],
-                            None,
-                        ),
-                    )
-                    .await;
                     self.close_block(block).await;
                     self.finish_with_error(error).await;
                     return Action::Stop;
                 }
-                // 本轮内容结束，工具调用结果从下一块开始
                 let message = self.close_block(block).await;
-                let has_tool_calls = message
-                    .tool_calls
+                let content = message
                     .as_ref()
-                    .is_some_and(|calls| !calls.is_empty());
-                if !has_tool_calls {
-                    self.finish(message.content).await;
+                    .map(|message| message.content.clone())
+                    .unwrap_or_default();
+                if let Some(message) = message {
+                    contexts.push(message);
+                }
+                // 处理上下文中待执行的工具调用
+                let pendings = pending_tool_calls(&contexts)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .cloned()
+                    .collect::<Vec<FunctionCall>>();
+                if pendings.is_empty() {
+                    self.finish(content).await;
                     return Action::Stop;
                 }
-                contexts.push(message);
-                let pendings = match find_pending_calls(&contexts) {
-                    Ok(tools) => tools.into_iter().cloned().collect::<Vec<FunctionCall>>(),
-                    Err(err) => {
-                        self.push_chunk(
-                            block,
-                            Message::new_simple(
-                                Role::Assistant,
-                                vec![Content::new_text(err.to_string())],
-                                None,
-                            ),
-                        )
-                        .await;
-                        self.close_block(block).await;
-                        self.finish_with_error(err.to_string()).await;
-                        return Action::Stop;
-                    }
-                };
                 // 执行工具调用，Block 序列递增
                 match self
                     .handle_await_tool_call(block, &mut contexts, pendings)
                     .await
                 {
-                    Ok(_) => Action::Resume { contexts },
+                    Ok(true) => Action::Resume { contexts },
+                    Ok(false) => Action::Stop,
                     Err(err) => {
                         self.finish_with_error(err.to_string()).await;
                         Action::Stop
@@ -374,133 +379,5 @@ impl AgentRuntime {
             denied,
             waiting,
         })
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-    use serde_json::json;
-    use wind_ai::message::Role;
-
-    fn call(id: &str) -> FunctionCall {
-        FunctionCall {
-            id: id.to_string(),
-            name: "tool".to_string(),
-            arguments: "{}".to_string(),
-        }
-    }
-
-    fn output(id: &str) -> FunctionCallOutput {
-        FunctionCallOutput {
-            id: id.to_string(),
-            content: json!({"ok": true}),
-        }
-    }
-
-    /// 构造一条 tool_request 消息（role=Assistant + tool_calls）
-    fn req(calls: &[&str]) -> Message {
-        Message::new_tool_request(calls.iter().map(|id| call(id)).collect(), None)
-    }
-
-    /// 构造一条 tool_result 消息（role=Tool，全部为函数调用结果）
-    fn result(ids: &[&str]) -> Message {
-        Message::new_tool_result(ids.iter().map(|id| output(id)).collect())
-    }
-
-    /// 取待处理调用的 id 列表，便于断言
-    fn pending_ids(content: &[Message]) -> Vec<String> {
-        find_pending_calls(content)
-            .expect("find pending calls")
-            .into_iter()
-            .map(|c| c.id.clone())
-            .collect()
-    }
-
-    #[test]
-    fn find_pending_returns_all_calls_when_none_executed() {
-        // 无任何 tool_result，全部调用待执行，顺序保持请求原始顺序
-        let content = vec![req(&["id1", "id2", "id3"])];
-        assert_eq!(pending_ids(&content), vec!["id1", "id2", "id3"]);
-    }
-
-    #[test]
-    fn find_pending_filters_out_executed_calls() {
-        // 请求了 3 个调用，只有 id2 返回了结果，其余继续待执行
-        let content = vec![req(&["id1", "id2", "id3"]), result(&["id2"])];
-        assert_eq!(pending_ids(&content), vec!["id1", "id3"]);
-    }
-
-    #[test]
-    fn find_pending_returns_empty_when_all_executed() {
-        // 结果分两条 tool_result 消息返回，executed_ids 跨消息累积
-        let content = vec![req(&["id1", "id2"]), result(&["id1"]), result(&["id2"])];
-        assert!(find_pending_calls(&content).expect("find").is_empty());
-    }
-
-    #[test]
-    fn find_pending_reentrant_multi_round() {
-        // 注释中的重入场景，多轮完整对话后判断当前待执行的调用：
-        // [旧轮 result] [reqA] [result 1-1] [reqB] [result 1-2]
-        let content = vec![
-            result(&["id_x"]),    // 旧轮结果，早于最近 req，不应计入
-            req(&["id1", "id2"]), // 第一轮请求
-            result(&["id1"]),     // 第一轮只执行了 id1
-            req(&["id1", "id2"]), // 第二轮（模型重新发起的）请求
-            result(&["id2"]),     // 第二轮执行了 id2
-        ];
-        // 只考虑最近 reqB 之后的 result（id2），id1 仍待执行
-        assert_eq!(pending_ids(&content), vec!["id1"]);
-    }
-
-    #[test]
-    fn find_pending_uses_most_recent_tool_request() {
-        // 存在多个互不重叠的 tool_request 时，只处理最近的一条
-        let content = vec![req(&["id_a"]), req(&["id_b"])];
-        assert_eq!(pending_ids(&content), vec!["id_b"]);
-    }
-
-    #[test]
-    fn find_pending_ignores_non_function_result_content() {
-        // tool_result 判定只看 role；content 中混入的文本不参与 id 收集
-        let tool_msg = Message {
-            role: Role::Tool,
-            content: vec![
-                Content::new_text("tool internal note".to_string()),
-                Content::new_function_call("id1".to_string(), json!({"ok": true})),
-            ],
-            tool_calls: None,
-            reasoning_content: None,
-            created_at: 0,
-            input_tokens: 0,
-            output_tokens: 0,
-        };
-        let content = vec![req(&["id1", "id2"]), tool_msg];
-        assert_eq!(pending_ids(&content), vec!["id2"]);
-    }
-
-    #[test]
-    fn find_pending_errors_when_no_tool_request() {
-        // 空内容 / 纯 simple 消息 / 只有 tool_result / 空 tool_calls 的 assistant
-        let cases: Vec<Vec<Message>> = vec![
-            vec![],
-            vec![Message::new_simple(
-                Role::User,
-                vec![Content::new_text("hi".to_string())],
-                None,
-            )],
-            vec![result(&["id1"])],
-            vec![Message::new_tool_request(vec![], None)],
-        ];
-        for content in cases {
-            let err = match find_pending_calls(&content) {
-                Ok(_) => panic!("expected an error, content: {content:?}"),
-                Err(err) => err,
-            };
-            assert!(
-                err.to_string().contains("No tool_request"),
-                "unexpected error: {err}"
-            );
-        }
     }
 }

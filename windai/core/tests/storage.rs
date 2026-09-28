@@ -149,8 +149,8 @@ fn asst_msg(
 async fn create_content(storage: &WindCore, message_id: i64, role: Role, text: &str) {
     storage
         .storage()
-        .message_content()
-        .create(CreateMessageContent {
+        .message()
+        .create_content(CreateMessageContent {
             message_id,
             data: AiMessage::new_simple(role, vec![Content::new_text(text.into())], None),
         })
@@ -646,8 +646,8 @@ async fn topic_delete_cascades() {
     );
     assert!(
         core.storage()
-            .message_content()
-            .list_by_messages(&[u1, a1])
+            .message()
+            .list_contents_by_messages(&[u1, a1])
             .await
             .unwrap()
             .is_empty(),
@@ -717,8 +717,8 @@ async fn instance_delete_cascades_messages_and_approvals() {
     );
     assert!(
         core.storage()
-            .message_content()
-            .list_by_messages(&[u1, a1])
+            .message()
+            .list_contents_by_messages(&[u1, a1])
             .await
             .unwrap()
             .is_empty(),
@@ -844,8 +844,8 @@ async fn topic_delete_succeeds_without_owned_definitions() {
     );
     assert!(
         core.storage()
-            .message_content()
-            .list_by_messages(&[u1, a1])
+            .message()
+            .list_contents_by_messages(&[u1, a1])
             .await
             .unwrap()
             .is_empty(),

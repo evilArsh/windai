@@ -25,13 +25,6 @@ pub enum TopicEvent {
         /// 错误信息
         error: String,
     },
-    /// 全量快照消息
-    Snapshot {
-        /// agent 实例 id
-        instance_id: i64,
-        /// 全量消息
-        messages: Vec<Message>,
-    },
     /// 消息已创建
     MessageCreated {
         /// instance id
@@ -115,10 +108,6 @@ impl std::fmt::Display for TopicEvent {
                     instance_id.map(|t| t.to_string()).unwrap_or_default(),
                     error
                 ),
-            ),
-            TopicEvent::Snapshot { instance_id, .. } => (
-                self.as_ref(),
-                format!("(instance_id = {})", instance_id.to_string(),),
             ),
             TopicEvent::MessageCreated { instance_id, .. } => (
                 self.as_ref(),

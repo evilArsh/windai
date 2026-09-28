@@ -194,8 +194,8 @@ async fn blocks_of_message(core: &WindCore, instance_id: i64) -> Vec<AiMessage> 
         .expect("list messages");
     let last = messages.last().expect("assistant message");
     core.storage()
-        .message_content()
-        .list_by_message(last.id)
+        .message()
+        .list_contents(last.id)
         .await
         .expect("list blocks")
         .into_iter()
@@ -258,8 +258,8 @@ async fn add_block(
         .await
         .expect("create message");
     core.storage()
-        .message_content()
-        .create(CreateMessageContent {
+        .message()
+        .create_content(CreateMessageContent {
             message_id: message.id,
             data,
         })
@@ -338,12 +338,12 @@ async fn approval_resume_appends_blocks_in_id_order() {
 }
 
 // ---------------------------------------------------------------------------
-// 取消：必须留下错误内容块
+// 取消：任务结束，不落内容块
 // ---------------------------------------------------------------------------
 
-/// 流式中取消后，消息末尾必须留下一条取消错误块，且只有一份
+/// 流式中取消后任务进入 Cancelled 终态，且不落任何内容块
 #[tokio::test]
-async fn cancel_mid_stream_persists_cancel_error_block() {
+async fn cancel_mid_stream_leaves_no_content_block() {
     let core = common::init_test_core().await;
     let base = fake_server(vec![vec![
         text_delta("hello"),
@@ -391,22 +391,10 @@ async fn cancel_mid_stream_persists_cancel_error_block() {
     assert_eq!(terminal, "cancelled", "取消后应进入 Cancelled 终态");
 
     let blocks = last_message_blocks(&core, topic_id).await;
-    let cancel_blocks = blocks
-        .iter()
-        .filter(|b| text_of(b).contains("cancelled"))
-        .count();
-    assert_eq!(
-        cancel_blocks,
-        1,
-        "取消必须留下且只留一条错误内容块，实际块: {:?}",
-        blocks.iter().map(text_of).collect::<Vec<_>>()
-    );
-    // 任务进入终态后 FSM 丢弃内容块，取消错误块因而必然是该消息的末尾
-    let last = blocks.last().expect("取消后必须留下错误内容块");
     assert!(
-        text_of(last).contains("cancelled"),
-        "取消错误块必须是消息末尾，实际末尾块: {}",
-        text_of(last)
+        blocks.is_empty(),
+        "取消不应落下任何内容块，实际: {:?}",
+        blocks.iter().map(text_of).collect::<Vec<_>>()
     );
 
     handle.shutdown().await.expect("shutdown runtime");

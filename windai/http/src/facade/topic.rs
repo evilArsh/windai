@@ -133,8 +133,8 @@ impl TopicFacade {
         match self
             .core
             .storage()
-            .message_content()
-            .list_by_messages(&ids)
+            .message()
+            .list_contents_by_messages(&ids)
             .await
         {
             Ok(contents) => ApiResponse::ok(contents),
@@ -152,8 +152,8 @@ impl TopicFacade {
         match self
             .core
             .storage()
-            .message_content()
-            .list_by_message(message_id)
+            .message()
+            .list_contents(message_id)
             .await
         {
             Ok(contents) => ApiResponse::ok(contents),

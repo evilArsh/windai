@@ -3,7 +3,6 @@ pub mod approval;
 mod executor;
 pub mod mcp;
 pub mod message;
-pub mod message_content;
 pub mod model;
 pub mod prompt;
 pub mod provider;
@@ -12,8 +11,8 @@ pub mod utils;
 
 use self::{
     agent::AgentStorage, approval::ToolApprovalStorage, executor::StorageExecutor, mcp::McpStorage,
-    message::MessageStorage, message_content::MessageContentStorage, model::ModelStorage,
-    prompt::PromptStorage, provider::ProviderStorage, topic::TopicStorage,
+    message::MessageStorage, model::ModelStorage, prompt::PromptStorage, provider::ProviderStorage,
+    topic::TopicStorage,
 };
 use super::db::DbPool;
 use crate::error::Result;
@@ -26,7 +25,6 @@ pub struct Storage {
     topic: topic::TopicStorage,
     model: model::ModelStorage,
     message: message::MessageStorage,
-    message_content: message_content::MessageContentStorage,
     mcp: mcp::McpStorage,
     agent: agent::AgentStorage,
     prompt: prompt::PromptStorage,
@@ -62,7 +60,6 @@ impl Storage {
             topic: TopicStorage::new(executor.clone()),
             model: ModelStorage::new(executor.clone()),
             message: MessageStorage::new(executor.clone()),
-            message_content: MessageContentStorage::new(executor.clone()),
             mcp: McpStorage::new(executor.clone()),
             agent: AgentStorage::new(executor.clone()),
             prompt: PromptStorage::new(executor.clone()),
@@ -99,10 +96,6 @@ impl Storage {
     }
     pub fn message(&self) -> &MessageStorage {
         &self.message
-    }
-
-    pub fn message_content(&self) -> &MessageContentStorage {
-        &self.message_content
     }
 
     pub fn mcp(&self) -> &McpStorage {

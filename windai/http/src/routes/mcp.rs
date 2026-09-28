@@ -175,7 +175,7 @@ pub(crate) async fn update_mcp_server(
         ("mcp_server_id", Path, description = "MCP 服务 ID"),
     ),
     responses(
-        (status = 200, description = "删除 MCP 服务，并停止 MCP 客户端实例", body = ApiResponse<Value>)
+        (status = 200, description = "删除 MCP 服务，并停止 MCP 客户端实例", body = ApiResponse<ClientSnapshot>)
     )
 )]
 pub(crate) async fn delete_mcp_server(

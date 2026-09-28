@@ -136,8 +136,8 @@ async fn create_one_per_table(core: &WindCore) -> Vec<(&'static str, i64)> {
     ids.push(("messages", message_id));
 
     ids.push(("message_contents", {
-        s.message_content()
-            .create(CreateMessageContent {
+        s.message()
+            .create_content(CreateMessageContent {
                 message_id,
                 data: AiMessage::new_simple(
                     Role::User,

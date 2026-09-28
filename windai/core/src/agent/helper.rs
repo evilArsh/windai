@@ -52,7 +52,7 @@ async fn load_contexts(storage: &Storage, instance_id: i64) -> Result<Vec<Messag
     }
     let ids = messages.iter().map(|m| m.id).collect::<Vec<i64>>();
     let mut contents: HashMap<i64, Vec<AiMessage>> = HashMap::new();
-    for content in storage.message_content().list_by_messages(&ids).await? {
+    for content in storage.message().list_contents_by_messages(&ids).await? {
         contents
             .entry(content.message_id)
             .or_default()
@@ -339,8 +339,8 @@ async fn create_context_inner(
 
             // 用户输入就是该消息的第一块内容
             let user_content = storage
-                .message_content()
-                .create(CreateMessageContent {
+                .message()
+                .create_content(CreateMessageContent {
                     message_id: user.id,
                     data: content_cloned,
                 })

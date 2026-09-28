@@ -522,8 +522,6 @@ impl TopicRuntime {
 }
 
 /// 新任务启动时的固定事件序列
-///
-/// 用户内容块紧跟它所属消息的 `MessageCreated`，保证前端拿到的是已落库的块
 fn launch_events(created: &helper::CreatedContexts, spec: TaskSpec) -> Vec<FsmEvent> {
     let instance_id = spec.instance.id;
     vec![

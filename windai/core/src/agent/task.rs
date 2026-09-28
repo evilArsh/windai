@@ -443,8 +443,8 @@ impl TaskManager {
     /// 保存一块消息内容
     pub async fn persist_content(&self, message_id: i64, data: Message) -> Result<()> {
         self.storage
-            .message_content()
-            .create(CreateMessageContent { message_id, data })
+            .message()
+            .create_content(CreateMessageContent { message_id, data })
             .await?;
         Ok(())
     }

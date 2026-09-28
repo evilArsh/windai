@@ -1,4 +1,5 @@
 use crate::db::DbRow;
+use crate::error::CoreError;
 use crate::storage::utils;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
@@ -41,7 +42,7 @@ impl<'s> sqlx::FromRow<'s, DbRow> for Message {
 }
 
 /// 从数据库列解码失败时统一转成 [`sqlx::Error`]
-fn decode_err(err: crate::error::CoreError) -> sqlx::Error {
+fn decode_err(err: CoreError) -> sqlx::Error {
     sqlx::Error::Decode(err.to_string().into())
 }
 
@@ -80,23 +81,6 @@ impl<'s> sqlx::FromRow<'s, DbRow> for MessageContent {
             },
         })
     }
-}
-
-/// 文本消息类型，当前文本消息细分为以下类型
-///
-/// - Text: 文本消息（纯文本对话）
-/// - Image: 图片消息（分析图像并将其用作生成文本或音频的输入）
-/// - Audio: 音频消息（音频和文本的输入与输出）
-/// - File: 文件消息
-#[derive(
-    Debug, Serialize, Deserialize, PartialEq, Copy, Eq, Clone, strum::EnumString, strum::Display,
-)]
-#[serde(rename_all = "lowercase")]
-pub enum ContentType {
-    Text,
-    Image,
-    Audio,
-    File,
 }
 
 pub struct CreateMessage {

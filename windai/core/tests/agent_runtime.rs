@@ -122,8 +122,8 @@ async fn terminal_state_content_is_persisted_as_message_contents() {
 
     let user_blocks = core
         .storage()
-        .message_content()
-        .list_by_message(messages[0].id)
+        .message()
+        .list_contents(messages[0].id)
         .await
         .expect("user blocks");
     assert_eq!(user_blocks.len(), 1, "用户输入应恰好落一块");
@@ -136,8 +136,8 @@ async fn terminal_state_content_is_persisted_as_message_contents() {
     // base_url 指向 example.invalid，模型请求必然失败，错误内容追加为一块
     let assistant_blocks = core
         .storage()
-        .message_content()
-        .list_by_message(messages[1].id)
+        .message()
+        .list_contents(messages[1].id)
         .await
         .expect("assistant blocks");
     assert_eq!(assistant_blocks.len(), 1, "失败任务应留下一条错误内容");

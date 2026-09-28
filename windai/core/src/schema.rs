@@ -1,3 +1,5 @@
+#[cfg(feature = "postgres")]
+use crate::error::CoreError;
 use crate::{db::DbPool, error::Result};
 
 /// SQLite 表结构。
@@ -185,7 +187,7 @@ pub async fn init_schema(pool: &DbPool) -> Result<()> {
 /// PostgreSQL 表结构尚未实现。
 #[cfg(feature = "postgres")]
 pub async fn init_schema(_pool: &DbPool) -> Result<()> {
-    Err(crate::error::CoreError::Internal(
+    Err(CoreError::Internal(
         "postgres schema is not implemented yet".into(),
     ))
 }

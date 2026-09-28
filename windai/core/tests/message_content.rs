@@ -111,14 +111,14 @@ async fn contents_round_trip_ordered_by_id() {
     let core = setup().await;
     let instance = create_instance(&core, "round-trip").await;
     let message_id = create_message(&core, instance).await;
-    let contents = core.storage().message_content();
+    let contents = core.storage().message();
 
     let first = contents
-        .create(content(message_id, text_message(Role::User, "你好", 5, 0)))
+        .create_content(content(message_id, text_message(Role::User, "你好", 5, 0)))
         .await
         .expect("create first");
     let second = contents
-        .create(content(
+        .create_content(content(
             message_id,
             AiMessage {
                 tool_calls: Some(vec![FunctionCall {
@@ -134,7 +134,7 @@ async fn contents_round_trip_ordered_by_id() {
         .expect("create second");
 
     let rows = contents
-        .list_by_message(message_id)
+        .list_contents(message_id)
         .await
         .expect("list by message");
     assert_eq!(
@@ -158,11 +158,11 @@ async fn appending_creates_distinct_rows() {
     let core = setup().await;
     let instance = create_instance(&core, "append").await;
     let message_id = create_message(&core, instance).await;
-    let contents = core.storage().message_content();
+    let contents = core.storage().message();
 
     for text in ["第一块", "第二块"] {
         contents
-            .create(content(
+            .create_content(content(
                 message_id,
                 text_message(Role::Assistant, text, 0, 3),
             ))
@@ -171,7 +171,7 @@ async fn appending_creates_distinct_rows() {
     }
 
     let rows = contents
-        .list_by_message(message_id)
+        .list_contents(message_id)
         .await
         .expect("list by message");
     assert_eq!(rows.len(), 2, "两次写入应产生两行");
@@ -191,12 +191,12 @@ async fn list_by_messages_orders_by_message_then_id() {
     let instance = create_instance(&core, "batch").await;
     let first = create_message(&core, instance).await;
     let second = create_message(&core, instance).await;
-    let contents = core.storage().message_content();
+    let contents = core.storage().message();
 
     // 每条消息的块按写入先后落库，读出顺序应与写入顺序一致
     for (message_id, text) in [(second, "b0"), (first, "a0"), (second, "b1"), (first, "a1")] {
         contents
-            .create(content(
+            .create_content(content(
                 message_id,
                 text_message(Role::Assistant, text, 0, 0),
             ))
@@ -206,7 +206,7 @@ async fn list_by_messages_orders_by_message_then_id() {
     // 未被查询的消息不应出现在结果里
     let untouched = create_message(&core, instance).await;
     contents
-        .create(content(
+        .create_content(content(
             untouched,
             text_message(Role::Assistant, "c0", 0, 0),
         ))
@@ -214,7 +214,7 @@ async fn list_by_messages_orders_by_message_then_id() {
         .expect("create");
 
     let rows = contents
-        .list_by_messages(&[first, second])
+        .list_contents_by_messages(&[first, second])
         .await
         .expect("list by messages");
     let keys = rows
@@ -242,7 +242,7 @@ async fn list_by_messages_orders_by_message_then_id() {
     // 空 id 列表不查库
     assert!(
         contents
-            .list_by_messages(&[])
+            .list_contents_by_messages(&[])
             .await
             .expect("empty ids")
             .is_empty()
@@ -255,9 +255,9 @@ async fn deleting_message_removes_its_contents() {
     let core = setup().await;
     let instance = create_instance(&core, "delete-message").await;
     let message_id = create_message(&core, instance).await;
-    let contents = core.storage().message_content();
+    let contents = core.storage().message();
     contents
-        .create(content(
+        .create_content(content(
             message_id,
             text_message(Role::Assistant, "x", 0, 0),
         ))
@@ -272,7 +272,7 @@ async fn deleting_message_removes_its_contents() {
 
     assert!(
         contents
-            .list_by_message(message_id)
+            .list_contents(message_id)
             .await
             .expect("list")
             .is_empty()
@@ -287,11 +287,11 @@ async fn deleting_instance_cascades_contents() {
     let kept_instance = create_instance(&core, "delete-instance-kept").await;
     let message_id = create_message(&core, instance).await;
     let kept_message = create_message(&core, kept_instance).await;
-    let contents = core.storage().message_content();
+    let contents = core.storage().message();
 
     for (message_id, text) in [(message_id, "gone"), (kept_message, "kept")] {
         contents
-            .create(content(
+            .create_content(content(
                 message_id,
                 text_message(Role::Assistant, text, 0, 0),
             ))
@@ -307,13 +307,13 @@ async fn deleting_instance_cascades_contents() {
 
     assert!(
         contents
-            .list_by_message(message_id)
+            .list_contents(message_id)
             .await
             .expect("list removed")
             .is_empty()
     );
     let kept: Vec<MessageContent> = contents
-        .list_by_message(kept_message)
+        .list_contents(kept_message)
         .await
         .expect("list kept");
     assert_eq!(kept.len(), 1, "其它实例的内容不应被级联删除");
@@ -344,8 +344,8 @@ async fn create_message_with_blocks(
         .expect("create message");
     for (role, text) in blocks.iter() {
         core.storage()
-            .message_content()
-            .create(content(message.id, text_message(*role, text, 0, 0)))
+            .message()
+            .create_content(content(message.id, text_message(*role, text, 0, 0)))
             .await
             .expect("create block");
     }
@@ -460,8 +460,8 @@ async fn excluded_message_keeps_its_blocks_out_of_context() {
         .await
         .expect("create excluded message");
     core.storage()
-        .message_content()
-        .create(content(user.id, text_message(Role::User, "dropped", 0, 0)))
+        .message()
+        .create_content(content(user.id, text_message(Role::User, "dropped", 0, 0)))
         .await
         .expect("create block");
     create_message_with_blocks(&core, instance, None, &[(Role::User, "kept")]).await;
@@ -507,8 +507,8 @@ async fn stale_schema_write_fails_loudly() {
 
     let err = core
         .storage()
-        .message_content()
-        .create(content(
+        .message()
+        .create_content(content(
             message_id,
             text_message(Role::Assistant, "x", 0, 0),
         ))

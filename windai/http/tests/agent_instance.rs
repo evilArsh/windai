@@ -122,8 +122,8 @@ async fn create_message(
         .await
         .expect("创建消息");
     core.storage()
-        .message_content()
-        .create(CreateMessageContent {
+        .message()
+        .create_content(CreateMessageContent {
             message_id: message.id,
             data: AiMessage::new_simple(role, vec![Content::new_text(text.to_string())], None),
         })
@@ -472,8 +472,8 @@ async fn instance_contents_returns_all_blocks_in_message_order() {
     let reply_msg = create_message(&core, main.id, Role::Assistant, "hi", Some(user_msg)).await;
     // 助手消息的第二块内容
     core.storage()
-        .message_content()
-        .create(CreateMessageContent {
+        .message()
+        .create_content(CreateMessageContent {
             message_id: reply_msg,
             data: AiMessage::new_simple(
                 Role::Assistant,

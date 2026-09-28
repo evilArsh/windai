@@ -1,112 +1,94 @@
 # windai
 
-An AI engine core library providing database-driven multi-turn chat, hierarchical agent orchestration, tool calling with approval flow, multi-provider adapters, and declarative request transformation. Ships an HTTP service (`wind-http`) exposing the core over REST + SSE.
+Progressive Agent library for private workflows.
 
 ## Quick Start
 
 ```bash
 cargo build
-cargo test                   # Every crate's tests in one run; .env-gated tests are #[ignore]d
-cargo test -p wind-http      # HTTP route/facade/DTO tests (no .env needed)
-cargo test -p wind-core --test core_chat -- --include-ignored --test-threads=1
+cargo test
+cargo test -p wind-http
 ```
-
-Copy `.env.example` to `.env` and fill in `TEST_*` values before running the `.env`-gated tests.
 
 ```toml
 [dependencies]
 wind-core = { git = "https://github.com/evilArsh/windai" }
 ```
 
-## Usage
-
-### Initialization
+## Initialization
 
 ```rust
 use wind_core::WindCore;
 
-// In-memory SQLite (tests / ephemeral)
 let core = WindCore::init_memory().await?;
-
-// File-backed SQLite — path comes from the app dirs (`WIND_ROOT_DIR`, default `~/.windai/windai.db`)
-let core = WindCore::init_local().await?;
-
-// Custom connection pool (e.g. shared-cache for tests)
+let core = WindCore::init_local().await?;                                  // windai.db under WIND_ROOT_DIR (default ~/.windai/)
 let core = WindCore::init_with_pool(pool).await?;
+let core = WindCore::init_with_pool_and_registry(pool, registry).await?;   // pool + shared MCP registry
 
-// Custom connection pool + shared MCP registry (test harnesses / advanced embedding)
-let core = WindCore::init_with_pool_and_registry(pool, registry).await?;
+core.storage()               // &Storage — all CRUD access
+core.registry()              // &RegistryHandle — MCP clients
+core.fetch_topic(topic_id)   // TopicRuntimeHandle
+core.shutdown().await;       // cancel topic runtimes + MCP clients, close the pool
 ```
 
-`WindCore` is a process-level runtime root: one instance per process, owns the storage (DB pool) + MCP registry, and manages one `TopicRuntime` actor per topic. Initialization also registers the two builtin MCP servers (`FsServer`, `SkillsServer`) on the registry.
+The schema is created with `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS` and there is **no migration mechanism** — after any column or index change you must delete the local DB file (`~/.windai/windai.db`) so it is rebuilt. The storage driver is picked by cargo feature: `sqlite` (default) or `postgres`, mutually exclusive.
 
-The SQLite schema is created with `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS` and there is **no migration mechanism** — after a schema change, delete the local DB file (`~/.windai/windai.db`, or the file under `WIND_ROOT_DIR`) so it is rebuilt.
-
-### Register Provider & Model
+## Provider and Model
 
 ```rust
 use wind_core::models::{CreateProvider, CreateCredentials, CreateModel, ModelConfig, ModelType};
 use wind_ai::model::AdapterType;
 
-let storage = core.storage();
-
-let provider = storage.provider().create(CreateProvider {
+let provider = core.storage().provider().create(CreateProvider {
     name: "deepseek".into(),
     base_url: "https://api.deepseek.com".into(),
     description: None,
     doc: None,
     alias: None,
 }).await?;
-let pid = provider.id;
 
-storage.provider().create_credentials(CreateCredentials {
-    provider_id: pid,
+core.storage().provider().create_credentials(CreateCredentials {
+    provider_id: provider.id,
     key: "sk-xxx".into(),
 }).await?;
 
-let model = storage.model().create(CreateModel {
+let model = core.storage().model().create(CreateModel {
     name: "deepseek-chat".into(),
-    provider_id: pid,
+    provider_id: provider.id,
     adapter: AdapterType::OpenAICompletion,
     alias: None,
     modalities: Some(vec![ModelType::Chat]),
     active: Some(true),
     icon: None,
     endpoint: None,
-    // 请求配置按模型配置（只有 stream 与 reasoning 两个键）
+    // request config lives on the model; only `stream` and `reasoning` are read
     config: Some(ModelConfig { stream: Some(true), reasoning: None }),
 }).await?;
-let mid = model.id;
 ```
 
-### Create a Topic & Start a Chat
+Every `create()` returns the full record (`INSERT ... RETURNING id`), so read `.id` off the result — the database assigns ids.
 
-Chats run through the **agent system**: a `Topic` is a scope owning a `TopicRuntime`, one *main* `AgentInstance` plus its sibling child instances. Agent 能力通过 `TopicAgentMap` 挂到 topic 上 —— 每条映射把一份 `AgentDefinition` 暴露给该 topic（只表达「拥有该能力」，没有主次之分）。每个 topic 有一个主 `AgentInstance`，它不绑定任何定义，只负责调度：模型通过 `agent_list_agents` / `agent_spawn_agent` 从能力映射里挑。消息记录在实例上（`Message.instance_id`）。The runtime streams progress as `TopicEvent`s over a `broadcast` channel.
+## Create a Topic and Start a Chat
+
+A topic owns one `TopicRuntime`, one main `AgentInstance` and any number of child instances. Agent capabilities are attached to a topic through `TopicAgentMap`, which only says "this topic has that capability" — there is no primary/secondary distinction. A main instance without an agent definition degrades to plain chat and only drives scheduling through `agent_list_agents` / `agent_spawn_agent`.
 
 ```rust
-use wind_core::agent::event::TopicEvent;
-use wind_core::models::{
-    AgentDefinitionData,
-    CreateAgentDefinition, CreateTopic, CreateTopicAgentMap,
-};
 use wind_ai::message::{Content, Role};
+use wind_core::agent::event::TopicEvent;
+use wind_core::models::{AgentDefinitionData, CreateAgentDefinition, CreateTopic, CreateTopicAgentMap};
 
-let storage = core.storage();
-
-// 1. Create a topic (a scope; parent_id is reserved for a tree nobody builds yet)
-//    模型与工具审批策略都挂在 topic 上
-let topic = storage.topic().create(CreateTopic {
+// 1. the model and the tool approval policy both live on the topic
+let topic = core.storage().topic().create(CreateTopic {
     parent_id: None,
     label: "My Chat".into(),
     icon: None,
-    model_id: Some(mid),
-    agent_id: None,               // Some(id) 则在同一事务内创建绑定该 Agent 的主实例
-    tool_approval_policy: None,   // None 视同 AllowAll
+    model_id: Some(model.id),
+    agent_id: None,               // Some(id) creates the main instance bound to that agent in the same transaction
+    tool_approval_policy: None,   // None behaves as AllowAll
 }).await?;
-let tid = topic.id;
 
-// 2. Define a reusable agent (what the agent *can* do)
-let agent_def = storage.agent().create_definition(CreateAgentDefinition {
+// 2. define a reusable agent capability; `key` is generated by the system
+let definition = core.storage().agent().create_definition(CreateAgentDefinition {
     name: "assistant".into(),
     description: "Default assistant".into(),
     owner_topic_id: None,     // None = global definition
@@ -115,21 +97,22 @@ let agent_def = storage.agent().create_definition(CreateAgentDefinition {
     data: AgentDefinitionData::default(),
 }).await?;
 
-// 3. 把该能力映射到 topic（主实例由此获得可调度的能力列表）
-storage.agent().create_topic_agent_map(CreateTopicAgentMap {
-    topic_id: tid,
-    agent_id: agent_def.id,
+// 3. map that capability to the topic
+core.storage().agent().create_topic_agent_map(CreateTopicAgentMap {
+    topic_id: topic.id,
+    agent_id: definition.id,
 }).await?;
 
-// 4. Submit user input, then consume the event stream
-//    未指定 agent_id 时，首次 create_task 会懒创建该 topic 的主实例（不绑定任何定义）
-let handle = core.fetch_topic(tid);
+// 4. submit input and consume the event stream; without `agent_id` the main instance is
+//    created lazily on the first create_task
+let handle = core.fetch_topic(topic.id);
 let mut events = handle.subscribe().await?;
-handle.create_task(vec![Content::new_text("Hello!".into())]).await?;
+handle.create_task(vec![Content::new_text("Hello!".into())]).await??;
 
 while let Ok(event) = events.recv().await {
     match event {
-        // 用户输入落库后也会以 Message 下发（完整块，index: 0），这里只打印模型输出
+        // Message carries both streaming deltas (same index = same block) and complete
+        // non-streamed blocks (user input, tool results)
         TopicEvent::Message { data, .. } if data.role != Role::User => {
             for c in &data.content {
                 if let Content::Text { data } = c {
@@ -147,38 +130,40 @@ while let Ok(event) = events.recv().await {
 }
 ```
 
-**Key points:**
-- `create_task` submits `Vec<Content>` (the full `wind_ai::message::Content` protocol) and returns immediately — the runtime accepts it asynchronously. You do **not** hand-build `Message` records; the engine creates the user/assistant messages bound to the main instance, plus tool results, internally.
-- A topic has one `TopicRuntime` and one main `AgentInstance` (plus children spawned by `agent_spawn_agent`). There is no per-agent sub-topic: isolation comes from `Message.instance_id`, so read an instance's history with `MessageStorage::list_by_instance`. HTTP 上主实例与子实例同等对待：`GET /api/v1/agent-instances/{instance_id}/messages` 取消息结构，`GET /api/v1/agent-instances/{instance_id}/contents` 取正文内容块（按 `message_id` 分组）
-- 每次 spawn 都新建实例，不复用空闲实例
-- The event stream channel closes once the main instance reaches a terminal state (`Finished` / `Failed` / `Cancelled`) or waits for approval — re-subscribe per conversation.
-- `TopicEvent` variants: `Error`, `Snapshot`, `MessageCreated`, `Message` (streaming delta 或用户输入这种已落库的完整块), `MessageFinished`, `TaskStatusChanged`, `ApprovalRequired`。（`Snapshot` 目前没有任何代码产出。）
+- `create_task` takes `Vec<Content>` and returns `Result<Result<()>>` — the outer error is transport, the inner one means the topic is busy. Submitting while a turn is running is rejected; there is no task queue yet.
+- Messages hang off instances (`Message.instance_id`) and every spawn creates a new instance — idle instances are never reused.
+- The stream closes once the main instance reaches a terminal state (`Finished` / `Failed` / `Cancelled`) or waits for approval, so re-subscribe per conversation. A child instance waiting for approval does not close the stream.
 
-### MCP Tool Calling
+## Messages and Content Blocks
 
-Register MCP servers, then attach them to an agent definition. The engine discovers tools, filters them per agent, sends them with each request, and executes approved calls.
+`Message` holds conversation structure only (`from_id` / `model_id` / `instance_id` / `is_boundary` / `is_excluded`). Bodies are split into `MessageContent` rows in `message_contents`: one block per model response, one block per tool result. Block order is the autoincrement id order and writes only ever append.
+
+```rust
+let s = core.storage();
+s.message().list_by_instance(instance_id).await?;             // message structure, ordered by id
+s.message().list_contents(message_id).await?;                 // blocks of a single message
+s.message().list_contents_by_messages(&[m1, m2]).await?;      // batched, grouped by message_id, ids ascending
+```
+
+## MCP Tools
 
 ```rust
 use wind_core::models::agent::{AgentDefinitionData, AgentMcpBinding};
-use wind_core::models::{CreateMcpServer, CreateAgentDefinition};
+use wind_core::models::CreateMcpServer;
 use wind_mcp::client::TransportType;
 
-let mcp = storage.mcp().create(CreateMcpServer {
+let server = core.storage().mcp().create(CreateMcpServer {
     r#type: TransportType::Stdio,
     name: "everything".into(),
     command: Some("npx".into()),
-    args: Some(vec![
-        "-y".into(),
-        "@modelcontextprotocol/server-everything".into(),
-    ]),
+    args: Some(vec!["-y".into(), "@modelcontextprotocol/server-everything".into()]),
     url: None,
     description: None,
     env: None,
 }).await?;
-let sid = mcp.id;
 
-// Give the agent access to that MCP server
-storage.agent().create_definition(CreateAgentDefinition {
+// an empty allowed_tools does not restrict anything; denied_tools wins
+core.storage().agent().create_definition(CreateAgentDefinition {
     name: "tool-user".into(),
     description: "Assistant with MCP tools".into(),
     owner_topic_id: None,
@@ -186,8 +171,7 @@ storage.agent().create_definition(CreateAgentDefinition {
     active: Some(true),
     data: AgentDefinitionData {
         mcp_servers: vec![AgentMcpBinding {
-            mcp_server_id: sid,
-            alias: None,
+            mcp_server_id: server.id,
             allowed_tools: vec![],
             denied_tools: vec![],
             enabled: true,
@@ -197,57 +181,39 @@ storage.agent().create_definition(CreateAgentDefinition {
 }).await?;
 ```
 
-Agent definition data also carries `prompt_modules`, `builtin_mcp_servers`, `context_policy`, `permission_policy`, and `runtime_limits` — see the `AgentDefinitionData` type for the full surface。（其中只有 `context_policy.max_context` 目前被真正使用。）
+`AgentDefinitionData` also carries `prompt_modules`, `builtin_mcp_servers`, `context_policy`, `permission_policy` and `runtime_limits`. Only `context_policy.max_context` and the enable/tool-name filtering of the MCP bindings take effect today.
 
-`AgentDefinition.key` 是唯一短标识，**由系统在创建时生成、生成后不可修改**（12 字符，首字符为小写字母）。`create_definition` 不接受调用方指定 key；`clone_definition_for_topic` 会生成全新 key，来源关系记录在 `cloned_from_id`。
+The builtin servers (`wind-mcp-fs`, `wind-mcp-skills`) are registered when `WindCore` is initialized — reference them through `builtin_mcp_servers` instead of creating them.
 
-### Tool Approval Flow
+## Tool Approval
 
-Tool execution is controlled by **`Topic.tool_approval_policy`**（不再有 binding/instance 级策略）
+The policy lives on `Topic.tool_approval_policy` (`None` behaves as `AllowAll`):
 
-```rust
-use wind_core::models::{ToolApprovalPolicy, UpdateTopic};
-
-// Require manual approval for every tool call in this topic
-// `storage.topic().update(id, UpdateTopic)` — `None` 字段不会被写入
-storage.topic().update(tid, UpdateTopic {
-    tool_approval_policy: Some(ToolApprovalPolicy::Manual),
-    ..Default::default()
-}).await?;
-```
-
-Policies:
-
-| Policy                   | Behavior                                                     |
-| ------------------------ | ------------------------------------------------------------ |
-| `AllowAll`               | Default (also what `None` means). Execute all requested MCP tools automatically. |
-| `AllowList(Vec<String>)` | Execute listed tool names automatically; pause for the rest. |
-| `Manual`                 | Pause for every tool call and emit `TopicEvent::ApprovalRequired`. |
-
-When manual review is required, the runtime persists `ToolApprovalRequest` rows (status `Pending`) and emits `ApprovalRequired` (carrying the request ids). Reply through the handle — do not write approval state directly:
+| Policy                   | Behavior                                                         |
+| ------------------------ | ---------------------------------------------------------------- |
+| `AllowAll`               | execute every tool call automatically (default)                  |
+| `AllowList(Vec<String>)` | execute the listed tool names automatically, wait for the rest   |
+| `Manual`                 | wait for every tool call and emit `TopicEvent::ApprovalRequired` |
 
 ```rust
-use wind_core::agent::event::TopicEvent;
-
-// In your event loop:
+// the runtime persists Pending ToolApprovalRequests and emits ApprovalRequired with their ids
 TopicEvent::ApprovalRequired { instance_id, requests, .. } => {
     let allow: Vec<i64> = requests.iter().map(|r| r.id).collect();
-    handle.approve(instance_id, allow, vec![]).await?;  // or deny via the third arg
+    handle.approve(instance_id, allow, vec![]).await?;   // last argument is deny_ids
 }
 ```
 
-`approve(instance_id, allow_ids, deny_ids)` sets the rows' status and resumes the agent, which re-loads its state and continues. 注意终态与等待审批都会关流，审批后需要重新 `subscribe()` 才能继续消费事件。Denied tools receive `{"error": "tool call denied", "tool": "..."}` as their result and the model continues with those markers in context.
+On resume the runtime picks those approved calls up from the context, executes them, and hands the results back to the model. Denied calls get `{"error": "tool call denied", "tool": "..."}` as their result.
 
-### JSON Rule Engine
+## JSON Rules
 
-Define declarative request transformations stored in the database. Rules are applied to every API request before sending.
+One rule set per `(provider_id, adapter)`, applied to the request body before every API call:
 
 ```rust
 use wind_core::models::CreateJsonRule;
-use wind_ai::model::AdapterType;
 
-storage.provider().create_json_rule(CreateJsonRule {
-    provider_id: pid,
+core.storage().provider().create_json_rule(CreateJsonRule {
+    provider_id: provider.id,
     adapter: AdapterType::OpenAICompletion,
     json_rule: r#"{
         "rules": [{
@@ -264,106 +230,7 @@ storage.provider().create_json_rule(CreateJsonRule {
 }).await?;
 ```
 
-**Operations:** `set`, `remove`, `map_value`, `compute`, `when`.
-
-**Conditions:** `eq`, `neq`, `exists`, `and`, `or`, `not`（条件对象恰好一个 key；未知算子返回 `Condition` 错误）
-
-**Context variables** (`$ctx.*`) auto-injected: `$ctx.provider`, `$ctx.model`, `$ctx.adapter`, `$ctx.endpoint`.
-
-### Entity Management
-
-```rust
-let s = core.storage();
-
-// Lists
-s.provider().list_all().await?;
-s.model().list_by_provider().await?;
-s.topic().list_topics().await?;
-s.agent().list_instances_by_topic(tid).await?;      // 含主实例
-s.agent().get_main_instance(tid).await?;            // 单个主实例
-s.agent().list_agent_maps_by_topic(tid).await?;      // topic 能力映射
-
-// Messages belong to an instance, not a topic
-s.message().list_by_instance(instance.id).await?;   // full history
-// list_contexts 只供 core 内部使用（pub(crate)），对外一律读全量历史
-
-// Cascade delete — 删除实例连同 tool_approval_requests / messages；topic 行与它自己的
-// definitions、能力映射、实例一起删除。Child topics are NOT cascaded, pass their ids explicitly.
-s.topic().delete_topics(&[tid]).await?;
-s.provider().delete(pid).await?;  // cascades credentials + json_rules
-
-// MCP
-s.mcp().get_by_name("everything").await?;
-s.mcp().list().await?;
-
-// Graceful shutdown (cancels topic runtimes + MCP clients)
-core.shutdown().await;
-```
-
-## Crate Map
-
-| Crate         | Responsibility                                                                             |
-| ------------- | ------------------------------------------------------------------------------------------ |
-| `wind-core`   | Orchestration — SQLite storage, agent/FSM runtime, MCP coordination, rule application       |
-| `wind-ai`     | Provider abstraction — streaming/non-streaming, adapter pattern (`ChatAdapter`), SSE parsing |
-| `wind-mcp`    | MCP client — actor-based registry, stdio/HTTP transports, builtin servers, tool discovery & execution |
-| `wind-rule`   | JSON rule engine — declarative request transformation, expression evaluation                |
-| `wind-skills` | `SKILL.md` frontmatter parsing (`SkillsMeta`, `scan`) — consumed by the builtin skills server |
-| `wind-http`   | HTTP service — axum REST + SSE over the core, facade layer, OpenAPI (`/api-docs/openapi.json`) |
-| `wind-tui`    | Terminal UI (skeleton) — ratatui + crossterm                                                |
-
-## Topic Events
-
-The public event contract is `TopicEvent`, consumed via `TopicRuntimeHandle::subscribe()`:
-
-| Event              | When                                                    |
-| ------------------ | ------------------------------------------------------- |
-| `MessageCreated`   | A user or assistant message was persisted                |
-| `Message`          | Streaming content delta, 或用户输入落库后的完整块（`index: 0`） |
-| `ApprovalRequired` | Tool calls require manual approval before execution      |
-| `MessageFinished`  | A message is complete                                    |
-| `TaskStatusChanged`| An agent task changed status (`Idle`/`Running`/`Finished`/…) |
-| `Error`            | A task or the runtime failed                             |
-| `Snapshot`         | 某个实例的全量消息（变体已定义，目前无代码产出）          |
-
-A typical tool-call flow: `InstanceCreated → MessageCreated(user) → Message (user content, index: 0) → MessageCreated(assistant) → Message (streaming) → ApprovalRequired → [approve] → Message (tool results + text) → MessageFinished`. `Effect::Init` 与 `Effect::SpawnChild` 都会下发这条用户内容块，前端因此不必再走 HTTP 拉取自己刚提交的输入。The low-level `ChatEvent` (`Partial`/`AwaitToolCall`/`Finish`) is an internal detail of `AgentRuntime` — external code consumes `TopicEvent`.
-
-## HTTP API 摘要
-
-- **消息**：`POST /api/v1/topics/{topic_id}/messages`（提交对话输入，受理返回 `ApiResponse<()>`：`code: 200` + `msg: "ok"`）、`GET /api/v1/agent-instances/{instance_id}/messages`（该实例的全部消息，不含正文）、`GET|PUT /api/v1/messages/{message_id}`（PUT 只改 `model_id`）。话题级消息 GET 与上下文路由、`/topics/by-instance/*`、`/messages/{id}/from-message` 已删除
-- **消息正文**：消息结构（`Message`）与正文（`MessageContent`）分表存放 —— `GET /api/v1/agent-instances/{instance_id}/contents`（该实例全部内容块，按消息顺序与块插入顺序返回）、`GET /api/v1/messages/{message_id}/contents`（单条消息的内容块）。块顺序由自增 `id` 决定，`create` 只追加 —— 响应里的每个块**不再有 `index` 字段**，客户端必须改用数组顺序标识块在消息中的位置；`TopicEvent::Message` 的 `index` 是**本次运行内的块序号**（同一块的分片共用，跨运行不连续），同索引分片按增量拼接，重订阅后先拉一次 `/contents`。该事件也用于用户输入这种已落库的完整块：`Effect::Init` / `Effect::SpawnChild` 在 user 消息的 `MessageCreated` 之后以 `index: 0` 下发一次，`message_id` 指向 user 消息，消费方按完整块处理而非增量拼接
-- **实例**：只读，且不区分主实例与子实例 —— `/api/v1/agent-instances/*` 下全部是 GET —— `GET /api/v1/agent-instances/{instance_id}`、`GET /api/v1/agent-instances/{instance_id}/messages`、`.../tool-approvals/pending`，外加 `GET /api/v1/topics/{topic_id}/agent-instances`（含主实例）；实例由 core 内部创建
-- **能力映射**：`GET /api/v1/topics/{topic_id}/agent-maps`、`POST /api/v1/agent-maps`（请求体是 core 的 `CreateTopicAgentMap`，自带 `topic_id`）、`DELETE /api/v1/agent-maps/{map_id}`。映射只表达能力归属，没有角色概念，故没有 PUT
-- **事件流**：`GET /api/v1/topics/{topic_id}/events`（SSE）、`GET /api/v1/mcp-servers/events`（MCP 客户端状态 SSE）
-- **审批**：`POST /api/v1/topics/{topic_id}/tool-approvals/{message_id}/approve`、`POST /api/v1/topics/{topic_id}/agent-instances/{instance_id}/cancel`
-
-## Test Organization
-
-下面的数字是当前快照，会随代码变化
-
-| File                                 | Content                                                                  |
-| ------------------------------------ | ------------------------------------------------------------------------ |
-| `windai/core/tests/storage.rs`       | 32 tests — storage CRUD, validation, cascades, batch operations (no `.env` needed) |
-| `windai/core/tests/schema.rs`        | 15 tests — schema↔model column contract for all 13 tables, plus `dropped_columns_are_absent` / `dropped_tables_are_absent` |
-| `windai/core/tests/agent_runtime.rs` | 3 tests — runtime lifecycle, the terminal event must reach subscribers before the stream closes, and terminal content is persisted as `MessageContent` |
-| `windai/core/tests/autoincrement.rs` | 7 tests — autoincrement primary keys across all 13 tables |
-| `windai/core/tests/message_content.rs` | 9 tests — `message_contents` contract (`create` append, id ordering, cascade, stale schema write fails loudly) and context assembly (flatten order, `max_context` truncation, `is_excluded` isolation) |
-| `windai/core/tests/agent_flow.rs` | 8 tests — full agent flow driven by a local fake SSE server: blocks appended in id order after resume, SSE `index` as the per-run block sequence, cancel error block, no stale tool-call replay, non-JSON error text, blank block skipped, plus `user_input_content_is_pushed_over_sse` / `child_user_input_content_is_pushed_over_sse` (user input blocks pushed over SSE, main and child) |
-| `windai/core/src/agent/runtime.rs` (cfg test) | 7 tests — `find_pending_calls` pending tool-call detection |
-| `windai/core/tests/core_chat.rs`     | One test (`test_agent_chat`, `#[ignore]` behind `.env`): seeds providers/agents/maps, subscribes to topic events, drives `create_task` |
-| `windai/core/tests/chat.rs`          | AI adapter tests (needs `.env`)                                          |
-| `windai/core/tests/common/lib.rs`    | Shared helpers: `init_test_pool()`, `init_test_core()`, `init_test_core_with_registry()`, `seed_definition()`, `seed_chat_fixture()`, `McpTestEnv`, MCP server params |
-| `windai/core/src/storage/message.rs` (cfg test) | 3 tests — `list_contexts` semantics (crate-internal API) |
-| `windai/http/tests/*`                | HTTP router/facade/DTO tests via `tower::ServiceExt::oneshot`             |
-
-## Environment Variables
-
-| Variable          | Purpose                                      |
-| ----------------- | -------------------------------------------- |
-| `WIND_ROOT_DIR`   | Core data directory (default `~/.windai/`; DB file is `windai.db` inside it) |
-| `RUST_LOG`        | Log level (`debug`, `info`, `warn`, `error`) |
-| `WIND_HTTP_HOST`  | `wind-http` bind host (default `127.0.0.1`)  |
-| `WIND_HTTP_PORT`  | `wind-http` bind port (default `7324`)       |
+Operations: `set` / `remove` / `map_value` / `compute` / `when`. Conditions: `eq` / `neq` / `exists` / `and` / `or` / `not`. `$ctx` is injected with `provider` / `model` / `adapter` / `endpoint`.
 
 ## License
 

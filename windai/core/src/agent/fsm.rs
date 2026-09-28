@@ -26,9 +26,6 @@ impl TopicFsm {
             tasks: HashMap::new(),
         }
     }
-    pub fn main_status(&self) -> Option<AgentStatus> {
-        self.main_instance_id.and_then(|id| self.task_state(id))
-    }
     pub fn main_instance_id(&self) -> Option<i64> {
         self.main_instance_id
     }
