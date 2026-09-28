@@ -14,7 +14,7 @@ use std::collections::hash_map::Entry;
 use std::path::PathBuf;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
-use wind_ai::message::{Content, Message as AiMessage, Role};
+use wind_ai::message::{Content, Message};
 use wind_ai::tool::FunctionCall;
 use wind_mcp::client::registry::RegistryHandle;
 
@@ -46,7 +46,7 @@ pub enum TaskNotification {
         instance_id: i64,
         message_id: i64,
         index: i64,
-        delta: AiMessage,
+        delta: Message,
         partial: bool,
     },
     ApprovalRequired {
@@ -57,7 +57,12 @@ pub enum TaskNotification {
     Finish {
         instance_id: i64,
         message_id: i64,
-        error: Option<String>,
+        content: Vec<Content>,
+    },
+    Failed {
+        instance_id: i64,
+        message_id: i64,
+        error: String,
     },
     Cancelled {
         instance_id: i64,
@@ -72,6 +77,7 @@ impl std::fmt::Display for TaskNotification {
             | TaskNotification::Message { instance_id, .. }
             | TaskNotification::ApprovalRequired { instance_id, .. }
             | TaskNotification::Finish { instance_id, .. }
+            | TaskNotification::Failed { instance_id, .. }
             | TaskNotification::Cancelled { instance_id } => instance_id,
         };
         write!(f, "[TaskNotification {name}] (instance_id = {instance_id})")
@@ -92,17 +98,11 @@ pub struct TaskSpec {
     pub chat_context: ChatContext,
     pub instance: AgentInstance,
     pub agent: Option<AgentDefinition>,
-    /// 用户任务
-    pub user_input: Vec<Content>,
     /// 当前任务对应的消息 id
     pub message_id: i64,
-    pub contexts: Vec<AiMessage>,
+    pub contexts: Vec<Message>,
 }
 /// 待完成的子任务记录
-///
-/// 当父实例 spawn 出一个子实例后，会登记一条该记录，用于在子实例
-/// 完成任务时，通过 `reply` 通道把结果回传给等待中的父实例
-/// 父实例（`parent_instance_id`）在此等待子实例（`instance_id`）完成
 pub struct PendingChild {
     pub parent_instance_id: i64,
     pub instance_id: i64,
@@ -158,25 +158,6 @@ impl TaskManager {
             pending: vec![],
         };
     }
-
-    /// 取任务输出：该消息最后一块 assistant 简单内容
-    ///
-    /// 内容块粒度下消息的最后一块很可能是工具调用结果，因此需要向前扫描
-    pub async fn get_output(&self, message_id: i64) -> Result<Vec<Content>> {
-        let contents = self
-            .storage
-            .message_content()
-            .list_by_message(message_id)
-            .await?;
-        let output = contents
-            .into_iter()
-            .rev()
-            .find(|content| content.data.is_simple() && content.data.role == Role::Assistant)
-            .map(|content| content.data.content)
-            .unwrap_or_else(|| vec![Content::new_text("Task has no valid result".to_string())]);
-        Ok(output)
-    }
-
     /// 登记子任务记录
     pub fn insert_pending(&mut self, child: PendingChild) {
         if !self
@@ -269,7 +250,6 @@ impl TaskManager {
             chat_context: chat_ctx,
             instance,
             agent,
-            user_input,
             message_id: created.assistant.id,
             contexts,
         };
@@ -292,7 +272,6 @@ impl TaskManager {
                 .await?;
         chat_ctx.tools = tools;
 
-        // 待恢复的任务以最后两条消息构成一对 user-assistant
         let messages = self.storage.message().list_by_instance(instance.id).await?;
         let mut it = messages.iter().rev();
         let assistant = it.next().ok_or_else(|| {
@@ -308,28 +287,14 @@ impl TaskManager {
                 instance.id, user.id, assistant.from_id
             )));
         }
-
-        // 用户任务就是该用户消息的第一块内容
-        let user_input = self
-            .storage
-            .message_content()
-            .list_by_message(user.id)
-            .await?
-            .into_iter()
-            .next()
-            .map(|content| content.data.content)
-            .unwrap_or_default();
-
-        let message_id = assistant.id;
         let contexts =
             helper::get_message_contexts(&self.storage, instance.id, agent.as_ref()).await?;
         let spec = TaskSpec {
             chat_context: chat_ctx,
             agent,
-            message_id,
+            message_id: assistant.id,
             contexts,
             instance,
-            user_input,
         };
         if let Some(entry) = self.get_entry(instance_id) {
             entry.handler.start(spec).await?;
@@ -363,11 +328,8 @@ impl TaskManager {
                 "background mode is not supported yet".into(),
             ));
         }
-
         let tx = self.storage.begin().await?;
-
         let agent = helper::get_def_by_key(&tx.storage(), &request.agent_key).await?;
-
         let instance = helper::create_child_instance(
             &tx.storage(),
             topic_id,
@@ -431,7 +393,6 @@ impl TaskManager {
             contexts,
             instance,
             agent: Some(agent),
-            user_input,
         };
 
         Ok((created, spec))
@@ -480,25 +441,13 @@ impl TaskManager {
     }
 
     /// 保存一块消息内容
-    pub async fn persist_content(&self, message_id: i64, data: AiMessage) -> Result<()> {
+    pub async fn persist_content(&self, message_id: i64, data: Message) -> Result<()> {
         self.storage
             .message_content()
             .create(CreateMessageContent { message_id, data })
             .await?;
         Ok(())
     }
-
-    // /// 在消息末尾追加一条错误内容块
-    // ///
-    // /// 任务失败或取消时让模型与用户都能看到中断原因
-    // pub async fn persist_error_content(&self, message_id: i64, error: &str) -> Result<()> {
-    //     let data = AiMessage::new_simple(
-    //         Role::Assistant,
-    //         vec![Content::new_text(error.to_string())],
-    //         None,
-    //     );
-    //     self.persist_content(message_id, data).await
-    // }
 
     pub async fn persist_approval_state(
         &self,

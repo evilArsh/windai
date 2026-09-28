@@ -22,7 +22,7 @@ Copy `.env.example` to `.env` and fill in `TEST_*` values for the `.env`-gated t
 - `windai/core/tests/storage.rs` — 32 tests, active, no `.env` needed
 - `windai/core/tests/schema.rs` — 15 tests, the schema↔model contract（13 张表各一条列断言 + `dropped_columns_are_absent` + `dropped_tables_are_absent`），no `.env`
 - `windai/core/tests/autoincrement.rs` — 7 tests, 自增主键的回归测试（13 张表自增生效 / 不复用 / 严格递增 / `create()` 返回值落库一致 / 批量插入的自然键关联与分块 / 布尔列往返），no `.env`
-- `windai/core/tests/message_content.rs` — 11 tests, `message_contents` 契约（`create` 追加成行、按 id 排序、token 汇总、级联删除、老 schema 写入报错）与上下文获取（展平顺序、`max_context` 按消息条数截断、`is_excluded` 消息的内容不进上下文），no `.env`
+- `windai/core/tests/message_content.rs` — 9 tests, `message_contents` 契约（`create` 追加成行、按 id 排序、级联删除、老 schema 写入报错）与上下文获取（展平顺序、`max_context` 按消息条数截断、`is_excluded` 消息的内容不进上下文），no `.env`
 - `windai/core/src/storage/message.rs` (cfg test) — 3 tests：`list_contexts` 的排除/删除/boundary 语义（`list_contexts` 是 crate 内部 API，集成测试访问不到）
 - `windai/core/src/agent/runtime.rs` (cfg test) — 7 tests：`find_pending_calls` 的待办工具调用判定（plan.md 要求它随函数一起从 ChatRunner 迁到 runtime）
 - `windai/core/tests/agent_runtime.rs` — 3 tests: runtime 生命周期、「终态事件先于关流到达订阅者」，以及终态内容按 MessageContent 落库
@@ -89,7 +89,7 @@ All `create()` methods return the **full record** (`Result<Topic>`, `Result<Mode
 
 **Messages hang off an instance, not a topic**: `MessageStorage` queries by instance — `list_by_instance(instance_id)` (all messages of an instance, ordered). `list_contexts(instance_id)` (the subset usable as chat context: not `is_excluded`, and only messages after the last `is_boundary = true` row) is **`pub(crate)`** —— 只供 core 内部（`helper::load_contexts`）使用，不对外暴露
 
-**消息正文在 `message_contents`**：`Message` 只承载会话结构（谁、属于哪个实例、是否边界/被排除、token 汇总），正文按内容块拆到 `MessageContentStorage`。**块顺序由自增 `id` 决定**，`MessageContentStorage::create` 只追加、不覆盖（一次模型响应一块、工具调用结果一块）；写入后在同一事务内用子查询把 `messages.input_tokens` / `output_tokens` 重算为全部块的汇总 —— 因此这两个 token 字段是**派生值**，`UpdateMessage` 不暴露它们；`sync_message_tokens` 兼作父消息存在性校验（消息不存在则 `RowNotFound` 并回滚，不留下孤儿内容行）
+**消息正文在 `message_contents`**：`Message` 只承载会话结构（谁、属于哪个实例、是否边界/被排除），正文按内容块拆到 `MessageContentStorage`。**块顺序由自增 `id` 决定**，`MessageContentStorage::create` 只追加、不覆盖（一次模型响应一块、工具调用结果一块），且**不维护 `messages` 上的任何汇总列** —— token 只落在块上，读取方按内容块自行累加
 
 **Transactions**: `storage.with_tx(|inner| async { ... }).await` (NOT `.tx()`). For multi-step transactions: `storage.begin().await` → `StorageTx` (a `Storage` bound to a transaction) with `.storage()` / `.commit()` / `.rollback()`.
 
@@ -101,7 +101,7 @@ All `create()` methods return the **full record** (`Result<Topic>`, `Result<Mode
 - `vec_to_str_default(Some(v))` → JSON string; `vec_to_str_default(None)` → `"[]"` — always writes the column
 - `vec_to_str_optional(v)` → `Some(json)` / `None` — skip the column when `None`; use this for `update!` so absent fields are not written
 
-`UpdateMessage` has only `model_id` — 正文与 token 都不再由客户端直写（正文走 `message_contents`，token 由内容汇总）。Tool approvals are no longer stored on messages (see Tool Approval Flow).
+`UpdateMessage` has only `model_id` — 正文不再由客户端直写（正文走 `message_contents`）。Tool approvals are no longer stored on messages (see Tool Approval Flow).
 
 **`AgentStorage` 的可见性**：`get_instance` / `get_main_instance` / `list_instances_by_topic` / `list_definitions_by_topic`，以及 4 个面向调用方的能力映射方法（`create_topic_agent_map` / `list_agent_maps_by_topic` / `get_agent_map` / `delete_topic_agent_map`）都是 `pub`；`create_instance` / `update_instance` / `delete_instances` 同样是 `pub`，级联用的 `batch_delete_agent_maps_by_topics` 是 `pub(crate)`，`select_instances` / `select_agent_maps` 两个查询构造器是私有的（`select_definitions` 是 `pub`，供 facade 直接构造查询）
 
@@ -299,9 +299,9 @@ Column notes: `topics` 有 `parent_id`（tree structure is kept, but **no code c
 
 **布尔列**：一律 `BOOLEAN`，比较用 `push_bind(bool)` 或 `= TRUE` 字面量，**不要写 `= 0` / `= 1`** —— SQLite 的 BOOLEAN 只有 NUMERIC 亲和性所以能跑，PostgreSQL 会报 `operator does not exist: boolean = integer`
 
-**No migrations**: `schema.rs` runs only `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS`. An existing DB file is never altered, so after any column/index change you must delete the local DB file (`~/.windai/windai.db`, or the file under `WIND_ROOT_DIR`) and let it be re-created — otherwise queries fail against the stale schema。把 `messages.content` 拆成 `message_contents` 属于这类改动：**必须删掉本地库文件**
+**No migrations**: `schema.rs` runs only `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS`. An existing DB file is never altered, so after any column/index change you must delete the local DB file (`~/.windai/windai.db`, or the file under `WIND_ROOT_DIR`) and let it be re-created — otherwise queries fail against the stale schema。把 `messages.content` 拆成 `message_contents` 属于这类改动：**必须删掉本地库文件**。反之，只是从表里去掉新代码不再读写的列（如 `messages.input_tokens` / `output_tokens` —— 旧库上它们是 `NOT NULL DEFAULT 0`，新代码既不选也不插）时旧库仍可继续使用，无需删库
 
-**Key constraints**: `message_contents` 只有普通索引 `idx_message_contents_message (message_id, id)` —— 用于 `list_by_message` / `list_by_messages` 的过滤与排序，`message_id` 上没有外键，父消息存在性由 `sync_message_tokens` 保证；`agent_instances` 有 topic / agent / parent / (topic, role) 普通索引，以及 `UNIQUE (topic_id) WHERE role = 'main'` ——「一个 topic 至多一个主实例」由 partial unique index 与应用层 `get_main_instance` 的 `ensure_lte_one` 共同保证；`topic_agent_maps` 只有 `UNIQUE (topic_id, agent_id)` ——「一个定义在一个 topic 至多映射一次」。**`topic_agent_maps` 没有 `role` 列**，能力映射不表达主 Agent 偏好
+**Key constraints**: `message_contents` 只有普通索引 `idx_message_contents_message (message_id, id)` —— 用于 `list_by_message` / `list_by_messages` 的过滤与排序；`message_id` 上没有外键，写入**不校验**父消息是否存在（无孤儿内容行保护）；`agent_instances` 有 topic / agent / parent / (topic, role) 普通索引，以及 `UNIQUE (topic_id) WHERE role = 'main'` ——「一个 topic 至多一个主实例」由 partial unique index 与应用层 `get_main_instance` 的 `ensure_lte_one` 共同保证；`topic_agent_maps` 只有 `UNIQUE (topic_id, agent_id)` ——「一个定义在一个 topic 至多映射一次」。**`topic_agent_maps` 没有 `role` 列**，能力映射不表达主 Agent 偏好
 
 **Delete cascades**: `AgentStorage::delete_instances` 删实例时连带 `tool_approval_requests` → `message_contents`（按 `message_id IN (SELECT id FROM messages WHERE instance_id IN …)`）→ `messages` → `agent_instances`；`MessageStorage::delete` 删单条消息时同事务删它的全部内容块。`TopicStorage::delete_topics` 只删该 topic 自己的 `agent_definitions` + `topic_agent_maps` + 其下实例（含上面那几张表）+ 残留审批行 + topic 行；**不**级联子 topic（callers must pass child ids explicitly）
 
@@ -331,7 +331,7 @@ Column notes: `topics` 有 `parent_id`（tree structure is kept, but **no code c
 | `windai/core/tests/schema.rs` | 15 tests — the schema↔model contract: 13 张表各一条列断言（`assert_table_columns`），加 `dropped_columns_are_absent` 与 `dropped_tables_are_absent` |
 | `windai/core/tests/autoincrement.rs` | 7 tests — 自增主键契约：13 张表 id 非空且落在 JS 安全整数内、不复用（守护 `AUTOINCREMENT`）、严格递增、`RETURNING id` 与库中一致、`create_requests` 的自然键关联与超限分块、布尔列往返 |
 | `windai/core/tests/agent_runtime.rs` | 3 tests — runtime 生命周期、`terminal_event_is_delivered_before_stream_closes`（`Effect::CloseEventStream` 的时序）、终态内容按 MessageContent 落库 |
-| `windai/core/tests/message_content.rs` | 11 tests — `message_contents` 契约（`create` 追加、排序、token 汇总、级联删除、父消息存在性、老 schema 写入报错）与上下文获取（展平顺序、`max_context` 截断、`is_excluded` 隔离） |
+| `windai/core/tests/message_content.rs` | 9 tests — `message_contents` 契约（`create` 追加、排序、级联删除、老 schema 写入报错）与上下文获取（展平顺序、`max_context` 截断、`is_excluded` 隔离） |
 | `windai/core/tests/agent_flow.rs` | 8 tests — 假 SSE 服务驱动的全链路：审批恢复后块按 id 追加、SSE `index` 是本次运行内的块序号、取消落错误块、历史工具调用不重放、错误文本非 JSON、空响应不落块、`user_input_content_is_pushed_over_sse` / `child_user_input_content_is_pushed_over_sse`（用户输入与子实例首轮输入的内容块经 SSE 下发） |
 | `windai/core/tests/core_chat.rs` | Non-MCP chat test (`test_agent_chat`, `#[ignore]` behind `.env`): seeds providers/agents/topic 能力映射, subscribes to topic events, drives `create_task` |
 | `windai/core/tests/chat.rs` | AI adapter tests (needs `.env`) |

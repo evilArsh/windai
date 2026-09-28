@@ -268,16 +268,13 @@ impl TopicRuntime {
                 };
                 event
             }
-            Effect::Completed {
+            Effect::Finish {
                 instance_id,
                 status,
                 message_id,
+                content,
             } => {
-                let output = match self.task_mgr.get_output(message_id).await {
-                    Ok(output) => output,
-                    Err(err) => vec![Content::new_text(err.to_string())],
-                };
-                let mut event = self.handle_pending(instance_id, status, output);
+                let mut event = self.handle_pending(instance_id, status, content);
                 event.push(FsmEvent::Emit(TopicEvent::MessageFinished {
                     instance_id,
                     message_id,

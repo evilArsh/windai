@@ -125,8 +125,6 @@ fn user_msg(
         instance_id,
         is_boundary,
         is_excluded,
-        input_tokens: 5,
-        output_tokens: 0,
     }
 }
 
@@ -144,8 +142,6 @@ fn asst_msg(
         instance_id,
         is_boundary,
         is_excluded,
-        input_tokens: 0,
-        output_tokens: 10,
     }
 }
 

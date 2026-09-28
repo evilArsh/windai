@@ -57,10 +57,11 @@ pub enum Effect {
         message_id: i64,
         calls: Vec<FunctionCall>,
     },
-    Completed {
+    Finish {
         instance_id: i64,
         message_id: i64,
         status: AgentStatus,
+        content: Vec<Content>,
     },
     Failed {
         instance_id: i64,
@@ -136,7 +137,7 @@ impl std::fmt::Display for Effect {
                 (name_ref, format!("(message_id = {message_id})"))
             }
             Effect::ApprovalRequest { .. } => (name_ref, String::new()),
-            Effect::Completed { instance_id, .. } => {
+            Effect::Finish { instance_id, .. } => {
                 (name_ref, format!("(instance_id = {instance_id})"))
             }
             Effect::Failed { instance_id, .. } => {

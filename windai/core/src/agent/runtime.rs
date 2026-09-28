@@ -2,7 +2,7 @@ use super::function_call::partition_tool_calls_by_policy;
 use super::host::AgentHost;
 use super::task::{TaskNotification, TaskSpec};
 use super::tool::{self, AGENT_TOOL_PREFIX, SpawnAgentResponse};
-use crate::chat::runner::{ChatContext, pending_tool_calls};
+use crate::chat::runner::pending_tool_calls;
 use crate::chat::{ChatEvent, run_chat};
 use crate::error::{CoreError, Result};
 use crate::models::ToolApprovalStatus;
@@ -34,25 +34,11 @@ impl std::fmt::Display for ToolPlan {
     }
 }
 
-macro_rules! try_or_finish {
-    ($expr:expr) => {
-        match $expr {
-            Ok(v) => v,
-            Err(e) => return Output::Agent(self.build_finish_error(e)),
-        }
-    };
-}
-
 #[derive(strum::AsRefStr)]
 enum Action {
     Continue,
     Resume { contexts: Vec<Message> },
     Stop,
-}
-
-enum Output {
-    Agent(TaskNotification),
-    Resume { contexts: Vec<Message> },
 }
 
 /// 找出本轮待处理的工具调用
@@ -61,50 +47,42 @@ fn find_pending_calls(contexts: &[Message]) -> Result<Vec<&FunctionCall>> {
         .ok_or_else(|| CoreError::Chat("No tool_request found in assistant content".into()))
 }
 
-fn is_blank(message: &Message) -> bool {
-    let empty_text = message.content.iter().all(|content| match content {
-        Content::Text { data } => data.is_empty(),
-        _ => false,
-    });
-    empty_text
-        && message
-            .tool_calls
-            .as_ref()
-            .is_none_or(|calls| calls.is_empty())
-        && message
-            .reasoning_content
-            .as_ref()
-            .is_none_or(String::is_empty)
+struct BlockState {
+    /// partial 缓存块
+    data: Message,
+    /// 本次运行内的块序号
+    index: i64,
+}
+
+impl BlockState {
+    fn new() -> Self {
+        Self {
+            data: Message::default(),
+            index: 0,
+        }
+    }
 }
 
 pub struct AgentRuntime {
     host: Arc<dyn AgentHost>,
     ctx: CancellationToken,
-    /// partial 缓存块
-    block: Message,
-    block_index: i64,
     task: TaskSpec,
 }
 
 impl AgentRuntime {
     pub fn new(ctx: CancellationToken, host: Arc<dyn AgentHost>, task: TaskSpec) -> Self {
-        Self {
-            ctx,
-            host,
-            block: Message::default(),
-            block_index: 1,
-            task,
-        }
+        Self { ctx, host, task }
     }
 
     /// 开始对话
     pub async fn run(mut self) {
-        let chat_context = self.task.chat_context;
-        let mut contexts = self.task.contexts;
+        let chat_context = &self.task.chat_context;
+        let mut contexts = std::mem::take(&mut self.task.contexts);
+        let mut block = BlockState::new();
         let mut auto_resume_count = 0usize;
         const MAX_AUTO_RESUME: usize = 32;
         loop {
-            let mut stream = run_chat(&chat_context, contexts);
+            let mut stream = run_chat(chat_context, contexts);
             self.send_event(TaskNotification::Started {
                 instance_id: self.task.instance.id,
             })
@@ -116,9 +94,7 @@ impl AgentRuntime {
                         return;
                     }
                     Some(event) = stream.next() => {
-                        let action = self
-                            .handle_chat_event(&chat_context, event)
-                            .await;
+                        let action = self.handle_chat_event(&mut block, event).await;
                         match action {
                             Action::Continue => {
                                 // 内容块尚未结束
@@ -129,10 +105,8 @@ impl AgentRuntime {
                             } => {
                                 auto_resume_count += 1;
                                 if auto_resume_count > MAX_AUTO_RESUME {
-                                    self.send_event(self.build_finish_error(
-                                        "max auto resume limit exceeded",
-                                    ))
-                                    .await;
+                                    self.finish_with_error("max auto resume limit exceeded".to_string())
+                                        .await;
                                     return;
                                 }
                                 contexts = next_contexts;
@@ -145,28 +119,35 @@ impl AgentRuntime {
                     }
                 }
             }
-            log::debug!("next block index: {}", self.block_index);
+            log::debug!("next block index: {}", block.index);
         }
     }
 
-    fn build_finish_error(&self, error: impl ToString) -> TaskNotification {
-        TaskNotification::Finish {
+    async fn finish_with_error(&self, error: String) {
+        self.send_event(TaskNotification::Failed {
             instance_id: self.task.instance.id,
             message_id: self.task.message_id,
-            error: Some(error.to_string()),
-        }
+            error,
+        })
+        .await;
     }
 
-    async fn push_chunk(&mut self, delta: Message) {
-        self.block.append_chunk(&delta);
-        self.broadcast_delta(delta).await;
+    async fn finish(&self, content: Vec<Content>) {
+        self.send_event(TaskNotification::Finish {
+            instance_id: self.task.instance.id,
+            message_id: self.task.message_id,
+            content,
+        })
+        .await;
     }
 
-    async fn broadcast_delta(&self, delta: Message) {
+    /// 拼接内容块，并且向上发送消息
+    async fn push_chunk(&self, block: &mut BlockState, delta: Message) {
+        block.data.append_chunk(&delta);
         self.send_event(TaskNotification::Message {
             message_id: self.task.message_id,
             instance_id: self.task.instance.id,
-            index: self.block_index,
+            index: block.index,
             delta,
             partial: true,
         })
@@ -174,28 +155,25 @@ impl AgentRuntime {
     }
 
     /// 结束当前内容块，递增块索引
-    async fn close_block(&mut self) -> Option<Message> {
-        let data = std::mem::take(&mut self.block);
-        if is_blank(&data) {
-            return None;
-        }
-        self.persist_block(data.clone()).await;
-        Some(data)
+    async fn close_block(&self, block: &mut BlockState) -> Message {
+        let data = std::mem::take(&mut block.data);
+        self.persist_block(block, data.clone()).await;
+        data
     }
 
-    async fn persist_block(&mut self, data: Message) {
+    async fn persist_block(&self, block: &mut BlockState, data: Message) {
         if self.ctx.is_cancelled() {
             return;
         }
         self.send_event(TaskNotification::Message {
             instance_id: self.task.instance.id,
             message_id: self.task.message_id,
-            index: self.block_index,
+            index: block.index,
             delta: data,
             partial: false,
         })
         .await;
-        self.block_index += 1;
+        block.index += 1;
     }
 
     /// 执行工具调用和提交工具调用审批，存在以下情况
@@ -204,26 +182,26 @@ impl AgentRuntime {
     ///
     /// 2. 上一轮对话中工具审批完毕，处理审批结果
     async fn handle_await_tool_call(
-        &mut self,
-        chat_context: &ChatContext,
-        mut contexts: Vec<Message>,
+        &self,
+        block: &mut BlockState,
+        contexts: &mut Vec<Message>,
         tools: Vec<FunctionCall>,
-    ) -> Output {
-        let plan = try_or_finish!(self.make_tool_plan(chat_context, tools).await);
+    ) -> Result<()> {
+        let plan = self.make_tool_plan(tools).await?;
         let mut call_results: Vec<FunctionCallOutput> = vec![];
         log::debug!("{}", plan);
         // MCP 工具执行
         if !plan.exec_mcp.is_empty() {
-            let tool_result = try_or_finish!(self.host.execute_tool_calls(&plan.exec_mcp).await);
+            let tool_result = self.host.execute_tool_calls(&plan.exec_mcp).await?;
             call_results.extend(tool_result);
         }
         // Allowed 工具执行
         if !plan.exec_agent.is_empty() {
-            let plan = try_or_finish!(tool::parse_agent_action(&plan.exec_agent));
+            let action_plan = tool::parse_agent_action(&plan.exec_agent)?;
             // 合并后的 list_agents 只查询一次
-            if let Some(call_ids) = plan.list_agents {
-                let response = try_or_finish!(self.host.list_agents().await);
-                let result_json = try_or_finish!(serde_json::to_value(&response));
+            if let Some(call_ids) = action_plan.list_agents {
+                let response = self.host.list_agents().await?;
+                let result_json = serde_json::to_value(&response)?;
                 for call_id in call_ids {
                     call_results.push(FunctionCallOutput {
                         id: call_id,
@@ -231,7 +209,7 @@ impl AgentRuntime {
                     });
                 }
             }
-            let futures = plan.spawn_agents.into_iter().map(|action| {
+            let futures = action_plan.spawn_agents.into_iter().map(|action| {
                 let host = self.host.clone();
                 async move {
                     let call_id = action.call_id;
@@ -239,7 +217,7 @@ impl AgentRuntime {
                     Ok::<SpawnAgentResponse, CoreError>(result)
                 }
             });
-            let results = try_or_finish!(futures::future::try_join_all(futures).await);
+            let results = futures::future::try_join_all(futures).await?;
             for result in results {
                 call_results.push(FunctionCallOutput {
                     id: result.call_id,
@@ -262,30 +240,30 @@ impl AgentRuntime {
                 .collect::<Vec<FunctionCallOutput>>();
             call_results.extend(tool_result);
         };
-        // 工具调用结果自成一块内容；全部调用都在等待审批时结果为空，此时不产生块
+
         if !call_results.is_empty() {
             let tool_result = Message::new_tool_result(call_results);
             contexts.push(tool_result.clone());
-            self.persist_block(tool_result).await;
+            self.persist_block(block, tool_result).await;
         }
 
         // 通知审批
         if !plan.waiting.is_empty() {
-            Output::Agent(TaskNotification::ApprovalRequired {
+            self.send_event(TaskNotification::ApprovalRequired {
                 calls: plan.waiting,
                 message_id: self.task.message_id,
                 instance_id: self.task.instance.id,
             })
-        } else {
-            Output::Resume { contexts }
+            .await;
         }
+        Ok(())
     }
 
-    async fn handle_chat_event(&mut self, chat_context: &ChatContext, event: ChatEvent) -> Action {
+    async fn handle_chat_event(&self, block: &mut BlockState, event: ChatEvent) -> Action {
         log::debug!("{}", event);
         match event {
             ChatEvent::Partial { delta } => {
-                self.push_chunk(delta).await;
+                self.push_chunk(block, delta).await;
                 Action::Continue
             }
             ChatEvent::Finish {
@@ -293,47 +271,55 @@ impl AgentRuntime {
                 error,
             } => {
                 if let Some(error) = error {
-                    self.push_chunk(Message::new_simple(
-                        Role::Assistant,
-                        vec![Content::new_text(error.to_string())],
-                        None,
-                    ))
+                    self.push_chunk(
+                        block,
+                        Message::new_simple(
+                            Role::Assistant,
+                            vec![Content::new_text(error.clone())],
+                            None,
+                        ),
+                    )
                     .await;
-                    self.close_block().await;
+                    self.close_block(block).await;
+                    self.finish_with_error(error).await;
                     return Action::Stop;
                 }
                 // 本轮内容结束，工具调用结果从下一块开始
-                let Some(message) = self.close_block().await else {
-                    return Action::Stop;
-                };
+                let message = self.close_block(block).await;
                 let has_tool_calls = message
                     .tool_calls
                     .as_ref()
                     .is_some_and(|calls| !calls.is_empty());
-                contexts.push(message);
                 if !has_tool_calls {
+                    self.finish(message.content).await;
                     return Action::Stop;
                 }
+                contexts.push(message);
                 let pendings = match find_pending_calls(&contexts) {
                     Ok(tools) => tools.into_iter().cloned().collect::<Vec<FunctionCall>>(),
                     Err(err) => {
-                        self.push_chunk(Message::new_simple(
-                            Role::Assistant,
-                            vec![Content::new_text(err.to_string())],
-                            None,
-                        ))
+                        self.push_chunk(
+                            block,
+                            Message::new_simple(
+                                Role::Assistant,
+                                vec![Content::new_text(err.to_string())],
+                                None,
+                            ),
+                        )
                         .await;
-                        self.close_block().await;
+                        self.close_block(block).await;
+                        self.finish_with_error(err.to_string()).await;
                         return Action::Stop;
                     }
                 };
+                // 执行工具调用，Block 序列递增
                 match self
-                    .handle_await_tool_call(chat_context, contexts, pendings)
+                    .handle_await_tool_call(block, &mut contexts, pendings)
                     .await
                 {
-                    Output::Resume { contexts } => Action::Resume { contexts },
-                    Output::Agent(output) => {
-                        self.send_event(output).await;
+                    Ok(_) => Action::Resume { contexts },
+                    Err(err) => {
+                        self.finish_with_error(err.to_string()).await;
                         Action::Stop
                     }
                 }
@@ -344,11 +330,7 @@ impl AgentRuntime {
     async fn send_event(&self, signal: TaskNotification) {
         self.host.emit(signal).await;
     }
-    async fn make_tool_plan(
-        &self,
-        chat_context: &ChatContext,
-        pending: Vec<FunctionCall>,
-    ) -> Result<ToolPlan> {
+    async fn make_tool_plan(&self, pending: Vec<FunctionCall>) -> Result<ToolPlan> {
         // 获取所有历史审批请求
         let approvals = self.host.list_approvals(self.task.message_id).await?;
         let by_call_id: HashMap<_, _> = approvals
@@ -376,7 +358,7 @@ impl AgentRuntime {
 
         let (auto, manual) = partition_tool_calls_by_policy(
             unhandled,
-            chat_context.topic.tool_approval_policy.as_ref(),
+            self.task.chat_context.topic.tool_approval_policy.as_ref(),
         );
         approved.extend(auto);
         waiting.extend(manual);

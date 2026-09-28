@@ -21,13 +21,7 @@ pub struct Message {
     /// 标识当前消息作为聊天上下文分割点
     pub is_boundary: bool,
     /// 被排除的消息不会作为对话上下文
-    ///
-    /// user-assistant 消息对必须同时不被排除才能作为上下文
     pub is_excluded: bool,
-    /// 用户输入的 token 数，取全部 [`MessageContent`] 的汇总
-    pub input_tokens: i32,
-    /// 模型输出的 token 数，取全部 [`MessageContent`] 的汇总
-    pub output_tokens: i32,
     /// 创建时间
     pub created_at: i64,
 }
@@ -41,8 +35,6 @@ impl<'s> sqlx::FromRow<'s, DbRow> for Message {
             instance_id: row.try_get("instance_id")?,
             is_boundary: row.try_get("is_boundary")?,
             is_excluded: row.try_get("is_excluded")?,
-            input_tokens: row.try_get("input_tokens")?,
-            output_tokens: row.try_get("output_tokens")?,
             created_at: row.try_get("created_at")?,
         })
     }
@@ -113,19 +105,15 @@ pub struct CreateMessage {
     pub instance_id: i64,
     pub is_boundary: bool,
     pub is_excluded: bool,
-    pub input_tokens: i32,
-    pub output_tokens: i32,
 }
 
-/// 创建 [`MessageContent`]，块顺序即插入顺序
+/// 创建 [`MessageContent`]
 pub struct CreateMessageContent {
     pub message_id: i64,
     pub data: AiMessage,
 }
 
 /// 更新消息
-///
-/// 正文由 [`CreateMessageContent`] 写入、token 由内容汇总刷新，两者都不在此处更新
 #[derive(utoipa::ToSchema, Serialize, Deserialize, Default)]
 pub struct UpdateMessage {
     /// 模型 ID

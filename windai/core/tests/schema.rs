@@ -115,8 +115,6 @@ async fn messages_columns_match_model() {
             "instance_id",
             "is_boundary",
             "is_excluded",
-            "input_tokens",
-            "output_tokens",
             "created_at",
         ],
     )
@@ -272,6 +270,9 @@ async fn dropped_columns_are_absent() {
     for (table, col) in [
         ("messages", "content"),
         ("messages", "stream"),
+        // token 不再由服务端汇总，读取方按内容块累加
+        ("messages", "input_tokens"),
+        ("messages", "output_tokens"),
         ("agent_instances", "chat_config_id"),
         ("agent_instances", "tool_approval_policy"),
         ("agent_instances", "enabled"),

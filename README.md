@@ -347,7 +347,7 @@ A typical tool-call flow: `InstanceCreated → MessageCreated(user) → Message 
 | `windai/core/tests/schema.rs`        | 15 tests — schema↔model column contract for all 13 tables, plus `dropped_columns_are_absent` / `dropped_tables_are_absent` |
 | `windai/core/tests/agent_runtime.rs` | 3 tests — runtime lifecycle, the terminal event must reach subscribers before the stream closes, and terminal content is persisted as `MessageContent` |
 | `windai/core/tests/autoincrement.rs` | 7 tests — autoincrement primary keys across all 13 tables |
-| `windai/core/tests/message_content.rs` | 11 tests — `message_contents` contract (`create` append, id ordering, token rollup, cascade, missing parent, stale schema write fails loudly) and context assembly (flatten order, `max_context` truncation, `is_excluded` isolation) |
+| `windai/core/tests/message_content.rs` | 9 tests — `message_contents` contract (`create` append, id ordering, cascade, stale schema write fails loudly) and context assembly (flatten order, `max_context` truncation, `is_excluded` isolation) |
 | `windai/core/tests/agent_flow.rs` | 8 tests — full agent flow driven by a local fake SSE server: blocks appended in id order after resume, SSE `index` as the per-run block sequence, cancel error block, no stale tool-call replay, non-JSON error text, blank block skipped, plus `user_input_content_is_pushed_over_sse` / `child_user_input_content_is_pushed_over_sse` (user input blocks pushed over SSE, main and child) |
 | `windai/core/src/agent/runtime.rs` (cfg test) | 7 tests — `find_pending_calls` pending tool-call detection |
 | `windai/core/tests/core_chat.rs`     | One test (`test_agent_chat`, `#[ignore]` behind `.env`): seeds providers/agents/maps, subscribes to topic events, drives `create_task` |

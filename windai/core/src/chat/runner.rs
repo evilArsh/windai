@@ -43,12 +43,11 @@ pub fn run_chat<'a>(
     ctx: &'a ChatContext,
     contexts: Vec<Message>,
 ) -> Pin<Box<dyn Stream<Item = ChatEvent> + Send + 'a>> {
-    // TODO 判断移交到AgentRuntime
-    // if has_pending_calls(&contexts) {
-    //     return Box::pin(stream! {
-    //         yield ChatEvent::AwaitToolCall{ contexts };
-    //     });
-    // }
+    if has_pending_calls(&contexts) {
+        return Box::pin(stream! {
+            yield ChatEvent::Finish{ contexts ,error:None};
+        });
+    }
     let rule = match build_rule(ctx.rule_set.as_ref()) {
         Ok(rule) => rule,
         Err(err) => {
@@ -81,7 +80,7 @@ fn start_chat<'a>(
                     Ok(None) => {}
                     Err(err) => {
                         error_obj = Some(err);
-                        log::debug!("[llm_loop] error: {:#?}", &error_obj);
+                        log::debug!("[chat runner] error: {:#?}", &error_obj);
                     }
                 }
             }

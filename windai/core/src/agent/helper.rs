@@ -40,24 +40,16 @@ pub async fn list_approval_requests(
 ) -> Result<Vec<ToolApprovalRequest>> {
     storage.approval().list_by_message(message_id).await
 }
-
-/// 一条消息的全部正文内容块（按 id 升序）
-///
-/// 组在 `Vec` 中的顺序即消息顺序；无内容的消息不会成组
 struct MessageGroup {
     contents: Vec<AiMessage>,
 }
 
 /// 加载实例的上下文消息组
-///
-/// 消息顺序由 `MessageStorage::list_contexts` 的 id 升序决定，
-/// 消息内部的块顺序由 `message_contents` 的自增 id 升序决定
 async fn load_contexts(storage: &Storage, instance_id: i64) -> Result<Vec<MessageGroup>> {
     let messages = storage.message().list_contexts(instance_id).await?;
     if messages.is_empty() {
         return Ok(Vec::new());
     }
-
     let ids = messages.iter().map(|m| m.id).collect::<Vec<i64>>();
     let mut contents: HashMap<i64, Vec<AiMessage>> = HashMap::new();
     for content in storage.message_content().list_by_messages(&ids).await? {
@@ -67,7 +59,6 @@ async fn load_contexts(storage: &Storage, instance_id: i64) -> Result<Vec<Messag
             .push(content.data);
     }
 
-    // 组顺序以消息顺序为唯一来源，无内容的消息不进入上下文
     Ok(messages
         .into_iter()
         .filter_map(|message| {
@@ -78,8 +69,10 @@ async fn load_contexts(storage: &Storage, instance_id: i64) -> Result<Vec<Messag
         .collect())
 }
 
-/// 按 `max_context` 截断消息条数，再从第一条用户消息开始展平为模型上下文
-fn flatten_contexts(groups: Vec<MessageGroup>, agent: Option<&AgentDefinition>) -> Vec<AiMessage> {
+fn flatten_contexts(
+    mut groups: Vec<MessageGroup>,
+    agent: Option<&AgentDefinition>,
+) -> Vec<AiMessage> {
     if groups.is_empty() {
         return Vec::new();
     }
@@ -88,8 +81,8 @@ fn flatten_contexts(groups: Vec<MessageGroup>, agent: Option<&AgentDefinition>) 
         Some(c) => c.max(1) as usize,
         None => groups.len(),
     };
-    let sliced = &groups[groups.len().saturating_sub(max_context)..];
-    // 截断后窗口可能以助手消息开头，前移到第一条用户消息，保证上下文从用户轮开始
+    let sliced = groups.split_off(groups.len().saturating_sub(max_context));
+    // 保证上下文从用户轮开始
     let start = sliced
         .iter()
         .position(|group| {
@@ -99,9 +92,10 @@ fn flatten_contexts(groups: Vec<MessageGroup>, agent: Option<&AgentDefinition>) 
                 .any(|m| m.is_simple() && m.role == Role::User)
         })
         .unwrap_or(0);
-    sliced[start..]
-        .iter()
-        .flat_map(|group| group.contents.iter().cloned())
+    sliced
+        .into_iter()
+        .skip(start)
+        .flat_map(|group| group.contents)
         .collect()
 }
 
@@ -339,8 +333,6 @@ async fn create_context_inner(
                     model_id: chat_ctx.model.id,
                     is_boundary: false,
                     is_excluded: false,
-                    input_tokens: 0,
-                    output_tokens: 0,
                     instance_id,
                 })
                 .await?;
@@ -362,8 +354,6 @@ async fn create_context_inner(
                     model_id: chat_ctx.model.id,
                     is_boundary: false,
                     is_excluded: false,
-                    input_tokens: 0,
-                    output_tokens: 0,
                     instance_id,
                 })
                 .await?;

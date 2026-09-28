@@ -13,7 +13,6 @@ pub use effect::*;
 pub use event::*;
 use std::collections::HashMap;
 pub use task_fsm::*;
-use wind_ai::message::Content;
 
 pub struct TopicFsm {
     main_instance_id: Option<i64>,
@@ -139,22 +138,31 @@ impl TopicFsm {
             TaskNotification::Finish {
                 instance_id,
                 message_id,
+                content,
+            } => {
+                self.apply_task(
+                    effects,
+                    instance_id,
+                    TaskEvent::Finish {
+                        message_id,
+                        content,
+                    },
+                );
+            }
+            TaskNotification::Failed {
+                instance_id,
+                message_id,
                 error,
             } => {
-                if let Some(error) = error {
-                    self.apply_task(
-                        effects,
-                        instance_id,
-                        TaskEvent::Failed {
-                            error: Content::arr_to_string(&error.content),
-                            message_id: Some(message_id),
-                        },
-                    );
-                } else {
-                    self.apply_task(effects, instance_id, TaskEvent::Finish { message_id });
-                }
+                self.apply_task(
+                    effects,
+                    instance_id,
+                    TaskEvent::Failed {
+                        error,
+                        message_id: Some(message_id),
+                    },
+                );
             }
-
             TaskNotification::Cancelled { instance_id } => {
                 self.apply_task(effects, instance_id, TaskEvent::Cancelled);
             }

@@ -118,8 +118,6 @@ async fn create_message(
             instance_id,
             is_boundary: false,
             is_excluded: false,
-            input_tokens: 0,
-            output_tokens: 0,
         })
         .await
         .expect("创建消息");

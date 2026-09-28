@@ -34,16 +34,12 @@ impl MessageStorage {
                 "instance_id",
                 "is_boundary",
                 "is_excluded",
-                "input_tokens",
-                "output_tokens",
                 "created_at"
             )
         )
     }
 
     /// 保存一条消息
-    ///
-    /// 正文由 [`MessageContentStorage::create`] 单独写入
     pub async fn create(&self, data: CreateMessage) -> Result<Message> {
         let now = now_ts();
         let mut qb = insert!(
@@ -53,8 +49,6 @@ impl MessageStorage {
             ("instance_id", data.instance_id),
             ("is_boundary", data.is_boundary),
             ("is_excluded", data.is_excluded),
-            ("input_tokens", data.input_tokens),
-            ("output_tokens", data.output_tokens),
             ("created_at", now),
         );
         qb.push(" RETURNING id");
@@ -70,8 +64,6 @@ impl MessageStorage {
             instance_id: data.instance_id,
             is_boundary: data.is_boundary,
             is_excluded: data.is_excluded,
-            input_tokens: data.input_tokens,
-            output_tokens: data.output_tokens,
             created_at: now,
         })
     }
@@ -261,8 +253,6 @@ mod tests {
             instance_id,
             is_boundary,
             is_excluded,
-            input_tokens: 5,
-            output_tokens: 0,
         }
     }
 
@@ -278,8 +268,6 @@ mod tests {
             instance_id,
             is_boundary,
             is_excluded,
-            input_tokens: 0,
-            output_tokens: 10,
         }
     }
 

@@ -1,7 +1,7 @@
 use super::super::task::TaskSpec;
 use super::effect::Effect;
 use crate::models::{AgentMode, AgentStatus};
-use wind_ai::{message::Message, tool::FunctionCall};
+use wind_ai::{message::Content, tool::FunctionCall};
 
 /// Agent 任务事件
 #[derive(Debug, strum::AsRefStr)]
@@ -12,11 +12,13 @@ pub enum TaskEvent {
         calls: Vec<FunctionCall>,
     },
     /// 任务完成
-    Finish { message_id: i64 },
+    Finish {
+        message_id: i64,
+        content: Vec<Content>,
+    },
     /// 任务失败
     Failed {
         message_id: Option<i64>,
-        // error: Message,
         error: String,
     },
     /// 任务已取消
@@ -40,9 +42,17 @@ impl std::fmt::Display for TaskEvent {
                 name_ref,
                 format!("(message_id = {}, calls_len = {})", message_id, calls.len()),
             ),
-            TaskEvent::Finish { message_id } => {
-                (name_ref, format!("(message_id = {})", message_id))
-            }
+            TaskEvent::Finish {
+                message_id,
+                content,
+            } => (
+                name_ref,
+                format!(
+                    "(message_id = {}, content_len = {})",
+                    message_id,
+                    content.len()
+                ),
+            ),
             TaskEvent::Failed { message_id, error } => (
                 name_ref,
                 format!("(message_id = {:?}, error = {:?})", message_id, error),
@@ -65,8 +75,6 @@ pub struct TaskFsm {
     instance_id: i64,
     state: AgentStatus,
     mode: AgentMode,
-    /// 本次运行写入的 assistant 消息，取消时用它追加错误内容块
-    message_id: Option<i64>,
 }
 
 impl TaskFsm {
@@ -75,7 +83,6 @@ impl TaskFsm {
             instance_id,
             state: AgentStatus::Idle,
             mode: AgentMode::Sync,
-            message_id: None,
         }
     }
 
@@ -94,7 +101,6 @@ impl TaskFsm {
             (S::Idle | S::Finished | S::Failed | S::Cancelled, E::Start { spec }) => {
                 self.state = S::Running;
                 self.mode = spec.instance.mode.unwrap_or(AgentMode::Sync);
-                self.message_id = Some(spec.message_id);
                 let agent_id = spec.instance.agent_id;
                 vec![
                     Effect::PersistStatus {
@@ -152,7 +158,13 @@ impl TaskFsm {
                     agent_id: None,
                 }]
             }
-            (S::Running, E::Finish { message_id }) => {
+            (
+                S::Running,
+                E::Finish {
+                    message_id,
+                    content,
+                },
+            ) => {
                 self.state = S::Finished;
                 vec![
                     Effect::PersistStatus {
@@ -161,7 +173,8 @@ impl TaskFsm {
                         mode: self.mode,
                         agent_id: None,
                     },
-                    Effect::Completed {
+                    Effect::Finish {
+                        content,
                         instance_id,
                         message_id,
                         status: self.state,

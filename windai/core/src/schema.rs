@@ -54,8 +54,6 @@ CREATE TABLE IF NOT EXISTS messages (
     instance_id     BIGINT NOT NULL,
     is_boundary     BOOLEAN NOT NULL,
     is_excluded     BOOLEAN NOT NULL,
-    input_tokens    BIGINT NOT NULL DEFAULT 0,
-    output_tokens   BIGINT NOT NULL DEFAULT 0,
     created_at      BIGINT,
     updated_at      BIGINT
 );

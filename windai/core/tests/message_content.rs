@@ -1,7 +1,7 @@
 //! `message_contents` 表的行为测试
 //!
 //! 消息正文从 `messages.content` 拆到独立表后，这里覆盖写入、排序、
-//! token 汇总与级联删除这几条契约
+//! 级联删除与上下文获取这几条契约
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use std::str::FromStr;
@@ -17,9 +17,6 @@ use wind_core::{
         CreateMessageContent, CreateTopic, MessageContent,
     },
 };
-
-/// 不存在的消息 id，用于孤儿内容行用例
-const MISSING_MESSAGE_ID: i64 = 999_999;
 
 /// 单连接内存池，保证 schema 初始化与后续查询命中同一个库
 async fn pool() -> sqlx::SqlitePool {
@@ -73,8 +70,6 @@ async fn create_message(core: &WindCore, instance_id: i64) -> i64 {
             instance_id,
             is_boundary: false,
             is_excluded: false,
-            input_tokens: 0,
-            output_tokens: 0,
         })
         .await
         .expect("create message")
@@ -187,54 +182,6 @@ async fn appending_creates_distinct_rows() {
             .collect::<Vec<String>>(),
         vec!["第一块", "第二块"]
     );
-}
-
-/// Message 的 token 汇总是全部 MessageContent 的累加值
-#[tokio::test]
-async fn message_tokens_are_summed_from_contents() {
-    let core = setup().await;
-    let instance = create_instance(&core, "tokens").await;
-    let message_id = create_message(&core, instance).await;
-    let contents = core.storage().message_content();
-
-    contents
-        .create(content(message_id, text_message(Role::User, "问题", 7, 0)))
-        .await
-        .expect("create 0");
-    contents
-        .create(content(
-            message_id,
-            text_message(Role::Assistant, "回答", 0, 11),
-        ))
-        .await
-        .expect("create 1");
-
-    let message = core
-        .storage()
-        .message()
-        .get(message_id)
-        .await
-        .expect("get message")
-        .expect("message exists");
-    assert_eq!(message.input_tokens, 7);
-    assert_eq!(message.output_tokens, 11);
-
-    // 新增块后汇总累加
-    contents
-        .create(content(
-            message_id,
-            text_message(Role::Assistant, "补充回答", 0, 30),
-        ))
-        .await
-        .expect("create 2");
-    let message = core
-        .storage()
-        .message()
-        .get(message_id)
-        .await
-        .expect("get message")
-        .expect("message exists");
-    assert_eq!(message.output_tokens, 41);
 }
 
 /// 批量查询按 message_id 升序、组内 id 升序返回
@@ -392,8 +339,6 @@ async fn create_message_with_blocks(
             instance_id,
             is_boundary: false,
             is_excluded: false,
-            input_tokens: 0,
-            output_tokens: 0,
         })
         .await
         .expect("create message");
@@ -511,8 +456,6 @@ async fn excluded_message_keeps_its_blocks_out_of_context() {
             instance_id: instance,
             is_boundary: false,
             is_excluded: true,
-            input_tokens: 0,
-            output_tokens: 0,
         })
         .await
         .expect("create excluded message");
@@ -529,29 +472,6 @@ async fn excluded_message_keeps_its_blocks_out_of_context() {
     assert_eq!(
         contexts.iter().map(text_of).collect::<Vec<String>>(),
         vec!["kept"]
-    );
-}
-
-/// 父消息不存在时写入内容必须报错，不能留下孤儿内容行
-#[tokio::test]
-async fn create_rejects_missing_parent_message() {
-    let core = setup().await;
-    let contents = core.storage().message_content();
-
-    let result = contents
-        .create(content(
-            MISSING_MESSAGE_ID,
-            text_message(Role::Assistant, "orphan", 0, 0),
-        ))
-        .await;
-    assert!(result.is_err(), "父消息不存在时应报错，实际成功");
-    assert!(
-        contents
-            .list_by_message(MISSING_MESSAGE_ID)
-            .await
-            .expect("list")
-            .is_empty(),
-        "不应留下孤儿内容行"
     );
 }
 

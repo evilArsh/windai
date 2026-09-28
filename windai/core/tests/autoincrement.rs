@@ -129,8 +129,6 @@ async fn create_one_per_table(core: &WindCore) -> Vec<(&'static str, i64)> {
             instance_id,
             is_boundary: false,
             is_excluded: false,
-            input_tokens: 0,
-            output_tokens: 0,
         })
         .await
         .expect("create message")
@@ -457,8 +455,6 @@ async fn boolean_columns_roundtrip() {
             instance_id: instance.id,
             is_boundary: true,
             is_excluded: false,
-            input_tokens: 0,
-            output_tokens: 0,
         })
         .await
         .expect("create message");
