@@ -15,6 +15,7 @@ use wind_ai::message::Message as AiMessage;
 /// 外部通知事件
 #[derive(utoipa::ToSchema, Debug, Serialize, Deserialize, Clone, strum::AsRefStr)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
 pub enum TopicEvent {
     /// 错误消息
     Error {
