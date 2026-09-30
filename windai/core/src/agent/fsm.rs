@@ -86,12 +86,14 @@ impl TopicFsm {
                 call_id,
                 request,
                 reply,
+                contexts,
             } => {
                 effects.push(Effect::SpawnChild {
                     instance_id,
                     call_id,
                     request,
                     reply,
+                    contexts,
                 });
             }
         }

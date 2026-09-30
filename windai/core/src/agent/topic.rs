@@ -1,5 +1,6 @@
 use super::event::{TopicCommand, TopicEvent, TopicMailbox, TopicMsg};
 use super::fsm::{Effect, FsmEvent, TaskEvent, TopicFsm};
+use super::helper::CreatedContexts;
 use super::task::{PendingChild, TaskManager, TaskSpec};
 use super::tool::{SpawnAgentRequest, SpawnAgentResponse};
 use crate::agent::helper;
@@ -209,10 +210,11 @@ impl TopicRuntime {
                 instance_id,
                 call_id,
                 request,
+                contexts,
                 reply,
             } => {
                 match self
-                    .handle_spawn_child(instance_id, call_id, request, reply)
+                    .handle_spawn_child(instance_id, call_id, request, contexts, reply)
                     .await
                 {
                     Some((created, spec)) => Some(launch_events(&created, spec)),
@@ -434,12 +436,13 @@ impl TopicRuntime {
         parent_instance_id: i64,
         call_id: String,
         request: SpawnAgentRequest,
+        contexts: Option<Vec<Message>>,
         reply: oneshot::Sender<SpawnAgentResponse>,
-    ) -> Option<(helper::CreatedContexts, TaskSpec)> {
+    ) -> Option<(CreatedContexts, TaskSpec)> {
         let mode = request.mode;
         match self
             .task_mgr
-            .spawn_child(self.topic_id, parent_instance_id, request)
+            .spawn_child(self.topic_id, parent_instance_id, request, contexts)
             .await
         {
             Ok((created, spec)) => {

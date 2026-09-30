@@ -26,6 +26,7 @@ pub enum SupervisorRequest {
         instance_id: i64,
         call_id: String,
         request: SpawnAgentRequest,
+        contexts: Option<Vec<Message>>,
         reply: oneshot::Sender<SpawnAgentResponse>,
     },
 }
@@ -321,6 +322,7 @@ impl TaskManager {
         topic_id: i64,
         parent_instance_id: i64,
         request: SpawnAgentRequest,
+        parent_contexts: Option<Vec<Message>>,
     ) -> Result<(helper::CreatedContexts, TaskSpec)> {
         if request.mode == AgentMode::Background {
             // TODO: 后台任务
@@ -356,16 +358,18 @@ impl TaskManager {
         let (created, contexts) = match request.mode {
             AgentMode::Fork => match self.get_entry(parent_instance_id) {
                 Some(entry) => {
-                    helper::create_fork_contexts(
-                        &self.cwd,
+                    let (created, mut new_contexts) = helper::create_contexts(
                         &tx.storage(),
-                        entry.instance_id,
-                        instance_id,
-                        user_input.as_slice(),
+                        &self.cwd,
                         &chat_ctx,
+                        entry.instance_id,
+                        user_input.as_slice(),
                         Some(&agent),
                     )
-                    .await?
+                    .await?;
+                    let mut parent = parent_contexts.unwrap_or_else(|| vec![]);
+                    parent.append(&mut new_contexts);
+                    (created, parent)
                 }
                 None => {
                     return Err(CoreError::Validation(format!(

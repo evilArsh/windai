@@ -9,7 +9,7 @@ use crate::models::{
     CreateToolApprovalRequests, Message, MessageContent, ToolApprovalRequest,
 };
 use crate::storage::Storage;
-use futures::future::{try_join, try_join3};
+use futures::future::try_join3;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use wind_ai::message::{Content, Message as AiMessage, Role};
@@ -123,33 +123,6 @@ pub struct CreatedContexts {
     pub user_content: MessageContent,
 }
 
-pub async fn create_fork_contexts(
-    cwd: &PathBuf,
-    storage: &Storage,
-    parent_instance_id: i64,
-    instance_id: i64,
-    user_input: &[Content],
-    chat_ctx: &ChatContext,
-    agent: Option<&AgentDefinition>,
-) -> Result<(CreatedContexts, Vec<AiMessage>)> {
-    let (mut main_raw, mut raw) = try_join(
-        load_contexts(storage, parent_instance_id),
-        load_contexts(storage, instance_id),
-    )
-    .await?;
-
-    main_raw.append(&mut raw);
-    create_context_inner(
-        cwd,
-        storage,
-        instance_id,
-        user_input,
-        main_raw,
-        chat_ctx,
-        agent,
-    )
-    .await
-}
 /// 为一次 Agent 对话创建完整的上下文：User 消息、Assistant 消息和历史消息列表
 pub async fn create_contexts(
     storage: &Storage,

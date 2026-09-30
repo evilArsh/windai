@@ -16,7 +16,10 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
-use wind_ai::tool::{FunctionCall, FunctionCallOutput};
+use wind_ai::{
+    message::Message,
+    tool::{FunctionCall, FunctionCallOutput},
+};
 use wind_mcp::client::registry::RegistryHandle;
 
 struct SyncHost {
@@ -67,6 +70,7 @@ impl AgentHost for SyncHost {
         &self,
         call_id: String,
         request: SpawnAgentRequest,
+        contexts: Option<Vec<Message>>,
     ) -> Result<SpawnAgentResponse> {
         let (tx, rx) = oneshot::channel();
         if let Err(err) = self
@@ -75,6 +79,7 @@ impl AgentHost for SyncHost {
                 instance_id: self.instance_id,
                 call_id,
                 request,
+                contexts,
                 reply: tx,
             })
             .await

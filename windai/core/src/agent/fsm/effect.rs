@@ -8,7 +8,7 @@ use crate::{
 };
 use tokio::sync::oneshot;
 use wind_ai::{
-    message::{Content, Message as AiMessage},
+    message::{Content, Message},
     tool::FunctionCall,
 };
 
@@ -22,7 +22,7 @@ pub enum Effect {
         agent_id: Option<i64>,
     },
     /// 保存一块消息内容
-    PersistContent { message_id: i64, data: AiMessage },
+    PersistContent { message_id: i64, data: Message },
     /// 广播业务事件
     Emit(TopicEvent),
     /// 启动 AgentRuntime
@@ -37,6 +37,7 @@ pub enum Effect {
         instance_id: i64,
         call_id: String,
         request: SpawnAgentRequest,
+        contexts: Option<Vec<Message>>,
         reply: oneshot::Sender<SpawnAgentResponse>,
     },
     /// 批量写审批状态

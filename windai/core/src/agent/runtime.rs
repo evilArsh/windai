@@ -5,13 +5,13 @@ use super::tool::{self, AGENT_TOOL_PREFIX, SpawnAgentResponse};
 use crate::chat::runner::pending_tool_calls;
 use crate::chat::{ChatEvent, run_chat};
 use crate::error::{CoreError, Result};
-use crate::models::ToolApprovalStatus;
+use crate::models::{AgentMode, ToolApprovalStatus};
 use futures::stream::StreamExt;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
-use wind_ai::message::{Content, Message};
+use wind_ai::message::{Content, Message, Role};
 use wind_ai::tool::{FunctionCall, FunctionCallOutput};
 
 struct ToolPlan {
@@ -55,6 +55,14 @@ fn is_blank(message: &Message) -> bool {
             .reasoning_content
             .as_ref()
             .is_none_or(String::is_empty)
+}
+
+fn fork_contexts(contexts: &[Message]) -> Vec<Message> {
+    let end = contexts
+        .iter()
+        .rposition(|ctx| ctx.is_simple() && ctx.role == Role::Assistant)
+        .map_or(0, |last| last + 1);
+    contexts[..end].to_vec()
 }
 
 struct BlockState {
@@ -231,9 +239,15 @@ impl AgentRuntime {
             }
             let futures = action_plan.spawn_agents.into_iter().map(|action| {
                 let host = self.host.clone();
+                let contexts_clone = match action.data.mode {
+                    AgentMode::Fork => Some(fork_contexts(contexts)),
+                    _ => None,
+                };
                 async move {
                     let call_id = action.call_id;
-                    let result = host.spawn_agent(call_id, action.data).await?;
+                    let result = host
+                        .spawn_agent(call_id, action.data, contexts_clone)
+                        .await?;
                     Ok::<SpawnAgentResponse, CoreError>(result)
                 }
             });
