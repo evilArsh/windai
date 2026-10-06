@@ -27,6 +27,8 @@ pub enum AgentStatus {
     WaitingApproval,
     /// 正在等待子任务完成
     WaitingChild,
+    /// 已请求停止，等 worker 确认
+    Cancelling,
     /// 已完成
     Finished,
     /// 已失败

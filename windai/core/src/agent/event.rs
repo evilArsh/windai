@@ -1,15 +1,9 @@
-use super::task::SupervisorRequest;
-use super::task::TaskNotification;
-use crate::error::CoreError;
-use crate::error::Result;
 use crate::models::AgentInstance;
 use crate::models::AgentMode;
 use crate::models::AgentStatus;
 use crate::models::Message;
 use crate::models::ToolApprovalRequest;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast, mpsc, oneshot};
-use wind_ai::message::Content;
 use wind_ai::message::Message as AiMessage;
 
 /// 外部通知事件
@@ -75,28 +69,6 @@ pub enum TopicEvent {
     },
 }
 
-/// 外部调用命令
-#[derive(Debug, strum::AsRefStr)]
-pub enum TopicCommand {
-    /// 启动一个对话
-    Start {
-        user_input: Vec<Content>,
-        reply: oneshot::Sender<Result<()>>,
-    },
-    Cancel {
-        instance_id: i64,
-    },
-    Shutdown,
-    Approval {
-        instance_id: i64,
-        deny_ids: Vec<i64>,
-        allow_ids: Vec<i64>,
-    },
-    Subscribe {
-        reply: oneshot::Sender<broadcast::Receiver<TopicEvent>>,
-    },
-}
-
 impl std::fmt::Display for TopicEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let (name, args) = match self {
@@ -140,51 +112,5 @@ impl std::fmt::Display for TopicEvent {
             ),
         };
         write!(f, "[TopicEvent {name}] {args}")
-    }
-}
-
-impl std::fmt::Display for TopicCommand {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let name = self.as_ref();
-        write!(f, "[TopicCommand {name}]")
-    }
-}
-
-pub enum TopicMsg {
-    Command(TopicCommand),
-    Task(TaskNotification),
-    Supervisor(SupervisorRequest),
-}
-impl std::fmt::Display for TopicMsg {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TopicMsg::Command(topic_command) => write!(f, "{}", topic_command),
-            TopicMsg::Task(task_notification) => write!(f, "{}", task_notification),
-            TopicMsg::Supervisor(supervisor_request) => write!(f, "{}", supervisor_request),
-        }
-    }
-}
-#[derive(Clone)]
-pub struct TopicMailbox {
-    tx: mpsc::Sender<TopicMsg>,
-}
-impl TopicMailbox {
-    pub fn new(tx: mpsc::Sender<TopicMsg>) -> Self {
-        Self { tx }
-    }
-
-    pub async fn send(&self, msg: TopicMsg) -> Result<()> {
-        self.tx
-            .send(msg)
-            .await
-            .map_err(|err| CoreError::Internal(err.to_string()))
-    }
-
-    pub async fn notify_task(&self, event: TaskNotification) -> Result<()> {
-        self.send(TopicMsg::Task(event)).await
-    }
-
-    pub async fn request_supervisor(&self, req: SupervisorRequest) -> Result<()> {
-        self.send(TopicMsg::Supervisor(req)).await
     }
 }

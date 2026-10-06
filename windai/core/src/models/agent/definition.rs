@@ -153,7 +153,7 @@ pub struct PermissionPolicy {
     pub can_spawn_fork: bool,
     /// 当前 Agent 创建的子 Agent 是否允许继续创建子 Agent
     pub can_spawn_recursive: bool,
-    /// Agent 调度树的最大深度
+    /// 节点允许自己展开子任务的深度预算
     pub max_spawn_depth: u32,
 }
 

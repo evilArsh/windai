@@ -46,3 +46,5 @@ nanoid.workspace = true
 dotenvy.workspace = true
 env_logger.workspace = true
 test-case.workspace = true
+# `start_paused` 的暂停时钟，供退避时长的精确断言使用；`full` 不含该 feature
+tokio = { workspace = true, features = ["test-util"] }

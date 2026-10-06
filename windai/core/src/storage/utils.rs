@@ -163,9 +163,6 @@ macro_rules! update_strict {
 }
 
 /// UPDATE 语句拼接
-/// 所有值必须使用 Option 包装
-/// 值为 `None` 时，将忽略该字段
-/// 全部字段为 None 时不生成任何 SQL
 ///
 /// 用法:
 /// ```ignore

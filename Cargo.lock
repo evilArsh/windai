@@ -4330,7 +4330,6 @@ dependencies = [
  "wind-ai",
  "wind-core",
  "wind-mcp",
- "wind-rule",
 ]
 
 [[package]]

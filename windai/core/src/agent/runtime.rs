@@ -1,23 +1,32 @@
-use super::function_call::partition_tool_calls_by_policy;
-use super::host::AgentHost;
-use super::task::{TaskNotification, TaskSpec};
-use super::tool::{self, AGENT_TOOL_PREFIX, SpawnAgentResponse};
-use crate::chat::runner::pending_tool_calls;
+use super::behavior::{Behavior, Ctx, Input, Outcome, SpawnRequest};
+use super::domain::{AgentDomain, AgentFailure, AgentOutcome, AgentProgress, PendingApproval};
+use super::helper;
+use super::tool::{AGENT_TOOL_PREFIX, parse_agent_action};
+use crate::chat::runner::{ChatContext, pending_tool_calls};
 use crate::chat::{ChatEvent, run_chat};
+use crate::env::app_dirs;
 use crate::error::{CoreError, Result};
-use crate::models::{AgentMode, ToolApprovalStatus};
+use crate::models::{
+    AgentDefinition, AgentInstance, AgentMode, CreateMessageContent, Message as StoredMessage,
+    ToolApprovalStatus,
+};
+use crate::storage::Storage;
 use futures::stream::StreamExt;
-use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
+use std::path::PathBuf;
 use wind_ai::message::{Content, Message, Role};
 use wind_ai::tool::{FunctionCall, FunctionCallOutput};
+use wind_mcp::client::registry::RegistryHandle;
 
+/// 一批待办工具调用按去向切开
 struct ToolPlan {
+    /// 直接执行的 MCP 工具
     exec_mcp: Vec<FunctionCall>,
+    /// 交给引擎派生的 Agent 工具
     exec_agent: Vec<FunctionCall>,
+    /// 用户已拒绝的调用
     denied: Vec<FunctionCall>,
+    /// 等待用户审批的调用
     waiting: Vec<FunctionCall>,
 }
 
@@ -34,11 +43,18 @@ impl std::fmt::Display for ToolPlan {
     }
 }
 
-#[derive(strum::AsRefStr)]
-enum Action {
-    Continue,
-    Resume { contexts: Vec<Message> },
-    Stop,
+struct BlockState {
+    data: Message,
+    index: i64,
+}
+
+impl BlockState {
+    fn new() -> Self {
+        Self {
+            data: Message::default(),
+            index: 0,
+        }
+    }
 }
 
 /// 消息是否为空块：无文本、无工具调用、无推理内容
@@ -57,301 +73,505 @@ fn is_blank(message: &Message) -> bool {
             .is_none_or(String::is_empty)
 }
 
-fn fork_contexts(contexts: &[Message]) -> Vec<Message> {
-    let end = contexts
-        .iter()
-        .rposition(|ctx| ctx.is_simple() && ctx.role == Role::Assistant)
-        .map_or(0, |last| last + 1);
-    contexts[..end].to_vec()
+/// 把 LLM 循环写成 Behavior：一次 run 跑一轮 chat + 工具处理
+pub struct AgentBehavior {
+    storage: Storage,
+    mcp: RegistryHandle,
+    topic_id: i64,
+    cwd: PathBuf,
 }
 
-struct BlockState {
-    /// partial 缓存块
-    data: Message,
-    /// 本次运行内的块序号
-    index: i64,
-}
-
-impl BlockState {
-    fn new() -> Self {
+impl AgentBehavior {
+    pub fn new(storage: Storage, mcp: RegistryHandle, topic_id: i64) -> Self {
         Self {
-            data: Message::default(),
-            index: 0,
-        }
-    }
-}
-
-pub struct AgentRuntime {
-    host: Arc<dyn AgentHost>,
-    ctx: CancellationToken,
-    task: TaskSpec,
-}
-
-impl AgentRuntime {
-    pub fn new(ctx: CancellationToken, host: Arc<dyn AgentHost>, task: TaskSpec) -> Self {
-        Self { ctx, host, task }
-    }
-
-    /// 开始对话
-    pub async fn run(mut self) {
-        let chat_context = &self.task.chat_context;
-        let mut contexts = std::mem::take(&mut self.task.contexts);
-        let mut block = BlockState::new();
-        let mut auto_resume_count = 0usize;
-        const MAX_AUTO_RESUME: usize = 32;
-        loop {
-            let mut stream = run_chat(chat_context, contexts);
-            self.send_event(TaskNotification::Started {
-                instance_id: self.task.instance.id,
-            })
-            .await;
-            loop {
-                tokio::select! {
-                    biased;
-                    _ = self.ctx.cancelled() => {
-                        return;
-                    }
-                    Some(event) = stream.next() => {
-                        let action = self.handle_chat_event(&mut block, event).await;
-                        match action {
-                            Action::Continue => {
-                                // 内容块尚未结束
-                            }
-                            Action::Stop => return,
-                            Action::Resume {
-                                contexts: next_contexts,
-                            } => {
-                                auto_resume_count += 1;
-                                if auto_resume_count > MAX_AUTO_RESUME {
-                                    self.finish_with_error("max auto resume limit exceeded".to_string())
-                                        .await;
-                                    return;
-                                }
-                                contexts = next_contexts;
-                                break;
-                            }
-                        }
-                    }
-                    else => {
-                        return;
-                    }
-                }
-            }
-            log::debug!("next block index: {}", block.index);
+            storage,
+            mcp,
+            topic_id,
+            cwd: app_dirs().topic_dir().join(topic_id.to_string()),
         }
     }
 
-    async fn finish_with_error(&self, error: String) {
-        self.send_event(TaskNotification::Failed {
-            instance_id: self.task.instance.id,
-            message_id: self.task.message_id,
-            error,
-        })
-        .await;
-    }
-
-    async fn finish(&self, content: Vec<Content>) {
-        self.send_event(TaskNotification::Finish {
-            instance_id: self.task.instance.id,
-            message_id: self.task.message_id,
-            content,
-        })
-        .await;
-    }
-
-    /// 下发一个内容分片
-    async fn broadcast_chunk(&self, block: &BlockState, delta: Message) {
-        self.send_event(TaskNotification::Message {
-            message_id: self.task.message_id,
-            instance_id: self.task.instance.id,
-            index: block.index,
-            delta,
-            partial: true,
-        })
-        .await;
-    }
-
-    /// 拼接内容块，并且向上发送消息
-    async fn push_chunk(&self, block: &mut BlockState, delta: Message) {
-        block.data.append_chunk(&delta);
-        self.broadcast_chunk(block, delta).await;
-    }
-
-    /// 结束当前内容块，递增块索引；跳过空块
-    async fn close_block(&self, block: &mut BlockState) -> Option<Message> {
-        let data = std::mem::take(&mut block.data);
-        if is_blank(&data) {
-            return None;
-        }
-        self.persist_block(block, data.clone()).await;
-        Some(data)
-    }
-
-    async fn persist_block(&self, block: &mut BlockState, data: Message) {
-        if self.ctx.is_cancelled() {
-            return;
-        }
-        self.send_event(TaskNotification::Message {
-            instance_id: self.task.instance.id,
-            message_id: self.task.message_id,
-            index: block.index,
-            delta: data,
-            partial: false,
-        })
-        .await;
-        block.index += 1;
-    }
-
-    /// 执行工具调用和提交工具调用审批，存在以下情况
+    /// 宣告实例、待消费的输入与本轮的 assistant 消息
     ///
-    /// 1. 新一轮对话需要执行调用和请求审批
-    ///
-    /// 2. 上一轮对话中工具审批完毕，处理审批结果
-    ///
-    /// 返回 `false` 表示仍有调用在等待审批，本轮到此为止
-    async fn handle_await_tool_call(
+    /// 待消费 = 最后一条**不是本轮的** assistant 消息之后的全部非排除 user 消息；
+    /// 每一轮都宣告，模型看到的输入与客户端看到的一致。
+    /// 本轮的 assistant 自己排除在待消费集合之外，它由函数末尾单独宣告一次
+    async fn announce(
         &self,
-        block: &mut BlockState,
-        contexts: &mut Vec<Message>,
-        tools: Vec<FunctionCall>,
-    ) -> Result<bool> {
-        let plan = self.make_tool_plan(tools).await?;
-        let mut call_results: Vec<FunctionCallOutput> = vec![];
-        log::debug!("{}", plan);
-        // MCP 工具执行
-        if !plan.exec_mcp.is_empty() {
-            let tool_result = self.host.execute_tool_calls(&plan.exec_mcp).await?;
-            call_results.extend(tool_result);
+        ctx: &Ctx<'_, AgentDomain>,
+        instance_id: i64,
+        message_id: i64,
+    ) -> Result<()> {
+        let instance = helper::get_instance_by_id(&self.storage, instance_id).await?;
+        ctx.emit(AgentProgress::InstanceCreated(instance));
+        let messages: Vec<StoredMessage> =
+            self.storage.message().list_by_instance(instance_id).await?;
+        let start = messages
+            .iter()
+            .rposition(|m| m.from_id.is_some() && m.id != message_id)
+            .map_or(0, |pos| pos + 1);
+        let pending: Vec<&StoredMessage> = messages[start..]
+            .iter()
+            .filter(|m| !m.is_excluded && m.id != message_id)
+            .collect();
+        let ids: Vec<i64> = pending.iter().map(|m| m.id).collect();
+        let mut blocks: HashMap<i64, Vec<Message>> = HashMap::new();
+        for content in self
+            .storage
+            .message()
+            .list_contents_by_messages(&ids)
+            .await?
+        {
+            blocks
+                .entry(content.message_id)
+                .or_default()
+                .push(content.data);
         }
-        // Allowed 工具执行
-        if !plan.exec_agent.is_empty() {
-            let action_plan = tool::parse_agent_action(&plan.exec_agent)?;
-            // 合并后的 list_agents 只查询一次
-            if let Some(call_ids) = action_plan.list_agents {
-                let response = self.host.list_agents().await?;
-                let result_json = serde_json::to_value(&response)?;
-                for call_id in call_ids {
-                    call_results.push(FunctionCallOutput {
-                        id: call_id,
-                        content: result_json.clone(),
-                    });
-                }
-            }
-            let futures = action_plan.spawn_agents.into_iter().map(|action| {
-                let host = self.host.clone();
-                let contexts_clone = match action.data.mode {
-                    AgentMode::Fork => Some(fork_contexts(contexts)),
-                    _ => None,
-                };
-                async move {
-                    let call_id = action.call_id;
-                    let result = host
-                        .spawn_agent(call_id, action.data, contexts_clone)
-                        .await?;
-                    Ok::<SpawnAgentResponse, CoreError>(result)
-                }
-            });
-            let results = futures::future::try_join_all(futures).await?;
-            for result in results {
-                call_results.push(FunctionCallOutput {
-                    id: result.call_id,
-                    content: Value::String(Content::arr_to_string(&result.output)),
+        for message in pending {
+            ctx.emit(AgentProgress::MessageCreated(message.clone()));
+            for (index, data) in blocks.remove(&message.id).into_iter().flatten().enumerate() {
+                ctx.emit(AgentProgress::Block {
+                    message_id: message.id,
+                    index: index as i64,
+                    data,
                 });
             }
         }
-        // Denied 工具执行
-        if !plan.denied.is_empty() {
-            let tool_result = plan
-                .denied
-                .into_iter()
-                .map(|call| FunctionCallOutput {
-                    id: call.id,
-                    content: serde_json::json!({
-                        "error": "tool call denied",
-                        "tool": call.name,
-                    }),
-                })
-                .collect::<Vec<FunctionCallOutput>>();
-            call_results.extend(tool_result);
-        };
+        let assistant = self
+            .storage
+            .message()
+            .get(message_id)
+            .await?
+            .ok_or_else(|| CoreError::RowNotFound(format!("message {message_id}")))?;
+        ctx.emit(AgentProgress::MessageCreated(assistant));
+        Ok(())
+    }
 
+    /// 加载本轮所需的实例、定义、请求上下文与消息上下文
+    async fn load(
+        &self,
+        instance_id: i64,
+    ) -> Result<(
+        AgentInstance,
+        Option<AgentDefinition>,
+        ChatContext,
+        Vec<Message>,
+    )> {
+        let instance = helper::get_instance_by_id(&self.storage, instance_id).await?;
+        let agent = match instance.agent_id {
+            Some(agent_id) => Some(helper::get_def_by_id(&self.storage, agent_id).await?),
+            None => None,
+        };
+        let mut chat_ctx = helper::get_base_info(&self.storage, instance.topic_id).await?;
+        chat_ctx.tools =
+            helper::build_agent_tools(&self.storage, &self.mcp, &instance, agent.as_ref()).await?;
+        let mut contexts =
+            helper::get_message_contexts(&self.storage, instance.id, agent.as_ref()).await?;
+        helper::system_message(&self.storage, &self.cwd, agent.as_ref(), &mut contexts).await?;
+        Ok((instance, agent, chat_ctx, contexts))
+    }
+
+    /// 结束当前块：空块丢弃，否则落库并把块序号推进
+    async fn close_block(
+        &self,
+        ctx: &Ctx<'_, AgentDomain>,
+        message_id: i64,
+        block: &mut BlockState,
+    ) -> Result<Option<Message>> {
+        let data = std::mem::take(&mut block.data);
+        if is_blank(&data) {
+            return Ok(None);
+        }
+        self.commit_block(ctx, message_id, block, data.clone())
+            .await?;
+        Ok(Some(data))
+    }
+
+    /// 整块落库并推进块序号
+    async fn commit_block(
+        &self,
+        ctx: &Ctx<'_, AgentDomain>,
+        message_id: i64,
+        block: &mut BlockState,
+        data: Message,
+    ) -> Result<()> {
+        if ctx.cancel.is_cancelled() {
+            return Ok(());
+        }
+        self.storage
+            .message()
+            .create_content(CreateMessageContent { message_id, data })
+            .await?;
+        block.index += 1;
+        Ok(())
+    }
+
+    /// 下发一个流式分片
+    fn push_chunk(
+        &self,
+        ctx: &Ctx<'_, AgentDomain>,
+        message_id: i64,
+        block: &mut BlockState,
+        delta: Message,
+    ) {
+        block.data.append_chunk(&delta);
+        ctx.emit(AgentProgress::Block {
+            message_id,
+            index: block.index,
+            data: delta,
+        });
+    }
+
+    /// 整块下发一段非流式内容，再落库
+    ///
+    /// 流式块不能走这里：它的分片已经在 `push_chunk` 里发过了，整块重发就是重复
+    async fn push_whole_block(
+        &self,
+        ctx: &Ctx<'_, AgentDomain>,
+        message_id: i64,
+        block: &mut BlockState,
+        data: Message,
+    ) -> Result<()> {
+        ctx.emit(AgentProgress::Block {
+            message_id,
+            index: block.index,
+            data: data.clone(),
+        });
+        self.commit_block(ctx, message_id, block, data).await
+    }
+
+    async fn fail(
+        &self,
+        ctx: &Ctx<'_, AgentDomain>,
+        message_id: i64,
+        err: CoreError,
+    ) -> Outcome<AgentDomain> {
+        if !ctx.cancel.is_cancelled() {
+            let message = Message::new_simple(
+                Role::Assistant,
+                vec![Content::new_text(err.to_string())],
+                None,
+            );
+            if let Err(write_err) = self
+                .storage
+                .message()
+                .create_content(CreateMessageContent {
+                    message_id,
+                    data: message,
+                })
+                .await
+            {
+                log::error!("[agent] persist failure block failed: {write_err}");
+            }
+        }
+        failure(Some(message_id), err)
+    }
+}
+
+#[async_trait::async_trait]
+impl Behavior<AgentDomain> for AgentBehavior {
+    async fn run(
+        &self,
+        ctx: Ctx<'_, AgentDomain>,
+        input: Input<AgentDomain>,
+    ) -> Outcome<AgentDomain> {
+        let spec = match input {
+            Input::Fresh(spec) => spec,
+            Input::Children(_) | Input::External(_) => {
+                match helper::current_spec(&self.storage, ctx.node).await {
+                    Ok(spec) => spec,
+                    Err(err) => return failure(None, err),
+                }
+            }
+        };
+        let instance_id = spec.instance_id;
+        let message_id = match spec.message_id {
+            Some(message_id) => message_id,
+            None => match helper::open_assistant(&self.storage, instance_id).await {
+                Ok(message) => message.id,
+                Err(err) => return failure(None, err),
+            },
+        };
+        if let Err(err) = self.announce(&ctx, instance_id, message_id).await {
+            return self.fail(&ctx, message_id, err).await;
+        }
+        match self.round(&ctx, instance_id, message_id).await {
+            Ok(outcome) => outcome,
+            Err(err) => self.fail(&ctx, message_id, err).await,
+        }
+    }
+}
+
+fn failure(message_id: Option<i64>, err: CoreError) -> Outcome<AgentDomain> {
+    Outcome::Failed(AgentFailure {
+        message_id,
+        error: err.to_string(),
+    })
+}
+
+/// 一轮还未走到任何判定的中间态
+enum PartialRound {
+    /// 工具已执行完，带着新上下文继续下一轮 chat
+    Continue(Vec<Message>),
+    /// 本节点已有判定
+    Done(Outcome<AgentDomain>),
+}
+
+impl AgentBehavior {
+    /// 跑一轮：可含多次 chat 往返（每次工具执行后回到模型）
+    async fn round(
+        &self,
+        ctx: &Ctx<'_, AgentDomain>,
+        instance_id: i64,
+        message_id: i64,
+    ) -> Result<Outcome<AgentDomain>> {
+        let (instance, _agent, chat_ctx, contexts) = self.load(instance_id).await?;
+        let mut contexts = contexts;
+        let mut block = BlockState::new();
+        // 本轮开始前先补上上一轮派生、已经结束但还没回报的调用
+        if let Some(report) = helper::report_spawns(&self.storage, &instance).await? {
+            contexts.push(report.clone());
+            self.push_whole_block(ctx, message_id, &mut block, report)
+                .await?;
+        }
+        let mut rounds = 0usize;
+        const MAX_ROUNDS: usize = 32;
+        loop {
+            rounds += 1;
+            if rounds > MAX_ROUNDS {
+                return Ok(self
+                    .fail(
+                        ctx,
+                        message_id,
+                        CoreError::Internal("max tool rounds exceeded".into()),
+                    )
+                    .await);
+            }
+            match self
+                .chat_once(
+                    ctx,
+                    instance_id,
+                    message_id,
+                    &chat_ctx,
+                    &mut block,
+                    &mut contexts,
+                )
+                .await?
+            {
+                PartialRound::Continue(next) => contexts = next,
+                PartialRound::Done(outcome) => return Ok(outcome),
+            }
+        }
+    }
+
+    /// 一次 chat 请求 + 一次工具处理
+    ///
+    /// 模型这一轮没有待办工具调用就收尾为 `Completed`，否则交给 `handle_tools`
+    async fn chat_once(
+        &self,
+        ctx: &Ctx<'_, AgentDomain>,
+        instance_id: i64,
+        message_id: i64,
+        chat_ctx: &ChatContext,
+        block: &mut BlockState,
+        contexts: &mut Vec<Message>,
+    ) -> Result<PartialRound> {
+        let mut stream = run_chat(chat_ctx, contexts.clone());
+        loop {
+            tokio::select! {
+                biased;
+                _ = ctx.cancel.cancelled() => {
+                    // worker 被取消时这个判定会被 job 层换成 Stopped，见 jobs.rs
+                    let outcome = self
+                        .fail(ctx, message_id, CoreError::Internal("cancelled".into()))
+                        .await;
+                    return Ok(PartialRound::Done(outcome));
+                }
+                event = stream.next() => match event {
+                    None => {
+                        let outcome = self
+                            .fail(
+                                ctx,
+                                message_id,
+                                CoreError::Internal("chat stream ended without a verdict".into()),
+                            )
+                            .await;
+                        return Ok(PartialRound::Done(outcome));
+                    }
+                    Some(ChatEvent::Partial { delta }) => self.push_chunk(ctx, message_id, block, delta),
+                    Some(ChatEvent::Finish { contexts: next, error }) => {
+                        if let Some(error) = error {
+                            let _ = self.close_block(ctx, message_id, block).await?;
+                            let outcome = self.fail(ctx, message_id, CoreError::Chat(error)).await;
+                            return Ok(PartialRound::Done(outcome));
+                        }
+                        let message = self.close_block(ctx, message_id, block).await?;
+                        let mut merged = next;
+                        if let Some(message) = message {
+                            merged.push(message);
+                        }
+                        *contexts = merged;
+                        // 处理上下文中待执行的工具调用
+                        let pendings = pending_tool_calls(contexts)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .cloned()
+                            .collect::<Vec<FunctionCall>>();
+                        if pendings.is_empty() {
+                            return Ok(PartialRound::Done(Outcome::Completed(
+                                AgentOutcome { message_id },
+                            )));
+                        }
+                        return self
+                            .handle_tools(ctx, instance_id, message_id, block, contexts, pendings)
+                            .await;
+                    }
+                },
+            }
+        }
+    }
+
+    /// 处理一批待办工具调用
+    ///
+    /// 已执行的调用当场落成工具结果块；需要审批的挂起本节点；
+    /// 需要派生子任务的把请求交还引擎（见 Task 6）
+    async fn handle_tools(
+        &self,
+        ctx: &Ctx<'_, AgentDomain>,
+        instance_id: i64,
+        message_id: i64,
+        block: &mut BlockState,
+        contexts: &mut Vec<Message>,
+        pending: Vec<FunctionCall>,
+    ) -> Result<PartialRound> {
+        let plan = self.make_tool_plan(message_id, pending).await?;
+        log::debug!("{}", plan);
+        let mut call_results: Vec<FunctionCallOutput> = Vec::new();
+
+        if !plan.exec_mcp.is_empty() {
+            call_results.extend(helper::execute_tool_calls(&self.mcp, &plan.exec_mcp).await?);
+        }
+        if !plan.denied.is_empty() {
+            call_results.extend(plan.denied.into_iter().map(|call| FunctionCallOutput {
+                id: call.id,
+                content: serde_json::json!({
+                    "error": "tool call denied",
+                    "tool": call.name,
+                }),
+            }));
+        }
         if !call_results.is_empty() {
             let tool_result = Message::new_tool_result(call_results);
             contexts.push(tool_result.clone());
-            // 工具结果整块下发后落库
-            self.broadcast_chunk(block, tool_result.clone()).await;
-            self.persist_block(block, tool_result).await;
+            self.push_whole_block(ctx, message_id, block, tool_result)
+                .await?;
         }
 
-        // 通知审批
-        if !plan.waiting.is_empty() {
-            self.send_event(TaskNotification::ApprovalRequired {
-                calls: plan.waiting,
-                message_id: self.task.message_id,
-                instance_id: self.task.instance.id,
-            })
-            .await;
-            return Ok(false);
-        }
-        Ok(true)
-    }
-
-    async fn handle_chat_event(&self, block: &mut BlockState, event: ChatEvent) -> Action {
-        log::debug!("{}", event);
-        match event {
-            ChatEvent::Partial { delta } => {
-                self.push_chunk(block, delta).await;
-                Action::Continue
-            }
-            ChatEvent::Finish {
-                mut contexts,
-                error,
-            } => {
-                if let Some(error) = error {
-                    self.close_block(block).await;
-                    self.finish_with_error(error).await;
-                    return Action::Stop;
-                }
-                let message = self.close_block(block).await;
-                let content = message
-                    .as_ref()
-                    .map(|message| message.content.clone())
-                    .unwrap_or_default();
-                if let Some(message) = message {
-                    contexts.push(message);
-                }
-                // 处理上下文中待执行的工具调用
-                let pendings = pending_tool_calls(&contexts)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .cloned()
-                    .collect::<Vec<FunctionCall>>();
-                if pendings.is_empty() {
-                    self.finish(content).await;
-                    return Action::Stop;
-                }
-                // 执行工具调用，Block 序列递增
-                match self
-                    .handle_await_tool_call(block, &mut contexts, pendings)
-                    .await
-                {
-                    Ok(true) => Action::Resume { contexts },
-                    Ok(false) => Action::Stop,
-                    Err(err) => {
-                        self.finish_with_error(err.to_string()).await;
-                        Action::Stop
+        // 派生请求最后交还引擎：exec_mcp 的结果块、list_agents 的结果块与派生失败的错误块
+        // 都已经先落库，派生成功的调用等子任务结束后由父节点续跑时补报
+        let mut spawn: Vec<SpawnRequest<AgentDomain>> = Vec::new();
+        if !plan.exec_agent.is_empty() {
+            match parse_agent_action(&plan.exec_agent) {
+                Ok(actions) => {
+                    if let Some(call_ids) = actions.list_agents {
+                        let response = helper::list_agents(&self.storage, self.topic_id).await?;
+                        let result_json = serde_json::to_value(&response)?;
+                        let list_results: Vec<FunctionCallOutput> = call_ids
+                            .into_iter()
+                            .map(|id| FunctionCallOutput {
+                                id,
+                                content: result_json.clone(),
+                            })
+                            .collect();
+                        let message = Message::new_tool_result(list_results);
+                        contexts.push(message.clone());
+                        self.push_whole_block(ctx, message_id, block, message)
+                            .await?;
+                    }
+                    if !actions.spawn_agents.is_empty() {
+                        let instance =
+                            helper::get_instance_by_id(&self.storage, instance_id).await?;
+                        // 串行 await：子实例与它的消息按调用顺序创建，批次内的顺序即上下文顺序
+                        for action in actions.spawn_agents {
+                            match helper::spawn_child_round(
+                                &self.storage,
+                                &self.cwd,
+                                self.topic_id,
+                                &instance,
+                                &action,
+                            )
+                            .await
+                            {
+                                Ok(child_spec) => spawn.push(SpawnRequest {
+                                    id: child_spec.instance_id,
+                                    detached: action.data.mode == AgentMode::Background,
+                                    spec: child_spec,
+                                }),
+                                // 派生失败不失败整个任务：把原因作为该调用的工具结果交回模型
+                                Err(err) => {
+                                    let message = Message::new_tool_result(vec![
+                                        FunctionCallOutput {
+                                            id: action.call_id,
+                                            content: serde_json::json!({ "error": err.to_string() }),
+                                        },
+                                    ]);
+                                    contexts.push(message.clone());
+                                    self.push_whole_block(ctx, message_id, block, message)
+                                        .await?;
+                                }
+                            }
+                        }
                     }
                 }
+                // 参数来自模型写的文本，不可信：这批调用各回报一条错误结果，本轮继续
+                Err(err) => {
+                    let message = Message::new_tool_result(
+                        plan.exec_agent
+                            .iter()
+                            .map(|call| FunctionCallOutput {
+                                id: call.id.clone(),
+                                content: serde_json::json!({ "error": err.to_string() }),
+                            })
+                            .collect(),
+                    );
+                    contexts.push(message.clone());
+                    self.push_whole_block(ctx, message_id, block, message)
+                        .await?;
+                }
             }
         }
+        // 审批行必须在交还派生之前落库：
+        // 同一批里派生与待审批的调用混在一起时，否则用户的审批提示会被整棵子树挡住
+        let waiting = !plan.waiting.is_empty();
+        if waiting {
+            helper::save_approval_state(
+                &self.storage,
+                self.topic_id,
+                instance_id,
+                message_id,
+                plan.waiting,
+            )
+            .await?;
+        }
+        if !spawn.is_empty() {
+            return Ok(PartialRound::Done(Outcome::Spawn { spawn }));
+        }
+        if waiting {
+            return Ok(PartialRound::Done(Outcome::Suspend(PendingApproval {
+                instance_id,
+                message_id,
+            })));
+        }
+        Ok(PartialRound::Continue(std::mem::take(contexts)))
     }
 
-    async fn send_event(&self, signal: TaskNotification) {
-        self.host.emit(signal).await;
-    }
-    async fn make_tool_plan(&self, pending: Vec<FunctionCall>) -> Result<ToolPlan> {
-        // 获取所有历史审批请求
-        let approvals = self.host.list_approvals(self.task.message_id).await?;
+    /// 按审批策略切开待办调用
+    async fn make_tool_plan(
+        &self,
+        message_id: i64,
+        pending: Vec<FunctionCall>,
+    ) -> Result<ToolPlan> {
+        let approvals = helper::list_approval_requests(&self.storage, message_id).await?;
         let by_call_id: HashMap<_, _> = approvals
             .iter()
             .map(|approval| (approval.tool_call_id.as_str(), approval))
@@ -361,30 +581,22 @@ impl AgentRuntime {
         let mut denied = Vec::new();
         let mut waiting = Vec::new();
         let mut unhandled = Vec::new();
-
-        // 根据审批状态处理剩余的工具调用
         for call in pending {
-            match by_call_id
-                .get(call.id.as_str())
-                .map(|approval| &approval.status)
-            {
+            match by_call_id.get(call.id.as_str()).map(|a| &a.status) {
                 Some(ToolApprovalStatus::Approved) => approved.push(call),
                 Some(ToolApprovalStatus::Denied) => denied.push(call),
                 Some(ToolApprovalStatus::Pending) => waiting.push(call),
                 None => unhandled.push(call),
             }
         }
-
-        let (auto, manual) = partition_tool_calls_by_policy(
-            unhandled,
-            self.task.chat_context.topic.tool_approval_policy.as_ref(),
-        );
+        let topic = self.storage.topic().get_topic(self.topic_id).await?;
+        let policy = topic.as_ref().and_then(|t| t.tool_approval_policy.as_ref());
+        let (auto, manual) = helper::partition_tool_calls_by_policy(unhandled, policy);
         approved.extend(auto);
         waiting.extend(manual);
 
         let (agent_calls, mcp_calls): (Vec<_>, Vec<_>) = approved
-            .iter()
-            .cloned()
+            .into_iter()
             .partition(|call| call.name.starts_with(AGENT_TOOL_PREFIX));
 
         Ok(ToolPlan {

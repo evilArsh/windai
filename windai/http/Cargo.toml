@@ -13,7 +13,6 @@ license.workspace = true
 
 wind-mcp = { path = "../mcp" }
 wind-ai = { path = "../ai" }
-wind-rule = { path = "../rule" }
 wind-core = { path = "../core" }
 
 tokio.workspace = true
@@ -24,7 +23,7 @@ futures.workspace = true
 
 axum = { version = "0.8" }
 tower = { version = "0.5", features = ["full"] }
-tower-http = { version = "0.7", features = ["trace", "timeout", "request-id", "set-header", "cors"] }
+tower-http = { version = "0.7", features = ["trace", "timeout", "request-id"] }
 utoipa = { workspace = true, features = ["axum_extras"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 

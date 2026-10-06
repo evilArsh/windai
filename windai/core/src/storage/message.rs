@@ -12,6 +12,7 @@ use crate::{
     storage::TableName,
     update,
 };
+use futures::future::try_join_all;
 use sqlx::QueryBuilder;
 
 const IN_CHUNK: usize = 1000;
@@ -153,6 +154,30 @@ impl MessageStorage {
             })
             .await
     }
+
+    /// 批量把消息标为已排除：它们不再进入上下文，也不被宣告
+    pub async fn batch_exclude(&self, message_ids: &[i64]) -> Result<()> {
+        if message_ids.is_empty() {
+            return Ok(());
+        }
+        let mut qb = QueryBuilder::new("UPDATE ");
+        qb.push(TableName::MESSAGES)
+            .push(" SET is_excluded = ")
+            .push_bind(true)
+            .push(", updated_at = ")
+            .push_bind(now_ts())
+            .push(" WHERE id IN (");
+        {
+            let mut separated = qb.separated(", ");
+            for id in message_ids {
+                separated.push_bind(*id);
+            }
+        }
+        qb.push(")");
+        self.executor.execute(qb.build()).await?;
+        Ok(())
+    }
+
     /// 查询 instance_id 下所有的消息
     pub async fn list_by_instance(&self, instance_id: i64) -> Result<Vec<Message>> {
         let rows = self
@@ -166,6 +191,32 @@ impl MessageStorage {
             )
             .await?;
 
+        Ok(rows)
+    }
+
+    /// 查询多个实例下所有的消息，按 (instance_id, id) 升序
+    pub async fn list_by_instances(&self, instance_ids: &[i64]) -> Result<Vec<Message>> {
+        if instance_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let chunks = instance_ids.chunks(IN_CHUNK).map(|chunk| async move {
+            let mut qb = Self::select_common();
+            qb.push(" WHERE instance_id IN (");
+            {
+                let mut separated = qb.separated(", ");
+                for id in chunk {
+                    separated.push_bind(*id);
+                }
+            }
+            qb.push(") ORDER BY instance_id ASC, id ASC ");
+            self.executor
+                .fetch_all(qb.build_query_as::<Message>())
+                .await
+        });
+        let mut rows = Vec::new();
+        for chunk_rows in try_join_all(chunks).await? {
+            rows.extend(chunk_rows);
+        }
         Ok(rows)
     }
 

@@ -8,7 +8,7 @@ pub mod schema;
 pub mod storage;
 
 use self::storage::Storage;
-use crate::agent::topic::{TopicRuntime, TopicRuntimeHandle};
+use crate::agent::topic::{TopicRuntimeHandle, spawn_runtime};
 use db::DbPool;
 use error::Result;
 use std::{
@@ -111,7 +111,7 @@ impl WindCore {
 
     /// 生成 topic 运行时
     fn spawn_topic_handler(&self, topic_id: i64) -> TopicRuntimeHandle {
-        TopicRuntime::spawn(
+        spawn_runtime(
             self.ctx.child_token(),
             topic_id,
             self.mcp.clone(),

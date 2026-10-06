@@ -1,21 +1,110 @@
-use super::function_call::build_tools_from_mcp;
-use super::tool::{self, AgentCatalog, ListAgentsResponse};
+use super::domain::AgentSpec;
+use super::tool::{
+    self, AgentCatalog, ListAgentsResponse, SPAWN_AGENT_NAME, SpawnAgentAction, SpawnAgentRequest,
+};
 use crate::chat::runner::ChatContext;
 use crate::env::app_dirs;
 use crate::error::{CoreError, Result};
+use crate::models::ToolApprovalPolicy;
 use crate::models::{
     AgentDefinition, AgentInstance, AgentMcpBinding, AgentMode, AgentRole, AgentStatus,
     CreateInstance, CreateMessage, CreateMessageContent, CreateToolApprovalCall,
-    CreateToolApprovalRequests, Message, MessageContent, ToolApprovalRequest,
+    CreateToolApprovalRequests, Message, ToolApprovalRequest,
 };
 use crate::storage::Storage;
 use futures::future::try_join3;
-use std::collections::HashMap;
-use std::path::PathBuf;
+use serde_json::Value;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use wind_ai::message::{Content, Message as AiMessage, Role};
-use wind_ai::tool::{FunctionCall, Tools};
+use wind_ai::tool::{FunctionCall, FunctionCallOutput, FunctionTool, Tools};
 use wind_mcp::client::Tool;
 use wind_mcp::client::registry::RegistryHandle;
+use wind_mcp::client::{CallToolParam, Tool as McpTool};
+
+/// [wind_mcp::client::Tool] 转换为 [wind_ai::tool::Tools]
+pub fn build_tools_from_mcp(mcp_tools: Vec<McpTool>) -> Vec<Tools> {
+    mcp_tools
+        .into_iter()
+        .map(|tool| {
+            Tools::Function(FunctionTool {
+                name: tool.name,
+                description: tool.description,
+                parameters: Some(Value::Object((*tool.input_schema).clone())),
+                strict: None,
+            })
+        })
+        .collect()
+}
+/// 并发执行函数调用
+pub async fn execute_tool_calls(
+    mcp_registry: &RegistryHandle,
+    tool_calls: &[FunctionCall],
+) -> Result<Vec<FunctionCallOutput>> {
+    let params = tool_calls
+        .iter()
+        .map(|tool| match McpTool::parse_name(&tool.name) {
+            Ok((server_name, tool_name)) => Ok(CallToolParam {
+                server_name,
+                tool_name,
+                arguments: Some(serde_json::from_str(&tool.arguments)?),
+            }),
+            Err(err) => Err(err.into()),
+        })
+        .collect::<Result<Vec<CallToolParam>>>()?;
+
+    let tools_len = params.len();
+
+    let pending = params
+        .into_iter()
+        .map(|param| async move { mcp_registry.call_tool(param).await });
+    // TODO: 超时控制
+    let results = futures::future::try_join_all(pending).await?;
+    if tools_len != results.len() {
+        return Err(CoreError::Internal(format!(
+            "MCP returned a different number of results than expected. Expected {}, got {}",
+            tools_len,
+            results.len()
+        )));
+    }
+
+    Ok(results
+        .into_iter()
+        .enumerate()
+        .map(|(index, res)| {
+            log::debug!(
+                "[tool call result] id: {}, res: {:?}",
+                &tool_calls[index].id,
+                &res
+            );
+            return FunctionCallOutput {
+                id: tool_calls[index].id.clone(),
+                content: res.content,
+            };
+        })
+        .collect())
+}
+
+/// 根据审批策略拆分可自动执行和需要人工审批的工具调用
+///
+/// 当不存在审批策略时，所有工具调用都自动执行
+///
+/// (自动审批, 手动审批)
+pub fn partition_tool_calls_by_policy(
+    pending: Vec<FunctionCall>,
+    policy: Option<&ToolApprovalPolicy>,
+) -> (Vec<FunctionCall>, Vec<FunctionCall>) {
+    match policy {
+        Some(policy) => match policy {
+            ToolApprovalPolicy::AllowAll => (pending, vec![]),
+            ToolApprovalPolicy::AllowList(approved_list) => pending
+                .into_iter()
+                .partition(|call| approved_list.contains(&call.name)),
+            ToolApprovalPolicy::Manual => (vec![], pending),
+        },
+        None => (pending, vec![]),
+    }
+}
 
 /// 获取当前 Topic 能力列表中的全部 Agent
 pub async fn list_agents(storage: &Storage, topic_id: i64) -> Result<ListAgentsResponse> {
@@ -111,29 +200,186 @@ pub async fn get_message_contexts(
     ))
 }
 
-/// 一次上下文创建出来的消息与用户内容块
-///
-/// 交给模型的初始上下文由创建函数作为第二个返回值单独交出，不在这里
-pub struct CreatedContexts {
-    /// 用户消息
-    pub user: Message,
-    /// 助手消息，正文留给运行时逐块写入
-    pub assistant: Message,
-    /// 用户输入落库的内容块，需要经 SSE 下发给前端
-    pub user_content: MessageContent,
+/// 给模型上下文补上系统消息
+pub async fn system_message(
+    storage: &Storage,
+    cwd: &Path,
+    agent: Option<&AgentDefinition>,
+    contexts: &mut Vec<AiMessage>,
+) -> Result<()> {
+    let mut sys_p = vec![Content::new_text(format!(
+        "<AppDataDirectory>\n{}\n</AppDataDirectory>\n
+        <CurrentWorkingDirectory>\n{}\n</CurrentWorkingDirectory>\n
+        <SkillsResourceDirectory>\n{}\n</SkillsResourceDirectory>\n",
+        app_dirs().root_dir().to_string_lossy(),
+        cwd.to_string_lossy(),
+        app_dirs().skills_dir().to_string_lossy(),
+    ))];
+    if let Some(prompt) = assemble_prompt(storage, agent).await? {
+        sys_p.push(Content::new_text(prompt));
+    }
+    contexts.insert(0, AiMessage::new_simple(Role::System, sys_p, None));
+    Ok(())
 }
 
-/// 为一次 Agent 对话创建完整的上下文：User 消息、Assistant 消息和历史消息列表
-pub async fn create_contexts(
+/// 实例当前一轮的 spec
+///
+/// TODO: AgentInstance 关联最新一轮的 Message id
+pub async fn current_spec(storage: &Storage, instance_id: i64) -> Result<AgentSpec> {
+    let messages = storage.message().list_by_instance(instance_id).await?;
+    let message_id = messages
+        .iter()
+        .rev()
+        .find(|m| m.from_id.is_some())
+        .map(|m| m.id)
+        .ok_or_else(|| {
+            CoreError::Validation(format!("no assistant message for instance {instance_id}"))
+        })?;
+    Ok(AgentSpec {
+        instance_id,
+        message_id: Some(message_id),
+    })
+}
+
+/// 开一条新的 assistant 消息，`from_id` 指向实例最后一条用户消息
+///
+/// TODO: Agentinstance 关联最新一轮的 user message id 和 assistant message id
+pub async fn open_assistant(storage: &Storage, instance_id: i64) -> Result<Message> {
+    let messages = storage.message().list_by_instance(instance_id).await?;
+    let user = messages
+        .iter()
+        .rev()
+        .find(|m| m.from_id.is_none() && !m.is_excluded)
+        .ok_or_else(|| {
+            CoreError::Validation(format!("no user message for instance {instance_id}"))
+        })?;
+    storage
+        .message()
+        .create(CreateMessage {
+            from_id: Some(user.id),
+            model_id: user.model_id,
+            is_boundary: false,
+            is_excluded: false,
+            instance_id,
+        })
+        .await
+}
+
+/// 建一轮新的用户对话，返回本轮的 spec
+///
+/// 只写用户消息；本轮的 assistant 消息由运行时在轮首创建。
+/// 取模型 id 只看 topic，不查凭证 —— 写输入不该依赖提供商可用
+pub async fn start_round(
     storage: &Storage,
-    cwd: &PathBuf,
-    chat_ctx: &ChatContext,
-    instance_id: i64,
+    cwd: &Path,
+    topic_id: i64,
+    instance: AgentInstance,
     user_input: &[Content],
-    agent: Option<&AgentDefinition>,
-) -> Result<(CreatedContexts, Vec<AiMessage>)> {
-    let raw = load_contexts(storage, instance_id).await?;
-    create_context_inner(cwd, storage, instance_id, user_input, raw, chat_ctx, agent).await
+) -> Result<AgentSpec> {
+    let model_id = topic_model_id(storage, topic_id).await?;
+    create_user_message(storage, instance.id, model_id, user_input).await?;
+    std::fs::create_dir_all(cwd)?;
+    Ok(AgentSpec {
+        instance_id: instance.id,
+        message_id: None,
+    })
+}
+
+/// 丢弃实例里尚未被消费的输入
+///
+/// 末条 assistant 消息之后的用户消息全部标为已排除 —— 它们既不进上下文，
+/// 也不会被下一轮宣告；节点被取消时调用
+pub async fn discard_unconsumed_input(storage: &Storage, instance_id: i64) -> Result<()> {
+    let messages = storage.message().list_by_instance(instance_id).await?;
+    // 末条 assistant 之前的输入都已经消费过，只有它之后的那批还没人处理
+    let start = messages
+        .iter()
+        .rposition(|message| message.from_id.is_some())
+        .map_or(0, |last_assistant| last_assistant + 1);
+    let ids: Vec<i64> = messages[start..]
+        .iter()
+        .filter(|message| message.from_id.is_none() && !message.is_excluded)
+        .map(|message| message.id)
+        .collect();
+    storage.message().batch_exclude(&ids).await
+}
+
+/// topic 绑定的模型 id
+async fn topic_model_id(storage: &Storage, topic_id: i64) -> Result<i64> {
+    let topic = storage
+        .topic()
+        .get_topic(topic_id)
+        .await?
+        .ok_or_else(|| CoreError::RowNotFound(format!("topic_id: {}", topic_id)))?;
+    topic.model_id.ok_or_else(|| {
+        CoreError::RowNotFound(format!("No model in current topic, topic_id: {topic_id}"))
+    })
+}
+
+/// 把父实例**已完结的**对话复制成子实例的初始上下文
+///
+/// 截到「最后一条简单 assistant 消息」为止 —— 正在派生中的那一轮助手消息带着
+/// 未回填的 tool_call，属于未完结的一轮，不该进子实例。父实例若还没有过任何
+/// 一轮纯文本回复（首次工具轮就派生），子实例就只从自己的任务消息开始
+pub async fn fork_contexts(
+    storage: &Storage,
+    parent_instance_id: i64,
+    child_instance_id: i64,
+) -> Result<()> {
+    let messages = storage
+        .message()
+        .list_by_instance(parent_instance_id)
+        .await?;
+    let ids: Vec<i64> = messages.iter().map(|m| m.id).collect();
+    let mut contents: HashMap<i64, Vec<AiMessage>> = HashMap::new();
+    for content in storage.message().list_contents_by_messages(&ids).await? {
+        contents
+            .entry(content.message_id)
+            .or_default()
+            .push(content.data);
+    }
+    let end = messages
+        .iter()
+        .rposition(|m| {
+            contents.get(&m.id).is_some_and(|blocks| {
+                blocks
+                    .iter()
+                    .any(|b| b.is_simple() && b.role == Role::Assistant)
+            })
+        })
+        .map_or(0, |last| last + 1);
+
+    // 克隆时保留原消息的配对：assistant 行的 from_id 改写成对应克隆 user 行的 id，
+    // 否则子实例里全是「用户消息」，宣告锚点与删除配对都会认错
+    storage
+        .with_tx(|storage| async move {
+            let mut cloned_ids: HashMap<i64, i64> = HashMap::new();
+            // 串行 await：克隆按原顺序落库，assistant 行的 from_id 依赖前面 user 行已回填的克隆 id
+            for message in messages.iter().take(end) {
+                let cloned = storage
+                    .message()
+                    .create(CreateMessage {
+                        from_id: message.from_id.and_then(|id| cloned_ids.get(&id).copied()),
+                        model_id: message.model_id,
+                        is_boundary: message.is_boundary,
+                        is_excluded: message.is_excluded,
+                        instance_id: child_instance_id,
+                    })
+                    .await?;
+                cloned_ids.insert(message.id, cloned.id);
+                for block in contents.get(&message.id).into_iter().flatten() {
+                    storage
+                        .message()
+                        .create_content(CreateMessageContent {
+                            message_id: cloned.id,
+                            data: block.clone(),
+                        })
+                        .await?;
+                }
+            }
+            Ok(())
+        })
+        .await
 }
 
 /// 获取主 Agent 实例，不存在时创建
@@ -170,6 +416,296 @@ pub async fn create_child_instance(
             role: Some(AgentRole::Child),
         })
         .await
+}
+
+/// 实例在 topic 内的深度，主实例为 0
+pub async fn instance_depth(storage: &Storage, topic_id: i64, instance_id: i64) -> Result<usize> {
+    let instances = storage.agent().list_instances_by_topic(topic_id).await?;
+    let parent_of: HashMap<i64, Option<i64>> =
+        instances.iter().map(|i| (i.id, i.parent_id)).collect();
+    let mut depth = 0usize;
+    let mut cursor = parent_of.get(&instance_id).copied().flatten();
+    while let Some(id) = cursor {
+        depth += 1;
+        cursor = parent_of.get(&id).copied().flatten();
+        if depth > instances.len() {
+            return Err(CoreError::Internal(format!(
+                "instance {instance_id} has a cyclic parent chain"
+            )));
+        }
+    }
+    Ok(depth)
+}
+
+/// 为一次 `agent_spawn_agent` 调用建好子实例、上下文与消息
+///
+/// 返回子节点的 spec；`fork` 模式会先把父实例的消息历史复制进子实例
+pub async fn spawn_child_round(
+    storage: &Storage,
+    cwd: &Path,
+    topic_id: i64,
+    parent: &AgentInstance,
+    action: &SpawnAgentAction,
+) -> Result<AgentSpec> {
+    let agent = get_def_by_key(storage, &action.data.agent_key).await?;
+    let depth = instance_depth(storage, topic_id, parent.id).await?;
+    // 上限取自**派生的那一方**：这个节点允许自己展开多深
+    // 懒建的主实例没有绑定定义，那一支不设上限（它必然在深度 0）
+    if let Some(agent_id) = parent.agent_id {
+        let ceiling = get_def_by_id(storage, agent_id)
+            .await?
+            .data
+            .permission_policy
+            .max_spawn_depth as usize;
+        if depth + 1 > ceiling {
+            return Err(CoreError::Validation(format!(
+                "spawn depth {} exceeds the ceiling {ceiling}",
+                depth + 1
+            )));
+        }
+    }
+
+    let instance =
+        create_child_instance(storage, topic_id, parent.id, agent.id, action.data.mode).await?;
+
+    if action.data.mode == AgentMode::Fork {
+        fork_contexts(storage, parent.id, instance.id).await?;
+    }
+
+    let model_id = topic_model_id(storage, topic_id).await?;
+    let user_input = vec![Content::new_text(action.data.task.clone())];
+    create_user_message(storage, instance.id, model_id, &user_input).await?;
+    std::fs::create_dir_all(cwd)?;
+
+    Ok(AgentSpec {
+        instance_id: instance.id,
+        message_id: None,
+    })
+}
+
+/// 父节点每轮开始前补上还没回报的派生调用
+///
+/// 关联不依赖任何内存态：父实例**全部历史**里、还没有配对
+/// `Content::FunctionCall` 的 `agent_spawn_agent` 调用，
+/// 与它的子实例按 (agent_key, task) 对齐。
+/// 只要配到子实例行就回报（终态给结果，否则给「已启动」），
+/// 只有一条子实例行都配不上时才留作未回报
+///
+/// 返回 None 表示没有可补报的调用
+pub async fn report_spawns(
+    storage: &Storage,
+    instance: &AgentInstance,
+) -> Result<Option<AiMessage>> {
+    let messages = storage.message().list_by_instance(instance.id).await?;
+    let ids: Vec<i64> = messages.iter().map(|m| m.id).collect();
+    let contents = storage.message().list_contents_by_messages(&ids).await?;
+
+    let answered: HashSet<String> = contents
+        .iter()
+        .flat_map(|block| block.data.content.iter())
+        .filter_map(|content| match content {
+            Content::FunctionCall { data } => Some(data.id.clone()),
+            _ => None,
+        })
+        .collect();
+    let pending: Vec<&FunctionCall> = contents
+        .iter()
+        .filter_map(|block| block.data.tool_calls.as_ref())
+        .flatten()
+        .filter(|call| call.name == SPAWN_AGENT_NAME)
+        .filter(|call| !answered.contains(&call.id))
+        .collect();
+    if pending.is_empty() {
+        return Ok(None);
+    }
+
+    let children: Vec<AgentInstance> = storage
+        .agent()
+        .list_instances_by_topic(instance.topic_id)
+        .await?
+        .into_iter()
+        .filter(|child| child.parent_id == Some(instance.id))
+        .collect();
+    // 配对要用的子实例数据先一次性取出，回报循环里只做纯计算
+    let states = if children.is_empty() {
+        HashMap::new()
+    } else {
+        child_states(storage, &children).await?
+    };
+
+    let mut used: Vec<i64> = Vec::new();
+    let mut outputs: Vec<FunctionCallOutput> = Vec::new();
+    for call in pending {
+        // 参数来自模型写的文本，不可信：畸形只回报这一条，本轮继续
+        let request: SpawnAgentRequest = match serde_json::from_str(&call.arguments) {
+            Ok(request) => request,
+            Err(err) => {
+                log::warn!(
+                    "[agent] spawn call {} has malformed arguments: {err}",
+                    call.id
+                );
+                outputs.push(FunctionCallOutput {
+                    id: call.id.clone(),
+                    content: serde_json::json!({ "error": err.to_string() }),
+                });
+                continue;
+            }
+        };
+        let Some(child) = pick_child(&children, &states, &used, &request) else {
+            // 一条子实例行都没有：上次没派生成，留给下一轮重派
+            log::warn!(
+                "[agent] no child instance matches the spawn call {}",
+                call.id
+            );
+            continue;
+        };
+        used.push(child.id);
+        // 只要找到子实例行就回报：状态列可能过期，留着不报会让下一轮把同一个 spawn 再发一次
+        match child.status {
+            AgentStatus::Finished => {
+                let text = states
+                    .get(&child.id)
+                    .map(|s| s.reply.clone())
+                    .unwrap_or_default();
+                outputs.push(FunctionCallOutput {
+                    id: call.id.clone(),
+                    content: Value::String(text),
+                });
+            }
+            AgentStatus::Failed | AgentStatus::Cancelled => {
+                outputs.push(FunctionCallOutput {
+                    id: call.id.clone(),
+                    content: serde_json::json!({ "error": "child task did not complete" }),
+                });
+            }
+            _ => {
+                outputs.push(FunctionCallOutput {
+                    id: call.id.clone(),
+                    content: serde_json::json!({
+                        "status": "background task started",
+                        "instance_id": child.id,
+                    }),
+                });
+            }
+        }
+    }
+    if outputs.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(AiMessage::new_tool_result(outputs)))
+}
+
+/// 一批子实例的配对数据
+struct ChildState {
+    /// 子实例绑定的定义 key，没有绑定或定义已删时为 None
+    agent_key: Option<String>,
+    /// 末条 user 消息的文本，即派生它的任务
+    task: String,
+    /// 末条 assistant 消息的文本，即它的产出
+    reply: String,
+}
+
+/// 一次性取出子实例的配对数据，按实例 id 索引
+async fn child_states(
+    storage: &Storage,
+    children: &[AgentInstance],
+) -> Result<HashMap<i64, ChildState>> {
+    let keys: HashMap<i64, String> = storage
+        .agent()
+        .list_definitions()
+        .await?
+        .into_iter()
+        .map(|definition| (definition.id, definition.key))
+        .collect();
+    let ids: Vec<i64> = children.iter().map(|child| child.id).collect();
+    let messages = storage.message().list_by_instances(&ids).await?;
+    let message_ids: Vec<i64> = messages.iter().map(|message| message.id).collect();
+    let mut texts: HashMap<i64, String> = HashMap::new();
+    for content in storage
+        .message()
+        .list_contents_by_messages(&message_ids)
+        .await?
+    {
+        push_block_text(texts.entry(content.message_id).or_default(), &content.data);
+    }
+
+    let mut states: HashMap<i64, ChildState> = children
+        .iter()
+        .map(|child| {
+            (
+                child.id,
+                ChildState {
+                    agent_key: child.agent_id.and_then(|id| keys.get(&id).cloned()),
+                    task: String::new(),
+                    reply: String::new(),
+                },
+            )
+        })
+        .collect();
+    // 消息按 (instance_id, id) 升序，后写的覆盖先写的即得到各自的末条
+    for message in &messages {
+        let Some(state) = states.get_mut(&message.instance_id) else {
+            continue;
+        };
+        let text = texts.get(&message.id).cloned().unwrap_or_default();
+        if message.from_id.is_none() {
+            state.task = text;
+        } else {
+            state.reply = text;
+        }
+    }
+    Ok(states)
+}
+
+/// 按 (agent_key, task) 找第一个还没被认领的子实例，退而求其次只按 agent_key
+fn pick_child<'a>(
+    children: &'a [AgentInstance],
+    states: &HashMap<i64, ChildState>,
+    used: &[i64],
+    request: &SpawnAgentRequest,
+) -> Option<&'a AgentInstance> {
+    let mut by_key: Option<&AgentInstance> = None;
+    for child in children.iter().filter(|c| !used.contains(&c.id)) {
+        let Some(state) = states.get(&child.id) else {
+            continue;
+        };
+        if state.agent_key.as_deref() != Some(request.agent_key.as_str()) {
+            continue;
+        }
+        if state.task == request.task {
+            return Some(child);
+        }
+        by_key.get_or_insert(child);
+    }
+    by_key
+}
+
+/// 实例最后一条 assistant 消息的文本
+pub async fn last_assistant_text(storage: &Storage, instance_id: i64) -> Result<String> {
+    let messages = storage.message().list_by_instance(instance_id).await?;
+    let Some(last) = messages.iter().rev().find(|m| m.from_id.is_some()) else {
+        return Ok(String::new());
+    };
+    let contents = storage.message().list_contents(last.id).await?;
+    Ok(content_text(contents.iter().map(|content| &content.data)))
+}
+
+/// 拼接一组内容块里的文本
+fn content_text<'a>(blocks: impl Iterator<Item = &'a AiMessage>) -> String {
+    let mut text = String::new();
+    for block in blocks {
+        push_block_text(&mut text, block);
+    }
+    text
+}
+
+/// 把一块内容里的文本追加到 `out`
+fn push_block_text(out: &mut String, block: &AiMessage) {
+    for content in &block.content {
+        if let Content::Text { data } = content {
+            out.push_str(data);
+        }
+    }
 }
 
 pub async fn get_instance_by_id(storage: &Storage, instance_id: i64) -> Result<AgentInstance> {
@@ -285,80 +821,36 @@ pub async fn save_approval_state(
         .await
 }
 
-async fn create_context_inner(
-    cwd: &PathBuf,
+/// 落一条用户消息，并把用户输入写成它的第一块内容
+async fn create_user_message(
     storage: &Storage,
     instance_id: i64,
+    model_id: i64,
     user_input: &[Content],
-    raw_contexts: Vec<MessageGroup>,
-    chat_ctx: &ChatContext,
-    agent: Option<&AgentDefinition>,
-) -> Result<(CreatedContexts, Vec<AiMessage>)> {
-    let prompt = assemble_prompt(storage, agent).await?;
-    let user_ctx = AiMessage::new_simple(Role::User, user_input.to_vec(), None);
-    let content_cloned = user_ctx.clone();
-    let (user_message, assistant_message, user_content) = storage
+) -> Result<Message> {
+    let data = AiMessage::new_simple(Role::User, user_input.to_vec(), None);
+    storage
         .with_tx(|storage| async move {
             let user = storage
                 .message()
                 .create(CreateMessage {
                     from_id: None,
-                    model_id: chat_ctx.model.id,
+                    model_id,
                     is_boundary: false,
                     is_excluded: false,
                     instance_id,
                 })
                 .await?;
-
-            // 用户输入就是该消息的第一块内容
-            let user_content = storage
+            storage
                 .message()
                 .create_content(CreateMessageContent {
                     message_id: user.id,
-                    data: content_cloned,
+                    data,
                 })
                 .await?;
-
-            // 助手消息的正文由 Agent 运行时逐轮写入
-            let assistant = storage
-                .message()
-                .create(CreateMessage {
-                    from_id: Some(user.id),
-                    model_id: chat_ctx.model.id,
-                    is_boundary: false,
-                    is_excluded: false,
-                    instance_id,
-                })
-                .await?;
-
-            Ok((user, assistant, user_content))
+            Ok(user)
         })
-        .await?;
-
-    let mut contexts = flatten_contexts(raw_contexts, agent);
-    contexts.push(user_ctx);
-
-    let mut sys_p = vec![Content::new_text(format!(
-        "<AppDataDirectory>\n{}\n</AppDataDirectory>\n
-        <CurrentWorkingDirectory>\n{}\n</CurrentWorkingDirectory>\n
-        <SkillsResourceDirectory>\n{}\n</SkillsResourceDirectory>\n",
-        app_dirs().root_dir().to_string_lossy(),
-        cwd.to_string_lossy().to_string(),
-        app_dirs().skills_dir().to_string_lossy(),
-    ))];
-    if let Some(system_prompt) = prompt {
-        sys_p.push(Content::new_text(system_prompt));
-    }
-    contexts.insert(0, AiMessage::new_simple(Role::System, sys_p, None));
-
-    Ok((
-        CreatedContexts {
-            user: user_message,
-            assistant: assistant_message,
-            user_content,
-        },
-        contexts,
-    ))
+        .await
 }
 
 /// 判断 MCP 工具是否被允许：allowed_tools 为空则默认允许，denied_tools 中存在则拒绝

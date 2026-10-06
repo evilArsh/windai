@@ -70,7 +70,7 @@ Every `create()` returns the full record (`INSERT ... RETURNING id`), so read `.
 
 ## Create a Topic and Start a Chat
 
-A topic owns one `TopicRuntime`, one main `AgentInstance` and any number of child instances. Agent capabilities are attached to a topic through `TopicAgentMap`, which only says "this topic has that capability" — there is no primary/secondary distinction. A main instance without an agent definition degrades to plain chat and only drives scheduling through `agent_list_agents` / `agent_spawn_agent`.
+A topic owns one task tree (`hub` + `AgentBehavior`), one main `AgentInstance` and any number of child instances. Agent capabilities are attached to a topic through `TopicAgentMap`, which only says "this topic has that capability" — there is no primary/secondary distinction. A main instance without an agent definition degrades to plain chat and only drives scheduling through `agent_list_agents` / `agent_spawn_agent`.
 
 ```rust
 use wind_ai::message::{Content, Role};
@@ -130,9 +130,10 @@ while let Ok(event) = events.recv().await {
 }
 ```
 
-- `create_task` takes `Vec<Content>` and returns `Result<Result<()>>` — the outer error is transport, the inner one means the topic is busy. Submitting while a turn is running is rejected; there is no task queue yet.
+- `create_task` takes `Vec<Content>` and returns `Result<Result<()>>` — the outer error is transport, the inner one means the input could not be written (e.g. the topic has no model). Submitting while a turn is running is queued, not rejected: the pending input is consumed when the node reaches a terminal state, when an approval resumes it, or when it re-enters after its children finish.
 - Messages hang off instances (`Message.instance_id`) and every spawn creates a new instance — idle instances are never reused.
-- The stream closes once the main instance reaches a terminal state (`Finished` / `Failed` / `Cancelled`) or waits for approval, so re-subscribe per conversation. A child instance waiting for approval does not close the stream.
+- A `Background` child's result is delivered back to the parent as a synthetic user message (`[后台任务 <agent_key> 已完成]\n<output>`) and starts a new turn.
+- The stream closes once the whole tree is quiescent — every node terminal, no queued input, no undelivered background result — so re-subscribe per conversation. A running child or an outstanding background result keeps it open.
 
 ## Messages and Content Blocks
 
@@ -181,7 +182,7 @@ core.storage().agent().create_definition(CreateAgentDefinition {
 }).await?;
 ```
 
-`AgentDefinitionData` also carries `prompt_modules`, `builtin_mcp_servers`, `context_policy`, `permission_policy` and `runtime_limits`. Only `context_policy.max_context` and the enable/tool-name filtering of the MCP bindings take effect today.
+`AgentDefinitionData` also carries `prompt_modules`, `builtin_mcp_servers`, `context_policy`, `permission_policy` and `runtime_limits`. Only `context_policy.max_context`, `permission_policy.max_spawn_depth` and the enable/tool-name filtering of the MCP bindings take effect today.
 
 The builtin servers (`wind-mcp-fs`, `wind-mcp-skills`) are registered when `WindCore` is initialized — reference them through `builtin_mcp_servers` instead of creating them.
 
