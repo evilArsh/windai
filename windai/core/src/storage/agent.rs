@@ -17,7 +17,7 @@ use crate::{
     },
     select_fields,
     storage::TableName,
-    update,
+    update, update_strict,
 };
 
 #[derive(Clone)]
@@ -180,6 +180,8 @@ impl AgentStorage {
             parent_id: data.parent_id,
             topic_id: data.topic_id,
             agent_id: data.agent_id,
+            user_id: None,
+            assistant_id: None,
             mode: data.mode,
             role,
             status,
@@ -195,7 +197,50 @@ impl AgentStorage {
             ("agent_id", data.agent_id),
             ("status", data.status.map(|v| v.to_string())),
             ("mode", data.mode.map(|v| v.to_string())),
+            ("user_id", data.user_id),
+            ("assistant_id", data.assistant_id),
         );
+        ensure_affected(self.executor.execute(qb.build()).await?)
+    }
+
+    /// 把一条新的用户消息记成实例本轮的输入
+    pub async fn bind_unconsumed_input(&self, id: i64, user_message_id: i64) -> Result<()> {
+        let instance = self
+            .get_instance(id)
+            .await?
+            .ok_or_else(|| CoreError::RowNotFound(format!("instance_id: {}", id)))?;
+        let has_input = instance
+            .user_id
+            .is_some_and(|user_id| user_id > instance.assistant_id.unwrap_or(0));
+        if has_input {
+            return Ok(());
+        }
+        self.update_instance(
+            id,
+            UpdateInstance {
+                user_id: Some(user_message_id),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    /// 把实例的消息指针回退到末次配对
+    ///
+    /// `user_id` 回到 `assistant_id` 锚定的那条用户消息，还没跑过轮的实例两个指针都清空；
+    pub async fn rewind_instance_messages(&self, id: i64) -> Result<()> {
+        let instance = self
+            .get_instance(id)
+            .await?
+            .ok_or_else(|| CoreError::RowNotFound(format!("instance_id: {}", id)))?;
+        let user_id = match instance.assistant_id {
+            Some(assistant_id) => MessageStorage::new(self.executor.clone())
+                .get(assistant_id)
+                .await?
+                .and_then(|assistant| assistant.from_id),
+            None => None,
+        };
+        let mut qb = update_strict!(TableName::AGENT_INSTANCES, id, ("user_id", user_id));
         ensure_affected(self.executor.execute(qb.build()).await?)
     }
 
@@ -457,6 +502,8 @@ impl AgentStorage {
                 "parent_id",
                 "topic_id",
                 "agent_id",
+                "user_id",
+                "assistant_id",
                 "role",
                 "status",
                 "mode",

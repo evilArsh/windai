@@ -12,7 +12,6 @@ use crate::{
     storage::TableName,
     update,
 };
-use futures::future::try_join_all;
 use sqlx::QueryBuilder;
 
 const IN_CHUNK: usize = 1000;
@@ -194,29 +193,25 @@ impl MessageStorage {
         Ok(rows)
     }
 
-    /// 查询多个实例下所有的消息，按 (instance_id, id) 升序
-    pub async fn list_by_instances(&self, instance_ids: &[i64]) -> Result<Vec<Message>> {
-        if instance_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let chunks = instance_ids.chunks(IN_CHUNK).map(|chunk| async move {
-            let mut qb = Self::select_common();
-            qb.push(" WHERE instance_id IN (");
-            {
-                let mut separated = qb.separated(", ");
-                for id in chunk {
-                    separated.push_bind(*id);
-                }
-            }
-            qb.push(") ORDER BY instance_id ASC, id ASC ");
-            self.executor
-                .fetch_all(qb.build_query_as::<Message>())
-                .await
-        });
-        let mut rows = Vec::new();
-        for chunk_rows in try_join_all(chunks).await? {
-            rows.extend(chunk_rows);
-        }
+    /// 查询实例下 id 不小于 `from_id` 的消息，按 id 升序
+    pub async fn list_by_instance_from(
+        &self,
+        instance_id: i64,
+        from_id: i64,
+    ) -> Result<Vec<Message>> {
+        let rows = self
+            .executor
+            .fetch_all(
+                Self::select_common()
+                    .push(" WHERE instance_id = ")
+                    .push_bind(instance_id)
+                    .push(" AND id >= ")
+                    .push_bind(from_id)
+                    .push(" ORDER BY id ASC ")
+                    .build_query_as::<Message>(),
+            )
+            .await?;
+
         Ok(rows)
     }
 

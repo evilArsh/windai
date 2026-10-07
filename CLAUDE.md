@@ -23,12 +23,12 @@ Copy `.env.example` to `.env` and fill in `TEST_*` values for the `.env`-gated t
 
 | File | Tests | Content |
 |------|-------|---------|
-| `windai/core/tests/storage.rs` | 32 | 各 `*Storage` 的 CRUD、校验、级联、批量 |
+| `windai/core/tests/storage.rs` | 33 | 各 `*Storage` 的 CRUD、校验、级联、批量 |
 | `windai/core/tests/schema.rs` | 15 | schema↔model 列契约：13 张表各一条断言 + `dropped_columns_are_absent` + `dropped_tables_are_absent` |
 | `windai/core/tests/autoincrement.rs` | 7 | 自增主键契约：id 非空且落在 JS 安全整数内、不复用（守护 `AUTOINCREMENT`）、严格递增、`create()` 返回值与库中一致、批量插入的自然键关联与分块、布尔列往返 |
 | `windai/core/tests/message_content.rs` | 9 | `message_contents` 契约（追加成行、按 id 排序、级联删除、老 schema 写入报错）与上下文获取（展平顺序、`max_context` 按消息条数截断、`is_excluded` 隔离） |
-| `windai/core/tests/agent_adoption.rs` | 44 | hub 运行时的端到端（本地假 SSE 服务，无 `.env`、无网络）：单轮落一块、manual 策略挂起与恢复、拒绝标记、直驱 `AgentBehavior`（审批、拒绝、list_agents、spawn 的三种模式与深度上限）、取消级联整棵子树、并发任务排队、后台产出投递回父实例、取消丢弃未消费输入、失败落错误块 |
-| `windai/core/tests/agent_recovery.rs` | 4 | `AgentStore::load_snapshots` 从库重建相位、父子、detached 与待消费输入；idle 实例不进树 |
+| `windai/core/tests/agent_adoption.rs` | 47 | hub 运行时的端到端（本地假 SSE 服务，无 `.env`、无网络）：单轮落一块、manual 策略挂起与恢复、拒绝标记、直驱 `AgentBehavior`（审批、拒绝、list_agents、spawn 的三种模式与深度上限）、取消级联整棵子树、并发任务排队、后台产出投递回父实例、取消丢弃未消费输入、消息指针的绑定与回退、失败落错误块 |
+| `windai/core/tests/agent_recovery.rs` | 4 | `AgentStore::load_snapshots` 从实例指针重建相位、父子、detached 与待消费输入；idle 实例不进树 |
 | `windai/core/tests/agent_runtime.rs` | 3 | 冻结面：runtime 生命周期、终态事件先于关流到达订阅者、终态内容按 `MessageContent` 落库 |
 | `windai/core/tests/agent_flow.rs` | 9 | 冻结面：本地假 SSE 服务驱动真实运行时（无 `.env`、无网络）：审批恢复后块按 id 追加、SSE `index` 是本次运行内的块序号、取消不落内容块、历史遗留工具调用不重放、错误文本不被 JSON 包装、空响应不落空白块、用户输入与子实例首轮输入的内容块经 SSE 下发 |
 | `windai/core/src/agent/tree/{tree,reduce,cancel,phase}.rs` (cfg test) | 70 | 引擎单元测试：节点状态与等待屏障、入队与出队、投递义务与 `Sealed` 条件、取消展开、恢复收敛 |
@@ -110,7 +110,7 @@ core.storage().approval()   // &ToolApprovalStorage
 
 All `create()` methods return the **full record** (`Result<Topic>`, `Result<Model>`, `Result<AgentInstance>`, …) — read `.id` off the result. **id 由数据库自增生成**：SQLite 侧是 `INTEGER PRIMARY KEY AUTOINCREMENT`，`create()` 用 `INSERT ... RETURNING id`（`executor.fetch_one_scalar`）取回；不再有应用层的 id 生成器。自增 id 保证「id 顺序 = 插入顺序」，这正是 `ORDER BY id` 与 `list_contexts` 的 `id > MAX(id)` 所依赖的。
 
-**Messages 与 MessageContent 同属 `MessageStorage`**（`storage/message.rs`）：`MessageStorage` 既管 `messages` 表也管 `message_contents` 表 —— `create` / `update` / `get` / `get_from_msg` / `delete` / `list_by_instance` / `list_by_instances`（消息结构）与 `create_content` / `list_contents(message_id)` / `list_contents_by_messages(&[i64])` / `delete_contents_by_messages` / `delete_contents_by_instances`（正文内容块）、`batch_exclude(&[i64])`（批量标 `is_excluded`）。没有单独的 `MessageContentStorage`。
+**Messages 与 MessageContent 同属 `MessageStorage`**（`storage/message.rs`）：`MessageStorage` 既管 `messages` 表也管 `message_contents` 表 —— `create` / `update` / `get` / `get_from_msg` / `delete` / `list_by_instance` / `list_by_instance_from(instance_id, from_id)`（消息结构，`from` 版本用实例指针给出的下界收窄）与 `create_content` / `list_contents(message_id)` / `list_contents_by_messages(&[i64])` / `delete_contents_by_messages` / `delete_contents_by_instances`（正文内容块）、`batch_exclude(&[i64])`（批量标 `is_excluded`）。没有单独的 `MessageContentStorage`。
 
 **消息正文在 `message_contents`**：`Message` 只承载会话结构（`from_id` / `model_id` / `instance_id` / `is_boundary` / `is_excluded` / `created_at`），正文按内容块拆到 `MessageContent`（`id` / `message_id` / `data: AiMessage`）。**块顺序由自增 `id` 决定**，`create_content` 只追加、不覆盖（一次模型响应累积成一块、工具调用结果自成一块），**不维护 `messages` 上的任何汇总列** —— token 只落在块上（`AiMessage.input_tokens` / `output_tokens` 平铺成列），读取方按内容块自行累加。模型里没有 `index` 字段：`index` 只存在于 SSE 事件里，是**本次运行内的块序号**。
 
@@ -120,7 +120,7 @@ All `create()` methods return the **full record** (`Result<Topic>`, `Result<Mode
 
 **取回自增 id 一律用 `INSERT ... RETURNING id`**，不要用 `last_insert_rowid()`（SQLite 驱动专有，PostgreSQL 无对应物）。批量插入时**不要依赖 `RETURNING` 的返回顺序**（两个驱动都不承诺），而要用自然键关联 —— 见 `ToolApprovalStorage::create_requests` 用 `tool_call_id` 回填 id，并按 `input.calls` 原始顺序组装返回值。
 
-**SQL macros** (`storage/utils.rs`): `insert!`, `update!`, `update_fields!`, `insert_fields!`, `delete_by_id!`, `delete_from!`, `select_fields!`, `get_by_id!`。Values are `Option`-wrapped; `None` fields are skipped。`update!` appends `updated_at` and `WHERE id = ?`。（`executor.rs` 的 `with_transaction!` / `with_connection!` 是连接池 plumbing。）
+**SQL macros** (`storage/utils.rs`): `insert!`, `update!`, `update_strict!`, `update_fields!`, `insert_fields!`, `delete_by_id!`, `delete_from!`, `select_fields!`, `get_by_id!`。Values are `Option`-wrapped; `None` fields are skipped，只有 `update_strict!` 不做解包、`None` 直接落成 `NULL`。`update!` / `update_strict!` append `updated_at` and `WHERE id = ?`。（`executor.rs` 的 `with_transaction!` / `with_connection!` 是连接池 plumbing。）
 
 **Serializing `Option` vec/map fields** (`storage/utils.rs`):
 - `vec_to_str_default(Some(v))` → JSON string；`vec_to_str_default(None)` → `"[]"` —— 总是写列
@@ -128,7 +128,7 @@ All `create()` methods return the **full record** (`Result<Topic>`, `Result<Mode
 
 `UpdateMessage` 只有 `model_id` —— 正文与 token 都不由客户端直写。Tool approvals 不再存在消息上（见 Tool Approval Flow）。
 
-**`AgentStorage` 的可见性**（`storage/agent.rs`）：`create_definition` / `update_definition` / `delete_definition` / `get_definition` / `get_definition_by_key` / `list_definitions` / `select_definitions` / `clone_definition_for_topic` / `create_instance` / `update_instance` / `delete_instances` / `get_instance` / `get_main_instance` / `list_instances_by_topic` / `list_definitions_by_topic`，以及 4 个能力映射方法（`create_topic_agent_map` / `list_agent_maps_by_topic` / `get_agent_map` / `delete_topic_agent_map`）都是 `pub`；级联用的 `batch_delete_agent_maps_by_topics` 是 `pub(crate)`；`select_instances` / `select_agent_maps` 两个查询构造器是私有的。
+**`AgentStorage` 的可见性**（`storage/agent.rs`）：`create_definition` / `update_definition` / `delete_definition` / `get_definition` / `get_definition_by_key` / `list_definitions` / `select_definitions` / `clone_definition_for_topic` / `create_instance` / `update_instance` / `bind_unconsumed_input` / `rewind_instance_messages` / `delete_instances` / `get_instance` / `get_main_instance` / `list_instances_by_topic` / `list_definitions_by_topic`，以及 4 个能力映射方法（`create_topic_agent_map` / `list_agent_maps_by_topic` / `get_agent_map` / `delete_topic_agent_map`）都是 `pub`；级联用的 `batch_delete_agent_maps_by_topics` 是 `pub(crate)`；`select_instances` / `select_agent_maps` 两个查询构造器是私有的。
 
 ### Agent system
 
@@ -193,14 +193,16 @@ Agent 系统分三层：**任务树引擎**（`agent/tree.rs` + `agent/tree/`）
 TopicRuntimeHandle::create_task(user_input)
   → ensure_recovered()（首次调用才从库重建树）
   → helper::start_round()：get_or_create_main_instance()（已存在则复用；不存在时以 agent_id = None 建），
-    在事务内创建绑定到主实例的 user 消息，返回 AgentSpec { message_id: None }
+    在事务内创建绑定到主实例的 user 消息并记进 AgentInstance::user_id（已有未消费输入时不顶替），
+    返回 AgentSpec { message_id: None }
   → 节点不存在 → hub.send(Event::Spawn { detached: false })；已存在 → Event::Enqueue（入队，不拒绝）
   → 引擎 reduce_spawn（新节点）或 reduce_enqueue 命中终态节点 → Effect::Persist + Launch(Input::Fresh(spec))；
     节点在跑时 Enqueue 只置 pending，开轮推迟到它落终态 / 审批恢复 / 子节点重入
-  → AgentBehavior::run()：message_id 为 None 时先 `helper::open_assistant()` 建本轮 assistant（`from_id` 指向末条用户消息），
-    再 announce() 依次下发（每一轮都发，不只开新轮）
-      InstanceCreated → 每条待消费 user 消息（MessageCreated + 其内容块）→ MessageCreated(assistant)
-        已知重复：续轮的锚点是「最后一条不是本轮的 assistant」，本轮 assistant 刚消费的那条 user 消息会被再宣告一次 —— 每次审批恢复与每次子节点重入都会发生
+  → AgentBehavior::run()：续写本轮（spec.message_id 为 Some）时先把消息指针回退到末次配对 ——
+    停在库里的输入已被这一轮读进上下文一并消费；开新一轮（None）时由 `helper::open_assistant()` 锚在 user_id 上
+    建本轮 assistant 并记进 assistant_id，再 announce() 依次下发（每一轮都发，不只开新轮）
+      InstanceCreated → 本轮消费的 user 消息（从 user_id 起，MessageCreated + 其内容块）→ MessageCreated(assistant)
+        续轮只补上本轮 assistant 之后新到的输入，开新轮只取本轮 assistant 之前的 —— 已宣告过的输入不会重发
   → round()：run_chat() → ChatEvent stream
       Partial        → AgentProgress::Block → TreeEvent::Progress → TopicEvent::Message（不落库）
       块结束          → close_block：空块丢弃，否则落 MessageContent 再发 Progress
@@ -212,6 +214,14 @@ TopicRuntimeHandle::create_task(user_input)
       error          → fail()：落错误块 + Outcome::Failed → TopicEvent::Error
   整棵树安静 → TreeEvent::Sealed → 关流
 ```
+
+**消息指针的读写**（`AgentInstance::user_id` / `assistant_id`）：
+
+- 写：`create_user_message` 在同一事务里 `bind_unconsumed_input` —— 实例上已经压着未消费输入时不顶替；`open_assistant` 建本轮 assistant 并记进 `assistant_id`；`AgentStorage::rewind_instance_messages` 把 `user_id` 回退到 `assistant_id` 锚定的那条（还没有配对时两列清空），续轮轮首与取消丢弃输入后各调一次
+- 读：`open_assistant` 拿它当锚点、`current_spec` 读 `assistant_id` 续写本轮、`announce` 从 `user_id` 起查本轮消费的输入、`discard_unconsumed_input` 从 `max(user_id, assistant_id)` 起丢输入（正在进行的那一轮锚定的输入不算未消费）、`last_assistant_text` 与 `child_states` 按指针点查
+- 「有没有待消费的输入」的判据就是 `user_id > assistant_id`，`AgentStore::load_snapshots` 的 `pending_of` 据此派生：两处回退保证已消费、已丢弃的输入不会停在指针上
+- `load_snapshots` 只认指针：相位载荷（`Done` / `Failed` / `Suspended` 的消息 id）取 `assistant_id`，`WaitingApproval` / `Finished` 而 `assistant_id` 为空时整条实例跳过（连带丢掉它的后代）
+- 残留的宣告重复只剩一条竞态：输入恰好落在某一轮的 `announce` 与上下文加载之间时，那一轮与随后 drain 出的新一轮都会消费并宣告它 —— 引擎既有的「开轮期间入队」竞态，不是指针引入的
 
 `run_chat()` 的短路：上下文里还有未执行的工具调用时（`has_pending_calls`）直接 `yield ChatEvent::Finish { contexts, error: None }`，不请求模型。**审批恢复就靠这条路径** —— `AgentBehavior` 在 `Finish` 分支用 `pending_tool_calls(&contexts)` 判定待办调用（不是看本轮块里有没有 `tool_calls`），把已审批的调用执行掉再继续下一轮。
 
@@ -308,7 +318,7 @@ When the model requests tool calls:
 
 **`key` 由系统生成，调用方无法指定**：`CreateAgentDefinition` 不含 `key`，`AgentStorage::generate_key`（`KEY_LEN = 12`）取首字符小写字母 + 其余 nanoid 的 URL 安全字母表；`UpdateAgentDefinition` 与 `update_definition` 都不含 key，生成后不可修改；`clone_definition_for_topic` 同样走 `create_definition` 生成全新 key，来源关系由 `cloned_from_id` 记录。
 
-**`AgentInstance`** (`models/agent/instance.rs`) — `id` / `parent_id`（`None` 即主实例）/ `topic_id` / `agent_id`（`None` = 回退为普通对话）/ `mode: Option<AgentMode>` / `role: AgentRole`（`Main`/`Child`）/ `status: AgentStatus` / `created_at`。**`model_id` 与 `tool_approval_policy` 不在实例上 —— 它们在 `Topic` 上**；实例没有 `enabled` / `chat_config_id` 字段。`AgentStatus`: `Idle → Running → (WaitingApproval | WaitingChild | Cancelling) → Finished | Failed | Cancelled` —— `Cancelling` 只在库里出现，从不广播。
+**`AgentInstance`** (`models/agent/instance.rs`) — `id` / `parent_id`（`None` 即主实例）/ `topic_id` / `agent_id`（`None` = 回退为普通对话）/ `user_id` / `assistant_id` / `mode: Option<AgentMode>` / `role: AgentRole`（`Main`/`Child`）/ `status: AgentStatus` / `created_at`。**`user_id` / `assistant_id` 是当前一轮的消息指针**：`user_id` 指向本轮要作答的那条用户消息（没有输入待消费时指向最后一次作答的那条），`assistant_id` 指向本轮开出的助手消息；新实例两者皆空，节点取消丢弃输入时由 `AgentStorage::rewind_instance_messages` 回退到末次配对的形状。**`model_id` 与 `tool_approval_policy` 不在实例上 —— 它们在 `Topic` 上**；实例没有 `enabled` / `chat_config_id` 字段。`AgentStatus`: `Idle → Running → (WaitingApproval | WaitingChild | Cancelling) → Finished | Failed | Cancelled` —— `Cancelling` 只在库里出现，从不广播。
 
 **`TopicAgentMap`** (`models/agent/topic_map.rs`) — 能力映射：`id` / `topic_id` / `agent_id` / `created_at`（**无 `role` 列**，`CreateTopicAgentMap` 同形，没有 `UpdateTopicAgentMap`）。映射只表达「这个 topic 拥有该 AgentDefinition 能力」，用户只能添加或删除。`AgentStorage::list_definitions_by_topic(topic_id)` 返回该 topic 映射到的**全部**定义，不做任何过滤。
 
@@ -324,7 +334,7 @@ When the model requests tool calls:
 
 `providers`, `models`, `credentials`, `topics`, `messages`, `message_contents`, `mcp_servers`, `json_rule`, `prompt_modules`, `agent_definitions`, `agent_instances`, `topic_agent_maps`, `tool_approval_requests` —— 共 13 张表。`chat_configs` 与 `topic_agent_bindings` 已被删除。
 
-Column notes: `topics` 有 `parent_id` / `model_id` / `tool_approval_policy`；`messages` 按自己的 `instance_id` 归属（**没有 `topic_id` 列**），排除标志列名与模型字段同名 `is_excluded`；`message_contents` 的 `role` / `content` / `reasoning_content` / `tool_calls` / `input_tokens` / `output_tokens` / `created_at` 是把 `AiMessage` 平铺后的列（`content` 与 `tool_calls` 序列化成字符串，`reasoning_content` 与 `tool_calls` 可空）；`agent_instances` 按 `topic_id` 归属；`topic_agent_maps` 按 `topic_id` 归属且**没有 `role` 列**；`prompt_modules` 的展示名列名是 `alias`；`tool_approval_requests` 带 `topic_id` + `message_id` + `instance_id`。
+Column notes: `topics` 有 `parent_id` / `model_id` / `tool_approval_policy`；`messages` 按自己的 `instance_id` 归属（**没有 `topic_id` 列**），排除标志列名与模型字段同名 `is_excluded`；`message_contents` 的 `role` / `content` / `reasoning_content` / `tool_calls` / `input_tokens` / `output_tokens` / `created_at` 是把 `AiMessage` 平铺后的列（`content` 与 `tool_calls` 序列化成字符串，`reasoning_content` 与 `tool_calls` 可空）；`agent_instances` 按 `topic_id` 归属，`user_id` / `assistant_id` 是当前一轮的消息指针（新实例两列皆空）；`topic_agent_maps` 按 `topic_id` 归属且**没有 `role` 列**；`prompt_modules` 的展示名列名是 `alias`；`tool_approval_requests` 带 `topic_id` + `message_id` + `instance_id`。
 
 **主键 DDL**：13 张表的 `id` 一律是 `INTEGER PRIMARY KEY AUTOINCREMENT`（SQLite 侧）。必须是 `INTEGER` 而非 `BIGINT` —— 只有前者才是 rowid 别名，用 `BIGINT` 时省略 id 插入**不报错、而是静默写入 NULL**；必须带 `AUTOINCREMENT` —— 否则删除最大 id 行后新行会复用该 id，破坏「id 顺序 = 插入顺序」。`message_contents` 正是靠它：**块顺序就是 `id` 顺序**，没有单独的索引列。
 
@@ -431,7 +441,7 @@ Skeleton TUI application using `ratatui` + `crossterm`。目前只渲染 `"hello
 
 **`pending_tool_calls` 的判定范围**：`chat/runner.rs` 的实现只扫描**最后一条用户简单消息之后**的内容块，并只统计 `Content::FunctionCall` 项。全展平之后必须限定范围，否则上一轮遗留的未执行工具调用会被新任务重新执行、模型被绕过。`chat::run_chat` 的短路与 `agent::runtime` 的待办判定共用这一个实现。
 
-**上下文获取**（`helper::load_contexts` / `flatten_contexts`）：先用 `list_contexts(instance_id)` 取消息（已排除 `is_excluded`、只保留最后一次 `is_boundary` 之后的行），按其 id 升序分组；再用 `list_contents_by_messages` 取每组的块（组内按自增 `id` 升序，即块插入顺序）；`max_context` 按**消息条数**截断窗口，截断后前移到第一条用户消息，最后展平成 `Vec<AiMessage>` —— 历史消息的全部内容块（含工具调用与结果）都会进入上下文。`create_user_message` 只创建 user 消息并把用户输入写成它的第一块内容；本轮的 assistant 消息由 `helper::open_assistant()` 在 `run` 最开头创建，正文留给运行时逐块追加。用户输入块由 `AgentBehavior::announce()` 从库里读回，经 `TopicEvent::Message`（`index: 0`）推送给前端。
+**上下文获取**（`helper::load_contexts` / `flatten_contexts`）：先用 `list_contexts(instance_id)` 取消息（已排除 `is_excluded`、只保留最后一次 `is_boundary` 之后的行），按其 id 升序分组；再用 `list_contents_by_messages` 取每组的块（组内按自增 `id` 升序，即块插入顺序）；`max_context` 按**消息条数**截断窗口，截断后前移到第一条用户消息，最后展平成 `Vec<AiMessage>` —— 历史消息的全部内容块（含工具调用与结果）都会进入上下文。`create_user_message` 只创建 user 消息、把用户输入写成它的第一块内容，并把它记成实例的 `user_id`；本轮的 assistant 消息由 `helper::open_assistant()` 在轮首锚着 `user_id` 创建，正文留给运行时逐块追加。用户输入块由 `AgentBehavior::announce()` 从库里读回，经 `TopicEvent::Message`（`index: 0`）推送给前端。
 
 ## Agent skills
 

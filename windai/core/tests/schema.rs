@@ -220,6 +220,8 @@ async fn agent_instances_columns_match_model() {
             "parent_id",
             "topic_id",
             "agent_id",
+            "user_id",
+            "assistant_id",
             "role",
             "status",
             "mode",

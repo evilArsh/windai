@@ -154,7 +154,9 @@ impl TopicRuntimeHandle {
                 origin: CancelOrigin::External,
             })
             .await?;
-        // 引擎只清内存里的 pending，库里那批输入要在这里一并丢弃
+        // 引擎只清内存里的 pending，库里那批输入要在这里一并丢弃。
+        // 丢弃会把消息指针回退到末次配对，而正在开轮的那个 worker 可能刚读完指针还没落 assistant ——
+        // 它随后锚到的是上一条输入。这一轮注定被取消、也不写内容块，留下的空 assistant 行只影响锚点
         if let Err(err) = helper::discard_unconsumed_input(&self.inner.storage, instance_id).await {
             log::error!("[topic] discarding the input of node {instance_id} failed: {err}");
         }
@@ -476,7 +478,7 @@ mod tests {
     };
     use wind_ai::message::{Message as AiMessage, Role};
 
-    /// 给一个实例补一对 user/assistant 消息，恢复才能重建它的相位载荷
+    /// 给一个实例补一对 user/assistant 消息并记进指针，恢复才能重建它的相位载荷
     async fn seed_messages(storage: &Storage, instance_id: i64) {
         let user = storage
             .message()
@@ -489,7 +491,7 @@ mod tests {
             })
             .await
             .expect("user message");
-        storage
+        let assistant = storage
             .message()
             .create(CreateMessage {
                 from_id: Some(user.id),
@@ -500,6 +502,23 @@ mod tests {
             })
             .await
             .expect("assistant message");
+        bind_messages(storage, instance_id, user.id, assistant.id).await;
+    }
+
+    /// 把一对消息记成实例的当前一轮
+    async fn bind_messages(storage: &Storage, instance_id: i64, user_id: i64, assistant_id: i64) {
+        storage
+            .agent()
+            .update_instance(
+                instance_id,
+                UpdateInstance {
+                    user_id: Some(user_id),
+                    assistant_id: Some(assistant_id),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("bind messages");
     }
 
     /// 建一个 Agent 定义
@@ -521,19 +540,16 @@ mod tests {
             .expect("definition")
     }
 
-    /// 把一个实例末条 assistant 消息填上一块文本，它才有产出
+    /// 把一个实例本轮的 assistant 消息填上一块文本，它才有产出
     async fn seed_reply(storage: &Storage, instance_id: i64, text: &str) {
-        let messages = storage
-            .message()
-            .list_by_instance(instance_id)
+        let assistant = storage
+            .agent()
+            .get_instance(instance_id)
             .await
-            .expect("messages");
-        let assistant = messages
-            .iter()
-            .rev()
-            .find(|message| message.from_id.is_some())
-            .expect("assistant message")
-            .id;
+            .expect("instance")
+            .expect("instance row")
+            .assistant_id
+            .expect("assistant message");
         storage
             .message()
             .create_content(CreateMessageContent {
@@ -578,7 +594,7 @@ mod tests {
             .join("\n")
     }
 
-    /// 立刻完成的 worker：产出指向该实例末条 assistant 消息，没有则退到节点 id
+    /// 立刻完成的 worker：产出指向该实例本轮的 assistant 消息，没有则退到节点 id
     struct DoneBehavior {
         storage: Storage,
     }
@@ -590,17 +606,15 @@ mod tests {
             ctx: Ctx<'_, AgentDomain>,
             _input: Input<AgentDomain>,
         ) -> Outcome<AgentDomain> {
-            let messages = self
+            let message_id = self
                 .storage
-                .message()
-                .list_by_instance(ctx.node)
+                .agent()
+                .get_instance(ctx.node)
                 .await
-                .unwrap_or_default();
-            let message_id = messages
-                .iter()
-                .rev()
-                .find(|message| message.from_id.is_some())
-                .map_or(ctx.node, |message| message.id);
+                .ok()
+                .flatten()
+                .and_then(|instance| instance.assistant_id)
+                .unwrap_or(ctx.node);
             Outcome::Completed(crate::agent::domain::AgentOutcome { message_id })
         }
     }

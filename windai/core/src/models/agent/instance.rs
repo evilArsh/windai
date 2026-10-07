@@ -49,6 +49,10 @@ pub struct AgentInstance {
     ///
     /// 实例没有绑定 Agent 能力时，回退成普通对话模式
     pub agent_id: Option<i64>,
+    /// 当前一轮消费的用户消息 id
+    pub user_id: Option<i64>,
+    /// 当前一轮的助手消息 id
+    pub assistant_id: Option<i64>,
     /// 实例运行模式
     pub mode: Option<AgentMode>,
     /// 实例在任务中的角色
@@ -66,6 +70,8 @@ impl<'s> sqlx::FromRow<'s, DbRow> for AgentInstance {
             parent_id: row.get("parent_id"),
             topic_id: row.get("topic_id"),
             agent_id: row.get("agent_id"),
+            user_id: row.get("user_id"),
+            assistant_id: row.get("assistant_id"),
             role: utils::parse_str_to(&row.get::<String, _>("role"))
                 .map_err(|e| sqlx::Error::Decode(e.into()))?,
             created_at: row.get("created_at"),
@@ -166,4 +172,8 @@ pub struct UpdateInstance {
     pub mode: Option<AgentMode>,
     /// 绑定 AgentDefinition id
     pub agent_id: Option<i64>,
+    /// 当前一轮消费的用户消息 id
+    pub user_id: Option<i64>,
+    /// 当前一轮的助手消息 id
+    pub assistant_id: Option<i64>,
 }

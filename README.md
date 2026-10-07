@@ -132,6 +132,7 @@ while let Ok(event) = events.recv().await {
 
 - `create_task` takes `Vec<Content>` and returns `Result<Result<()>>` — the outer error is transport, the inner one means the input could not be written (e.g. the topic has no model). Submitting while a turn is running is queued, not rejected: the pending input is consumed when the node reaches a terminal state, when an approval resumes it, or when it re-enters after its children finish.
 - Messages hang off instances (`Message.instance_id`) and every spawn creates a new instance — idle instances are never reused.
+- Each instance points at its current turn with `AgentInstance::user_id` / `assistant_id`: the user message it is answering and the assistant message it writes into. Both are `None` until the instance talks, and a turn that is resumed (approval, child re-entry) keeps appending to the same assistant message.
 - A `Background` child's result is delivered back to the parent as a synthetic user message (`[后台任务 <agent_key> 已完成]\n<output>`) and starts a new turn.
 - The stream closes once the whole tree is quiescent — every node terminal, no queued input, no undelivered background result — so re-subscribe per conversation. A running child or an outstanding background result keeps it open.
 

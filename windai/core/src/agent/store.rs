@@ -3,9 +3,9 @@ use crate::agent::hub::{NodeSnapshot, Persist};
 use crate::agent::tree::NodeId;
 use crate::agent::tree::phase::{CancelOrigin, Phase};
 use crate::error::{CoreError, Result};
-use crate::models::{AgentMode, AgentStatus, Message, UpdateInstance};
+use crate::models::{AgentInstance, AgentMode, AgentStatus, UpdateInstance};
 use crate::storage::Storage;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::future::Future;
 use std::time::Duration;
 
@@ -74,7 +74,7 @@ impl AgentStore {
     ///
     /// `idle` 的实例尚未进入任务树，跳过它们；
     /// 相位载荷（`Output` / `Error` / `Suspended`）库里没有对应列，按约定从
-    /// 「该实例最后一条 assistant 消息」重建；
+    /// 实例的 `assistant_id` 重建；
     /// 载荷带 `message_id` 的相位（`WaitingApproval` / `Finished`）缺消息时整条实例跳过，
     /// 其余相位不要求实例有消息；
     /// 父不在结果集里的节点连同它的后代一并丢弃
@@ -84,21 +84,12 @@ impl AgentStore {
             .agent()
             .list_instances_by_topic(topic_id)
             .await?;
-        let ids: Vec<i64> = instances.iter().map(|instance| instance.id).collect();
-        let mut messages: HashMap<i64, Vec<Message>> = HashMap::new();
-        for message in self.storage.message().list_by_instances(&ids).await? {
-            messages
-                .entry(message.instance_id)
-                .or_default()
-                .push(message);
-        }
         let mut snaps = Vec::new();
         for instance in instances {
             if instance.status == AgentStatus::Idle {
                 continue;
             }
-            let own = messages.remove(&instance.id).unwrap_or_default();
-            let message_id = last_message_id(&own);
+            let message_id = instance.assistant_id;
             let phase = match (instance.status, message_id) {
                 (AgentStatus::Idle, _) => unreachable!("已在上面跳过"),
                 (AgentStatus::Running, _) => Phase::Running,
@@ -123,7 +114,7 @@ impl AgentStore {
                     continue;
                 }
             };
-            let pending = pending_of(instance.id, &phase, own.last());
+            let pending = pending_of(&instance, &phase);
             snaps.push(NodeSnapshot {
                 id: instance.id,
                 parent: instance.parent_id,
@@ -165,34 +156,21 @@ impl AgentStore {
     }
 }
 
-/// 实例最后一条 assistant 消息的 id，没有则退到它最后一条消息
-fn last_message_id(messages: &[Message]) -> Option<i64> {
-    messages
-        .iter()
-        .rev()
-        .find(|m| m.from_id.is_some())
-        .or_else(|| messages.last())
-        .map(|m| m.id)
-}
-
-/// 恢复出的待消费输入：完结的实例末条消息停在一条没被排除的 user 消息上
+/// 恢复出的待消费输入：完结的实例上还压着一条没人消费的用户消息
 ///
+/// 指针在输入被丢弃时一并回退，所以 `user_id` 越过 `assistant_id` 就是有输入等着被消费；
 /// 取消的实例不派生 —— 取消语义是丢弃输入，恢复时不该把它捡回来重跑
-fn pending_of(
-    instance_id: i64,
-    phase: &Phase<AgentDomain>,
-    last: Option<&Message>,
-) -> Option<AgentSpec> {
+fn pending_of(instance: &AgentInstance, phase: &Phase<AgentDomain>) -> Option<AgentSpec> {
     match phase {
         Phase::Done(_) | Phase::Failed(_) => {}
         _ => return None,
     }
-    let last = last?;
-    if last.from_id.is_some() || last.is_excluded {
+    let user_id = instance.user_id?;
+    if user_id <= instance.assistant_id.unwrap_or(0) {
         return None;
     }
     Some(AgentSpec {
-        instance_id,
+        instance_id: instance.id,
         message_id: None,
     })
 }

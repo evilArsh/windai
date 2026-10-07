@@ -17,6 +17,7 @@ use wind_core::agent::behavior::{Behavior, Ctx, Input, Outcome};
 use wind_core::agent::domain::{AgentDomain, AgentProgress, AgentSpec};
 use wind_core::agent::event::TopicEvent;
 use wind_core::agent::runtime::AgentBehavior;
+use wind_core::agent::store::AgentStore;
 use wind_core::models::{
     AgentDefinition, AgentMode, AgentStatus, ApprovalRecord, CreateCredentials, CreateMessage,
     CreateMessageContent, CreateModel, CreateProvider, CreateTopic, CreateTopicAgentMap, Message,
@@ -634,6 +635,59 @@ async fn a_round_creates_its_own_assistant_message() {
     assert_eq!(messages[1].id, assistant_id);
 }
 
+/// 轮首的 assistant 锚在实例记下的那条输入上，整批还没被消费的输入一并宣告
+#[tokio::test]
+async fn a_round_anchors_on_the_bound_input_and_announces_the_backlog() {
+    let core = common::init_test_core().await;
+    let base = fake_server(vec![vec![text_delta("hello"), stop_delta()]]).await;
+    let topic_id = seeded_topic(&core, &base, "anchor-bound").await;
+    let spec = start_direct_round(&core, topic_id).await;
+    let first = bound_messages(&core, spec.instance_id)
+        .await
+        .0
+        .expect("本轮输入必须记进 user_id");
+    let queued = queue_direct_input(&core, topic_id, "queued").await;
+    assert_eq!(
+        queued, first,
+        "已经有没被消费的输入时，新到的输入不得顶替 user_id"
+    );
+
+    let (_, seen) = drive(&core, topic_id, spec.clone()).await;
+    let assistant_id = assistant_of(&core, spec.instance_id).await;
+    let anchored = core
+        .storage()
+        .message()
+        .get(assistant_id)
+        .await
+        .expect("get assistant")
+        .expect("assistant exists")
+        .from_id;
+    assert_eq!(
+        anchored,
+        Some(first),
+        "轮首的 assistant 必须锚在记下的那条输入上"
+    );
+
+    let announced: Vec<i64> = seen
+        .iter()
+        .filter_map(|chunk| match chunk {
+            AgentProgress::MessageCreated(message) if message.from_id.is_none() => Some(message.id),
+            _ => None,
+        })
+        .collect();
+    let backlog: Vec<i64> = core
+        .storage()
+        .message()
+        .list_by_instance(spec.instance_id)
+        .await
+        .expect("messages")
+        .iter()
+        .filter(|message| message.from_id.is_none())
+        .map(|message| message.id)
+        .collect();
+    assert_eq!(announced, backlog, "本轮消费的整批输入都要按 id 顺序宣告");
+}
+
 /// 子任务重入续写同一条 assistant 消息，不新开一条
 #[tokio::test]
 async fn a_children_round_continues_the_existing_assistant_message() {
@@ -792,6 +846,7 @@ async fn a_children_round_announces_input_written_while_the_node_was_parked() {
         .model_id
         .expect("topic model");
     let spec = start_direct_round(&core, topic_id).await;
+    let own_input = user_message_of(&core, spec.instance_id).await;
     let (outcome, _) = drive(&core, topic_id, spec.clone()).await;
     let assistant_id = completed_id(outcome);
 
@@ -839,6 +894,10 @@ async fn a_children_round_announces_input_written_while_the_node_was_parked() {
         users.contains(&delivered.id),
         "停泊期间写入的输入必须被宣告，实际宣告了 {users:?}"
     );
+    assert!(
+        !users.contains(&own_input),
+        "本轮开轮时已经宣告过的那条输入不得重发，实际宣告了 {users:?}"
+    );
     assert_eq!(
         seen.iter()
             .filter_map(|chunk| match chunk {
@@ -848,6 +907,110 @@ async fn a_children_round_announces_input_written_while_the_node_was_parked() {
             .last(),
         Some(assistant_id),
         "assistant 的宣告仍排在全部用户消息之后"
+    );
+}
+
+/// 重入轮把停在库里的输入一并消费掉：指针随之回退，重启不会再把它跑一遍
+#[tokio::test]
+async fn a_reentrant_round_consumes_the_parked_input_for_good() {
+    let core = common::init_test_core().await;
+    let base = fake_server(vec![
+        vec![text_delta("first"), stop_delta()],
+        vec![text_delta("second"), stop_delta()],
+    ])
+    .await;
+    let topic_id = seeded_topic(&core, &base, "parked-consumed").await;
+    let spec = start_direct_round(&core, topic_id).await;
+    let (outcome, _) = drive(&core, topic_id, spec.clone()).await;
+    let assistant_id = completed_id(outcome);
+
+    // 停泊期间投递进来的输入经生产路径落库，实例空闲，它会顶替 user_id
+    let queued = queue_direct_input(&core, topic_id, "queued").await;
+    let bound = bound_messages(&core, spec.instance_id).await;
+    assert!(
+        bound.0 > Some(assistant_id),
+        "新到的输入必须成为待消费的输入: {bound:?}"
+    );
+
+    // 重入本轮：它把那条输入读进上下文一并作答，指针回到本轮锚定的形状
+    let (outcome, _) = drive_input(
+        &core,
+        topic_id,
+        spec.instance_id,
+        Input::Children(Vec::new()),
+    )
+    .await;
+    assert_eq!(
+        completed_id(outcome),
+        assistant_id,
+        "重入续写同一条 assistant"
+    );
+    let bound = bound_messages(&core, spec.instance_id).await;
+    assert!(
+        bound.0 < Some(assistant_id),
+        "输入被消费后 user_id 必须回退，否则重启会把它再跑一遍: {bound:?}"
+    );
+    assert_eq!(bound.1, Some(assistant_id), "assistant_id 保持本轮那条");
+
+    // 恢复不得把它当成还没消费的输入
+    set_instance_status(&core, spec.instance_id, AgentStatus::Finished).await;
+    let snaps = AgentStore::new(core.storage().clone())
+        .load_snapshots(topic_id)
+        .await
+        .expect("snapshots");
+    let node = snaps
+        .iter()
+        .find(|snap| snap.id == spec.instance_id)
+        .expect("node");
+    assert!(
+        node.pending.is_none(),
+        "已经被重入轮消费掉的输入（{queued}）不得派生: {node:?}"
+    );
+}
+
+/// 取消正在进行中的一轮：它锚定的那条输入已经在被作答，不算未消费输入
+#[tokio::test]
+async fn discarding_inputs_keeps_the_input_the_round_is_answering() {
+    let core = common::init_test_core().await;
+    let (_model, topic) = common::seed_chat_fixture(&core, "discard-under-way").await;
+    let instance = wind_core::agent::helper::get_or_create_main_instance(core.storage(), topic.id)
+        .await
+        .expect("main");
+    let spec = wind_core::agent::helper::start_round(
+        core.storage(),
+        std::path::Path::new("/tmp"),
+        topic.id,
+        instance,
+        &[Content::new_text("go".to_string())],
+    )
+    .await
+    .expect("start round");
+    let assistant = wind_core::agent::helper::open_assistant(core.storage(), spec.instance_id)
+        .await
+        .expect("open assistant");
+
+    wind_core::agent::helper::discard_unconsumed_input(core.storage(), spec.instance_id)
+        .await
+        .expect("discard");
+
+    let stored = core
+        .storage()
+        .message()
+        .list_by_instance(spec.instance_id)
+        .await
+        .expect("messages");
+    assert!(
+        stored.iter().all(|message| !message.is_excluded),
+        "本轮正在作答的输入与它的助手消息都不算未消费输入: {stored:?}"
+    );
+    let (user_id, assistant_id) = bound_messages(&core, spec.instance_id).await;
+    assert_eq!(
+        (user_id, assistant_id),
+        (
+            Some(user_message_of(&core, spec.instance_id).await),
+            Some(assistant.id)
+        ),
+        "指针必须停在本轮上"
     );
 }
 
@@ -1089,6 +1252,48 @@ async fn start_direct_round(core: &WindCore, topic_id: i64) -> AgentSpec {
     )
     .await
     .expect("start round")
+}
+
+/// 经生产路径再投一条输入，返回它记进的 `user_id`
+async fn queue_direct_input(core: &WindCore, topic_id: i64, text: &str) -> i64 {
+    let instance = wind_core::agent::helper::get_or_create_main_instance(core.storage(), topic_id)
+        .await
+        .expect("main");
+    let instance_id = instance.id;
+    wind_core::agent::helper::start_round(
+        core.storage(),
+        std::path::Path::new("/tmp"),
+        topic_id,
+        instance,
+        &[Content::new_text(text.to_string())],
+    )
+    .await
+    .expect("start round");
+    bound_messages(core, instance_id)
+        .await
+        .0
+        .expect("本轮输入必须记进 user_id")
+}
+
+/// 实例当前的两个消息指针 `(user_id, assistant_id)`
+async fn bound_messages(core: &WindCore, instance_id: i64) -> (Option<i64>, Option<i64>) {
+    let instance = wind_core::agent::helper::get_instance_by_id(core.storage(), instance_id)
+        .await
+        .expect("instance");
+    (instance.user_id, instance.assistant_id)
+}
+
+/// 实例上第一条用户消息，即本轮要作答的那条
+async fn user_message_of(core: &WindCore, instance_id: i64) -> i64 {
+    core.storage()
+        .message()
+        .list_by_instance(instance_id)
+        .await
+        .expect("messages")
+        .into_iter()
+        .find(|message| message.from_id.is_none())
+        .expect("user message")
+        .id
 }
 
 /// 起一轮并把本轮的 assistant 消息预先建好：需要在驱动前挂审批行的用例用它

@@ -70,7 +70,7 @@ impl<'a, D: Domain> Ctx<'a, D> {
     /// 下发一个进度增量
     ///
     /// 取消后静默拒绝；回报通道满时丢弃
-    /// 
+    ///
     /// 进度是尽力而为的观测，
     pub fn emit(&self, chunk: D::Progress) {
         if self.cancel.is_cancelled() {

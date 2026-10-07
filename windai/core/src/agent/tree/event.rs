@@ -88,11 +88,11 @@ impl<D: Domain> Event<D> {
     }
 
     /// 事件是否属于可绕过的终态吸收事件，吸收针对的是回报；
-    /// 
+    ///
     /// `CancelRequest` 作用于整棵子树
-    /// 
+    ///
     /// `Recovered` 是重建后的收敛指令，要挨个走过已终态的子节点
-    /// 
+    ///
     /// `Deliver` 释放的正是已终态节点的投递义务
     pub fn bypasses_entry_absorption(&self) -> bool {
         matches!(

@@ -118,6 +118,8 @@ CREATE TABLE IF NOT EXISTS agent_instances (
     parent_id       BIGINT,
     topic_id        BIGINT  NOT NULL,
     agent_id        BIGINT,
+    user_id         BIGINT,
+    assistant_id    BIGINT,
     role            TEXT    NOT NULL,
     status          TEXT    NOT NULL DEFAULT 'idle',
     mode            TEXT,

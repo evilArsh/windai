@@ -258,7 +258,7 @@ impl<D: Domain> Tree<D> {
     /// 给一个重建出来的节点补上收敛，并重跑一次重入判定
     ///
     /// Cancelling -> Cancelled
-    /// 
+    ///
     /// Running    -> Aborted
     fn reduce_recovered(&mut self, node: NodeId) -> Vec<Effect<D>> {
         let disposition = match self.phase(node) {

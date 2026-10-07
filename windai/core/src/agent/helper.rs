@@ -9,7 +9,7 @@ use crate::models::ToolApprovalPolicy;
 use crate::models::{
     AgentDefinition, AgentInstance, AgentMcpBinding, AgentMode, AgentRole, AgentStatus,
     CreateInstance, CreateMessage, CreateMessageContent, CreateToolApprovalCall,
-    CreateToolApprovalRequests, Message, ToolApprovalRequest,
+    CreateToolApprovalRequests, Message, ToolApprovalRequest, UpdateInstance,
 };
 use crate::storage::Storage;
 use futures::future::try_join3;
@@ -223,52 +223,56 @@ pub async fn system_message(
 }
 
 /// 实例当前一轮的 spec
-///
-/// TODO: AgentInstance 关联最新一轮的 Message id
 pub async fn current_spec(storage: &Storage, instance_id: i64) -> Result<AgentSpec> {
-    let messages = storage.message().list_by_instance(instance_id).await?;
-    let message_id = messages
-        .iter()
-        .rev()
-        .find(|m| m.from_id.is_some())
-        .map(|m| m.id)
-        .ok_or_else(|| {
-            CoreError::Validation(format!("no assistant message for instance {instance_id}"))
-        })?;
+    let instance = get_instance_by_id(storage, instance_id).await?;
+    let message_id = instance.assistant_id.ok_or_else(|| {
+        CoreError::Validation(format!("no assistant message for instance {instance_id}"))
+    })?;
     Ok(AgentSpec {
         instance_id,
         message_id: Some(message_id),
     })
 }
 
-/// 开一条新的 assistant 消息，`from_id` 指向实例最后一条用户消息
-///
-/// TODO: Agentinstance 关联最新一轮的 user message id 和 assistant message id
+/// 开一条新的 assistant 消息，并把它记为本轮的助手消息
 pub async fn open_assistant(storage: &Storage, instance_id: i64) -> Result<Message> {
-    let messages = storage.message().list_by_instance(instance_id).await?;
-    let user = messages
-        .iter()
-        .rev()
-        .find(|m| m.from_id.is_none() && !m.is_excluded)
-        .ok_or_else(|| {
-            CoreError::Validation(format!("no user message for instance {instance_id}"))
-        })?;
-    storage
+    let instance = get_instance_by_id(storage, instance_id).await?;
+    let user_id = instance.user_id.ok_or_else(|| {
+        CoreError::Validation(format!("no user message for instance {instance_id}"))
+    })?;
+    let user = storage
         .message()
-        .create(CreateMessage {
-            from_id: Some(user.id),
-            model_id: user.model_id,
-            is_boundary: false,
-            is_excluded: false,
-            instance_id,
+        .get(user_id)
+        .await?
+        .ok_or_else(|| CoreError::RowNotFound(format!("message {user_id}")))?;
+    storage
+        .with_tx(|storage| async move {
+            let assistant = storage
+                .message()
+                .create(CreateMessage {
+                    from_id: Some(user_id),
+                    model_id: user.model_id,
+                    is_boundary: false,
+                    is_excluded: false,
+                    instance_id,
+                })
+                .await?;
+            storage
+                .agent()
+                .update_instance(
+                    instance_id,
+                    UpdateInstance {
+                        assistant_id: Some(assistant.id),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            Ok(assistant)
         })
         .await
 }
 
 /// 建一轮新的用户对话，返回本轮的 spec
-///
-/// 只写用户消息；本轮的 assistant 消息由运行时在轮首创建。
-/// 取模型 id 只看 topic，不查凭证 —— 写输入不该依赖提供商可用
 pub async fn start_round(
     storage: &Storage,
     cwd: &Path,
@@ -286,22 +290,27 @@ pub async fn start_round(
 }
 
 /// 丢弃实例里尚未被消费的输入
-///
-/// 末条 assistant 消息之后的用户消息全部标为已排除 —— 它们既不进上下文，
-/// 也不会被下一轮宣告；节点被取消时调用
 pub async fn discard_unconsumed_input(storage: &Storage, instance_id: i64) -> Result<()> {
-    let messages = storage.message().list_by_instance(instance_id).await?;
-    // 末条 assistant 之前的输入都已经消费过，只有它之后的那批还没人处理
-    let start = messages
-        .iter()
-        .rposition(|message| message.from_id.is_some())
-        .map_or(0, |last_assistant| last_assistant + 1);
-    let ids: Vec<i64> = messages[start..]
+    let instance = get_instance_by_id(storage, instance_id).await?;
+    let from = instance
+        .user_id
+        .unwrap_or(0)
+        .max(instance.assistant_id.unwrap_or(0));
+    let messages = storage
+        .message()
+        .list_by_instance_from(instance_id, from)
+        .await?;
+    let ids: Vec<i64> = messages
         .iter()
         .filter(|message| message.from_id.is_none() && !message.is_excluded)
         .map(|message| message.id)
         .collect();
-    storage.message().batch_exclude(&ids).await
+    storage
+        .with_tx(|storage| async move {
+            storage.message().batch_exclude(&ids).await?;
+            storage.agent().rewind_instance_messages(instance_id).await
+        })
+        .await
 }
 
 /// topic 绑定的模型 id
@@ -599,9 +608,9 @@ pub async fn report_spawns(
 struct ChildState {
     /// 子实例绑定的定义 key，没有绑定或定义已删时为 None
     agent_key: Option<String>,
-    /// 末条 user 消息的文本，即派生它的任务
+    /// 子实例本轮任务
     task: String,
-    /// 末条 assistant 消息的文本，即它的产出
+    /// 子实例本轮产出
     reply: String,
 }
 
@@ -617,44 +626,34 @@ async fn child_states(
         .into_iter()
         .map(|definition| (definition.id, definition.key))
         .collect();
-    let ids: Vec<i64> = children.iter().map(|child| child.id).collect();
-    let messages = storage.message().list_by_instances(&ids).await?;
-    let message_ids: Vec<i64> = messages.iter().map(|message| message.id).collect();
+    let ids: Vec<i64> = children
+        .iter()
+        .flat_map(|child| [child.user_id, child.assistant_id])
+        .flatten()
+        .collect();
     let mut texts: HashMap<i64, String> = HashMap::new();
-    for content in storage
-        .message()
-        .list_contents_by_messages(&message_ids)
-        .await?
-    {
+    for content in storage.message().list_contents_by_messages(&ids).await? {
         push_block_text(texts.entry(content.message_id).or_default(), &content.data);
     }
 
-    let mut states: HashMap<i64, ChildState> = children
+    let text_of = |message_id: Option<i64>| {
+        message_id
+            .and_then(|id| texts.get(&id).cloned())
+            .unwrap_or_default()
+    };
+    Ok(children
         .iter()
         .map(|child| {
             (
                 child.id,
                 ChildState {
                     agent_key: child.agent_id.and_then(|id| keys.get(&id).cloned()),
-                    task: String::new(),
-                    reply: String::new(),
+                    task: text_of(child.user_id),
+                    reply: text_of(child.assistant_id),
                 },
             )
         })
-        .collect();
-    // 消息按 (instance_id, id) 升序，后写的覆盖先写的即得到各自的末条
-    for message in &messages {
-        let Some(state) = states.get_mut(&message.instance_id) else {
-            continue;
-        };
-        let text = texts.get(&message.id).cloned().unwrap_or_default();
-        if message.from_id.is_none() {
-            state.task = text;
-        } else {
-            state.reply = text;
-        }
-    }
-    Ok(states)
+        .collect())
 }
 
 /// 按 (agent_key, task) 找第一个还没被认领的子实例，退而求其次只按 agent_key
@@ -680,13 +679,13 @@ fn pick_child<'a>(
     by_key
 }
 
-/// 实例最后一条 assistant 消息的文本
+/// 实例本轮助手消息的文本
 pub async fn last_assistant_text(storage: &Storage, instance_id: i64) -> Result<String> {
-    let messages = storage.message().list_by_instance(instance_id).await?;
-    let Some(last) = messages.iter().rev().find(|m| m.from_id.is_some()) else {
+    let instance = get_instance_by_id(storage, instance_id).await?;
+    let Some(assistant_id) = instance.assistant_id else {
         return Ok(String::new());
     };
-    let contents = storage.message().list_contents(last.id).await?;
+    let contents = storage.message().list_contents(assistant_id).await?;
     Ok(content_text(contents.iter().map(|content| &content.data)))
 }
 
@@ -701,11 +700,10 @@ fn content_text<'a>(blocks: impl Iterator<Item = &'a AiMessage>) -> String {
 
 /// 把一块内容里的文本追加到 `out`
 fn push_block_text(out: &mut String, block: &AiMessage) {
-    for content in &block.content {
-        if let Content::Text { data } = content {
-            out.push_str(data);
-        }
+    if out.len() != 0 {
+        out.push_str("\n\n");
     }
+    out.push_str(&Content::arr_to_string(&block.content));
 }
 
 pub async fn get_instance_by_id(storage: &Storage, instance_id: i64) -> Result<AgentInstance> {
@@ -821,7 +819,6 @@ pub async fn save_approval_state(
         .await
 }
 
-/// 落一条用户消息，并把用户输入写成它的第一块内容
 async fn create_user_message(
     storage: &Storage,
     instance_id: i64,
@@ -847,6 +844,10 @@ async fn create_user_message(
                     message_id: user.id,
                     data,
                 })
+                .await?;
+            storage
+                .agent()
+                .bind_unconsumed_input(instance_id, user.id)
                 .await?;
             Ok(user)
         })

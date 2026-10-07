@@ -995,6 +995,7 @@ async fn update_instance_switches_agent_and_mode() {
                 status: Some(AgentStatus::Running),
                 mode: Some(AgentMode::Fork),
                 agent_id: Some(def_a.id),
+                ..Default::default()
             },
         )
         .await
@@ -1015,6 +1016,146 @@ async fn update_instance_switches_agent_and_mode() {
     assert_eq!(main_now.agent_id, Some(def_a.id));
     assert_eq!(main_now.status, AgentStatus::Idle);
     assert_eq!(main_now.mode, Some(AgentMode::Sync));
+}
+
+/// 实例的两个消息指针 `(user_id, assistant_id)`
+async fn instance_pointers(
+    agent: &wind_core::storage::agent::AgentStorage,
+    instance_id: i64,
+) -> (Option<i64>, Option<i64>) {
+    let instance = agent
+        .get_instance(instance_id)
+        .await
+        .expect("get instance")
+        .expect("instance exists");
+    (instance.user_id, instance.assistant_id)
+}
+
+/// 建一个还没有绑定 Agent 的主实例
+async fn create_bare_instance(
+    agent: &wind_core::storage::agent::AgentStorage,
+    topic_id: i64,
+) -> AgentInstance {
+    agent
+        .create_instance(CreateInstance {
+            topic_id,
+            parent_id: None,
+            agent_id: None,
+            mode: None,
+            status: None,
+            role: None,
+        })
+        .await
+        .expect("create instance")
+}
+
+/// 消息指针跟着当前一轮走：新实例为空、已有未消费输入时不顶替、回退到末次配对
+#[tokio::test]
+async fn instance_message_pointers_follow_the_current_round() {
+    let core = setup().await;
+    let agent = core.storage().agent();
+    let topics = core.storage().topic();
+    let messages = core.storage().message();
+
+    let root = create_root_topic(topics, "instance-pointers").await;
+    let instance = create_bare_instance(agent, root.id).await;
+    assert_eq!(
+        (instance.user_id, instance.assistant_id),
+        (None, None),
+        "新实例还没有对话，两个指针都为空"
+    );
+
+    // 第一条输入：没有待消费的输入，它被记进 user_id
+    let first = messages
+        .create(user_msg(instance.id, 1, false, false))
+        .await
+        .unwrap();
+    agent
+        .bind_unconsumed_input(instance.id, first.id)
+        .await
+        .expect("bind first input");
+    assert_eq!(
+        instance_pointers(agent, instance.id).await.0,
+        Some(first.id),
+        "空实例上的输入必须被记下"
+    );
+
+    // 第二条输入：已经压着未消费的输入，user_id 不顶替
+    let second = messages
+        .create(user_msg(instance.id, 1, false, false))
+        .await
+        .unwrap();
+    agent
+        .bind_unconsumed_input(instance.id, second.id)
+        .await
+        .expect("bind second input");
+    assert_eq!(
+        instance_pointers(agent, instance.id).await.0,
+        Some(first.id),
+        "user_id 恒指向第一条未被消费的输入"
+    );
+
+    // 开轮：assistant 锚在 user_id 上，指针记下它
+    let assistant = messages
+        .create(asst_msg(instance.id, 1, first.id, false, false))
+        .await
+        .unwrap();
+    agent
+        .update_instance(
+            instance.id,
+            UpdateInstance {
+                assistant_id: Some(assistant.id),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        instance_pointers(agent, instance.id).await,
+        (Some(first.id), Some(assistant.id))
+    );
+
+    // 又到一条输入：实例空闲，它顶替 user_id
+    agent
+        .bind_unconsumed_input(instance.id, second.id)
+        .await
+        .expect("bind queued input");
+    assert_eq!(
+        instance_pointers(agent, instance.id).await.0,
+        Some(second.id),
+        "上一轮已经作答，新输入顶替 user_id"
+    );
+
+    // 回退：user_id 回到 assistant 锚定的那条
+    agent
+        .rewind_instance_messages(instance.id)
+        .await
+        .expect("rewind");
+    assert_eq!(
+        instance_pointers(agent, instance.id).await,
+        (Some(first.id), Some(assistant.id)),
+        "回退后两个指针是末次配对的形状"
+    );
+
+    // 还没跑过轮的实例：回退把 user_id 清零
+    let fresh = create_bare_instance(agent, root.id).await;
+    let input = messages
+        .create(user_msg(fresh.id, 1, false, false))
+        .await
+        .unwrap();
+    agent
+        .bind_unconsumed_input(fresh.id, input.id)
+        .await
+        .expect("bind input");
+    agent
+        .rewind_instance_messages(fresh.id)
+        .await
+        .expect("rewind");
+    assert_eq!(
+        instance_pointers(agent, fresh.id).await,
+        (None, None),
+        "没有配对的实例回退后回到「还没对话」的形状"
+    );
 }
 
 // ---------------------------------------------------------------------------

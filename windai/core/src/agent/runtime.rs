@@ -7,14 +7,13 @@ use crate::chat::{ChatEvent, run_chat};
 use crate::env::app_dirs;
 use crate::error::{CoreError, Result};
 use crate::models::{
-    AgentDefinition, AgentInstance, AgentMode, CreateMessageContent, Message as StoredMessage,
-    ToolApprovalStatus,
+    AgentDefinition, AgentInstance, AgentMode, CreateMessageContent, Message, ToolApprovalStatus,
 };
 use crate::storage::Storage;
 use futures::stream::StreamExt;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use wind_ai::message::{Content, Message, Role};
+use wind_ai::message::{Content, Message as AiMessage, Role};
 use wind_ai::tool::{FunctionCall, FunctionCallOutput};
 use wind_mcp::client::registry::RegistryHandle;
 
@@ -44,21 +43,21 @@ impl std::fmt::Display for ToolPlan {
 }
 
 struct BlockState {
-    data: Message,
+    data: AiMessage,
     index: i64,
 }
 
 impl BlockState {
     fn new() -> Self {
         Self {
-            data: Message::default(),
+            data: AiMessage::default(),
             index: 0,
         }
     }
 }
 
 /// 消息是否为空块：无文本、无工具调用、无推理内容
-fn is_blank(message: &Message) -> bool {
+fn is_blank(message: &AiMessage) -> bool {
     message
         .content
         .iter()
@@ -91,31 +90,39 @@ impl AgentBehavior {
         }
     }
 
-    /// 宣告实例、待消费的输入与本轮的 assistant 消息
+    /// 宣告实例、本轮消费的输入与本轮的 assistant 消息
     ///
-    /// 待消费 = 最后一条**不是本轮的** assistant 消息之后的全部非排除 user 消息；
-    /// 每一轮都宣告，模型看到的输入与客户端看到的一致。
-    /// 本轮的 assistant 自己排除在待消费集合之外，它由函数末尾单独宣告一次
+    /// 待宣告的输入从实例的 `user_id` 起查，再按本轮有没有续写收窄：
+    /// 续写（`since` 是本轮那条 assistant）时只补上它之后新到的，
+    /// 开新一轮时只取新 assistant 之前的 —— 它之后到达的属于下一轮。
+    /// 每一轮都宣告，模型看到的输入与客户端看到的一致，本轮的 assistant 最后单独宣告一次
     async fn announce(
         &self,
         ctx: &Ctx<'_, AgentDomain>,
         instance_id: i64,
         message_id: i64,
+        since: Option<i64>,
     ) -> Result<()> {
         let instance = helper::get_instance_by_id(&self.storage, instance_id).await?;
+        let user_id = instance.user_id.ok_or_else(|| {
+            CoreError::Validation(format!("no user message for instance {instance_id}"))
+        })?;
         ctx.emit(AgentProgress::InstanceCreated(instance));
-        let messages: Vec<StoredMessage> =
-            self.storage.message().list_by_instance(instance_id).await?;
-        let start = messages
+        let messages: Vec<Message> = self
+            .storage
+            .message()
+            .list_by_instance_from(instance_id, user_id)
+            .await?;
+        let pending: Vec<&Message> = messages
             .iter()
-            .rposition(|m| m.from_id.is_some() && m.id != message_id)
-            .map_or(0, |pos| pos + 1);
-        let pending: Vec<&StoredMessage> = messages[start..]
-            .iter()
-            .filter(|m| !m.is_excluded && m.id != message_id)
+            .filter(|m| m.from_id.is_none() && !m.is_excluded)
+            .filter(|m| match since {
+                Some(since) => m.id > since,
+                None => m.id < message_id,
+            })
             .collect();
         let ids: Vec<i64> = pending.iter().map(|m| m.id).collect();
-        let mut blocks: HashMap<i64, Vec<Message>> = HashMap::new();
+        let mut blocks: HashMap<i64, Vec<AiMessage>> = HashMap::new();
         for content in self
             .storage
             .message()
@@ -155,7 +162,7 @@ impl AgentBehavior {
         AgentInstance,
         Option<AgentDefinition>,
         ChatContext,
-        Vec<Message>,
+        Vec<AiMessage>,
     )> {
         let instance = helper::get_instance_by_id(&self.storage, instance_id).await?;
         let agent = match instance.agent_id {
@@ -177,7 +184,7 @@ impl AgentBehavior {
         ctx: &Ctx<'_, AgentDomain>,
         message_id: i64,
         block: &mut BlockState,
-    ) -> Result<Option<Message>> {
+    ) -> Result<Option<AiMessage>> {
         let data = std::mem::take(&mut block.data);
         if is_blank(&data) {
             return Ok(None);
@@ -193,7 +200,7 @@ impl AgentBehavior {
         ctx: &Ctx<'_, AgentDomain>,
         message_id: i64,
         block: &mut BlockState,
-        data: Message,
+        data: AiMessage,
     ) -> Result<()> {
         if ctx.cancel.is_cancelled() {
             return Ok(());
@@ -212,7 +219,7 @@ impl AgentBehavior {
         ctx: &Ctx<'_, AgentDomain>,
         message_id: i64,
         block: &mut BlockState,
-        delta: Message,
+        delta: AiMessage,
     ) {
         block.data.append_chunk(&delta);
         ctx.emit(AgentProgress::Block {
@@ -230,7 +237,7 @@ impl AgentBehavior {
         ctx: &Ctx<'_, AgentDomain>,
         message_id: i64,
         block: &mut BlockState,
-        data: Message,
+        data: AiMessage,
     ) -> Result<()> {
         ctx.emit(AgentProgress::Block {
             message_id,
@@ -247,7 +254,7 @@ impl AgentBehavior {
         err: CoreError,
     ) -> Outcome<AgentDomain> {
         if !ctx.cancel.is_cancelled() {
-            let message = Message::new_simple(
+            let message = AiMessage::new_simple(
                 Role::Assistant,
                 vec![Content::new_text(err.to_string())],
                 None,
@@ -285,6 +292,17 @@ impl Behavior<AgentDomain> for AgentBehavior {
             }
         };
         let instance_id = spec.instance_id;
+        // 续写本轮时轮首已经把停在库里的输入消费掉，指针随之回到本轮锚定的那条输入，
+        // 它才能继续表示「有没有还没被消费的输入」
+        if spec.message_id.is_some()
+            && let Err(err) = self
+                .storage
+                .agent()
+                .rewind_instance_messages(instance_id)
+                .await
+        {
+            return failure(None, err);
+        }
         let message_id = match spec.message_id {
             Some(message_id) => message_id,
             None => match helper::open_assistant(&self.storage, instance_id).await {
@@ -292,7 +310,10 @@ impl Behavior<AgentDomain> for AgentBehavior {
                 Err(err) => return failure(None, err),
             },
         };
-        if let Err(err) = self.announce(&ctx, instance_id, message_id).await {
+        if let Err(err) = self
+            .announce(&ctx, instance_id, message_id, spec.message_id)
+            .await
+        {
             return self.fail(&ctx, message_id, err).await;
         }
         match self.round(&ctx, instance_id, message_id).await {
@@ -312,7 +333,7 @@ fn failure(message_id: Option<i64>, err: CoreError) -> Outcome<AgentDomain> {
 /// 一轮还未走到任何判定的中间态
 enum PartialRound {
     /// 工具已执行完，带着新上下文继续下一轮 chat
-    Continue(Vec<Message>),
+    Continue(Vec<AiMessage>),
     /// 本节点已有判定
     Done(Outcome<AgentDomain>),
 }
@@ -374,7 +395,7 @@ impl AgentBehavior {
         message_id: i64,
         chat_ctx: &ChatContext,
         block: &mut BlockState,
-        contexts: &mut Vec<Message>,
+        contexts: &mut Vec<AiMessage>,
     ) -> Result<PartialRound> {
         let mut stream = run_chat(chat_ctx, contexts.clone());
         loop {
@@ -441,7 +462,7 @@ impl AgentBehavior {
         instance_id: i64,
         message_id: i64,
         block: &mut BlockState,
-        contexts: &mut Vec<Message>,
+        contexts: &mut Vec<AiMessage>,
         pending: Vec<FunctionCall>,
     ) -> Result<PartialRound> {
         let plan = self.make_tool_plan(message_id, pending).await?;
@@ -461,7 +482,7 @@ impl AgentBehavior {
             }));
         }
         if !call_results.is_empty() {
-            let tool_result = Message::new_tool_result(call_results);
+            let tool_result = AiMessage::new_tool_result(call_results);
             contexts.push(tool_result.clone());
             self.push_whole_block(ctx, message_id, block, tool_result)
                 .await?;
@@ -483,7 +504,7 @@ impl AgentBehavior {
                                 content: result_json.clone(),
                             })
                             .collect();
-                        let message = Message::new_tool_result(list_results);
+                        let message = AiMessage::new_tool_result(list_results);
                         contexts.push(message.clone());
                         self.push_whole_block(ctx, message_id, block, message)
                             .await?;
@@ -509,7 +530,7 @@ impl AgentBehavior {
                                 }),
                                 // 派生失败不失败整个任务：把原因作为该调用的工具结果交回模型
                                 Err(err) => {
-                                    let message = Message::new_tool_result(vec![
+                                    let message = AiMessage::new_tool_result(vec![
                                         FunctionCallOutput {
                                             id: action.call_id,
                                             content: serde_json::json!({ "error": err.to_string() }),
@@ -525,7 +546,7 @@ impl AgentBehavior {
                 }
                 // 参数来自模型写的文本，不可信：这批调用各回报一条错误结果，本轮继续
                 Err(err) => {
-                    let message = Message::new_tool_result(
+                    let message = AiMessage::new_tool_result(
                         plan.exec_agent
                             .iter()
                             .map(|call| FunctionCallOutput {
