@@ -1,10 +1,7 @@
-#[cfg(feature = "postgres")]
-use crate::error::CoreError;
-use crate::{db::DbPool, error::Result};
+use super::db::DbPool;
+use super::error::Result;
 
-/// SQLite 表结构。
-#[cfg(feature = "sqlite")]
-const SCHEMA_SQLITE: &str = r#"
+pub const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS providers (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     name            TEXT    NOT NULL UNIQUE,
@@ -40,48 +37,14 @@ CREATE TABLE IF NOT EXISTS credentials (
     updated_at      BIGINT
 );
 CREATE TABLE IF NOT EXISTS topics (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    parent_id       BIGINT,
-    label           TEXT    NOT NULL,
-    model_id        BIGINT,
-    tool_approval_policy TEXT,
-    icon            TEXT,
-    created_at      BIGINT,
-    updated_at      BIGINT
-);
-CREATE TABLE IF NOT EXISTS messages (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    from_id         BIGINT,
-    model_id        BIGINT NOT NULL,
-    instance_id     BIGINT NOT NULL,
-    is_boundary     BOOLEAN NOT NULL,
-    is_excluded     BOOLEAN NOT NULL,
-    created_at      BIGINT,
-    updated_at      BIGINT
-);
-CREATE TABLE IF NOT EXISTS message_contents (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    message_id      BIGINT  NOT NULL,
-    role            TEXT    NOT NULL,
-    content         TEXT    NOT NULL DEFAULT '[]',
-    reasoning_content TEXT,
-    tool_calls      TEXT,
-    input_tokens    BIGINT  NOT NULL DEFAULT 0,
-    output_tokens   BIGINT  NOT NULL DEFAULT 0,
-    created_at      BIGINT  NOT NULL DEFAULT 0,
-    updated_at      BIGINT
-);
-CREATE TABLE IF NOT EXISTS mcp_servers ( 
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    type            TEXT NOT NULL,
-    name            TEXT NOT NULL UNIQUE,
-    url             TEXT,
-    description     TEXT,
-    command         TEXT,
-    args            TEXT DEFAULT '[]',
-    env             TEXT DEFAULT '{}',
-    created_at      BIGINT,
-    updated_at      BIGINT
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    parent_id           BIGINT,
+    label               TEXT    NOT NULL,
+    model_id            BIGINT,
+    tool_approval_policy TEXT    NOT NULL,
+    icon                TEXT,
+    created_at          BIGINT,
+    updated_at          BIGINT
 );
 CREATE TABLE IF NOT EXISTS json_rule (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -92,104 +55,205 @@ CREATE TABLE IF NOT EXISTS json_rule (
     created_at  BIGINT,
     updated_at  BIGINT
 );
-CREATE TABLE IF NOT EXISTS prompt_modules (
+CREATE TABLE IF NOT EXISTS mcp_servers (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    type        TEXT    NOT NULL,
+    name        TEXT    NOT NULL UNIQUE,
+    url         TEXT,
+    description TEXT,
+    command     TEXT,
+    args        TEXT    DEFAULT '[]',
+    env         TEXT    DEFAULT '{}',
+    created_at  BIGINT,
+    updated_at  BIGINT
+);
+CREATE TABLE IF NOT EXISTS turn (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    alias           TEXT    NOT NULL,
-    description     TEXT    NOT NULL,
-    content         TEXT    NOT NULL,
-    active          BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at      BIGINT,
-    updated_at      BIGINT
+    instance_id     BIGINT  NOT NULL,
+    topic_id        BIGINT  NOT NULL,
+    from_id         BIGINT,
+    is_boundary     BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at      BIGINT
 );
-CREATE TABLE IF NOT EXISTS agent_definitions (
-    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
-    key                     TEXT    NOT NULL UNIQUE,
-    name                    TEXT    NOT NULL,
-    description             TEXT    NOT NULL,
-    owner_topic_id          BIGINT,
-    cloned_from_id          BIGINT,
-    active                  BOOLEAN NOT NULL DEFAULT TRUE,
-    data                    TEXT    NOT NULL DEFAULT '{}',
-    created_at              BIGINT,
-    updated_at              BIGINT
+CREATE TABLE IF NOT EXISTS message (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    turn_id         BIGINT  NOT NULL,
+    seq             BIGINT  NOT NULL,
+    role            TEXT    NOT NULL,
+    model_id        BIGINT,
+    finish_reason   TEXT,
+    input_tokens    BIGINT  NOT NULL DEFAULT 0,
+    output_tokens   BIGINT  NOT NULL DEFAULT 0,
+    created_at      BIGINT
 );
+CREATE TABLE IF NOT EXISTS block (
+    id              INTEGER PRIMARY KEY,
+    message_id      BIGINT  NOT NULL,
+    seq             BIGINT  NOT NULL,
+    kind            TEXT    NOT NULL,
+    call_id         TEXT,
+    revision        BIGINT  NOT NULL DEFAULT 0,
+    content         TEXT    NOT NULL DEFAULT '',
+    data            TEXT,
+    finished        BOOLEAN NOT NULL DEFAULT FALSE
+);
+CREATE INDEX IF NOT EXISTS idx_turn_instance ON turn(instance_id, id);
+CREATE INDEX IF NOT EXISTS idx_turn_topic ON turn(topic_id, id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_message_turn ON message(turn_id, seq);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_block_message ON block(message_id, seq);
+CREATE INDEX IF NOT EXISTS idx_block_call_id ON block(call_id);
 CREATE TABLE IF NOT EXISTS agent_instances (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     parent_id       BIGINT,
     topic_id        BIGINT  NOT NULL,
-    agent_id        BIGINT,
-    user_id         BIGINT,
-    assistant_id    BIGINT,
     role            TEXT    NOT NULL,
-    status          TEXT    NOT NULL DEFAULT 'idle',
     mode            TEXT,
+    phase           TEXT    NOT NULL,
+    phase_payload   TEXT,
     created_at      BIGINT,
     updated_at      BIGINT
 );
-CREATE TABLE IF NOT EXISTS topic_agent_maps (
+CREATE TABLE IF NOT EXISTS external_waits (
+    handle          TEXT PRIMARY KEY,
+    instance_id     BIGINT  NOT NULL,
+    kind            TEXT    NOT NULL,
+    message_id      BIGINT  NOT NULL,
+    payload_json    TEXT    NOT NULL,
+    created_at      BIGINT  NOT NULL,
+    answered_at     BIGINT,
+    decision_json   TEXT
+);
+CREATE TABLE IF NOT EXISTS agent_pending (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    instance_id  BIGINT NOT NULL,
+    kind         TEXT   NOT NULL,
+    payload_json TEXT   NOT NULL,
+    source_id    BIGINT,
+    created_at   BIGINT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS spawn_calls (
+    parent_id           BIGINT NOT NULL,
+    call_id             TEXT   NOT NULL,
+    child_id            BIGINT NOT NULL,
+    created_at          BIGINT NOT NULL,
+    result_delivered_at BIGINT,
+    PRIMARY KEY (parent_id, call_id),
+    UNIQUE (child_id)
+);
+CREATE TABLE IF NOT EXISTS mods (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    topic_id        BIGINT  NOT NULL,
-    agent_id        BIGINT  NOT NULL,
-    created_at      BIGINT,
+    name            TEXT    NOT NULL UNIQUE,
+    current_version BIGINT  NOT NULL,
+    created_at      BIGINT  NOT NULL,
     updated_at      BIGINT
 );
-CREATE TABLE IF NOT EXISTS tool_approval_requests (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    topic_id            BIGINT  NOT NULL,
-    message_id          BIGINT  NOT NULL,
-    instance_id         BIGINT  NOT NULL,
-    tool_call_id        TEXT    NOT NULL,
-    tool_name           TEXT    NOT NULL,
-    arguments           TEXT    NOT NULL,
-    status              TEXT    NOT NULL,
-    created_at          BIGINT,
-    updated_at          BIGINT
+CREATE TABLE IF NOT EXISTS mod_versions (
+    mod_id              BIGINT  NOT NULL,
+    version             BIGINT  NOT NULL,
+    manifest            TEXT    NOT NULL,
+    compiled            TEXT,
+    engine_fingerprint  TEXT,
+    created_at          BIGINT  NOT NULL,
+    PRIMARY KEY (mod_id, version)
 );
-
-CREATE INDEX IF NOT EXISTS idx_topics_parent_id ON topics(parent_id);
-
-CREATE INDEX IF NOT EXISTS idx_name_provider ON providers(name);
-
-CREATE INDEX IF NOT EXISTS idx_models_provider ON models(provider_id);
-
-CREATE INDEX IF NOT EXISTS idx_credentials_provider ON credentials(provider_id);
-
-CREATE INDEX IF NOT EXISTS idx_messages_instance ON messages(instance_id, id);
-
-CREATE INDEX IF NOT EXISTS idx_message_contents_message ON message_contents(message_id, id);
-
-CREATE INDEX IF NOT EXISTS idx_mcp_servers_name ON mcp_servers(name);
-
-CREATE INDEX IF NOT EXISTS idx_provider_adapter ON json_rule(provider_id,adapter);
-
-CREATE INDEX IF NOT EXISTS idx_agent_definitions_owner_topic ON agent_definitions(owner_topic_id);
-
+CREATE TABLE IF NOT EXISTS topic_mods (
+    topic_id    BIGINT  NOT NULL,
+    mod_id      BIGINT  NOT NULL,
+    PRIMARY KEY (topic_id, mod_id)
+);
+CREATE TABLE IF NOT EXISTS mod_state (
+    mod_id      BIGINT  NOT NULL,
+    scope_kind  TEXT    NOT NULL,
+    scope_id    BIGINT  NOT NULL DEFAULT 0,
+    kind        TEXT    NOT NULL,
+    key         TEXT    NOT NULL,
+    value_json  TEXT    NOT NULL,
+    updated_at  BIGINT  NOT NULL,
+    PRIMARY KEY (mod_id, scope_kind, scope_id, kind, key)
+);
+CREATE TABLE IF NOT EXISTS event_log (
+    seq         BIGINT  PRIMARY KEY,
+    time        BIGINT  NOT NULL,
+    name        TEXT    NOT NULL,
+    shape       TEXT    NOT NULL,
+    scope_kind  TEXT    NOT NULL,
+    scope_id    BIGINT  NOT NULL DEFAULT 0,
+    origin      TEXT    NOT NULL,
+    source      TEXT    NOT NULL,
+    cause       BIGINT,
+    payload     TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_event_log_scope ON event_log(scope_kind, scope_id, seq);
 CREATE INDEX IF NOT EXISTS idx_agent_instances_topic ON agent_instances(topic_id);
-CREATE INDEX IF NOT EXISTS idx_agent_instances_agent ON agent_instances(agent_id);
 CREATE INDEX IF NOT EXISTS idx_agent_instances_parent ON agent_instances(parent_id);
-CREATE INDEX IF NOT EXISTS idx_agent_instances_role ON agent_instances(topic_id, role);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_instances_unique_main ON agent_instances(topic_id) WHERE role = 'main';
-
-CREATE INDEX IF NOT EXISTS idx_topic_agent_maps_topic ON topic_agent_maps(topic_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_topic_agent_maps_unique ON topic_agent_maps(topic_id, agent_id);
-
-CREATE INDEX IF NOT EXISTS idx_tool_approvals_topic ON tool_approval_requests(topic_id);
-CREATE INDEX IF NOT EXISTS idx_tool_approvals_message ON tool_approval_requests(message_id);
-CREATE INDEX IF NOT EXISTS idx_tool_approvals_instance ON tool_approval_requests(instance_id);
-CREATE INDEX IF NOT EXISTS idx_tool_approvals_status ON tool_approval_requests(status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_instances_main ON agent_instances(topic_id) WHERE role = 'main';
+CREATE INDEX IF NOT EXISTS idx_external_waits_instance ON external_waits(instance_id);
+CREATE INDEX IF NOT EXISTS idx_external_waits_open ON external_waits(instance_id) WHERE answered_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_agent_pending_instance ON agent_pending(instance_id, id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_pending_source
+    ON agent_pending(instance_id, kind, source_id) WHERE source_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_topic_mods_mod ON topic_mods(mod_id);
 "#;
 
-/// 初始化数据库表结构
-#[cfg(feature = "sqlite")]
-pub async fn init_schema(pool: &DbPool) -> Result<()> {
-    sqlx::raw_sql(SCHEMA_SQLITE).execute(pool).await?;
+pub async fn create_if_missing(pool: &DbPool) -> Result<()> {
+    sqlx::raw_sql(SCHEMA).execute(pool).await?;
     Ok(())
 }
 
-/// PostgreSQL 表结构尚未实现。
-#[cfg(feature = "postgres")]
-pub async fn init_schema(_pool: &DbPool) -> Result<()> {
-    Err(CoreError::Internal(
-        "postgres schema is not implemented yet".into(),
-    ))
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_declared_table_appears_in_the_ddl() {
+        for table in [
+            "topics",
+            "providers",
+            "credentials",
+            "models",
+            "json_rule",
+            "mcp_servers",
+            "turn",
+            "message",
+            "block",
+            "agent_instances",
+            "external_waits",
+            "agent_pending",
+            "spawn_calls",
+            "mods",
+            "mod_versions",
+            "topic_mods",
+            "mod_state",
+            "event_log",
+        ] {
+            assert!(
+                SCHEMA.contains(&format!("CREATE TABLE IF NOT EXISTS {table}")),
+                "missing table {table}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_dropped_table_is_absent_from_the_ddl() {
+        for table in [
+            "agent_definitions",
+            "prompt_modules",
+            "topic_agent_maps",
+            "tool_approval_requests",
+        ] {
+            assert!(
+                !SCHEMA.contains(table),
+                "{table} no longer exists as a concept and must not appear in the DDL"
+            );
+        }
+    }
+
+    #[test]
+    fn the_ddl_is_repeatable() {
+        assert!(
+            !SCHEMA.contains("CREATE TABLE ")
+                || SCHEMA.matches("CREATE TABLE IF NOT EXISTS").count() == 18,
+            "every CREATE TABLE must be create-if-not-exists, or re-creating the database fails"
+        );
+    }
 }

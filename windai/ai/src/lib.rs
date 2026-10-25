@@ -1,27 +1,13 @@
-use crate::provider::adapter::AdapterError;
-use serde_json::Value;
-
-pub type JsonObject<F = Value> = serde_json::Map<String, F>;
-
-#[derive(thiserror::Error, Debug)]
-pub enum ProviderError {
-    #[error(transparent)]
-    Client(#[from] client::ClientError),
-
-    #[error(transparent)]
-    Adapter(#[from] AdapterError),
-
-    #[error("Url parse error: {0}")]
-    UrlParse(#[from] url::ParseError),
-
-    #[error("SSE error: {0}")]
-    SSE(String),
-}
-
+pub mod adapter;
 pub mod chat;
-pub(crate) mod client;
-mod eventsource;
-pub mod message;
+pub mod client;
+pub mod error;
+pub mod eventsource;
 pub mod model;
-pub mod provider;
-pub mod tool;
+mod openai_completion;
+mod openai_responses;
+pub mod schema;
+
+pub use adapter::{ChatAdapter, adapter_of};
+pub use error::AdapterError;
+pub use model::{AdapterType, ChatModel, Target};

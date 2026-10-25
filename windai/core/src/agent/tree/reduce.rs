@@ -8,7 +8,6 @@ use super::{
 use crate::agent::behavior::{ChildResult, Input};
 
 impl<D: Domain> Tree<D> {
-    /// 归约事件并产出副作用
     pub fn reduce(&mut self, event: Event<D>) -> Vec<Effect<D>> {
         let before = self.is_quiescent();
         let mut effects = self.reduce_inner(event);
@@ -19,7 +18,6 @@ impl<D: Domain> Tree<D> {
     }
 
     pub(super) fn reduce_inner(&mut self, event: Event<D>) -> Vec<Effect<D>> {
-        // 非可绕过的事件，并且节点已终态，并且不是让终态节点重新活跃
         if !event.bypasses_entry_absorption()
             && let Some(node) = event.node()
             && self.phase(node).is_some_and(Phase::is_terminal)
@@ -36,7 +34,6 @@ impl<D: Domain> Tree<D> {
             } => self.reduce_spawn(id, parent, spec, detached),
             Event::Enqueue { node, spec } => self.reduce_enqueue(node, spec),
             Event::Deliver { node } => self.reduce_deliver(node),
-            Event::Progress { node, job, chunk } => self.reduce_progress(node, job, chunk),
             Event::Completed { node, job, output } => {
                 if !self.accepts_job_report(node, job) {
                     return Vec::new();
@@ -64,8 +61,6 @@ impl<D: Domain> Tree<D> {
                     }));
                 }
                 if self.barrier_children(node).is_empty() {
-                    // 全是 detached：父节点立即重入
-                    self.set_pending(node, None);
                     let job = self.next_job_id();
                     self.set_job(node, Some(job));
                     self.set_phase(node, Phase::Running);
@@ -108,12 +103,10 @@ impl<D: Domain> Tree<D> {
                 expect,
                 input,
             } => {
-                // 回显比对：外部输入必须匹配当前挂起标记
                 let matched = matches!(self.phase(node), Some(Phase::Suspended(current)) if *current == expect);
                 if !matched {
                     return Vec::new();
                 }
-                self.set_pending(node, None);
                 let job = self.next_job_id();
                 self.set_job(node, Some(job));
                 self.set_phase(node, Phase::Running);
@@ -152,7 +145,6 @@ impl<D: Domain> Tree<D> {
         if !self.insert_node(id, parent, Phase::Running, detached) {
             return Vec::new();
         }
-        self.set_pending(id, None);
         let job = self.next_job_id();
         self.set_job(id, Some(job));
         vec![
@@ -166,9 +158,6 @@ impl<D: Domain> Tree<D> {
         ]
     }
 
-    /// 登记待消费输入：节点空闲则立刻出队，忙则只置位等它自然落终态
-    ///
-    /// 终态一律重开，取消中的节点忽略
     pub(crate) fn reduce_enqueue(&mut self, node: NodeId, spec: D::Spec) -> Vec<Effect<D>> {
         let Some(phase) = self.phase(node) else {
             log::warn!("[tree] enqueue for unknown node ignored: {node}");
@@ -179,18 +168,18 @@ impl<D: Domain> Tree<D> {
             return Vec::new();
         }
         let terminal = phase.is_terminal();
-        self.set_pending(node, Some(spec));
+        self.push_pending(node, spec);
         if terminal {
             return self.drain_pending(node);
         }
         Vec::new()
     }
 
-    /// 取走待消费输入并开新的一轮
     pub(super) fn drain_pending(&mut self, node: NodeId) -> Vec<Effect<D>> {
-        let Some(spec) = self.take_pending(node) else {
+        let specs = self.take_pending(node);
+        if specs.is_empty() {
             return Vec::new();
-        };
+        }
         let job = self.next_job_id();
         self.set_job(node, Some(job));
         self.set_phase(node, Phase::Running);
@@ -203,12 +192,11 @@ impl<D: Domain> Tree<D> {
             Effect::Launch {
                 node,
                 job,
-                input: Input::Fresh(spec),
+                input: Input::Idle(specs),
             },
         ]
     }
 
-    /// 释放一个节点的投递义务
     pub(crate) fn reduce_deliver(&mut self, node: NodeId) -> Vec<Effect<D>> {
         match self.node(node) {
             None => log::warn!("[tree] deliver for unknown node ignored: {node}"),
@@ -218,27 +206,16 @@ impl<D: Domain> Tree<D> {
         Vec::new()
     }
 
-    /// 给 detached 节点登记待投递
     pub(super) fn owe_delivery(&mut self, node: NodeId) {
         if self.is_detached(node) {
             self.set_delivered(node, false);
         }
     }
 
-    /// 是否接受 job 回报，只在节点仍处于 Running 时被接受
     pub(super) fn accepts_job_report(&self, node: NodeId, job: JobId) -> bool {
         self.job_of(node) == Some(job) && matches!(self.phase(node), Some(Phase::Running))
     }
 
-    /// 只有 Running 节点才能下发进度
-    fn reduce_progress(&mut self, node: NodeId, job: JobId, chunk: D::Progress) -> Vec<Effect<D>> {
-        if !self.accepts_job_report(node, job) {
-            return Vec::new();
-        }
-        vec![Effect::Publish(TreeEvent::Progress { node, chunk })]
-    }
-
-    /// 落终态并下发终态事件
     pub(super) fn finish_terminal(&mut self, node: NodeId, phase: Phase<D>) -> Vec<Effect<D>> {
         self.set_job(node, None);
         self.set_phase(node, phase);
@@ -255,11 +232,6 @@ impl<D: Domain> Tree<D> {
         effects
     }
 
-    /// 给一个重建出来的节点补上收敛，并重跑一次重入判定
-    ///
-    /// Cancelling -> Cancelled
-    ///
-    /// Running    -> Aborted
     fn reduce_recovered(&mut self, node: NodeId) -> Vec<Effect<D>> {
         let disposition = match self.phase(node) {
             Some(Phase::Cancelling(origin)) => Some(Phase::Cancelled(*origin)),
@@ -274,13 +246,14 @@ impl<D: Domain> Tree<D> {
             }
             None => {
                 let mut effects = self.reenter_parent_if_ready(node);
-                effects.extend(self.drain_pending(node));
+                if self.phase(node).is_some_and(Phase::is_terminal) {
+                    effects.extend(self.drain_pending(node));
+                }
                 effects
             }
         }
     }
 
-    /// 子节点全部结束后重入父节点，父节点不在 WaitingChildren 则跳过
     pub(super) fn reenter_parent_if_ready(&mut self, child: NodeId) -> Vec<Effect<D>> {
         let Some(parent) = self.node(child).and_then(|node| node.parent) else {
             return Vec::new();
@@ -291,7 +264,6 @@ impl<D: Domain> Tree<D> {
         if !self.all_children_terminal(parent) {
             return Vec::new();
         }
-        // 只交付进入屏障的子节点的结果
         let results: Vec<ChildResult<D>> = self
             .barrier_children(parent)
             .into_iter()
@@ -301,7 +273,6 @@ impl<D: Domain> Tree<D> {
                     .map(|terminal| ChildResult { node: id, terminal })
             })
             .collect();
-        self.set_pending(parent, None);
         let job = self.next_job_id();
         self.set_job(parent, Some(job));
         self.set_phase(parent, Phase::Running);
@@ -325,11 +296,12 @@ mod tests {
     use super::*;
     use crate::agent::behavior::{Input, SpawnRequest};
     use crate::agent::tree::domain::test_support::{
-        TestDomain, TestError, TestOutput, TestProgress, TestResume, TestSpec, TestSuspend,
+        TestDomain, TestError, TestOutput, TestResume, TestSpec, TestSuspend,
     };
     use crate::agent::tree::event::{Effect, Event};
     use crate::agent::tree::view::TreeEvent;
     use crate::agent::tree::{CancelOrigin, Terminal, Tree};
+    use std::collections::VecDeque;
 
     /// 派生一个节点并返回 (节点 id, job)
     fn spawn(
@@ -348,7 +320,7 @@ mod tests {
         (id, job)
     }
 
-    /// 让在跑的节点以 Done 落终态
+    /// 让在跑的节点以 `Done` 进入终态
     fn complete(tree: &mut Tree<TestDomain>, node: NodeId) {
         let job = tree.node(node).and_then(|node| node.job).expect("job");
         tree.reduce(Event::Completed {
@@ -373,6 +345,18 @@ mod tests {
             .iter()
             .filter(|effect| matches!(effect, Effect::Publish(TreeEvent::Sealed)))
             .count()
+    }
+
+    /// 建一个在跑的根节点
+    fn tree_with_running_root() -> Tree<TestDomain> {
+        let mut tree = Tree::<TestDomain>::new();
+        tree.reduce(Event::Spawn {
+            id: 1,
+            parent: None,
+            spec: TestSpec::Noop,
+            detached: false,
+        });
+        tree
     }
 
     /// 让在跑的父节点派生一个 detached 子节点，返回子节点的 job
@@ -427,7 +411,10 @@ mod tests {
             spec: TestSpec::Noop,
             detached: false,
         });
-        assert!(effects.is_empty(), "未知父节点不得产出任何副作用");
+        assert!(
+            effects.is_empty(),
+            "an unknown parent must produce no effects"
+        );
         assert_eq!(tree.all_node_ids(), Vec::<NodeId>::new());
     }
 
@@ -441,41 +428,8 @@ mod tests {
             spec: TestSpec::Noop,
             detached: false,
         });
-        assert!(effects.is_empty(), "重复 id 必须被拒绝");
+        assert!(effects.is_empty(), "a duplicate id must be rejected");
         assert_eq!(tree.all_node_ids(), vec![1]);
-    }
-
-    #[test]
-    fn progress_is_published_only_for_the_live_running_job() {
-        let mut tree = Tree::<TestDomain>::new();
-        let (node, job) = spawn(&mut tree, 1, None, false);
-
-        let effects = tree.reduce(Event::Progress {
-            node,
-            job,
-            chunk: TestProgress::Tick,
-        });
-        assert!(matches!(
-            effects.as_slice(),
-            [Effect::Publish(TreeEvent::Progress { .. })]
-        ));
-
-        let stale = tree.reduce(Event::Progress {
-            node,
-            job: job + 99,
-            chunk: TestProgress::Tick,
-        });
-        assert!(stale.is_empty(), "旧 job 的进度必须丢弃");
-
-        // 取消中的节点仍持有有效 job，但进度不得再漏出去
-        tree.set_phase_for_test(node, Phase::Cancelling(CancelOrigin::External));
-        assert_eq!(tree.job_of(node), Some(job), "Cancelling 阶段 job 尚未失效");
-        let during_cancel = tree.reduce(Event::Progress {
-            node,
-            job,
-            chunk: TestProgress::Tick,
-        });
-        assert!(during_cancel.is_empty(), "取消后不得再下发任何分片");
     }
 
     #[test]
@@ -489,11 +443,6 @@ mod tests {
         });
 
         let absorbed = vec![
-            Event::Progress {
-                node,
-                job,
-                chunk: TestProgress::Tick,
-            },
             Event::Stopped { node, job },
             Event::Aborted { node, job },
             Event::Suspended {
@@ -503,12 +452,15 @@ mod tests {
             },
         ];
         for event in absorbed {
-            assert!(tree.reduce(event).is_empty(), "终态必须静默吸收单节点事件");
+            assert!(
+                tree.reduce(event).is_empty(),
+                "a terminal phase must silently absorb single-node events"
+            );
         }
         assert!(matches!(tree.phase(node), Some(Phase::Done(_))));
     }
 
-    /// 终态节点收到入队就地重开一轮，运行中的节点只把输入留在触发位上
+    /// 终态节点收到入队立即重开一轮，运行中的节点只把输入留在队列里
     #[test]
     fn enqueue_reopens_a_terminal_node_and_flags_a_running_one() {
         let mut tree = Tree::<TestDomain>::new();
@@ -524,7 +476,11 @@ mod tests {
             spec: TestSpec::Noop,
         });
         assert!(matches!(tree.phase(node), Some(Phase::Running)));
-        assert_ne!(tree.job_of(node), Some(job), "新一轮必须拿到新的 job");
+        assert_ne!(
+            tree.job_of(node),
+            Some(job),
+            "a new round must obtain a new job"
+        );
         assert_eq!(launches(&effects), vec![node]);
 
         let running_job = tree.job_of(node).expect("job");
@@ -532,17 +488,20 @@ mod tests {
             node,
             spec: TestSpec::Children(1),
         });
-        assert!(busy.is_empty(), "忙时只置位，不打断在跑的那一轮");
+        assert!(
+            busy.is_empty(),
+            "while busy it only enqueues and does not interrupt the running round"
+        );
         assert!(matches!(tree.phase(node), Some(Phase::Running)));
         assert_eq!(
             tree.job_of(node),
             Some(running_job),
-            "在跑的那一轮不得被换掉"
+            "the running round's job must not be replaced"
         );
         assert_eq!(
             tree.node(node).expect("node").pending,
-            Some(TestSpec::Children(1)),
-            "后到的输入留在触发位上"
+            VecDeque::from(vec![TestSpec::Children(1)]),
+            "later input stays in the queue"
         );
     }
 
@@ -561,12 +520,15 @@ mod tests {
             .iter()
             .filter(|e| matches!(e, Effect::Publish(TreeEvent::Sealed)))
             .count();
-        assert_eq!(sealed, 1, "收敛时恰好发一次 Sealed");
+        assert_eq!(
+            sealed, 1,
+            "Sealed is published exactly once when the tree settles"
+        );
 
         assert_eq!(
             tree.job_of(node),
             None,
-            "落终态必须释放 job，否则过期的回报还有可能被认成有效"
+            "entering a terminal phase must release the job, otherwise a stale report could still be taken as valid"
         );
 
         let again = tree.reduce(Event::Stopped {
@@ -577,7 +539,7 @@ mod tests {
             !again
                 .iter()
                 .any(|e| matches!(e, Effect::Publish(TreeEvent::Sealed))),
-            "已安静后不得重复发 Sealed"
+            "Sealed must not be published again once the tree is quiet"
         );
     }
 
@@ -612,7 +574,11 @@ mod tests {
         let (root, children) = build_fanout(&mut tree, 2);
         assert_eq!(children.len(), 2);
         assert!(matches!(tree.phase(root), Some(Phase::WaitingChildren)));
-        assert_eq!(tree.job_of(root), None, "等待子任务时不得残留 job");
+        assert_eq!(
+            tree.job_of(root),
+            None,
+            "no job may remain while waiting for subtasks"
+        );
         for child in children {
             assert!(matches!(tree.phase(child), Some(Phase::Running)));
             assert!(tree.job_of(child).is_some());
@@ -636,7 +602,7 @@ mod tests {
         });
         assert!(
             !first.iter().any(|e| matches!(e, Effect::Launch { .. })),
-            "还有子节点未结束，不得重入父节点"
+            "children are still unfinished, so the parent must not be re-entered"
         );
 
         let second = tree.reduce(Event::Completed {
@@ -648,7 +614,7 @@ mod tests {
             Effect::Launch { node, input, .. } => Some((*node, input)),
             _ => None,
         });
-        let (node, input) = relaunched.expect("最后一个子节点结束必须重入父节点");
+        let (node, input) = relaunched.expect("reenter after the last child");
         assert_eq!(node, root);
         match input {
             Input::Children(results) => assert_eq!(results.len(), 2),
@@ -677,7 +643,11 @@ mod tests {
             } if *node == root => Some(results.len()),
             _ => None,
         });
-        assert_eq!(delivered, Some(1), "失败也必须交付给父节点，不能静默");
+        assert_eq!(
+            delivered,
+            Some(1),
+            "a failure must still be delivered to the parent, not swallowed silently"
+        );
     }
 
     #[test]
@@ -703,13 +673,17 @@ mod tests {
 
         assert!(
             matches!(tree.phase(1), Some(Phase::Running)),
-            "屏障为空时父节点立即重入，不进入 WaitingChildren"
+            "when the barrier is empty the parent is re-entered immediately and does not enter WaitingChildren"
         );
         assert!(
             matches!(tree.phase(2), Some(Phase::Running)),
-            "子节点照常启动"
+            "the child starts as usual"
         );
-        assert_ne!(tree.job_of(1), Some(root_job), "重入必须换新 job");
+        assert_ne!(
+            tree.job_of(1),
+            Some(root_job),
+            "re-entry must obtain a new job"
+        );
         let relaunched = effects.iter().find_map(|e| match e {
             Effect::Launch {
                 node,
@@ -718,26 +692,30 @@ mod tests {
             } if *node == 1 => Some(results.len()),
             _ => None,
         });
-        assert_eq!(relaunched, Some(0), "立即重入不带任何屏障结果");
+        assert_eq!(
+            relaunched,
+            Some(0),
+            "an immediate re-entry carries no barrier results"
+        );
         assert!(
             effects.iter().any(|e| matches!(
                 e,
                 Effect::Publish(TreeEvent::PhaseChanged { node, to })
                     if *node == 1 && matches!(**to, Phase::Running)
             )),
-            "重入必须对外宣告"
+            "re-entry must be announced"
         );
         assert!(
             effects
                 .iter()
                 .any(|e| matches!(e, Effect::Persist { node } if *node == 1)),
-            "重入必须落库"
+            "re-entry must be persisted"
         );
     }
 
-    /// 全是 detached 的派生让父节点立即重入，那一轮同样清掉待消费输入
+    /// 全是 detached 的派生让父节点立即重入，重入轮不消耗待消费队列
     #[test]
-    fn an_all_detached_respawn_clears_the_pending_input_it_consumed() {
+    fn an_all_detached_respawn_keeps_the_pending_input_for_the_next_idle() {
         let mut tree = Tree::<TestDomain>::new();
         tree.reduce(Event::Spawn {
             id: 1,
@@ -751,7 +729,7 @@ mod tests {
         });
         assert_eq!(
             tree.node(1).expect("root").pending,
-            Some(TestSpec::Children(1))
+            VecDeque::from(vec![TestSpec::Children(1)])
         );
 
         let job = tree.job_of(1).expect("job");
@@ -767,12 +745,12 @@ mod tests {
         assert_eq!(
             launches(&effects),
             vec![2, 1],
-            "先启动 detached 子节点，屏障为空时父节点立即重入"
+            "the detached child starts first, then the parent is re-entered immediately because the barrier is empty"
         );
         assert_eq!(
             tree.node(1).expect("root").pending,
-            None,
-            "立即重入的那一轮全量重载，待消费输入不得留下再开一轮"
+            VecDeque::from(vec![TestSpec::Children(1)]),
+            "an immediate re-entry round does not consume the queue; the input is left for the next idle"
         );
 
         let job = tree.job_of(1).expect("job");
@@ -781,10 +759,17 @@ mod tests {
             job,
             output: TestOutput::Ok,
         });
+        let idle = settled.iter().find_map(|effect| match effect {
+            Effect::Launch {
+                input: Input::Idle(specs),
+                ..
+            } => Some(specs.len()),
+            _ => None,
+        });
         assert_eq!(
-            launches(&settled),
-            Vec::<NodeId>::new(),
-            "那条输入已在重入轮被模型看过，不得再开一轮"
+            idle,
+            Some(1),
+            "after the re-entry round ends, the idle path drains the whole queue"
         );
     }
 
@@ -798,9 +783,9 @@ mod tests {
         let effects = tree.reduce(Event::Aborted { node: child, job });
         assert!(
             matches!(tree.phase(child), Some(Phase::Aborted)),
-            "worker 崩了必须落 Aborted"
+            "a worker crash must enter Aborted"
         );
-        assert_eq!(tree.job_of(child), None, "Aborted 必须释放 job");
+        assert_eq!(tree.job_of(child), None, "Aborted must release the job");
         assert!(
             effects.iter().any(|e| matches!(
                 e,
@@ -809,7 +794,7 @@ mod tests {
                     terminal: Terminal::Aborted
                 }) if *node == child
             )),
-            "Aborted 必须对外宣告"
+            "Aborted must be announced"
         );
         let delivered = effects.iter().find_map(|e| match e {
             Effect::Launch {
@@ -819,7 +804,11 @@ mod tests {
             } if *node == root => Some(results.len()),
             _ => None,
         });
-        assert_eq!(delivered, Some(1), "Aborted 也必须交付给父节点");
+        assert_eq!(
+            delivered,
+            Some(1),
+            "Aborted must also be delivered to the parent"
+        );
     }
 
     #[test]
@@ -831,7 +820,7 @@ mod tests {
         let effects = tree.reduce(Event::Aborted { node, job });
         assert!(
             matches!(tree.phase(node), Some(Phase::Aborted)),
-            "取消途中崩掉的 worker 交不出停止确认，Aborted 才是如实的结论"
+            "a worker that crashes mid-cancellation cannot produce a stop confirmation, so Aborted is the truthful conclusion"
         );
         assert!(
             effects.iter().any(|e| matches!(
@@ -841,7 +830,7 @@ mod tests {
                     terminal: Terminal::Aborted
                 }) if *reported == node
             )),
-            "取消中的节点也必须收敛并宣告"
+            "a cancelling node must also converge and be announced"
         );
     }
 
@@ -860,7 +849,7 @@ mod tests {
         });
         assert!(
             !effects.iter().any(|e| matches!(e, Effect::Launch { .. })),
-            "取消优先于重入"
+            "cancellation takes precedence over re-entry"
         );
     }
 
@@ -875,7 +864,10 @@ mod tests {
             job,
             output: TestOutput::Ok,
         });
-        assert!(effects.is_empty(), "迟到的完成回报不得被接受");
+        assert!(
+            effects.is_empty(),
+            "a late completion report must not be accepted"
+        );
         assert!(matches!(
             tree.phase(node),
             Some(Phase::Cancelling(CancelOrigin::External))
@@ -883,7 +875,7 @@ mod tests {
         assert_eq!(
             tree.job_of(node),
             Some(job),
-            "取消中 job 必须留待 Stopped 核对"
+            "while cancelling, the job must remain for Stopped to verify"
         );
     }
 
@@ -902,12 +894,19 @@ mod tests {
                 detached: false,
             }],
         });
-        assert!(effects.is_empty(), "迟到的派生回报不得被接受");
+        assert!(
+            effects.is_empty(),
+            "a late spawn report must not be accepted"
+        );
         assert!(
             !effects.iter().any(|e| matches!(e, Effect::Launch { .. })),
-            "取消优先于重入"
+            "cancellation takes precedence over re-entry"
         );
-        assert_eq!(tree.all_node_ids(), vec![node], "不得建出任何子节点");
+        assert_eq!(
+            tree.all_node_ids(),
+            vec![node],
+            "no child node may be created"
+        );
         assert!(matches!(
             tree.phase(node),
             Some(Phase::Cancelling(CancelOrigin::External))
@@ -935,12 +934,16 @@ mod tests {
             tree.phase(node),
             Some(Phase::Suspended(TestSuspend::Ask))
         ));
-        assert_eq!(tree.job_of(node), None, "挂起后不得残留 job");
+        assert_eq!(
+            tree.job_of(node),
+            None,
+            "no job may remain after suspension"
+        );
         assert!(
             !effects
                 .iter()
                 .any(|e| matches!(e, Effect::Publish(TreeEvent::Sealed))),
-            "挂起不是终态，不得关流"
+            "suspension is not terminal, so the stream must not close"
         );
     }
 
@@ -981,16 +984,23 @@ mod tests {
         assert_eq!(
             relaunched,
             tree.job_of(node),
-            "Launch 的 job 必须登记在节点上"
+            "the Launch job must be registered on the node"
         );
-        assert_ne!(tree.job_of(node), Some(job), "恢复必须分配新的 job");
+        assert_ne!(
+            tree.job_of(node),
+            Some(job),
+            "resume must allocate a new job"
+        );
 
         let replay = tree.reduce(Event::Resume {
             node,
             expect: TestSuspend::Ask,
             input: TestResume::Answer,
         });
-        assert!(replay.is_empty(), "重复或过期的外部输入必须静默丢弃");
+        assert!(
+            replay.is_empty(),
+            "duplicate or stale external input must be dropped silently"
+        );
     }
 
     #[test]
@@ -1012,12 +1022,19 @@ mod tests {
             expect: TestSuspend::Other,
             input: TestResume::Answer,
         });
-        assert!(stale.is_empty(), "回显不匹配的挂起标记必须静默丢弃");
+        assert!(
+            stale.is_empty(),
+            "a suspension token that does not match the echo must be dropped silently"
+        );
         assert!(
             matches!(tree.phase(node), Some(Phase::Suspended(TestSuspend::Ask))),
-            "被拒的恢复不得改写挂起标记"
+            "a rejected resume must not rewrite the suspension token"
         );
-        assert_eq!(tree.job_of(node), None, "被拒的恢复不得留下 job");
+        assert_eq!(
+            tree.job_of(node),
+            None,
+            "a rejected resume must not leave a job"
+        );
     }
 
     #[test]
@@ -1052,14 +1069,17 @@ mod tests {
         });
         assert!(
             matches!(tree.phase(node), Some(Phase::Running)),
-            "终态吸收不得吃掉入队"
+            "terminal absorption must not swallow an enqueue"
+        );
+        assert!(
+            tree.node(node).expect("node").pending.is_empty(),
+            "the queue must be empty after a full drain"
         );
         assert_eq!(
-            tree.node(node).expect("node").pending,
-            None,
-            "被 Launch 的一轮必然全量重载，待消费输入必须清掉"
+            launches(&effects),
+            vec![node],
+            "enqueue opens exactly one round"
         );
-        assert_eq!(launches(&effects), vec![node], "入队恰好开一轮");
         assert!(effects.iter().any(|e| matches!(
             e,
             Effect::Publish(TreeEvent::PhaseChanged { node: reported, to })
@@ -1069,7 +1089,7 @@ mod tests {
             !effects
                 .iter()
                 .any(|e| matches!(e, Effect::Publish(TreeEvent::NodeCreated { .. }))),
-            "入队只是开新的一轮，不开新节点"
+            "enqueue only opens a new round, it does not create a new node"
         );
     }
 
@@ -1082,9 +1102,15 @@ mod tests {
             node,
             spec: TestSpec::Noop,
         });
-        assert!(effects.is_empty(), "忙时只置位，不产出任何副作用");
+        assert!(
+            effects.is_empty(),
+            "while busy it only enqueues and produces no effects"
+        );
         assert!(matches!(tree.phase(node), Some(Phase::Running)));
-        assert_eq!(tree.node(node).expect("node").pending, Some(TestSpec::Noop));
+        assert_eq!(
+            tree.node(node).expect("node").pending,
+            VecDeque::from(vec![TestSpec::Noop])
+        );
     }
 
     #[test]
@@ -1105,11 +1131,15 @@ mod tests {
             .into_iter()
             .chain(launches(&second))
             .collect();
-        assert_eq!(all, vec![node], "连发两次入队只开一轮");
+        assert_eq!(
+            all,
+            vec![node],
+            "two consecutive enqueues open only one round"
+        );
         assert_eq!(
             tree.node(node).expect("node").pending,
-            Some(TestSpec::Noop),
-            "后到的那次留在触发位上，等这一轮结束再开一轮"
+            VecDeque::from(vec![TestSpec::Noop]),
+            "later input stays in the queue and opens the next round once this one ends"
         );
     }
 
@@ -1120,9 +1150,9 @@ mod tests {
         complete(&mut tree, node);
         assert!(tree.is_quiescent());
 
-        // 恢复出来的「终态 + 待消费输入」，实际由 recover 重建
-        tree.set_pending_for_test(node, Some(TestSpec::Noop));
-        assert!(!tree.is_quiescent(), "有待消费输入就不是安静");
+        // 恢复出的终态与待消费输入，实际由 `recover` 重建
+        tree.push_pending(node, TestSpec::Noop);
+        assert!(!tree.is_quiescent(), "having pending input means not quiet");
 
         let drained = tree.reduce(Event::Enqueue {
             node,
@@ -1132,9 +1162,12 @@ mod tests {
             !drained
                 .iter()
                 .any(|e| matches!(e, Effect::Publish(TreeEvent::Sealed))),
-            "出队开的是新一轮，不得顺手关流"
+            "a drain opens a new round, so the stream must not close early"
         );
-        assert!(!tree.is_quiescent(), "新一轮在跑，仍不安静");
+        assert!(
+            !tree.is_quiescent(),
+            "a new round is running, so it is still not quiet"
+        );
 
         let job = tree.job_of(node).expect("job");
         let sealed = tree.reduce(Event::Completed {
@@ -1142,7 +1175,10 @@ mod tests {
             job,
             output: TestOutput::Ok,
         });
-        assert!(tree.is_quiescent(), "这一轮跑完才算安静");
+        assert!(
+            tree.is_quiescent(),
+            "it is quiet only once this round finishes"
+        );
         assert_eq!(
             sealed
                 .iter()
@@ -1169,28 +1205,28 @@ mod tests {
         });
         assert!(
             matches!(tree.phase(node), Some(Phase::Running)),
-            "有输入在等就接着开一轮"
+            "while input is waiting, open another round"
         );
-        assert_eq!(tree.node(node).expect("node").pending, None);
+        assert!(tree.node(node).expect("node").pending.is_empty());
         let input = effects.iter().find_map(|e| match e {
             Effect::Launch {
                 node: reported,
-                input: Input::Fresh(spec),
+                input: Input::Idle(specs),
                 ..
-            } if *reported == node => Some(spec.clone()),
+            } if *reported == node => Some(specs.clone()),
             _ => None,
         });
         assert_eq!(
             input,
-            Some(TestSpec::Noop),
-            "新一轮用的就是待消费的那条输入"
+            Some(vec![TestSpec::Noop]),
+            "the new round uses exactly the pending input drained from the queue"
         );
         assert!(
             effects.iter().any(|e| matches!(
                 e,
                 Effect::Publish(TreeEvent::Terminated { node: reported, .. }) if *reported == node
             )),
-            "这一轮的终态照常宣告"
+            "this round's terminal phase is announced as usual"
         );
     }
 
@@ -1215,24 +1251,24 @@ mod tests {
         assert_eq!(
             launches(&effects),
             vec![root, child],
-            "先重入父节点，父节点转 Running 之后子节点才出队"
+            "the parent is re-entered first; the child drains only after the parent turns Running"
         );
     }
 
-    /// 重入的那一轮全量重载上下文，停泊期间到达的输入必须一并清掉
+    /// `Children` 重入不消费队列，停泊期间到达的输入留给下一次空闲
     #[test]
-    fn a_children_round_clears_the_pending_input_it_consumed() {
+    fn a_children_round_keeps_the_pending_input_for_the_next_idle() {
         let mut tree = Tree::<TestDomain>::new();
         let (root, children) = build_fanout(&mut tree, 1);
         let child = children[0];
-        // 父节点停泊期间到达的输入：只置位，不打断等待
+        // 父节点停泊期间到达的输入只入队，不打断等待
         tree.reduce(Event::Enqueue {
             node: root,
             spec: TestSpec::Children(1),
         });
         assert_eq!(
             tree.node(root).expect("root").pending,
-            Some(TestSpec::Children(1))
+            VecDeque::from(vec![TestSpec::Children(1)])
         );
 
         let job = tree.job_of(child).expect("job");
@@ -1244,12 +1280,12 @@ mod tests {
         assert_eq!(
             launches(&reentered),
             vec![root],
-            "子节点全终态必须重入父节点"
+            "all-terminal children must re-enter the parent"
         );
         assert_eq!(
             tree.node(root).expect("root").pending,
-            None,
-            "重入轮已全量重载，待消费输入不得留下再开一轮"
+            VecDeque::from(vec![TestSpec::Children(1)]),
+            "a Children re-entry does not consume the queue"
         );
 
         let job = tree.job_of(root).expect("job");
@@ -1258,11 +1294,30 @@ mod tests {
             job,
             output: TestOutput::Ok,
         });
+        let idle = settled.iter().find_map(|e| match e {
+            Effect::Launch {
+                node: reported,
+                input: Input::Idle(specs),
+                ..
+            } if *reported == root => Some(specs.len()),
+            _ => None,
+        });
         assert_eq!(
-            launches(&settled),
-            Vec::<NodeId>::new(),
-            "那条输入已在重入轮被模型看过，不得再开一轮"
+            idle,
+            Some(1),
+            "after this round ends the idle path drains the whole queue"
         );
+        assert!(
+            tree.node(root).expect("root").pending.is_empty(),
+            "the queue must be empty after a full drain"
+        );
+
+        let job = tree.job_of(root).expect("job");
+        tree.reduce(Event::Completed {
+            node: root,
+            job,
+            output: TestOutput::Ok,
+        });
         assert!(tree.is_quiescent());
     }
 
@@ -1275,7 +1330,7 @@ mod tests {
             Vec::new(),
             Phase::Cancelled(CancelOrigin::External),
             false,
-            None,
+            Vec::new(),
         );
 
         let effects = tree.reduce(Event::Enqueue {
@@ -1284,16 +1339,16 @@ mod tests {
         });
         assert!(
             matches!(tree.phase(1), Some(Phase::Running)),
-            "取消之后新来的输入必须能重新开轮"
+            "new input arriving after cancellation must be able to open a new round"
         );
         assert_eq!(launches(&effects), vec![1]);
-        assert!(!tree.is_quiescent(), "新一轮在跑");
+        assert!(!tree.is_quiescent(), "a new round is running");
     }
 
     #[test]
     fn enqueue_reopens_an_aborted_node() {
         let mut tree = Tree::<TestDomain>::new();
-        tree.restore_node(1, None, Vec::new(), Phase::Aborted, false, None);
+        tree.restore_node(1, None, Vec::new(), Phase::Aborted, false, Vec::new());
 
         let effects = tree.reduce(Event::Enqueue {
             node: 1,
@@ -1301,10 +1356,10 @@ mod tests {
         });
         assert!(
             matches!(tree.phase(1), Some(Phase::Running)),
-            "崩溃收尾之后新来的输入必须能重新开轮"
+            "new input arriving after a crash reaches a terminal phase must be able to open a new round"
         );
         assert_eq!(launches(&effects), vec![1]);
-        assert!(!tree.is_quiescent(), "新一轮在跑");
+        assert!(!tree.is_quiescent(), "a new round is running");
     }
 
     #[test]
@@ -1319,15 +1374,15 @@ mod tests {
         });
         assert!(effects.is_empty());
         assert!(
-            tree.node(node).expect("node").pending.is_none(),
-            "正在取消的节点不得登记待消费输入"
+            tree.node(node).expect("node").pending.is_empty(),
+            "a cancelling node must not register pending input"
         );
-        assert!(!tree.is_quiescent(), "取消中的节点还在跑");
+        assert!(!tree.is_quiescent(), "the cancelling node is still running");
 
         tree.reduce(Event::Stopped { node, job });
         assert!(
             tree.is_quiescent(),
-            "被拒的入队不得钉住树：节点落终态后整棵树必须安静"
+            "a rejected enqueue must not stall the tree. Once the node reaches a terminal phase the whole tree must be quiet"
         );
     }
 
@@ -1351,15 +1406,15 @@ mod tests {
             Vec::new(),
             Phase::Done(TestOutput::Ok),
             false,
-            None,
+            Vec::new(),
         );
-        // 恢复出来的「Done + 待消费输入」，实际由 recover 重建
-        tree.set_pending_for_test(1, Some(TestSpec::Noop));
+        // 恢复出的 Done 与待消费输入，实际由 `recover` 重建
+        tree.push_pending(1, TestSpec::Noop);
 
         let effects = tree.reduce(Event::Recovered { node: 1 });
         assert!(
             matches!(tree.phase(1), Some(Phase::Running)),
-            "恢复出的待消费输入必须出队，否则该话题永不安静"
+            "pending input produced by recovery must drain, otherwise that topic is never quiet"
         );
         assert_eq!(launches(&effects), vec![1]);
 
@@ -1369,28 +1424,31 @@ mod tests {
             job,
             output: TestOutput::Ok,
         });
-        assert!(tree.is_quiescent(), "出队后的这一轮跑完必须能收敛");
+        assert!(
+            tree.is_quiescent(),
+            "the tree must converge once this drained round completes"
+        );
     }
 
-    /// 恢复路径与 `finish_terminal` 同序：先重入父节点，带待消费输入的子节点才出队
+    /// 恢复路径先重入父节点，带待消费输入的子节点才出队
     #[test]
     fn a_recovered_child_drains_only_after_its_parent_is_reentered() {
         let mut tree = Tree::<TestDomain>::new();
-        tree.restore_node(1, None, vec![2], Phase::WaitingChildren, false, None);
+        tree.restore_node(1, None, vec![2], Phase::WaitingChildren, false, Vec::new());
         tree.restore_node(
             2,
             Some(1),
             Vec::new(),
             Phase::Done(TestOutput::Ok),
             false,
-            Some(TestSpec::Children(1)),
+            vec![TestSpec::Children(1)],
         );
 
         let effects = tree.reduce(Event::Recovered { node: 2 });
         assert_eq!(
             launches(&effects),
             vec![1, 2],
-            "先重入父节点，带待消费输入的子节点才出队"
+            "the parent is re-entered first; the child with pending input drains only afterwards"
         );
         assert!(matches!(tree.phase(1), Some(Phase::Running)));
     }
@@ -1404,44 +1462,54 @@ mod tests {
             Vec::new(),
             Phase::Cancelled(CancelOrigin::External),
             false,
-            None,
+            Vec::new(),
         );
 
         let effects = tree.reduce(Event::Recovered { node: 1 });
-        assert!(effects.is_empty(), "取消的实例不得派生待消费输入");
+        assert!(
+            effects.is_empty(),
+            "a cancelled instance must not spawn pending input"
+        );
         assert!(tree.is_quiescent());
     }
 
-    /// 恢复出的在途 detached 节点收敛后不得背投递义务
+    /// 恢复出的在途 detached 节点收敛后不得背交付义务
     ///
-    /// 崩溃期间没人投递，watcher 又在本轮恢复之后才订阅，没人会补发 `Deliver`
+    /// 崩溃期间没人交付，watcher 又在本轮恢复之后才订阅，没人会补发 `Deliver`
     #[test]
     fn a_recovered_in_flight_detached_node_owes_no_delivery() {
         let mut tree = Tree::<TestDomain>::new();
-        tree.restore_node(1, None, Vec::new(), Phase::Running, true, None);
+        tree.restore_node(1, None, Vec::new(), Phase::Running, true, Vec::new());
 
         let effects = tree.reduce(Event::Recovered { node: 1 });
         assert!(matches!(tree.phase(1), Some(Phase::Aborted)));
         assert!(
             tree.node(1).expect("node").delivered,
-            "恢复收敛出的终态不得产生投递义务，否则该话题的流永久挂着"
+            "a terminal phase produced by recovery convergence must not create a delivery obligation, otherwise that topic's stream hangs forever"
         );
         assert!(tree.is_quiescent());
         assert_eq!(sealed_count(&effects), 1);
     }
 
-    /// 恢复出的终态 detached 节点同样不背投递义务
+    /// 恢复出的终态 detached 节点同样不背交付义务
     #[test]
     fn a_recovered_terminal_detached_node_owes_no_delivery() {
         let mut done = Tree::<TestDomain>::new();
-        done.restore_node(1, None, Vec::new(), Phase::Done(TestOutput::Ok), true, None);
+        done.restore_node(
+            1,
+            None,
+            Vec::new(),
+            Phase::Done(TestOutput::Ok),
+            true,
+            Vec::new(),
+        );
         let done_effects = done.reduce(Event::Recovered { node: 1 });
         assert!(done.node(1).expect("node").delivered);
         assert!(done.is_quiescent());
         assert_eq!(
             sealed_count(&done_effects),
             0,
-            "恢复时本就安静，Sealed 由 hub 在恢复分支补发"
+            "it is already quiet at recovery time; the hub re-emits Sealed on the recovery branch"
         );
 
         let mut cancelling = Tree::<TestDomain>::new();
@@ -1451,7 +1519,7 @@ mod tests {
             Vec::new(),
             Phase::Cancelling(CancelOrigin::External),
             true,
-            None,
+            Vec::new(),
         );
         let cancel_effects = cancelling.reduce(Event::Recovered { node: 1 });
         assert!(matches!(
@@ -1460,7 +1528,7 @@ mod tests {
         ));
         assert!(
             cancelling.node(1).expect("node").delivered,
-            "收敛出的 Cancelled 也不得产生投递义务"
+            "a Cancelled produced by convergence must likewise not create a delivery obligation"
         );
         assert!(cancelling.is_quiescent());
         assert_eq!(sealed_count(&cancel_effects), 1);
@@ -1468,8 +1536,7 @@ mod tests {
 
     /// 恢复出的 `Cancelling` 节点带待消费输入时同样出队
     ///
-    /// `Cancelling` 收敛成 `Cancelled` 走 `finish_terminal`，出队紧随其后；
-    /// 领域侧不给取消的实例派生待消费输入，这里盖住的是「万一派生出来也不会挂着」
+    /// 领域侧不给取消的实例派生待消费输入，本用例覆盖即使派生出来也不会被卡住的情形
     #[test]
     fn a_recovered_cancelling_node_drains_its_pending() {
         let mut tree = Tree::<TestDomain>::new();
@@ -1479,12 +1546,16 @@ mod tests {
             Vec::new(),
             Phase::Cancelling(CancelOrigin::External),
             false,
-            Some(TestSpec::Noop),
+            vec![TestSpec::Noop],
         );
 
         let effects = tree.reduce(Event::Recovered { node: 1 });
-        assert_eq!(launches(&effects), vec![1], "恢复出的待消费输入必须出队");
-        assert!(tree.node(1).expect("node").pending.is_none());
+        assert_eq!(
+            launches(&effects),
+            vec![1],
+            "pending input produced by recovery must drain"
+        );
+        assert!(tree.node(1).expect("node").pending.is_empty());
         assert!(matches!(tree.phase(1), Some(Phase::Running)));
         assert!(effects.iter().any(|e| matches!(
             e,
@@ -1500,7 +1571,10 @@ mod tests {
             job,
             output: TestOutput::Ok,
         });
-        assert!(tree.is_quiescent(), "出队后的这一轮跑完必须能收敛");
+        assert!(
+            tree.is_quiescent(),
+            "the tree must converge once this drained round completes"
+        );
         assert_eq!(sealed_count(&sealed), 1);
     }
 
@@ -1518,9 +1592,13 @@ mod tests {
         assert!(tree.phase(2).is_some_and(Phase::is_terminal));
         assert!(
             !tree.is_quiescent(),
-            "后台产出还没回到父节点，整棵树不算安静"
+            "the background output has not returned to the parent yet, so the whole tree is not quiet"
         );
-        assert_eq!(sealed_count(&child_effects), 0, "不得抢跑关流");
+        assert_eq!(
+            sealed_count(&child_effects),
+            0,
+            "must not race the stream close"
+        );
 
         let parent_job = tree.job_of(root).expect("parent job");
         let parent_effects = tree.reduce(Event::Completed {
@@ -1528,13 +1606,20 @@ mod tests {
             job: parent_job,
             output: TestOutput::Ok,
         });
-        assert!(!tree.is_quiescent(), "父节点跑完，义务仍在");
+        assert!(
+            !tree.is_quiescent(),
+            "the parent finished, but the obligation remains"
+        );
         assert_eq!(sealed_count(&parent_effects), 0);
 
         let delivered = tree.reduce(Event::Deliver { node: 2 });
         assert!(tree.node(2).expect("child").delivered);
         assert!(tree.is_quiescent());
-        assert_eq!(sealed_count(&delivered), 1, "释放义务的那一刻才关流");
+        assert_eq!(
+            sealed_count(&delivered),
+            1,
+            "the stream closes only when the obligation is released"
+        );
     }
 
     #[test]
@@ -1542,23 +1627,26 @@ mod tests {
         assert_eq!(Event::<TestDomain>::Deliver { node: 1 }.node(), Some(1));
         assert!(
             Event::<TestDomain>::Deliver { node: 1 }.bypasses_entry_absorption(),
-            "Deliver 作用于已终态节点，必须绕过入口吸收"
+            "Deliver targets an already terminal node, so it must bypass entry absorption"
         );
         assert!(
             !Event::<TestDomain>::Deliver { node: 1 }.reopens(),
-            "释放义务不得让节点重新活跃"
+            "releasing an obligation must not reactivate the node"
         );
 
         let mut tree = Tree::<TestDomain>::new();
         let (node, _) = spawn(&mut tree, 1, None, false);
         complete(&mut tree, node);
         tree.set_delivered_for_test(node, false);
-        assert!(!tree.is_quiescent(), "登记了义务就不安静");
+        assert!(
+            !tree.is_quiescent(),
+            "registering an obligation makes the tree not quiet"
+        );
 
         let effects = tree.reduce(Event::Deliver { node });
         assert!(
             tree.node(node).expect("node").delivered,
-            "终态吸收不得吃掉 Deliver"
+            "terminal absorption must not swallow Deliver"
         );
         assert!(tree.is_quiescent());
         assert_eq!(sealed_count(&effects), 1);
@@ -1570,20 +1658,232 @@ mod tests {
         let (node, job) = spawn(&mut tree, 1, None, false);
 
         let running = tree.reduce(Event::Deliver { node });
-        assert!(running.is_empty(), "无义务可释放时不得产出任何副作用");
+        assert!(
+            running.is_empty(),
+            "no effects may be produced when there is no obligation to release"
+        );
         assert!(matches!(tree.phase(node), Some(Phase::Running)));
-        assert_eq!(tree.job_of(node), Some(job), "在跑的节点不得被记账改写");
+        assert_eq!(
+            tree.job_of(node),
+            Some(job),
+            "a running node's bookkeeping must not be rewritten"
+        );
 
         assert!(
             tree.reduce(Event::Deliver { node: 42 }).is_empty(),
-            "未知节点必须静默忽略"
+            "an unknown node must be ignored silently"
         );
 
         complete(&mut tree, node);
         assert!(
             tree.reduce(Event::Deliver { node }).is_empty(),
-            "非 detached 的终态节点没有义务，重复释放必须静默"
+            "a non-detached terminal node has no obligation, so a repeated release must be silent"
         );
         assert!(tree.is_quiescent());
+    }
+
+    #[test]
+    fn two_inputs_arriving_while_running_both_wait_for_the_next_idle() {
+        let mut tree = tree_with_running_root();
+        tree.reduce(Event::Enqueue {
+            node: 1,
+            spec: TestSpec::Noop,
+        });
+        tree.reduce(Event::Enqueue {
+            node: 1,
+            spec: TestSpec::Suspend,
+        });
+        assert_eq!(tree.node(1).expect("node").pending.len(), 2);
+
+        let effects = tree.reduce(Event::Completed {
+            node: 1,
+            job: 1,
+            output: TestOutput::Ok,
+        });
+        let idle = effects.iter().find_map(|effect| match effect {
+            Effect::Launch {
+                input: Input::Idle(specs),
+                ..
+            } => Some(specs),
+            _ => None,
+        });
+        assert_eq!(
+            idle.expect("open a round when idle").len(),
+            2,
+            "the whole queue is drained at once"
+        );
+    }
+
+    /// 恢复出的挂起节点不消费队列。答复回来之前不得抢跑一轮。
+    #[test]
+    fn a_recovered_suspended_node_keeps_its_pending_until_resumed() {
+        let mut tree = Tree::<TestDomain>::new();
+        tree.restore_node(
+            1,
+            None,
+            Vec::new(),
+            Phase::Suspended(TestSuspend::Ask),
+            false,
+            vec![TestSpec::Noop],
+        );
+
+        let effects = tree.reduce(Event::Recovered { node: 1 });
+        assert!(
+            matches!(tree.phase(1), Some(Phase::Suspended(TestSuspend::Ask))),
+            "recovery must not rewrite the suspended Phase"
+        );
+        assert!(
+            launches(&effects).is_empty(),
+            "recovery must not open a round for a suspended node"
+        );
+        assert_eq!(
+            tree.node(1).expect("node").pending.len(),
+            1,
+            "pending input is left for the next idle after recovery"
+        );
+
+        let resumed = tree.reduce(Event::Resume {
+            node: 1,
+            expect: TestSuspend::Ask,
+            input: TestResume::Answer,
+        });
+        assert!(
+            resumed.iter().any(|effect| matches!(
+                effect,
+                Effect::Launch {
+                    input: Input::External(_),
+                    ..
+                }
+            )),
+            "it resumes running only once the answer arrives"
+        );
+    }
+
+    /// 恢复后，等待子节点的父节点不得与仍在跑的子树并行开轮
+    #[test]
+    fn a_recovered_waiting_parent_does_not_race_its_running_children() {
+        let mut tree = Tree::<TestDomain>::new();
+        tree.restore_node(
+            1,
+            None,
+            vec![2],
+            Phase::WaitingChildren,
+            false,
+            vec![TestSpec::Noop],
+        );
+        tree.restore_node(2, Some(1), Vec::new(), Phase::Running, false, Vec::new());
+
+        let effects = tree.reduce(Event::Recovered { node: 1 });
+        assert!(
+            matches!(tree.phase(1), Some(Phase::WaitingChildren)),
+            "a child has not converged yet, so the parent must stay in the barrier"
+        );
+        assert!(
+            launches(&effects).is_empty(),
+            "a parent waiting for children must not open a round first"
+        );
+        assert_eq!(tree.node(1).expect("node").pending.len(), 1);
+
+        let child = tree.reduce(Event::Recovered { node: 2 });
+        let input = child.iter().find_map(|effect| match effect {
+            Effect::Launch { node, input, .. } if *node == 1 => Some(input),
+            _ => None,
+        });
+        assert!(
+            matches!(input, Some(Input::Children(_))),
+            "the parent is re-entered with Children only after the child converges"
+        );
+        assert_eq!(
+            tree.node(1).expect("node").pending.len(),
+            1,
+            "a Children re-entry does not consume the queue"
+        );
+    }
+
+    /// 恢复出的已答复等待仍能续行，续行结束后再消费排队的输入
+    #[test]
+    fn a_recovered_answered_wait_runs_its_queued_input_after_resuming() {
+        let mut tree = Tree::<TestDomain>::new();
+        tree.restore_node(
+            1,
+            None,
+            Vec::new(),
+            Phase::Suspended(TestSuspend::Ask),
+            false,
+            vec![TestSpec::Noop],
+        );
+        tree.reduce(Event::Recovered { node: 1 });
+
+        tree.reduce(Event::Resume {
+            node: 1,
+            expect: TestSuspend::Ask,
+            input: TestResume::Answer,
+        });
+        let job = tree.job_of(1).expect("read the job after resume");
+        let effects = tree.reduce(Event::Completed {
+            node: 1,
+            job,
+            output: TestOutput::Ok,
+        });
+        let idle = effects.iter().find_map(|effect| match effect {
+            Effect::Launch {
+                node: 1,
+                input: Input::Idle(specs),
+                ..
+            } => Some(specs.len()),
+            _ => None,
+        });
+        assert_eq!(
+            idle,
+            Some(1),
+            "after the resumed round ends, the queued input must open the next round"
+        );
+    }
+
+    #[test]
+    fn a_children_reentry_does_not_consume_the_pending_queue() {
+        let mut tree = tree_with_running_root();
+        // 先让根派生一个进入屏障的子节点，根停泊在 WaitingChildren
+        let root_job = tree.job_of(1).expect("job");
+        tree.reduce(Event::Spawned {
+            node: 1,
+            job: root_job,
+            spawn: vec![SpawnRequest {
+                id: 2,
+                spec: TestSpec::Noop,
+                detached: false,
+            }],
+        });
+        assert!(matches!(tree.phase(1), Some(Phase::WaitingChildren)));
+
+        tree.reduce(Event::Enqueue {
+            node: 1,
+            spec: TestSpec::Noop,
+        });
+        assert_eq!(tree.node(1).expect("node").pending.len(), 1);
+
+        // 子节点终态触发 Children 重入
+        let child_job = tree.job_of(2).expect("job");
+        let effects = tree.reduce(Event::Completed {
+            node: 2,
+            job: child_job,
+            output: TestOutput::Ok,
+        });
+        let input = effects
+            .iter()
+            .find_map(|effect| match effect {
+                Effect::Launch { node, input, .. } if *node == 1 => Some(input),
+                _ => None,
+            })
+            .expect("reenter after the child ends");
+        assert!(
+            matches!(input, Input::Children(_)),
+            "a re-entry round is not Idle, so it must not consume the queue"
+        );
+        assert_eq!(
+            tree.node(1).expect("node").pending.len(),
+            1,
+            "the earlier pending input is still there"
+        );
     }
 }

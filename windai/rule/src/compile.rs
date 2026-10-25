@@ -8,10 +8,8 @@ use evalexpr::{self, ContextWithMutableVariables, HashMapContext, Node};
 use serde::Deserialize;
 use serde_json::Value;
 
-/// 规则指令集
 #[derive(Debug, Clone)]
 pub struct RuleSet {
-    /// 编译后的指令
     ops: Vec<CompiledOp>,
 }
 
@@ -33,17 +31,11 @@ impl RuleSet {
             ops: Self::parse(json)?,
         })
     }
-    /// 把一段规则 JSON 解析出的指令追加到当前指令集末尾
-    ///
-    /// 供调用方分多次拼装规则；目前仓库内暂无调用方
     pub fn append_rule_str(&mut self, json: &str) -> Result<()> {
         self.ops.append(&mut Self::parse(json)?);
         Ok(())
     }
 
-    /// 基于当前规则指令集修改 `body` 中的字段和值
-    ///
-    /// `ctx` 为规则执行时注入的上下文
     pub fn apply(&self, body: &mut Value, ctx: &EvalContext) -> Result<()> {
         if self.ops.is_empty() {
             return Ok(());
@@ -59,13 +51,17 @@ impl RuleSet {
     }
 }
 
+impl Default for RuleSet {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Deserialize)]
 struct RawRuleSet {
     rules: Vec<RawOp>,
 }
 
-/// 原始规则集
-///
 /// # examples
 /// ```json
 /// [
@@ -160,40 +156,6 @@ enum CompiledOp {
 }
 
 impl CompiledOp {
-    /// 执行操作
-    ///
-    /// 1. [CompiledOp::Set]
-    ///
-    /// 如果路径不存在，将会在 body 上创建对象并设置值,
-    /// 如果子路径存在非 Object 值，则此次操作将失败
-    /// 比如在以下 body 中设置路径 `foo.bar.zoo` 的值会失败：
-    /// ```json
-    /// {
-    ///   "foo":: {
-    ///     "bar": 1
-    ///   }
-    /// }
-    ///
-    /// ```
-    ///
-    /// 2. [CompiledOp::Remove]
-    ///
-    /// 如果路径不存在或子路径存在非 Object 值，则失败
-    ///
-    /// 3. [CompiledOp::MapValue]
-    ///
-    /// 根据指定字段值的条件，映射出新的字段值
-    ///
-    /// 如果指定的字段值不存在，则跳过
-    ///
-    /// 4. [CompiledOp::Compute]
-    ///
-    /// 对一个指定的路径求值
-    ///
-    /// 内建函数参考： [https://crates.io/crates/evalexpr]
-    /// 5. [CompiledOp::When]
-    ///
-    /// 根据设定的条件设置字段值
     fn exec(&self, body: &mut Value, ctx: &super::EvalContext) -> Result<()> {
         match self {
             CompiledOp::Set { segs, value } => {
@@ -221,9 +183,9 @@ impl CompiledOp {
                         merge_root(body, map);
                         Ok(())
                     } else {
-                        Err(Error::Path(format!(
-                            "target value or body is not an object"
-                        )))
+                        Err(Error::Path(
+                            "target value or body is not an object".to_string(),
+                        ))
                     }
                 } else {
                     log::warn!("[MapValue] no target value found");
@@ -281,7 +243,6 @@ fn compile_op(raw: RawOp, out: &mut Vec<CompiledOp>) -> Result<()> {
         }
         RawOp::Compute { path, expr } => {
             let segs = path::segments(&path);
-            // 构建运算树
             let op_tree = evalexpr::build_operator_tree(&expr)?;
             out.push(CompiledOp::Compute { segs, op_tree });
         }
@@ -307,13 +268,9 @@ fn compile_op(raw: RawOp, out: &mut Vec<CompiledOp>) -> Result<()> {
     Ok(())
 }
 
-/// 解析映射对象集合
-/// - key 为 `"null"` 时解析成 `Value::Null`
-/// - key 为纯数字的字符串时解析成 `Value:Number`
-/// - 当 key 解析失败时，回退回字符串 `Value:String`
 fn compile_mappings(raw: &Value) -> Result<Vec<(Value, Value)>> {
     let obj = raw.as_object().ok_or_else(|| {
-        Error::InvalidRule("mappings must be an object of source_value → target_value".into())
+        Error::InvalidRule("mappings must be an object of source_value -> target_value".into())
     })?;
     let mut result = Vec::with_capacity(obj.len());
     for (k, v) in obj {
@@ -337,16 +294,15 @@ fn find_mapping<'a>(
             .iter()
             .find(|(key, _)| key == source)
             .map(|(_, target)| target)
-            .or_else(|| default),
+            .or(default),
         None => default,
     }
 }
 
 fn eval_compute(op_tree: &Node, current_value: Option<&Value>, ctx: &EvalContext) -> Result<Value> {
     let mut eval_ctx = HashMapContext::new();
-    // 注入当前字段值
     let _ = eval_ctx.set_value("$value".to_string(), json_to_evalexpr(current_value));
-    // 注入上下文变量。TODO: 支持嵌套上下文路径
+    // TODO: 支持嵌套上下文路径
     for (k, v) in ctx.entries() {
         let _ = eval_ctx.set_value(format!("$ctx.{k}"), json_to_evalexpr(Some(v)));
     }
@@ -396,26 +352,7 @@ fn evalexpr_to_json(v: evalexpr::Value) -> Value {
     }
 }
 
-/// 将 map_value 产生的目标对象合并到 body 根级别
-/// TODO: 考虑以下情况
-///
-/// ```json
-/// body: {"thinking": {"type": "enabled"}},
-/// map : {"thinking": {"type": "disabled", foo: "bar"}}
-/// ```
-///
-/// 合并后结果为
-///
-/// ```json
-/// {"thinking": {"type": "disabled", foo: "bar"}}
-/// ```
-///
-/// 可以考虑是否 skip 已有字段，skip 后
-///
-/// ```json
-/// {"thinking": {"type": "enabled",foo: "bar"}}
-/// ```
-///
+/// TODO: 合并时是否跳过 body 已有的字段尚未定
 fn merge_root(body: &mut serde_json::Map<String, Value>, map: &serde_json::Map<String, Value>) {
     for (k, v) in map {
         match (body.get_mut(k), v) {

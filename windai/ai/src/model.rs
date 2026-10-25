@@ -1,46 +1,75 @@
-use crate::JsonObject;
 use serde::{Deserialize, Serialize};
 
-/// 模型适配器类型
-///
-/// 决定模型请求和响应结果处理方式
-///
-/// 每一种适配器按照官方标准 API 格式处理，但会加入不影响标准 API 的额外参数
-///
-/// 对于复杂的标准 API 变体，用户可以使用 wind-rule 模块进行适配和拓展
 #[derive(
-    utoipa::ToSchema,
-    Debug,
-    Serialize,
-    Deserialize,
-    Hash,
-    Copy,
-    PartialEq,
-    Eq,
-    Clone,
-    strum::EnumString,
-    strum::Display,
-    strum::EnumIter,
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::AsRefStr, schemars::JsonSchema,
 )]
 pub enum AdapterType {
-    /// OpenAI chat completion API 适配器
+    #[serde(rename = "openai_completion")]
+    #[strum(serialize = "openai_completion")]
     OpenAICompletion,
-    /// OpenAI response api 适配器
+    #[serde(rename = "openai_response")]
+    #[strum(serialize = "openai_response")]
     OpenAIResponse,
 }
 
-/// 模型信息
-#[derive(Debug, Serialize, Clone)]
-pub struct Model {
-    /// 提供商提供的模型名称
+impl std::fmt::Display for AdapterType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_ref())
+    }
+}
+
+impl AdapterType {
+    pub fn parse(name: &str) -> Result<Self, AdapterTypeError> {
+        match name {
+            "openai_completion" => Ok(AdapterType::OpenAICompletion),
+            "openai_response" => Ok(AdapterType::OpenAIResponse),
+            other => Err(AdapterTypeError {
+                name: other.to_string(),
+            }),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("{name} is not a known adapter")]
+pub struct AdapterTypeError {
     pub name: String,
-    /// 当前模型的适配器类型
-    /// 该类型决定了模型请求和响应结果的处理方式
+}
+
+#[derive(Debug, Clone)]
+pub struct ChatModel {
+    pub name: String,
     pub adapter: AdapterType,
-    /// 模型专属端点地址
-    ///
-    /// 默认使用与 [AdapterType] 关联的提供商的默认端点
+    /// 专属端点，缺省时用适配器的默认端点
     pub endpoint: Option<String>,
-    /// 模型请求配置
-    pub config: Option<JsonObject>,
+    pub config: Option<serde_json::Value>,
+}
+
+/// 一次请求的地址与凭据
+#[derive(Debug, Clone)]
+pub struct Target {
+    pub base_url: String,
+    pub api_key: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_name_accessor_matches_the_parsed_and_serialized_literal() {
+        // 自动的 snake_case 会把 OpenAICompletion 写成 open_ai_completion，
+        // 而解析用的名字是 openai_completion，两个名字必须一致
+        for (kind, literal) in [
+            (AdapterType::OpenAICompletion, "openai_completion"),
+            (AdapterType::OpenAIResponse, "openai_response"),
+        ] {
+            assert_eq!(kind.as_ref(), literal);
+            assert_eq!(
+                serde_json::to_string(&kind).expect("serialize"),
+                format!("\"{literal}\"")
+            );
+            assert_eq!(AdapterType::parse(kind.as_ref()).expect("parse"), kind);
+        }
+    }
 }

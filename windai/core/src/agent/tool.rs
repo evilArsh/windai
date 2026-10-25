@@ -1,141 +1,60 @@
 use crate::error::Result;
-use crate::models::{AgentMode, AgentStatus};
+use crate::models::AgentMode;
 use serde::{Deserialize, Serialize};
-use wind_ai::message::Content;
-use wind_ai::tool::{FunctionCall, FunctionTool, Tools};
+use strum::IntoEnumIterator;
+use wind_wire::tool::{FunctionCall, FunctionTool, Tools};
 
-pub const AGENT_TOOL_PREFIX: &str = "agent_";
-const LIST_AGENTS_NAME: &str = "agent_list_agents";
-pub const SPAWN_AGENT_NAME: &str = "agent_spawn_agent";
+pub const SPAWN_AGENT_NAME: &str = "windai_spawn_agent";
 
-/// list_agents 的响应
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ListAgentsResponse {
-    /// 当前 Topic 中可见的 Agent 能力清单
-    pub agents: Vec<AgentCatalog>,
-}
-
-/// 暴露给 LLM 的 Agent 能力视图
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct AgentCatalog {
-    /// AgentDefinition.key
-    pub key: String,
-    /// 当前 Topic 中配置的 Agent 别名
-    pub alias: Option<String>,
-    /// Agent 能力描述
-    pub description: String,
-}
-
-/// 创建子 Agent 的请求
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SpawnAgentRequest {
-    /// AgentDefinition.key
-    pub agent_key: String,
-    /// 子 Agent 运行模式
-    pub mode: AgentMode,
-    /// 分配给子 Agent 的任务描述
+    pub mode: String,
     pub task: String,
 }
-impl std::fmt::Display for SpawnAgentRequest {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "[SpawnAgentRequest] (agent_key = {}, mode = {}, task = {})",
-            self.agent_key, self.mode, self.task
-        )
-    }
-}
-/// 创建子 Agent 的响应
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub struct SpawnAgentResponse {
-    pub call_id: String,
-    pub mode: AgentMode,
-    pub status: AgentStatus,
-    pub output: Vec<Content>,
-}
 
-pub struct AgentActionPlan {
-    /// 合并后的 list_agents
-    pub list_agents: Option<Vec<String>>,
-    /// 独立的 spawn_agent 调用
-    pub spawn_agents: Vec<SpawnAgentAction>,
-}
-
-/// 单个 spawn_agent 调用
+#[derive(Debug, Clone)]
 pub struct SpawnAgentAction {
     pub call_id: String,
     pub data: SpawnAgentRequest,
 }
 
-pub fn list_catalogs() -> Vec<Tools> {
-    vec![
-        function_tool(
-            LIST_AGENTS_NAME,
-            "List all available agents to finish specified tasks.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {},
-                "required": [],
-                "additionalProperties": false
-            }),
-        ),
-        function_tool(
-            SPAWN_AGENT_NAME,
-            "Create an agent by specifying a pattern to complete a specified task.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "agent_key": {
-                        "type": "string",
-                        "description": "The unique identifier of the agent"
-                    },
-                    "mode": {
-                        "type": "string",
-                        "enum": ["sync", "fork"],
-                        "description": "Agent run mode."
-                    },
-                    "task": {
-                        "type": "string",
-                        "description": "Description of the task to be completed by this agent"
-                    }
+pub fn tool_declarations() -> Vec<Tools> {
+    vec![function_tool(
+        SPAWN_AGENT_NAME,
+        "Create an agent by spawning a child instance to complete a specified task.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": AgentMode::iter().map(|mode| mode.to_string()).collect::<Vec<_>>(),
+                    "description": "Agent run mode."
                 },
-                "required": ["agent_key", "mode", "task"],
-                "additionalProperties": false
-            }),
-        ),
-    ]
+                "task": {
+                    "type": "string",
+                    "description": "Description of the task to be completed by this agent"
+                }
+            },
+            "required": ["mode", "task"],
+            "additionalProperties": false
+        }),
+    )]
 }
 
-/// 解析并合并 Agent 工具调用
-///
-/// 多个 `list_agents` 调用会被合并为一次查询，`call_ids` 收集所有原始 call ID；
-/// 无 `list_agents` 调用时返回 `None`
-pub fn parse_agent_action(calls: &[FunctionCall]) -> Result<AgentActionPlan> {
-    let mut list_call_ids: Vec<String> = Vec::new();
+pub fn parse_spawn_agents(calls: &[FunctionCall]) -> Result<Vec<SpawnAgentAction>> {
     let mut spawn_agents: Vec<SpawnAgentAction> = Vec::new();
 
     for call in calls {
         match call.name.as_str() {
-            name if name == LIST_AGENTS_NAME => {
-                list_call_ids.push(call.id.clone());
-            }
-            name if name == SPAWN_AGENT_NAME => {
-                spawn_agents.push(SpawnAgentAction {
-                    call_id: call.id.clone(),
-                    data: parse_args::<SpawnAgentRequest>(&call.arguments)?,
-                });
-            }
-            name => {
-                log::warn!("unsupported agent tool name: {name}, ignored");
-            }
-        };
+            SPAWN_AGENT_NAME => spawn_agents.push(SpawnAgentAction {
+                call_id: call.id.clone(),
+                data: parse_args::<SpawnAgentRequest>(&call.arguments)?,
+            }),
+            name => log::warn!("unsupported agent tool name: {name}, ignored"),
+        }
     }
 
-    Ok(AgentActionPlan {
-        list_agents: (!list_call_ids.is_empty()).then_some(list_call_ids),
-        spawn_agents,
-    })
+    Ok(spawn_agents)
 }
 
 fn function_tool(name: &str, description: &str, parameters: serde_json::Value) -> Tools {
@@ -152,4 +71,102 @@ where
     T: serde::de::DeserializeOwned,
 {
     Ok(serde_json::from_str(arguments)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 一次调用
+    fn call(id: &str, name: &str, arguments: &str) -> FunctionCall {
+        FunctionCall {
+            id: id.into(),
+            name: name.into(),
+            arguments: arguments.into(),
+        }
+    }
+
+    /// 唯一声明的工具序列化之后的结果
+    fn declared() -> serde_json::Value {
+        let tools = tool_declarations();
+        assert_eq!(tools.len(), 1, "only the spawn tool is declared");
+        let tool = tools.into_iter().next().expect("find the tool declaration");
+        let Tools::Function(function) = tool;
+        assert_eq!(function.name, SPAWN_AGENT_NAME);
+        serde_json::to_value(function).expect("serialize")
+    }
+
+    #[test]
+    fn the_only_declaration_is_the_spawn_tool() {
+        let spawn = declared();
+        assert_eq!(spawn["parameters"]["type"], serde_json::json!("object"));
+        assert_eq!(
+            spawn["parameters"]["required"],
+            serde_json::json!(["mode", "task"]),
+            "both parameters are required"
+        );
+        assert!(
+            spawn["parameters"]["properties"].get("agent_key").is_none(),
+            "an agent has only an instance and no definition to choose from, so the declaration must not ask for an agent_key"
+        );
+        let modes = spawn["parameters"]["properties"]["mode"]["enum"]
+            .as_array()
+            .expect("read the mode enum")
+            .clone();
+        assert!(
+            modes.contains(&serde_json::json!("background")),
+            "background mode must be selectable, otherwise child instances that stay out of the barrier cannot be spawned: {modes:?}"
+        );
+    }
+
+    #[test]
+    fn the_list_tool_is_gone() {
+        assert!(
+            tool_declarations().iter().all(|tool| match tool {
+                Tools::Function(function) => function.name != "agent_list_agents",
+            }),
+            "the tool that lists agent definitions has no producer and must not remain in the declarations"
+        );
+    }
+
+    #[test]
+    fn parsing_collects_the_spawn_requests_in_order() {
+        let actions = parse_spawn_agents(&[
+            call(
+                "c-1",
+                SPAWN_AGENT_NAME,
+                r#"{"mode":"sync","task":"look up information"}"#,
+            ),
+            call(
+                "c-2",
+                SPAWN_AGENT_NAME,
+                r#"{"mode":"background","task":"write a draft"}"#,
+            ),
+        ])
+        .expect("parse");
+
+        assert_eq!(actions.len(), 2);
+        assert_eq!(
+            actions[0].call_id, "c-1",
+            "order within the batch is context order"
+        );
+        assert_eq!(actions[0].data.mode, "sync");
+        assert_eq!(actions[0].data.task, "look up information");
+        assert_eq!(actions[1].data.mode, "background");
+    }
+
+    #[test]
+    fn a_malformed_spawn_argument_is_rejected() {
+        assert!(
+            parse_spawn_agents(&[call("c-1", SPAWN_AGENT_NAME, "{ not json")]).is_err(),
+            "arguments come from model-written text; unparseable input must be rejected, not defaulted to a guess"
+        );
+    }
+
+    #[test]
+    fn an_unknown_agent_tool_is_ignored() {
+        let actions =
+            parse_spawn_agents(&[call("c-1", "agent_do_something", "{}")]).expect("parse");
+        assert!(actions.is_empty());
+    }
 }

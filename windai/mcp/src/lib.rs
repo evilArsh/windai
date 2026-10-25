@@ -1,17 +1,12 @@
+//! MCP 客户端
+
 pub mod builtin;
-pub mod client;
-
-use self::client::registry::Registry;
-
-pub trait BuiltinMcp {
-    fn get_name(&self) -> &'static str;
-    fn get_description(&self) -> &'static str;
-}
-
-pub async fn init_builtin(_registry: &mut Registry) {
-    // 特殊 mcp，需要指定执行根目录
-    // FsServer
-    // SkillsServer
-
-    // 内建 MCP server 全局初始化
-}
+pub mod connector;
+pub mod events;
+pub mod identity;
+pub mod normalizer;
+pub mod params;
+pub mod process;
+pub mod registry;
+pub mod runtime;
+pub mod tools;

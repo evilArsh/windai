@@ -1,9 +1,7 @@
 use super::error::{Error, Result};
 use serde_json::{Map, Value};
 
-/// 将路径分割
-/// - eg: `"thinking.type"` --> `["thinking", "type"]`
-/// TODO: 返回 Vec<&str>
+/// TODO: 改成返回 `Vec<&str>`，省掉每段的字符串分配。
 pub fn segments(path: &str) -> Vec<String> {
     path.split('.')
         .collect::<Vec<_>>()
@@ -12,9 +10,6 @@ pub fn segments(path: &str) -> Vec<String> {
         .collect()
 }
 
-/// 按路径段从 JSON 中读取值
-/// - 如果路径能到达，但是值不存在，则返回空数据
-/// - 如果路径不能到达，则报错
 pub fn get<'a>(root: &'a Value, segs: &[String]) -> Result<Option<&'a Value>> {
     if segs.is_empty() {
         return Err(Error::Path("empty path".into()));
@@ -42,7 +37,6 @@ pub fn get<'a>(root: &'a Value, segs: &[String]) -> Result<Option<&'a Value>> {
     Ok(obj.get(&key[0]))
 }
 
-/// 删除路径指向的字段，如果父对象不存在则报错
 pub fn remove(root: &mut Value, segs: &[String]) -> Result<()> {
     if segs.is_empty() {
         return Err(Error::Path("empty path".into()));
@@ -71,9 +65,6 @@ pub fn remove(root: &mut Value, segs: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// 确保路径存在，返回最终位置的引用
-/// 如果子路径不存在，则创建空对象
-/// 如果子路径中间有非对象值则会被忽略
 pub fn walk<'a>(root: &'a mut Value, segs: &[String]) -> Result<&'a mut Value> {
     let mut cur = root;
     for seg in segs {

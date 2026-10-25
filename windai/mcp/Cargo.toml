@@ -1,28 +1,25 @@
 [package]
 name = "wind-mcp"
-description = """
-MCP client management for windai
-"""
-edition.workspace = true
 version.workspace = true
-repository.workspace = true
-authors.workspace = true
+edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
-wind-skills = { path = "../skills" }
-serde.workspace = true
-serde_json.workspace = true
-schemars.workspace = true
-thiserror.workspace = true
-log.workspace = true
-rmcp.workspace = true
-tokio.workspace = true
-futures.workspace = true
-strum.workspace = true
-utoipa.workspace = true
+wind-core = { path = "../core" }
+wind-event = { path = "../event" }
+wind-mod = { path = "../mod" }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+strum = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+log = { workspace = true }
+rmcp = { workspace = true }
+yaml-rust2 = { workspace = true }
 
 [dev-dependencies]
-env_logger.workspace = true
-tokio.workspace = true
-test-case.workspace = true
+tempfile = { version = "*" }
+tokio = { workspace = true, features = ["test-util", "macros"] }

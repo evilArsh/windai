@@ -1,0 +1,334 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://windai.local/schemas/mod.json",
+  "title": "windai Mod 清单",
+  "description": "Mod 包根目录下的 mod.json。\n\n本文件是纯数据声明，不含可执行内容。宿主在加载任何 Mod 代码之前即可依据本文件完成结构校验与能力授权。\n\n事件名、事件形态与派发语义见 docs/events.md。Mod 可用的宿主能力见 docs/facade.d.ts。\n\n有关包内其余文件的路径约定：\n  scripts/index.js    宿主侧代码入口\n  ui/index.js         前端组件入口\n  skills/<name>/      技能目录，目录名即技能名\n  mcp/<name>/         随包分发的可执行资产\n以上路径为固定约定，不在本清单中声明；相应目录均为可选。",
+  "type": "object",
+  "required": [
+    "name",
+    "version"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,62}$",
+      "description": "Mod 名。全局唯一。\n\n以数字或连字符开头会与工具名、事件名的前缀规则冲突，因此限定首字符为小写字母。\n\n同名 Mod 在全系统内只存在一份，不存在按话题区分的版本。话题持有的是启用集合，而非版本选择。"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "版本号。单调递增的整数。\n\n版本内容不可变：已发布的版本不得修改内容，变更须发布新版本。\n\n发布新版本不触发数据迁移。已有状态数据原样保留，向前兼容由 Mod 自身负责。"
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 500,
+      "description": "面向人工阅读的说明文本。"
+    },
+    "capabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/capability"
+      },
+      "description": "能力集合。\n\n声明的能力才会出现在处理函数的 ctx 上；未声明的属性不存在，访问它产生 TypeError，而非运行时的权限拒绝。\n\n该集合受第二级裁剪约束：intercept 形态的处理函数不注入任何 I/O 能力。因此声明了 \"http\" 的 Mod，其 intercept 处理函数中依然不存在 ctx.http。\n\n命令执行由宿主自带的 MCP 服务提供，不是可声明的能力。\n\n完整可用性矩阵见 docs/facade.d.ts。"
+    },
+    "prompts": {
+      "type": "object",
+      "default": {},
+      "propertyNames": {
+        "$ref": "#/$defs/symbolName"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "提示词正文。"
+          },
+          "description": {
+            "type": "string",
+            "description": "该片段的用途说明。"
+          }
+        }
+      },
+      "description": "静态提示词片段。\n\n注入到该话题的每一次模型请求。该注入不经过 Mod 运行时，因此不产生解释器实例化的开销。\n\n注入顺序按片段名的字典序确定，与声明顺序无关。"
+    },
+    "mcpServers": {
+      "type": "object",
+      "default": {},
+      "propertyNames": {
+        "$ref": "#/$defs/symbolName"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "type": "string",
+            "minLength": 1,
+            "description": "stdio 形式：可执行文件。\n\n以 ./ 开头时按本 Mod 版本的资产根目录解析。其余情形按系统 PATH 查找或视为绝对路径。\n\n两种写法在传输层等价，均产生一个通过标准输入输出通信的子进程。区别仅在于可执行文件的来源：一种由包管理器在运行时获取，另一种随包分发。"
+          },
+          "args": {
+            "type": "array",
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "description": "stdio 形式的命令行参数。通过包管理器启动时通常为包名，例如 [\"mcp-server-fetch\"]。"
+          },
+          "env": {
+            "type": "object",
+            "default": {},
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "stdio 形式的环境变量。\n\n凭据不应写在本字段。写入本字段等同于随包分发该凭据。"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "minLength": 8,
+            "description": "Streamable HTTP 形式的服务地址。\n\n该形式不启动本地进程，宿主直接与远端通信。因此 args 与 env 对本形式无意义，声明它们会被拒绝。\n\n地址中不应内嵌凭据（userinfo 段），凭据也不得写在查询串里。凭据由宿主注入。\n\n地址归一化会丢掉查询串，只在查询串上不同的两个地址会被并成一条连接。"
+          },
+          "description": {
+            "type": "string",
+            "description": "该服务的用途说明。"
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "command"
+            ],
+            "not": {
+              "required": [
+                "url"
+              ]
+            },
+            "description": "stdio 形式：有 command、无 url。"
+          },
+          {
+            "required": [
+              "url"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "command"
+                  ]
+                },
+                {
+                  "required": [
+                    "args"
+                  ]
+                },
+                {
+                  "required": [
+                    "env"
+                  ]
+                }
+              ]
+            },
+            "description": "Streamable HTTP 形式：有 url，且不含 command、args、env。"
+          }
+        ]
+      },
+      "description": "MCP 服务的连接描述。共两种形式，由字段互斥确定。\n\nstdio 形式——宿主启动一个子进程，通过标准输入输出通信：\n  { \"command\": \"uvx\", \"args\": [\"mcp-server-fetch\"] }\n  { \"command\": \"./mcp/search/bin/server\" }\n\nStreamable HTTP 形式——宿主与该地址通信，不启动本地进程：\n  { \"url\": \"https://mcp.example.com/v1\" }\n\n去重规则：\n  多个 Mod 声明同一服务时，宿主按连接方式判定身份，不按名称判定。\n\n    stdio，由包管理器启动        去重键 = 包名\n    stdio，由本包内相对路径启动   去重键 = 资产内容指纹\n    Streamable HTTP             去重键 = 归一化后的地址\n\n  因此两个 Mod 声明同名服务但连接方式不同时，宿主建立两条独立连接；该行为符合预期。"
+    },
+    "requests": {
+      "type": "object",
+      "default": {},
+      "propertyNames": {
+        "$ref": "#/$defs/symbolName"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "handler"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "handler": {
+            "$ref": "#/$defs/handlerName"
+          },
+          "summary": {
+            "type": "string",
+            "description": "面向模型的一句话说明。\n\ncallableBy 含 \"agent\" 时，本字段进入工具描述。"
+          },
+          "input": {
+            "$ref": "#/$defs/jsonSchema",
+            "description": "输入结构。宿主在调用边界校验。"
+          },
+          "output": {
+            "$ref": "#/$defs/jsonSchema",
+            "description": "输出结构。宿主在调用边界校验。"
+          },
+          "callableBy": {
+            "type": "array",
+            "uniqueItems": true,
+            "default": [],
+            "items": {
+              "enum": [
+                "agent",
+                "ui"
+              ]
+            },
+            "description": "允许的调用方。\n\n  \"agent\"  宿主将其注册为工具，工具名为 m_<mod>__<request>，进入模型的工具列表\n  \"ui\"     UI 组件可经 host 上被暴露的对应接口调用\n\n空数组表示仅宿主内部可见，任何外部调用方均不可调用。\n\n**不存在 \"mod\" 取值。** Mod 之间互相独立，不构成彼此的调用方。跨 Mod 的协作由用户或 agent 编排。"
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 300000,
+            "default": 30000,
+            "description": "本次调用的超时。\n\nrequest 本身即是受调用的操作，不阻塞其他操作的判定，因此不受每操作总时间预算的约束。"
+          }
+        }
+      },
+      "description": "Mod 暴露的调用入口。\n\n这是三条通信通道中唯一具有返回值的通道。其余两条为事件订阅（宿主到 Mod）与事件产生（Mod 到订阅方），均为单向。"
+    },
+    "events": {
+      "type": "object",
+      "additionalProperties": false,
+      "default": {},
+      "properties": {
+        "on": {
+          "type": "object",
+          "default": {},
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^core/[a-z][a-z0-9_.]*$",
+            "description": "宿主事件名。\n\n取值必须是 docs/events.md 中定义的事件之一。该约束无法以 JSON Schema 表达，由宿主在加载期校验：引用未定义的事件名将导致拒绝加载。"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "handler"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "handler": {
+                "$ref": "#/$defs/handlerName"
+              },
+              "phase": {
+                "enum": [
+                  "guard",
+                  "policy"
+                ],
+                "description": "执行相位。仅 intercept 形态的订阅具有本字段。\n\n  guard   安全与权限，最先执行\n  policy  业务策略，在 guard 之后执行\n\n同一相位内按注册顺序执行。\n\n本字段的取值由订阅方声明，而事件的形态由事件目录声明。二者不一致时（对 observe 事件声明本字段，或对 intercept 事件省略本字段），宿主在加载期拒绝该订阅。"
+              },
+              "timeoutMs": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 60000,
+                "description": "本订阅的单次时间预算。\n\n与本操作的总预算冲突时取较小值。总预算先耗尽时，剩余订阅不再执行。"
+              }
+            }
+          },
+          "description": "订阅宿主事件。\n\n仅已声明的事件会唤醒该 Mod。未声明的事件在派发时不查询本 Mod。"
+        },
+        "emit": {
+          "type": "object",
+          "default": {},
+          "propertyNames": {
+            "$ref": "#/$defs/symbolName"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "delivery",
+              "payload"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "delivery": {
+                "enum": [
+                  "notice",
+                  "stateful"
+                ],
+                "description": "投递方式。\n\n  notice    仅投递给当前在线的订阅方。允许丢失。\n  stateful  先写入状态存储，再投递。新订阅方建立连接时先接收基线值，再接收增量。\n\n面向前端的投递必须使用 stateful。前端建立连接的时机不确定，仅投递增量将导致新建立的界面上该数据为空，直至下一次投递发生。"
+              },
+              "stateKey": {
+                "type": "string",
+                "description": "delivery 为 stateful 时必填。清单里用来标识这条状态通道的键。\n\n状态在状态存储中的键是事件的完整名字（m_<mod>/<name>），订阅方按同一个名字取当前值；本字段不参与状态键的构成。"
+              },
+              "payload": {
+                "$ref": "#/$defs/jsonSchema",
+                "description": "载荷结构。宿主在投递边界校验。结构不符时拒绝投递，并将带路径的错误返回给发出方。"
+              },
+              "description": {
+                "type": "string",
+                "description": "该事件的用途说明。"
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "delivery": {
+                      "const": "stateful"
+                    }
+                  },
+                  "required": [
+                    "delivery"
+                  ]
+                },
+                "then": {
+                  "required": [
+                    "stateKey"
+                  ]
+                },
+                "description": "delivery 为 stateful 时必须提供 stateKey。"
+              }
+            ]
+          },
+          "description": "Mod 主动产生的事件，宿主据此推送给 UI 组件与订阅方。\n\n宿主为事件名加上 m_<mod>/ 前缀，避免不同 Mod 之间的事件名冲突。\n\n**这是宿主半侧向 UI 半侧投递数据的唯一通道**——UI 组件用 UiCtx.subscribe(name, handler) 订阅同一批名字。反方向（UI 半侧触发后端）走 UiCtx.host。\n\ndelivery 决定投递语义：\n  notice    只推给当前在线的订阅者。组件晚挂载就收不到\n  stateful  宿主先落当前值，组件挂载时先收一份基线再收增量。面板数据一律用它\n\n另一条途径是其他 Mod 订阅本 Mod 的事件，但 Mod 之间互相独立，不构成调用关系。"
+        }
+      }
+    },
+    "defs": {
+      "type": "object",
+      "default": {},
+      "propertyNames": {
+        "$ref": "#/$defs/symbolName"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/jsonSchema"
+      },
+      "description": "本清单内共享的结构定义。\n\n在 input、output 与 payload 中通过 $ref: \"#/defs/<name>\" 引用。\n\n该引用路径指向本清单的 defs 节，与本文档自身的 $defs 节无关。"
+    }
+  },
+  "$defs": {
+    "capability": {
+      "enum": [
+        "state",
+        "storage",
+        "http",
+        "agent",
+        "fs"
+      ],
+      "description": "可声明的宿主能力。\n\n  state    对外状态：写入广播给订阅方，agent 可读\n  storage  私有键值存储：不广播，agent 不可读\n  http     出网\n  agent    与 agent 系统交互\n  fs       Mod 私有目录内的文件读写\n\n全部能力声明即生效。\n\nlog 与 notify 不在本枚举内，因为二者无需声明：它们不产生 I/O 等待。\n\nfs 需要一个路径边界才能收口：私有目录是该能力的边界本身。"
+    },
+    "symbolName": {
+      "type": "string",
+      "pattern": "^[a-zA-Z_][a-zA-Z0-9_-]{0,62}$",
+      "description": "标识符。\n\n该名称会出现在工具名、事件名与状态键中，因此限定字符集以保证在各处均可安全拼接。"
+    },
+    "handlerName": {
+      "type": "string",
+      "pattern": "^[a-zA-Z_$][a-zA-Z0-9_$]*$",
+      "description": "处理函数名。\n\n必须对应 scripts/ 中真实导出的函数。宿主在加载期校验其存在性。\n\n若不在加载期校验，缺失的处理函数将延迟到某次调用时才表现为 undefined，该失败形态难以定位。"
+    },
+    "jsonSchema": {
+      "type": "object",
+      "description": "一个 JSON Schema（draft 2020-12）。可通过 $ref: \"#/defs/<name>\" 引用本清单顶层的 defs 节。\n\n本字段是契约而非文档。宿主在三处边界强制校验：request 的 input、request 的 output、以及 emit 的 payload。\n\n校验失败时的行为是拒绝递送，并将带路径的错误返回给发出方。emit 的发出方通常是 agent 生成的代码，该代码可依据错误信息修正自身。"
+    }
+  },
+  "$comment": "本清单刻意不包含以下字段：\n\nagents\n  Mod 提供能力，不定义角色。提示词、技能、MCP 服务均作用于整个对话，不归属于某个 agent 配置。模型需要派生 agent 时直接创建子实例，子实例自动使用同一话题的能力集合。\n\nentry / main\n  代码入口为固定约定 scripts/index.js。ui、skills、mcp 同理，均为目录约定，不进入清单。\n\nscope\n  事件的作用域取自调用方上下文，不由 Mod 声明。Mod 是全局资源，其运行时实例位于某个话题内，数据自然归属于该话题；在清单中重复声明该信息既不必要，也会造成 Mod 按话题定义的误解。\n\ndependencies / 版本约束\n  本版本不支持第三方分发，因此不定义 Mod 之间的依赖关系。\n\npermissions / sandbox\n  Mod 的宿主侧能力由 capabilities 字段声明并在注入阶段收口，不需要额外的权限字段。对 agent 文件访问的授权属于用户策略，不由 Mod 自身声明。\n\n  UI 组件不受沙箱约束：其浏览器能力不由本清单声明，也不被本清单限制。安装一个 Mod 即等于允许它的 UI 代码在前端页面内执行任意代码；该代价为明确接受。理由见 docs/facade.d.ts 的「前端门面」。"
+}

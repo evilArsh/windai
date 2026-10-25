@@ -3,8 +3,10 @@
 **/*.db
 .env
 /*.md
-/docs/agents/*
-/docs/superpowers/*
 .vscode
-.claude/skills/windai-*
+.claude
 .superpowers
+.archify
+!AGENTS.md
+!CLAUDE.md
+!agents

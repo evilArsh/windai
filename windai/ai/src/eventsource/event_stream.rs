@@ -17,7 +17,7 @@ struct EventBuilder {
 }
 
 impl EventBuilder {
-    /// From the HTML spec
+    /// 以下步骤摘自 HTML 规范
     ///
     /// -> If the field name is "event"
     ///    Set the event type buffer to field value.
@@ -46,7 +46,7 @@ impl EventBuilder {
                         self.event.event = val.to_string();
                     }
                     "data" => {
-                        // FIXME: gracefully handle
+                        // FIXME: 解析层跳过 `[DONE]` 会丢掉事件，需要重新考虑
                         if val == "[DONE]" {
                             return;
                         }
@@ -71,26 +71,26 @@ impl EventBuilder {
         }
     }
 
-    /// From the HTML spec
+    /// 以下步骤摘自 HTML 规范
     ///
     /// 1. Set the last event ID string of the event source to the value of the last event ID
-    /// buffer. The buffer does not get reset, so the last event ID string of the event source
-    /// remains set to this value until the next time it is set by the server.
+    ///    buffer. The buffer does not get reset, so the last event ID string of the event source
+    ///    remains set to this value until the next time it is set by the server.
     /// 2. If the data buffer is an empty string, set the data buffer and the event type buffer
-    /// to the empty string and return.
+    ///    to the empty string and return.
     /// 3. If the data buffer's last character is a U+000A LINE FEED (LF) character, then remove
-    /// the last character from the data buffer.
+    ///    the last character from the data buffer.
     /// 4. Let event be the result of creating an event using MessageEvent, in the relevant Realm
-    /// of the EventSource object.
+    ///    of the EventSource object.
     /// 5. Initialize event's type attribute to message, its data attribute to data, its origin
-    /// attribute to the serialization of the origin of the event stream's final URL (i.e., the
-    /// URL after redirects), and its lastEventId attribute to the last event ID string of the
-    /// event source.
+    ///    attribute to the serialization of the origin of the event stream's final URL (i.e., the
+    ///    URL after redirects), and its lastEventId attribute to the last event ID string of the
+    ///    event source.
     /// 6. If the event type buffer has a value other than the empty string, change the type of
-    /// the newly created event to equal the value of the event type buffer.
+    ///    the newly created event to equal the value of the event type buffer.
     /// 7. Set the data buffer and the event type buffer to the empty string.
     /// 8. Queue a task which, if the readyState attribute is set to a value other than CLOSED,
-    /// dispatches the newly created event at the EventSource object.
+    ///    dispatches the newly created event at the EventSource object.
     fn dispatch(&mut self) -> Option<Event> {
         let builder = core::mem::take(self);
         let mut event = builder.event;
@@ -100,7 +100,7 @@ impl EventBuilder {
             return None;
         }
 
-        if is_lf(event.data.chars().next_back().unwrap()) {
+        if event.data.chars().next_back().is_some_and(is_lf) {
             event.data.pop();
         }
 
@@ -129,7 +129,6 @@ impl EventStreamState {
 }
 
 pin_project! {
-/// A Stream of events
 pub struct EventStream<S> {
     #[pin]
     stream: Utf8Stream<S>,
@@ -141,7 +140,6 @@ pub struct EventStream<S> {
 }
 
 impl<S> EventStream<S> {
-    /// Initialize the EventStream with a Stream
     pub fn new(stream: S) -> Self {
         Self {
             stream: Utf8Stream::new(stream),
@@ -152,26 +150,21 @@ impl<S> EventStream<S> {
         }
     }
 
-    // /// Set the last event ID of the stream. Useful for initializing the stream with a previous
-    // /// last event ID
+    // /// 设置流的 last event ID，用于以先前的 last event ID 初始化流
     // pub fn set_last_event_id(&mut self, id: impl Into<String>) {
     //     self.last_event_id = id.into();
     // }
 
-    // /// Get the last event ID of the stream
+    // /// 获取流的 last event ID
     // pub fn last_event_id(&self) -> &str {
     //     &self.last_event_id
     // }
 }
 
-/// Error thrown while parsing an event line
 #[derive(Debug, PartialEq)]
 pub enum EventStreamError<E> {
-    /// Source stream is not valid UTF8
     Utf8(FromUtf8Error),
-    /// Source stream is not a valid EventStream
     Parser(NomError<String>),
-    /// Underlying source stream error
     Transport(E),
 }
 
@@ -219,10 +212,10 @@ fn parse_event<E>(
                 let consumed = buffer.len() - rem.len();
                 let rem = buffer.split_off(consumed);
                 *buffer = rem;
-                if builder.is_complete {
-                    if let Some(event) = builder.dispatch() {
-                        return Ok(Some(event));
-                    }
+                if builder.is_complete
+                    && let Some(event) = builder.dispatch()
+                {
+                    return Ok(Some(event));
                 }
             }
             Err(nom::Err::Incomplete(_)) => return Ok(None),
@@ -265,7 +258,7 @@ where
                         &string
                     } else {
                         *this.state = EventStreamState::Started;
-                        if is_bom(string.chars().next().unwrap()) {
+                        if string.chars().next().is_some_and(is_bom) {
                             &string[BOM_LEN..]
                         } else {
                             &string

@@ -1,14 +1,11 @@
 use std::time::Duration;
 
-/// An Event
 #[derive(Default, Debug, Eq, PartialEq, Clone)]
 pub struct Event {
-    /// The event name if given
+    /// 事件名，空字符串表示未给出
     pub event: String,
-    /// The event data
     pub data: String,
-    /// The event id if given
+    /// 事件 id，空字符串表示未给出
     pub id: String,
-    /// Retry duration if given
     pub retry: Option<Duration>,
 }

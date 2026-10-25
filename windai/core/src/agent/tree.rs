@@ -9,31 +9,24 @@ pub use event::{Effect, Event};
 pub use phase::{CancelOrigin, Phase, Terminal};
 pub use view::TreeEvent;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
+use std::mem;
 
 pub type NodeId = i64;
 pub type JobId = u64;
 
-/// 树上的一个节点
 #[derive(Debug, Clone)]
 pub struct Node<D: Domain> {
     pub id: NodeId,
     pub parent: Option<NodeId>,
     pub children: Vec<NodeId>,
     pub phase: Phase<D>,
-    /// 当前在跑的 worker id
     pub job: Option<JobId>,
-    /// 不进入父节点的等待屏障
     pub detached: bool,
-    /// 待消费输入
-    pub pending: Option<D::Spec>,
-    /// 产出是否已被领域投递
-    ///
-    /// 只对 detached 的终态节点有约束力，其它节点恒为 true
+    pub pending: VecDeque<D::Spec>,
     pub delivered: bool,
 }
 
-/// 任务树，全部状态的唯一持有者
 #[derive(Debug)]
 pub struct Tree<D: Domain> {
     nodes: BTreeMap<NodeId, Node<D>>,
@@ -60,7 +53,6 @@ impl<D: Domain> Tree<D> {
         self.nodes.get(&id)
     }
 
-    /// 节点生命周期状态
     pub fn phase(&self, id: NodeId) -> Option<&Phase<D>> {
         self.nodes.get(&id).map(|node| &node.phase)
     }
@@ -73,23 +65,21 @@ impl<D: Domain> Tree<D> {
         self.root
     }
 
+    /// 树所有节点
     pub fn nodes(&self) -> impl Iterator<Item = &Node<D>> {
         self.nodes.values()
     }
 
-    /// 全部节点 id，升序
     pub fn all_node_ids(&self) -> Vec<NodeId> {
         self.nodes.keys().copied().collect()
     }
 
-    /// 所有节点都处于终态
     pub fn is_quiescent(&self) -> bool {
         self.nodes
             .values()
-            .all(|node| node.phase.is_terminal() && node.pending.is_none() && node.delivered)
+            .all(|node| node.phase.is_terminal() && node.pending.is_empty() && node.delivered)
     }
 
-    /// 在途节点
     pub fn in_flight_nodes(&self) -> Vec<NodeId> {
         self.nodes
             .values()
@@ -98,7 +88,6 @@ impl<D: Domain> Tree<D> {
             .collect()
     }
 
-    /// 未投递的节点
     pub fn undelivered_nodes(&self) -> Vec<NodeId> {
         self.nodes
             .values()
@@ -107,9 +96,6 @@ impl<D: Domain> Tree<D> {
             .collect()
     }
 
-    /// 屏障子节点非空且全部处于终态
-    ///
-    /// detached 子节点不参与父节点的等待屏障
     pub fn all_children_terminal(&self, id: NodeId) -> bool {
         let barrier = self.barrier_children(id);
         !barrier.is_empty()
@@ -118,7 +104,6 @@ impl<D: Domain> Tree<D> {
                 .all(|child| self.phase(*child).is_some_and(Phase::is_terminal))
     }
 
-    /// 进入父节点等待屏障的子节点
     pub fn barrier_children(&self, id: NodeId) -> Vec<NodeId> {
         let Some(node) = self.nodes.get(&id) else {
             return Vec::new();
@@ -130,12 +115,10 @@ impl<D: Domain> Tree<D> {
             .collect()
     }
 
-    /// 节点是否不进入父节点的等待屏障
     pub fn is_detached(&self, id: NodeId) -> bool {
         self.nodes.get(&id).is_some_and(|node| node.detached)
     }
 
-    /// 后序子树遍历
     pub fn subtree_post_order(&self, root: NodeId) -> Vec<NodeId> {
         let mut out = Vec::new();
         let mut stack = vec![(root, false)];
@@ -154,9 +137,6 @@ impl<D: Domain> Tree<D> {
         out
     }
 
-    /// 插入一个节点，id 由领域提供
-    ///
-    /// id 已存在或父节点不存在时不做任何改动并返回 false
     pub(crate) fn insert_node(
         &mut self,
         id: NodeId,
@@ -183,7 +163,7 @@ impl<D: Domain> Tree<D> {
                 phase,
                 job: None,
                 detached,
-                pending: None,
+                pending: VecDeque::new(),
                 delivered: true,
             },
         );
@@ -202,9 +182,6 @@ impl<D: Domain> Tree<D> {
         true
     }
 
-    /// 用持久化数据重建一个节点
-    ///
-    /// 重建出来的节点不背投递义务，`delivered` 一律为 true
     pub(crate) fn restore_node(
         &mut self,
         id: NodeId,
@@ -212,7 +189,7 @@ impl<D: Domain> Tree<D> {
         children: Vec<NodeId>,
         phase: Phase<D>,
         detached: bool,
-        pending: Option<D::Spec>,
+        pending: Vec<D::Spec>,
     ) {
         self.nodes.insert(
             id,
@@ -223,7 +200,7 @@ impl<D: Domain> Tree<D> {
                 phase,
                 job: None,
                 detached,
-                pending,
+                pending: pending.into(),
                 delivered: true,
             },
         );
@@ -232,7 +209,6 @@ impl<D: Domain> Tree<D> {
         }
     }
 
-    /// 设置节点生命周期状态
     pub(crate) fn set_phase(&mut self, id: NodeId, phase: Phase<D>) {
         if let Some(node) = self.nodes.get_mut(&id) {
             node.phase = phase;
@@ -250,26 +226,28 @@ impl<D: Domain> Tree<D> {
         self.job_seq
     }
 
-    pub(crate) fn set_pending(&mut self, id: NodeId, spec: Option<D::Spec>) {
+    pub(crate) fn push_pending(&mut self, id: NodeId, spec: D::Spec) {
         if let Some(node) = self.nodes.get_mut(&id) {
-            node.pending = spec;
+            node.pending.push_back(spec);
         }
     }
 
-    /// 取走待消费输入
-    pub(crate) fn take_pending(&mut self, id: NodeId) -> Option<D::Spec> {
-        self.nodes.get_mut(&id).and_then(|node| node.pending.take())
+    pub(crate) fn take_pending(&mut self, id: NodeId) -> Vec<D::Spec> {
+        self.nodes
+            .get_mut(&id)
+            .map_or_else(Vec::new, |node| mem::take(&mut node.pending).into())
+    }
+
+    pub(crate) fn clear_pending(&mut self, id: NodeId) {
+        if let Some(node) = self.nodes.get_mut(&id) {
+            node.pending.clear();
+        }
     }
 
     pub(crate) fn set_delivered(&mut self, id: NodeId, delivered: bool) {
         if let Some(node) = self.nodes.get_mut(&id) {
             node.delivered = delivered;
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_pending_for_test(&mut self, id: NodeId, spec: Option<D::Spec>) {
-        self.set_pending(id, spec);
     }
 
     #[cfg(test)]
@@ -318,7 +296,7 @@ mod tests {
         assert!(tree.insert_for_test(1, None));
         assert!(
             !tree.insert_for_test(1, None),
-            "id 由领域提供，重复必须被拒绝"
+            "the id comes from the domain, so duplicates must be rejected"
         );
         assert_eq!(tree.all_node_ids(), vec![1]);
     }
@@ -328,7 +306,7 @@ mod tests {
         let mut tree = Tree::<TestDomain>::new();
         assert!(
             !tree.insert_for_test(1, Some(99)),
-            "未知父节点必须被拒绝，否则会留下挂不上任何 children 的悬空节点"
+            "an unknown parent must be rejected, otherwise it would leave a dangling node attached to no children"
         );
         assert_eq!(tree.all_node_ids(), Vec::<NodeId>::new());
         assert_eq!(tree.root(), None);
@@ -339,12 +317,20 @@ mod tests {
         let mut tree = Tree::<TestDomain>::new();
         assert!(tree.insert_for_test(1, None));
         assert!(tree.insert_for_test(2, None));
-        assert_eq!(tree.root(), Some(1), "插入路径认第一个无父节点");
+        assert_eq!(
+            tree.root(),
+            Some(1),
+            "the insert path takes the first parentless node"
+        );
 
         let mut restored = Tree::<TestDomain>::new();
-        restored.restore_node(7, None, Vec::new(), Phase::Running, false, None);
-        restored.restore_node(8, None, Vec::new(), Phase::Running, false, None);
-        assert_eq!(restored.root(), Some(7), "恢复路径与插入路径必须一致");
+        restored.restore_node(7, None, Vec::new(), Phase::Running, false, Vec::new());
+        restored.restore_node(8, None, Vec::new(), Phase::Running, false, Vec::new());
+        assert_eq!(
+            restored.root(),
+            Some(7),
+            "the recovery path must agree with the insert path"
+        );
     }
 
     #[test]
@@ -367,7 +353,7 @@ mod tests {
         assert!(!tree.is_quiescent());
 
         tree.set_phase_for_test(1, Phase::Done(TestOutput::Ok));
-        assert!(!tree.is_quiescent(), "还有子节点在跑");
+        assert!(!tree.is_quiescent(), "a child is still running");
 
         tree.set_phase_for_test(2, Phase::Failed(TestError::Boom));
         assert!(tree.is_quiescent());
@@ -382,13 +368,23 @@ mod tests {
         assert!(tree.is_detached(3));
         assert!(!tree.is_detached(2));
 
-        assert_eq!(tree.barrier_children(1), vec![2], "detached 不参与屏障");
+        assert_eq!(
+            tree.barrier_children(1),
+            vec![2],
+            "detached does not participate in the barrier"
+        );
         tree.set_phase_for_test(2, Phase::Done(TestOutput::Ok));
-        assert!(tree.all_children_terminal(1), "屏障只看非 detached 子节点");
+        assert!(
+            tree.all_children_terminal(1),
+            "the barrier only looks at non-detached children"
+        );
 
         // detached 子节点仍然计入整棵树的收敛
         tree.set_phase_for_test(1, Phase::Done(TestOutput::Ok));
-        assert!(!tree.is_quiescent(), "detached 未结束，整棵树不安静");
+        assert!(
+            !tree.is_quiescent(),
+            "detached is not finished, so the whole tree is not quiet"
+        );
         tree.set_phase_for_test(3, Phase::Done(TestOutput::Ok));
         assert!(tree.is_quiescent());
     }
@@ -396,14 +392,14 @@ mod tests {
     #[test]
     fn restore_node_keeps_the_snapshot_shape_and_the_first_root() {
         let mut tree = Tree::<TestDomain>::new();
-        tree.restore_node(5, None, vec![6], Phase::Running, false, None);
+        tree.restore_node(5, None, vec![6], Phase::Running, false, Vec::new());
         tree.restore_node(
             6,
             Some(5),
             Vec::new(),
             Phase::Suspended(TestSuspend::Ask),
             true,
-            None,
+            Vec::new(),
         );
         tree.restore_node(
             9,
@@ -411,20 +407,31 @@ mod tests {
             Vec::new(),
             Phase::Done(TestOutput::Ok),
             false,
-            None,
+            Vec::new(),
         );
 
         assert_eq!(tree.node(5).expect("node").children, vec![6]);
         assert_eq!(tree.node(6).expect("node").parent, Some(5));
-        assert!(tree.is_detached(6), "detached 必须随快照重建");
+        assert!(
+            tree.is_detached(6),
+            "detached must be rebuilt from the snapshot"
+        );
         assert!(!tree.is_detached(5));
-        assert_eq!(tree.job_of(5), None, "重建的节点不得带上在跑的 worker");
+        assert_eq!(
+            tree.job_of(5),
+            None,
+            "a rebuilt node must not carry a running worker"
+        );
         assert!(matches!(
             tree.phase(6),
             Some(Phase::Suspended(TestSuspend::Ask))
         ));
         assert_eq!(tree.all_node_ids(), vec![5, 6, 9]);
-        assert_eq!(tree.root(), Some(5), "根只认第一个无父节点");
+        assert_eq!(
+            tree.root(),
+            Some(5),
+            "the root is only the first parentless node"
+        );
     }
 
     #[test]
@@ -437,7 +444,10 @@ mod tests {
         assert!(!tree.all_children_terminal(1));
         tree.set_phase_for_test(2, Phase::Done(TestOutput::Ok));
         assert!(tree.all_children_terminal(1));
-        assert!(!tree.all_children_terminal(3), "无子节点不算满足");
+        assert!(
+            !tree.all_children_terminal(3),
+            "no children does not count as satisfied"
+        );
 
         // 只有 detached 子节点时屏障为空
         let mut only_detached = Tree::<TestDomain>::new();
@@ -457,7 +467,7 @@ mod tests {
         assert_eq!(
             tree.undelivered_nodes(),
             Vec::<NodeId>::new(),
-            "新登记的节点不背义务"
+            "a newly registered node owes no delivery"
         );
 
         tree.set_phase_for_test(2, Phase::Done(TestOutput::Ok));
@@ -467,7 +477,7 @@ mod tests {
         assert_eq!(
             tree.undelivered_nodes(),
             vec![3],
-            "只有义务未释放的节点进列表，与终态无关"
+            "only nodes whose obligation is unreleased are listed, regardless of terminal phase"
         );
 
         tree.set_delivered_for_test(3, true);
@@ -483,25 +493,32 @@ mod tests {
             Vec::new(),
             Phase::Done(TestOutput::Ok),
             true,
-            Some(TestSpec::Noop),
+            vec![TestSpec::Noop],
         );
 
         assert_eq!(
             tree.node(1).expect("node").pending,
-            Some(TestSpec::Noop),
-            "待消费输入必须随快照重建"
+            VecDeque::from(vec![TestSpec::Noop]),
+            "pending input must be rebuilt from the snapshot"
         );
         assert!(
             tree.node(1).expect("node").delivered,
-            "投递义务不跨重启，否则恢复出的树永不安静"
+            "delivery obligations do not survive a restart, otherwise a recovered tree is never quiet"
         );
-        assert!(!tree.is_quiescent(), "有待消费输入就不是安静");
+        assert!(!tree.is_quiescent(), "having pending input means not quiet");
 
         let mut owed = Tree::<TestDomain>::new();
-        owed.restore_node(1, None, Vec::new(), Phase::Done(TestOutput::Ok), true, None);
+        owed.restore_node(
+            1,
+            None,
+            Vec::new(),
+            Phase::Done(TestOutput::Ok),
+            true,
+            Vec::new(),
+        );
         assert!(
             owed.node(1).expect("node").delivered,
-            "重建出来的终态 detached 节点同样不带义务"
+            "a rebuilt terminal detached node likewise carries no obligation"
         );
         assert!(owed.is_quiescent());
     }

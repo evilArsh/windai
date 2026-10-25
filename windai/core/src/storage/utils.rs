@@ -1,107 +1,121 @@
 use super::executor::StorageExecutor;
-use crate::{
-    db::DbQueryResult,
-    error::{CoreError, Result},
-};
+use crate::db::{DbDriver, DbQueryResult};
+use crate::error::{CoreError, Result};
+use crate::models::AdapterType;
 use chrono::Utc;
 use serde::{Serialize, de::DeserializeOwned};
+use sqlx::QueryBuilder;
 
+/// 当前时刻的秒级时间戳
 pub fn now_ts() -> i64 {
     Utc::now().timestamp()
 }
 
-/// 将 vec 序列化为 json 字符串
-/// 如果 vec 为 None，则返回"[]"
 pub fn vec_to_str_default<T>(vec: Option<&[T]>) -> Result<String>
 where
     T: Serialize,
 {
     match vec {
-        Some(v) => serde_json::to_string(v).map_err(Into::into),
+        Some(items) => serde_json::to_string(items).map_err(Into::into),
         None => Ok("[]".to_string()),
     }
 }
 
-/// 将 vec 序列化为 json 字符串
 pub fn vec_to_str_optional<T>(vec: Option<&[T]>) -> Result<Option<String>>
 where
     T: Serialize,
 {
-    vec.map(|v| serde_json::to_string(v).map_err(Into::into))
+    vec.map(|items| serde_json::to_string(items).map_err(Into::into))
         .transpose()
 }
 
-/// 将 map 序列化为 json 字符串
-/// 如果 map 为 None，则返回"{}"
 pub fn map_to_str_default<T>(map: Option<&T>) -> Result<String>
 where
     T: Serialize,
 {
     match map {
-        Some(m) => serde_json::to_string(m).map_err(Into::into),
+        Some(value) => serde_json::to_string(value).map_err(Into::into),
         None => Ok("{}".to_string()),
     }
 }
 
-/// 将 map 序列化为 json 字符串
 pub fn map_to_str_optional<T>(map: Option<&T>) -> Result<Option<String>>
 where
     T: Serialize,
 {
-    map.map(|m| serde_json::to_string(m).map_err(Into::into))
+    map.map(|value| serde_json::to_string(value).map_err(Into::into))
         .transpose()
 }
 
-/// 将 json 字符串反序列化为 T
-pub fn de_str_to<T>(s: &str) -> Result<T>
+pub fn de_str_to<T>(text: &str) -> Result<T>
 where
     T: DeserializeOwned,
 {
-    serde_json::from_str(s).map_err(Into::into)
+    serde_json::from_str(text).map_err(Into::into)
 }
-/// 将字符串转换为指定类型
-pub fn parse_str_to<T>(value: &str) -> Result<T>
+
+pub fn parse_str_to<T>(text: &str) -> Result<T>
 where
     T: std::str::FromStr,
     T::Err: Into<CoreError>,
 {
-    value.parse::<T>().map_err(Into::into)
+    text.parse::<T>().map_err(Into::into)
+}
+
+pub fn decode_adapter(column: &str, text: &str) -> Result<AdapterType> {
+    AdapterType::parse(text).map_err(|error| CoreError::MalformedColumn {
+        column: column.into(),
+        detail: error.to_string(),
+    })
+}
+
+pub fn decode_enum<T>(column: &str, text: &str) -> Result<T>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    text.parse::<T>()
+        .map_err(|error| CoreError::MalformedColumn {
+            column: column.into(),
+            detail: error.to_string(),
+        })
 }
 
 pub fn ensure_affected(result: DbQueryResult) -> Result<()> {
     if result.rows_affected() == 0 {
-        return Err(CoreError::RowNotFound(format!("Data affect failed")));
+        return Err(CoreError::NoRowsAffected);
     }
     Ok(())
 }
 
-/// 确保数据数量`小于等于 1`
-pub fn ensure_lte_one<T>(result: Vec<T>, desc: Option<String>) -> Result<Option<T>> {
-    let len = result.len();
-    match len {
-        0 | 1 => Ok(result.into_iter().next()),
-        len => Err(CoreError::Validation(format!(
-            "Except only one result, but found {}. {}",
-            len,
-            desc.unwrap_or_default()
-        ))),
+pub fn ensure_lte_one<T>(rows: Vec<T>) -> Result<Option<T>> {
+    let found = rows.len();
+    match found {
+        0 | 1 => Ok(rows.into_iter().next()),
+        found => Err(CoreError::TooManyRows { found }),
     }
 }
 
-/// 单行 UPDATE，自动追加 `updated_at`。
-/// 所有值必须使用 Option 包装，
-/// 值为 `None` 时，将忽略该字段，
-/// 全部字段为 None 时不生成任何 SQL
+pub(crate) async fn execute_expecting_rows<'q>(
+    executor: &StorageExecutor,
+    mut query: QueryBuilder<'q, DbDriver>,
+) -> Result<()> {
+    let result = executor.execute(query.build()).await?;
+    ensure_affected(result)
+}
+
+pub(crate) async fn execute_allowing_zero_rows<'q>(
+    executor: &StorageExecutor,
+    mut query: QueryBuilder<'q, DbDriver>,
+) -> Result<()> {
+    executor.execute(query.build()).await?;
+    Ok(())
+}
+
+/// 拼接单行 UPDATE，并自动追加 `updated_at`
 ///
-/// 用法:
-/// ```ignore
-/// let mut qb = update!("table_name", id,
-///     ("name", data.name),                             // Option<String>
-///     ("type", data.r#type.map(|v| v.to_string())),    // Option + transform
-///     ("status", Some("active")),                      // 非 Option，始终拼入
-/// );
-/// assert_eq!(qb.sql(), "UPDATE table_name SET name = ?, type = ?, status = ? WHERE id = ?")
-/// ```
+/// 每个值都用 `Option` 包装，为 `None` 的字段跳过。全部字段都是 `None` 时
+/// 不生成任何 SQL
 #[macro_export]
 macro_rules! update {
     ($table:expr, $id:expr, $(($col:literal, $val:expr)),+ $(,)?) => {{
@@ -129,18 +143,9 @@ macro_rules! update {
     }};
 }
 
-/// 单行 UPDATE，自动追加 `updated_at`
-/// 与 [`update!`] 不同：传入的值**不做 Option 解包**。
+/// 拼接单行 UPDATE，并自动追加 `updated_at`
 ///
-/// 用法:
-/// ```ignore
-/// let mut qb = update_strict!("table_name", id,
-///     ("name", data.name),                       // Option<String> -> NULL 或值
-///     ("type", data.r#type),                     // Option<i32> -> NULL 或值
-///     ("status", "active"),                      // 非 Option，始终拼入
-/// );
-/// assert_eq!(qb.sql(), "UPDATE table_name SET name = ?, type = ?, status = ?, updated_at = ? WHERE id = ?")
-/// ```
+/// 传入的值不做 `Option` 解包，`None` 会写入 NULL
 #[macro_export]
 macro_rules! update_strict {
     ($table:expr, $id:expr, $(($col:literal, $val:expr)),+ $(,)?) => {{
@@ -162,17 +167,7 @@ macro_rules! update_strict {
     }};
 }
 
-/// UPDATE 语句拼接
-///
-/// 用法:
-/// ```ignore
-/// let mut qb = update_fields!("table_name",
-///     ("name", data.name),                             // Option<String>
-///     ("type", data.r#type.map(|v| v.to_string())),    // Option + transform
-///     ("status", Some("active")),                      // 非 Option，始终拼入
-/// );
-/// assert_eq!(qb.sql(), "UPDATE table_name SET name = ?, type = ?, status = ? ")
-/// ```
+/// UPDATE 语句拼接，只拼 SET，不拼 WHERE
 #[macro_export]
 macro_rules! update_fields {
     ($table:expr, $(($col:literal, $val:expr)),+ $(,)?) => {{
@@ -193,13 +188,7 @@ macro_rules! update_fields {
     }};
 }
 
-/// INSERT 语句拼接
-///
-/// 用法:
-/// ```ignore
-/// let qb = insert_fields!("table_name", ("users", "id", "name"));
-/// assert_eq!(qb.sql(), "INSERT INTO table_name (users, id, name) ")
-/// ```
+/// INSERT 语句的列前缀拼接
 #[macro_export]
 macro_rules! insert_fields {
     ($table:expr, ($($field:literal),+ $(,)?)) => {{
@@ -217,16 +206,6 @@ macro_rules! insert_fields {
 }
 
 /// 单行 INSERT
-///
-/// 用法:
-/// ```ignore
-/// let mut qb = insert!("table_name",
-///     ("name", "hello"),
-///     ("type", "stdio"),
-///     ("url", "http://example.com"),
-/// );
-/// assert_eq!(qb.sql(), "INSERT INTO table_name (name, type, url) VALUES (?, ?, ?)");
-/// ```
 #[macro_export]
 macro_rules! insert {
     ($table:expr, $(($col:literal, $val:expr)),+ $(,)?) => {{
@@ -251,12 +230,6 @@ macro_rules! insert {
 }
 
 /// 单行主键 id 删除
-///
-/// 用法：
-/// ```ignore
-/// let mut qb = delete_by_id!("table_name", 0);
-/// assert_eq!(qb.sql(), "DELETE FROM table_name WHERE id = ?");
-/// ```
 #[macro_export]
 macro_rules! delete_by_id {
     ($table:expr, $id:expr) => {{
@@ -267,6 +240,7 @@ macro_rules! delete_by_id {
     }};
 }
 
+/// DELETE 语句前缀拼接，不带条件
 #[macro_export]
 macro_rules! delete_from {
     ($table:expr) => {{
@@ -278,11 +252,6 @@ macro_rules! delete_from {
 }
 
 /// SELECT 查询字段
-///
-/// ```ignore
-/// let qb = select_fields!("table_name", ("users", "id", "name"));
-/// assert_eq!(qb.sql(), "SELECT users, id, name FROM table_name");
-/// ```
 #[macro_export]
 macro_rules! select_fields {
     ($table:expr, ($($field:literal),+ $(,)?)) => {{
@@ -304,11 +273,6 @@ macro_rules! select_fields {
 }
 
 /// 单行主键 id 查询
-///
-/// ```ignore
-/// let qb = get_by_id!("table_name", 1, ("users", "id"));
-/// assert_eq!(qb.sql(), "SELECT users, id FROM table_name WHERE id = ?");
-/// ```
 #[macro_export]
 macro_rules! get_by_id {
     // 不指定字段时，查询所有字段
@@ -330,221 +294,175 @@ macro_rules! get_by_id {
     }};
 }
 
-/// 按 `column IN (...)` 批量删除
-///
-/// column 为内部常量
-///
-/// 拼接结果示例
-///
-/// `DELETE FROM {table} WHERE {column} IN (?, ?)`
-pub(crate) async fn batch_delete_in(
-    executor: &StorageExecutor,
-    table: &str,
-    column: &str,
-    ids: &[i64],
-) -> Result<()> {
-    if ids.is_empty() {
-        return Ok(());
-    }
-    let mut qb = crate::delete_from!(table);
-    qb.push(" WHERE ").push(column).push(" IN (");
-    {
-        let mut separated = qb.separated(", ");
-        for id in ids {
-            separated.push_bind(*id);
-        }
-    }
-    qb.push(")");
-    executor.execute(qb.build()).await?;
-    Ok(())
-}
-
-/// 这些用例断言 `QueryBuilder::sql()` 的产物，而占位符按驱动变化：
-/// SQLite 是 `?`，PostgreSQL 是 `$1, $2…`。因此只在 sqlite feature 下运行
+/// 断言 `QueryBuilder::sql()` 的产物，占位符按驱动变化
+/// SQLite 是 `?`，PostgreSQL 是 `$1, $2…`
 #[cfg(all(test, feature = "sqlite"))]
 mod tests {
-    // ==================== insert! ====================
-
     #[test]
-    fn insert_generates_correct_sql() {
-        let qb = insert!("users", ("name", "alice"), ("age", 30),);
+    fn insert_lists_columns_and_placeholders() {
+        let qb = insert!("users", ("name", "alice"), ("age", 30));
         assert_eq!(qb.sql(), "INSERT INTO users (name, age) VALUES (?, ?)");
     }
 
     #[test]
-    fn insert_single_column() {
-        let qb = insert!("logs", ("msg", "started"),);
-        assert_eq!(qb.sql(), "INSERT INTO logs (msg) VALUES (?)");
-    }
-
-    // ==================== update! ====================
-
-    #[test]
-    fn update_all_fields() {
-        let qb = update!("users", 42, ("name", Some("bob")), ("age", Some(25)),);
-        assert_eq!(
-            qb.sql(),
-            "UPDATE users SET name = ?, age = ?, updated_at = ? WHERE id = ?"
-        );
-    }
-
-    #[test]
-    fn update_mixed_none_and_some() {
+    fn update_skips_none_fields_and_appends_updated_at() {
         let qb = update!(
             "users",
-            1,
-            ("name", Option::<&str>::None),
-            ("age", Some(99)),
-            ("email", Some("a@b.com")),
+            42,
+            ("name", Some("bob")),
+            ("email", Option::<&str>::None),
         );
         assert_eq!(
             qb.sql(),
-            "UPDATE users SET age = ?, email = ?, updated_at = ? WHERE id = ?"
+            "UPDATE users SET name = ?, updated_at = ? WHERE id = ?"
         );
     }
 
     #[test]
-    fn update_all_none_is_empty() {
-        let qb = update!(
-            "users",
-            1,
-            ("name", Option::<&str>::None),
-            ("age", Option::<i64>::None),
-        );
+    fn update_with_every_field_none_produces_no_statement() {
+        let qb = update!("users", 1, ("name", Option::<&str>::None));
         assert_eq!(qb.sql(), "");
     }
 
     #[test]
-    fn update_non_option_value() {
-        let qb = update!("users", 7, ("status", Some("active")),);
+    fn update_strict_binds_none_as_null() {
+        let qb = update_strict!(
+            "agent_instances",
+            7,
+            ("phase", "running"),
+            ("phase_payload", Option::<&str>::None)
+        );
         assert_eq!(
             qb.sql(),
-            "UPDATE users SET status = ?, updated_at = ? WHERE id = ?"
+            "UPDATE agent_instances SET phase = ?, phase_payload = ?, updated_at = ? WHERE id = ?"
         );
     }
 
     #[test]
-    fn update_with_transform() {
-        let opt = Some(42);
-        let qb = update!("users", 5, ("score", opt.map(|v| v * 10)),);
-        assert_eq!(
-            qb.sql(),
-            "UPDATE users SET score = ?, updated_at = ? WHERE id = ?"
-        );
-    }
-
-    #[test]
-    fn update_only_one_field() {
-        let qb = update!("items", 99, ("title", Some("new title")),);
-        assert_eq!(
-            qb.sql(),
-            "UPDATE items SET title = ?, updated_at = ? WHERE id = ?"
-        );
-    }
-
-    // ==================== update_fields! ====================
-
-    #[test]
-    fn update_fields_basic() {
-        let qb = update_fields!("users", ("name", Some("alice")), ("age", Some(30)),);
-        assert_eq!(qb.sql(), "UPDATE users SET name = ?, age = ?");
-    }
-
-    #[test]
-    fn update_fields_mixed_none() {
+    fn update_fields_emits_no_where_clause() {
         let qb = update_fields!(
-            "configs",
-            ("key", Some("theme")),
-            ("value", Option::<&str>::None),
+            "external_waits",
+            ("answered_at", Some(5)),
+            ("decision_json", Some("{}"))
         );
-        assert_eq!(qb.sql(), "UPDATE configs SET key = ?");
-    }
-
-    #[test]
-    fn update_fields_all_none_is_empty() {
-        let qb = update_fields!(
-            "configs",
-            ("a", Option::<&str>::None),
-            ("b", Option::<i64>::None),
+        assert_eq!(
+            qb.sql(),
+            "UPDATE external_waits SET answered_at = ?, decision_json = ?"
         );
-        assert_eq!(qb.sql(), "");
-    }
-
-    // ==================== insert_fields! ====================
-
-    #[test]
-    fn insert_fields_generates_prefix() {
-        let qb = insert_fields!("users", ("id", "name", "email"));
-        assert_eq!(qb.sql(), "INSERT INTO users (id, name, email) ");
     }
 
     #[test]
-    fn insert_fields_single_column() {
-        let qb = insert_fields!("logs", ("message"));
-        assert_eq!(qb.sql(), "INSERT INTO logs (message) ");
-    }
-
-    // ==================== delete_by_id! ====================
-
-    #[test]
-    fn delete_by_id_generates_sql() {
-        let qb = delete_by_id!("users", 42);
-        assert_eq!(qb.sql(), "DELETE FROM users WHERE id = ?");
+    fn insert_fields_emits_an_open_prefix() {
+        let qb = insert_fields!("users", ("id", "name"));
+        assert_eq!(qb.sql(), "INSERT INTO users (id, name) ");
     }
 
     #[test]
-    fn delete_by_id_expression_table() {
-        let qb = delete_by_id!("some_table", 0);
-        assert_eq!(qb.sql(), "DELETE FROM some_table WHERE id = ?");
-    }
-
-    // ==================== select_fields! ====================
-
-    #[test]
-    fn select_fields_multiple() {
-        let qb = select_fields!("users", ("id", "name", "email"));
-        assert_eq!(qb.sql(), "SELECT id, name, email FROM users ");
+    fn delete_by_id_targets_the_primary_key() {
+        let qb = delete_by_id!("topics", 3);
+        assert_eq!(qb.sql(), "DELETE FROM topics WHERE id = ?");
     }
 
     #[test]
-    fn select_fields_single() {
-        let qb = select_fields!("items", ("count"));
-        assert_eq!(qb.sql(), "SELECT count FROM items ");
-    }
-
-    // ==================== get_by_id! ====================
-
-    #[test]
-    fn get_by_id_all_columns() {
-        let qb = get_by_id!("users", 1);
-        assert_eq!(qb.sql(), "SELECT * FROM users WHERE id = ?");
+    fn delete_from_emits_no_condition() {
+        let qb = delete_from!("mod_state");
+        assert_eq!(qb.sql(), "DELETE FROM mod_state");
     }
 
     #[test]
-    fn get_by_id_specific_columns() {
-        let qb = get_by_id!("users", 1, ("id", "name"));
-        assert_eq!(qb.sql(), "SELECT id, name FROM users WHERE id = ?");
+    fn select_fields_lists_the_columns() {
+        let qb = select_fields!("block", ("id", "kind"));
+        assert_eq!(qb.sql(), "SELECT id, kind FROM block ");
     }
 
     #[test]
-    fn get_by_id_single_column() {
-        let qb = get_by_id!("items", 99, ("status"));
-        assert_eq!(qb.sql(), "SELECT status FROM items WHERE id = ?");
+    fn get_by_id_selects_every_column() {
+        let qb = get_by_id!("topics", 1);
+        assert_eq!(qb.sql(), "SELECT * FROM topics WHERE id = ?");
     }
+}
 
-    // ==================== batch_delete_in ====================
+/// 列值变换的测试
+#[cfg(test)]
+mod transforms {
+    use super::*;
+    use std::collections::BTreeMap;
 
     #[test]
-    fn batch_delete_in_generates_column_not_bind() {
-        use crate::db::DbDriver;
-        let mut qb: sqlx::QueryBuilder<'_, DbDriver> = crate::delete_from!("topics");
-        qb.push(" WHERE ")
-            .push("id")
-            .push(" IN (")
-            .push_bind(1_i64)
-            .push(", ")
-            .push_bind(2_i64)
-            .push(")");
-        assert_eq!(qb.sql(), "DELETE FROM topics WHERE id IN (?, ?)");
+    fn an_absent_vector_lands_as_an_empty_array() {
+        assert_eq!(vec_to_str_default::<String>(None).expect("encode"), "[]");
+    }
+
+    #[test]
+    fn a_present_vector_lands_as_its_items() {
+        let items = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(
+            vec_to_str_default(Some(&items)).expect("encode"),
+            "[\"a\",\"b\"]"
+        );
+    }
+
+    #[test]
+    fn an_absent_optional_vector_lands_as_null() {
+        assert_eq!(vec_to_str_optional::<String>(None).expect("encode"), None);
+    }
+
+    #[test]
+    fn an_absent_map_lands_as_an_empty_object() {
+        assert_eq!(
+            map_to_str_default::<BTreeMap<String, i64>>(None).expect("encode"),
+            "{}"
+        );
+    }
+
+    #[test]
+    fn a_present_map_lands_as_its_entries() {
+        let mut map = BTreeMap::new();
+        map.insert("a".to_string(), 1_i64);
+        assert_eq!(map_to_str_default(Some(&map)).expect("encode"), "{\"a\":1}");
+    }
+
+    #[test]
+    fn an_absent_optional_map_lands_as_null() {
+        assert_eq!(
+            map_to_str_optional::<BTreeMap<String, i64>>(None).expect("encode"),
+            None
+        );
+    }
+
+    #[test]
+    fn json_text_decodes_back_into_a_value() {
+        let decoded: serde_json::Value = de_str_to(r#"{"temp":22}"#).expect("decode");
+        assert_eq!(decoded, serde_json::json!({ "temp": 22 }));
+    }
+
+    #[test]
+    fn text_that_is_not_json_reports() {
+        assert!(de_str_to::<serde_json::Value>("{oops").is_err());
+    }
+
+    /// 文本列里存的是枚举名，读回来靠 `FromStr`
+    #[derive(Debug, PartialEq, strum::EnumString)]
+    #[strum(serialize_all = "snake_case")]
+    enum Phase {
+        Running,
+        Suspended,
+    }
+
+    #[test]
+    fn text_decodes_into_a_from_str_type() {
+        assert_eq!(
+            parse_str_to::<Phase>("running").expect("parse"),
+            Phase::Running
+        );
+        assert_eq!(
+            parse_str_to::<Phase>("suspended").expect("parse"),
+            Phase::Suspended
+        );
+    }
+
+    #[test]
+    fn text_that_is_not_a_from_str_value_reports() {
+        assert!(parse_str_to::<Phase>("sideways").is_err());
     }
 }

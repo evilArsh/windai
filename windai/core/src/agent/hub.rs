@@ -1,50 +1,83 @@
 use super::behavior::Behavior;
+use super::domain::{AgentDomain, AgentSpec};
+use super::events::{
+    AgentCancel, AgentCreate, AgentNodeView, AgentSpawn, AgentTerminate, AgentTree,
+    CORE_AGENT_CANCEL, CORE_AGENT_CREATE, CORE_AGENT_SPAWN, CORE_AGENT_TERMINATE, directory,
+};
 use super::jobs::{JobRequest, Jobs, REPORT_CAPACITY};
+use super::phase_codec::encode;
+use super::translate::Translated;
 use super::tree::event::{Effect, Event};
-use super::tree::phase::Phase;
+use super::tree::phase::{CancelOrigin, Phase};
 use super::tree::view::TreeEvent;
 use super::tree::{Domain, NodeId, Tree};
 use crate::error::{CoreError, Result};
-use std::sync::Arc;
+use crate::models::AgentMode;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
+use wind_event::context::DispatchCx;
+use wind_event::def::{Directory, EventDef, EventMeta};
+use wind_event::dispatch::Dispatcher;
+use wind_event::envelope::{Origin, Scope, Source};
 
-/// 对外事件总线的默认容量
 pub const BUS_CAPACITY: usize = 1024;
 
-/// 节点状态的持久化适配
+/// 派发翻译出的观测事件时，一次顶层操作的预算
+const OBSERVE_BUDGET: Duration = Duration::from_millis(50);
+
+pub type Translator<D> = fn(&TreeEvent<D>) -> Vec<Translated>;
+
 #[async_trait::async_trait]
 pub trait Persist<D: Domain>: Send + Sync {
-    /// 保存一个节点的当前状态
     async fn save(&self, node: NodeId, phase: &Phase<D>) -> Result<()>;
 }
 
-/// hub 的启动参数
 pub struct HubOptions<D: Domain> {
     pub behavior: Arc<dyn Behavior<D>>,
     pub persist: Arc<dyn Persist<D>>,
-    /// worker 不响应取消时的强制回收宽限期
     pub grace: Duration,
-    /// 对外事件总线的容量；接收方跟不上时按它跳帧
     pub bus_capacity: usize,
+    pub dispatcher: Arc<Dispatcher>,
+    pub topic_id: i64,
+    pub translator: Translator<D>,
 }
 
-/// 节点的只读快照
+/// 树节点快照
 #[derive(Debug, Clone)]
 pub struct NodeSnapshot<D: Domain> {
     pub id: NodeId,
     pub parent: Option<NodeId>,
     pub children: Vec<NodeId>,
     pub phase: Phase<D>,
-    /// 领域侧由 AgentMode 推出
     pub detached: bool,
-    /// 恢复出来的待消费输入
-    pub pending: Option<D::Spec>,
+    pub pending: Vec<D::Spec>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubmitOutcome {
+    Queued,
+    Launched,
+    Dropped,
 }
 
 enum Command<D: Domain> {
     Event(Event<D>),
+    Spawn {
+        id: NodeId,
+        parent: Option<NodeId>,
+        spec: D::Spec,
+        detached: bool,
+        reply: oneshot::Sender<bool>,
+    },
+    Submit {
+        node: NodeId,
+        spec: D::Spec,
+        reply: oneshot::Sender<SubmitOutcome>,
+    },
     Recover(Vec<NodeSnapshot<D>>, oneshot::Sender<()>),
     InFlight(oneshot::Sender<Vec<NodeId>>),
     Undelivered(oneshot::Sender<Vec<NodeId>>),
@@ -52,34 +85,40 @@ enum Command<D: Domain> {
     Shutdown,
 }
 
-/// hub 的对外句柄
+/// Agent 对外 hub 句柄
 #[derive(Clone)]
 pub struct HubHandle<D: Domain> {
     tx: mpsc::Sender<Command<D>>,
     bus: broadcast::Sender<TreeEvent<D>>,
     cancel: CancellationToken,
+    dispatcher: Arc<Dispatcher>,
 }
 
 impl<D: Domain> HubHandle<D> {
-    /// hub 是否已停机
     pub fn is_stopped(&self) -> bool {
         self.cancel.is_cancelled()
     }
 
-    /// 投递一个事件
-    pub async fn send(&self, event: Event<D>) -> Result<()> {
+    pub(crate) async fn send(&self, event: Event<D>) -> Result<()> {
         self.tx
             .send(Command::Event(event))
             .await
             .map_err(|err| CoreError::Internal(err.to_string()))
     }
 
-    /// 订阅对外事件流
     pub fn subscribe(&self) -> broadcast::Receiver<TreeEvent<D>> {
         self.bus.subscribe()
     }
 
-    /// 读取全部节点的当前状态
+    pub async fn wait_stopped(&self) {
+        self.cancel.cancelled().await;
+    }
+
+    pub async fn deliver(&self, node: NodeId) -> Result<()> {
+        self.send(Event::Deliver { node }).await
+    }
+
+    /// 当前节点状态树快照
     pub async fn snapshot(&self) -> Result<Vec<NodeSnapshot<D>>> {
         let (reply, rx) = oneshot::channel();
         self.tx
@@ -89,10 +128,6 @@ impl<D: Domain> HubHandle<D> {
         rx.await.map_err(|err| CoreError::Internal(err.to_string()))
     }
 
-    /// 用持久化快照重建树，并收敛其中的在途节点
-    ///
-    /// 前置条件：针对一个**空 hub** 调用一次。它按快照覆盖式重建，不合并既有节点，
-    /// 也不记忆「已宣告 Sealed」，重复调用会重复广播
     pub async fn recover(&self, nodes: Vec<NodeSnapshot<D>>) -> Result<()> {
         let (reply, rx) = oneshot::channel();
         self.tx
@@ -102,9 +137,6 @@ impl<D: Domain> HubHandle<D> {
         rx.await.map_err(|err| CoreError::Internal(err.to_string()))
     }
 
-    /// 读取在途相（Running / Cancelling）的节点
-    ///
-    /// 运行中它同时包含已请求取消、还在等 `Stopped` 的节点
     pub async fn in_flight_nodes(&self) -> Result<Vec<NodeId>> {
         let (reply, rx) = oneshot::channel();
         self.tx
@@ -114,7 +146,6 @@ impl<D: Domain> HubHandle<D> {
         rx.await.map_err(|err| CoreError::Internal(err.to_string()))
     }
 
-    /// 停止 hub
     pub async fn shutdown(&self) -> Result<()> {
         self.cancel.cancel();
         self.tx
@@ -123,9 +154,6 @@ impl<D: Domain> HubHandle<D> {
             .map_err(|err| CoreError::Internal(err.to_string()))
     }
 
-    /// 读取投递义务尚未释放的节点
-    ///
-    /// 事件流被跳帧后，调用方靠它重扫出没人投递的节点
     pub async fn undelivered_nodes(&self) -> Result<Vec<NodeId>> {
         let (reply, rx) = oneshot::channel();
         self.tx
@@ -134,9 +162,152 @@ impl<D: Domain> HubHandle<D> {
             .map_err(|err| CoreError::Internal(err.to_string()))?;
         rx.await.map_err(|err| CoreError::Internal(err.to_string()))
     }
+
+    async fn intercept<P>(&self, def: &EventDef<P>, cx: &DispatchCx, payload: P) -> P
+    where
+        P: Serialize + DeserializeOwned + Send + Sync,
+    {
+        self.dispatcher.decide(def, cx, payload).await
+    }
+
+    async fn notify<P>(&self, cx: &DispatchCx, def: &EventDef<P>, payload: P)
+    where
+        P: Serialize + Send + Sync,
+    {
+        self.dispatcher.notify(def, cx, payload).await;
+    }
 }
 
-/// 一次循环的唤醒来源
+impl HubHandle<AgentDomain> {
+    pub async fn intercept_create(&self, cx: &DispatchCx, payload: AgentCreate) -> AgentCreate {
+        self.intercept(&CORE_AGENT_CREATE, cx, payload).await
+    }
+
+    pub async fn spawn_at(
+        &self,
+        cx: &DispatchCx,
+        id: NodeId,
+        payload: &AgentCreate,
+    ) -> Result<NodeId> {
+        let spec = AgentSpec {
+            instance_id: id,
+            message_id: None,
+            pending_id: None,
+            turn_id: None,
+        };
+        self.spawn_at_with_spec(cx, id, payload, spec).await
+    }
+
+    /// 开始一个任务
+    pub async fn spawn_at_with_spec(
+        &self,
+        cx: &DispatchCx,
+        id: NodeId,
+        payload: &AgentCreate,
+        spec: AgentSpec,
+    ) -> Result<NodeId> {
+        let (reply, inserted) = oneshot::channel();
+        self.tx
+            .send(Command::Spawn {
+                id,
+                parent: payload.parent_id,
+                spec,
+                detached: payload.mode.as_str() == AgentMode::Background.as_ref(),
+                reply,
+            })
+            .await
+            .map_err(|err| CoreError::Internal(err.to_string()))?;
+
+        if !inserted
+            .await
+            .map_err(|err| CoreError::Internal(err.to_string()))?
+        {
+            return Err(CoreError::Internal(format!(
+                "the tree rejected the new node {id}: its id is taken or its parent is unknown"
+            )));
+        }
+
+        self.notify(
+            cx,
+            &CORE_AGENT_SPAWN,
+            AgentSpawn {
+                instance_id: id,
+                parent_id: payload.parent_id,
+                mode: payload.mode.clone(),
+            },
+        )
+        .await;
+        Ok(id)
+    }
+
+    /// 将任务加入 pending 队列
+    pub async fn submit(&self, node: NodeId, spec: AgentSpec) -> Result<SubmitOutcome> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(Command::Submit { node, spec, reply })
+            .await
+            .map_err(|err| CoreError::Internal(err.to_string()))?;
+        rx.await.map_err(|err| CoreError::Internal(err.to_string()))
+    }
+
+    pub async fn terminate(
+        &self,
+        cx: &DispatchCx,
+        instance_id: NodeId,
+        reason: &str,
+    ) -> Result<()> {
+        let payload = self
+            .intercept(
+                &CORE_AGENT_TERMINATE,
+                cx,
+                AgentTerminate {
+                    instance_id,
+                    reason: reason.to_string(),
+                },
+            )
+            .await;
+        self.request_cancel(payload.instance_id, CancelOrigin::External)
+            .await
+    }
+
+    pub async fn cancel(
+        &self,
+        cx: &DispatchCx,
+        instance_id: NodeId,
+        origin: CancelOrigin,
+    ) -> Result<()> {
+        let payload = self
+            .intercept(
+                &CORE_AGENT_CANCEL,
+                cx,
+                AgentCancel {
+                    instance_id,
+                    origin: serde_json::to_value(origin)
+                        .map_err(|err| CoreError::Bus(err.to_string()))?,
+                },
+            )
+            .await;
+        let origin: CancelOrigin = serde_json::from_value(payload.origin)
+            .map_err(|err| CoreError::Bus(err.to_string()))?;
+        self.request_cancel(payload.instance_id, origin).await
+    }
+
+    async fn request_cancel(&self, instance_id: NodeId, origin: CancelOrigin) -> Result<()> {
+        self.send(Event::CancelRequest {
+            root: instance_id,
+            origin,
+        })
+        .await
+    }
+
+    pub async fn tree_snapshot(&self) -> Result<AgentTree> {
+        let nodes = self.snapshot().await?;
+        Ok(AgentTree {
+            nodes: nodes.iter().filter_map(node_view).collect(),
+        })
+    }
+}
+
 enum Wake<D: Domain> {
     Event(Event<D>),
     Command(Command<D>),
@@ -151,6 +322,9 @@ struct Hub<D: Domain> {
     inbox: mpsc::Receiver<Command<D>>,
     reports: mpsc::Receiver<Event<D>>,
     cancel: CancellationToken,
+    dispatcher: Arc<Dispatcher>,
+    topic_id: i64,
+    translator: Translator<D>,
 }
 
 impl<D: Domain> Hub<D> {
@@ -171,8 +345,33 @@ impl<D: Domain> Hub<D> {
                 }
             };
             match wake {
-                Wake::Event(event) => self.apply(event).await,
-                Wake::Command(Command::Event(event)) => self.apply(event).await,
+                Wake::Event(event) => {
+                    self.apply(event).await;
+                }
+                Wake::Command(Command::Event(event)) => {
+                    self.apply(event).await;
+                }
+                Wake::Command(Command::Spawn {
+                    id,
+                    parent,
+                    spec,
+                    detached,
+                    reply,
+                }) => {
+                    let created = self
+                        .apply(Event::Spawn {
+                            id,
+                            parent,
+                            spec,
+                            detached,
+                        })
+                        .await;
+                    let _ = reply.send(created);
+                }
+                Wake::Command(Command::Submit { node, spec, reply }) => {
+                    let outcome = self.submit(node, spec).await;
+                    let _ = reply.send(outcome);
+                }
                 Wake::Command(Command::Recover(nodes, reply)) => {
                     for node in nodes.iter() {
                         self.tree.restore_node(
@@ -184,13 +383,10 @@ impl<D: Domain> Hub<D> {
                             node.pending.clone(),
                         );
                     }
-                    // 恢复 = 收敛判定 + 重入判定 + 崩溃策略，全部走归约器，
-                    // 让 Persist / Terminated / Launch / Sealed 都落在正常路径上
                     let quiet_before = self.tree.is_quiescent();
                     for id in self.tree.all_node_ids() {
                         self.apply(Event::Recovered { node: id }).await;
                     }
-                    // 本已安静的树不会再经历「由不安静变安静」，Sealed 在这里补发
                     if quiet_before {
                         let _ = self.bus.send(TreeEvent::Sealed);
                     }
@@ -211,6 +407,32 @@ impl<D: Domain> Hub<D> {
         self.jobs.shutdown();
     }
 
+    async fn submit(&mut self, node: NodeId, spec: D::Spec) -> SubmitOutcome {
+        let (accepted, idle) = match self.tree.node(node) {
+            None => {
+                log::warn!("[tree] submit for an unknown node dropped: {node}");
+                (false, false)
+            }
+            Some(current) if matches!(current.phase, Phase::Cancelling(_)) => {
+                log::warn!("[tree] submit for a cancelling node dropped: {node}");
+                (false, false)
+            }
+            Some(current) => (
+                true,
+                current.phase.is_terminal() && current.pending.is_empty(),
+            ),
+        };
+        if !accepted {
+            return SubmitOutcome::Dropped;
+        }
+        self.apply(Event::Enqueue { node, spec }).await;
+        if idle {
+            SubmitOutcome::Launched
+        } else {
+            SubmitOutcome::Queued
+        }
+    }
+
     fn snapshot(&self) -> Vec<NodeSnapshot<D>> {
         self.tree
             .nodes()
@@ -220,28 +442,55 @@ impl<D: Domain> Hub<D> {
                 children: node.children.clone(),
                 phase: node.phase.clone(),
                 detached: node.detached,
-                pending: node.pending.clone(),
+                pending: node.pending.iter().cloned().collect(),
             })
             .collect()
     }
 
-    /// 归约一个事件，按 reduce 的产出顺序依次执行副作用
-    async fn apply(&mut self, event: Event<D>) {
+    async fn apply(&mut self, event: Event<D>) -> bool {
+        let mut created = false;
         for effect in self.tree.reduce(event) {
+            if matches!(effect, Effect::Publish(TreeEvent::NodeCreated { .. })) {
+                created = true;
+            }
             self.execute(effect).await;
         }
+        created
+    }
+
+    async fn observe(&self, event: &TreeEvent<D>) {
+        for item in (self.translator)(event) {
+            let Some(def) = observe_def(item.name) else {
+                log::error!("[hub] translated event {} has no definition", item.name);
+                continue;
+            };
+            self.dispatcher
+                .notify(&def, &self.observe_cx(), item.payload)
+                .await;
+        }
+    }
+
+    fn observe_cx(&self) -> DispatchCx {
+        DispatchCx::root(
+            Origin::Internal,
+            Scope::Topic {
+                topic_id: self.topic_id,
+            },
+            Source::core("agent"),
+            OBSERVE_BUDGET,
+        )
     }
 
     async fn execute(&mut self, effect: Effect<D>) {
         match effect {
             Effect::Publish(event) => {
+                self.observe(&event).await;
                 let _ = self.bus.send(event);
             }
             Effect::Persist { node } => {
                 if let Some(phase) = self.tree.phase(node).cloned()
                     && let Err(err) = self.persist.save(node, &phase).await
                 {
-                    // 重试 / 降级 / 停机由适配层与部署决定，hub 的底线是不能静默
                     log::error!("[hub] persist failed for node {node}: {err}");
                 }
             }
@@ -255,7 +504,6 @@ impl<D: Domain> Hub<D> {
     }
 }
 
-/// 启动一个 hub
 pub fn spawn<D: Domain>(options: HubOptions<D>) -> HubHandle<D> {
     let (tx, rx) = mpsc::channel(256);
     let (bus, _) = broadcast::channel(options.bus_capacity);
@@ -271,26 +519,72 @@ pub fn spawn<D: Domain>(options: HubOptions<D>) -> HubHandle<D> {
         inbox: rx,
         reports: report_rx,
         cancel: cancel.clone(),
+        dispatcher: Arc::clone(&options.dispatcher),
+        topic_id: options.topic_id,
+        translator: options.translator,
     };
 
     tokio::spawn(hub.run());
 
-    HubHandle { tx, bus, cancel }
+    HubHandle {
+        tx,
+        bus,
+        cancel,
+        dispatcher: options.dispatcher,
+    }
+}
+
+fn catalog() -> &'static Directory {
+    static CATALOG: OnceLock<Directory> = OnceLock::new();
+    CATALOG.get_or_init(directory)
+}
+
+fn observe_def(name: &str) -> Option<EventDef<serde_json::Value>> {
+    let meta = catalog().get(name)?;
+    meta.is_observe().then(|| erased(meta))
+}
+
+fn node_view(node: &NodeSnapshot<AgentDomain>) -> Option<AgentNodeView> {
+    let stored = match encode(&node.phase) {
+        Ok(stored) => stored,
+        Err(error) => {
+            log::error!("[hub] cannot encode the phase of {}: {error}", node.id);
+            return None;
+        }
+    };
+    Some(AgentNodeView {
+        instance_id: node.id,
+        parent_id: node.parent,
+        detached: node.detached,
+        phase: stored.name,
+        phase_payload: stored.payload,
+    })
+}
+
+fn erased(meta: &EventMeta) -> EventDef<serde_json::Value> {
+    EventDef::new(meta.name, meta.shape, meta.log, meta.mount, meta.schema)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::agent::behavior::{Behavior, Ctx, Input, Outcome, SpawnRequest};
+    use crate::agent::domain::{AgentFailure, AgentOutcome, SuspendedWait};
+    use crate::agent::translate::translate;
     use crate::agent::tree::domain::test_support::{
-        TestDomain, TestError, TestOutput, TestProgress, TestSpec, TestSuspend,
+        TestDomain, TestError, TestOutput, TestSpec, TestSuspend,
     };
     use crate::agent::tree::event::Event;
     use crate::agent::tree::phase::{CancelOrigin, Phase, Terminal};
     use crate::agent::tree::view::TreeEvent;
     use std::collections::BTreeSet;
+    use std::result::Result as StdResult;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicI64, Ordering};
+    use wind_event::def::Directory;
+    use wind_event::dispatch::Limits;
+    use wind_event::host::{CallCx, HostError, ModEnablement, ModHost};
+    use wind_event::subscription::{EnabledSet, Subscription};
 
     /// 测试用的自增节点 id，模拟领域侧的 id 分配
     static NEXT_ID: AtomicI64 = AtomicI64::new(100);
@@ -298,25 +592,69 @@ mod tests {
         NEXT_ID.fetch_add(1, Ordering::Relaxed)
     }
 
+    /// 测试域不产生对外观测
+    fn no_events<D: Domain>(_event: &TreeEvent<D>) -> Vec<Translated> {
+        Vec::new()
+    }
+
+    /// 全部 mod 都不启用
+    struct NoEnablement;
+
+    impl ModEnablement for NoEnablement {
+        fn enabled(&self, _scope: &Scope) -> EnabledSet {
+            EnabledSet::none()
+        }
+    }
+
+    /// 不会被调用的宿主
+    struct NoHost;
+
+    #[async_trait::async_trait]
+    impl ModHost for NoHost {
+        async fn call(
+            &self,
+            _sub: &Subscription,
+            _payload: serde_json::Value,
+            _cx: CallCx,
+        ) -> StdResult<Option<serde_json::Value>, HostError> {
+            Err(HostError::Internal("the test domain emits nothing".into()))
+        }
+    }
+
+    /// 一组测试用的启动参数，树事件不外发
+    fn options(
+        behavior: Arc<dyn Behavior<TestDomain>>,
+        persist: Arc<dyn Persist<TestDomain>>,
+    ) -> HubOptions<TestDomain> {
+        HubOptions {
+            behavior,
+            persist,
+            grace: Duration::from_millis(50),
+            bus_capacity: BUS_CAPACITY,
+            dispatcher: Arc::new(Dispatcher::new(
+                Directory::default(),
+                Arc::new(NoEnablement),
+                Arc::new(NoHost),
+                Limits::default(),
+            )),
+            topic_id: 1,
+            translator: no_events::<TestDomain>,
+        }
+    }
+
     /// 按 Spec 分派的脚本化行为
     struct ScriptedBehavior;
 
     #[async_trait::async_trait]
     impl Behavior<TestDomain> for ScriptedBehavior {
-        async fn run(
-            &self,
-            ctx: Ctx<'_, TestDomain>,
-            input: Input<TestDomain>,
-        ) -> Outcome<TestDomain> {
-            ctx.emit(TestProgress::Tick);
+        async fn run(&self, _ctx: Ctx, input: Input<TestDomain>) -> Outcome<TestDomain> {
             match input {
                 Input::Fresh(TestSpec::Noop) => Outcome::Completed(TestOutput::Ok),
                 Input::Fresh(TestSpec::Children(n)) => Outcome::Spawn {
                     spawn: (0..n)
                         .map(|_| SpawnRequest {
                             id: next_id(),
-                            // 子节点挂起，父节点才会稳定停在 WaitingChildren，
-                            // 取消请求才能在没有任何 worker 在跑时确定性落地
+                            // 子节点挂起，父节点停在 WaitingChildren
                             spec: TestSpec::Suspend,
                             detached: false,
                         })
@@ -324,7 +662,9 @@ mod tests {
                 },
                 Input::Fresh(TestSpec::Suspend) => Outcome::Suspend(TestSuspend::Ask),
                 Input::Fresh(TestSpec::Fail) => Outcome::Failed(TestError::Boom),
-                Input::Children(_) | Input::External(_) => Outcome::Completed(TestOutput::Ok),
+                Input::Children(_) | Input::External(_) | Input::Idle(_) => {
+                    Outcome::Completed(TestOutput::Ok)
+                }
             }
         }
     }
@@ -343,17 +683,13 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Behavior<TestDomain> for BlockingBehavior {
-        async fn run(
-            &self,
-            ctx: Ctx<'_, TestDomain>,
-            _input: Input<TestDomain>,
-        ) -> Outcome<TestDomain> {
+        async fn run(&self, ctx: Ctx, _input: Input<TestDomain>) -> Outcome<TestDomain> {
             ctx.cancel.cancelled().await;
             Outcome::Completed(TestOutput::Ok)
         }
     }
 
-    /// 永远落库失败的适配器
+    /// 永远保存失败的适配器
     struct FailingPersist;
 
     #[async_trait::async_trait]
@@ -365,12 +701,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_persist_failure_reports_without_stopping_the_tree() {
-        let hub = spawn(HubOptions {
-            behavior: Arc::new(ScriptedBehavior),
-            persist: Arc::new(FailingPersist),
-            grace: Duration::from_millis(50),
-            bus_capacity: BUS_CAPACITY,
-        });
+        let hub = spawn(options(
+            Arc::new(ScriptedBehavior),
+            Arc::new(FailingPersist),
+        ));
         let mut rx = hub.subscribe();
         hub.send(Event::Spawn {
             id: 1,
@@ -385,13 +719,17 @@ mod tests {
         assert!(
             seen.iter()
                 .any(|e| matches!(e, TreeEvent::Terminated { node: 1, .. })),
-            "落库失败必须被上报，但不得中断节点的迁移"
+            "a persist failure must be reported without interrupting the node's transition"
         );
     }
 
+    /// 一次保存下来的节点与 Phase
+    type SavedState = (NodeId, Phase<TestDomain>);
+
     /// 把每次保存的状态记下来供断言
     struct RecordingPersist {
-        recorded: Arc<Mutex<Vec<(NodeId, Phase<TestDomain>)>>>,
+        /// 已保存的节点与 Phase，按保存顺序
+        recorded: Arc<Mutex<Vec<SavedState>>>,
     }
 
     #[async_trait::async_trait]
@@ -404,15 +742,16 @@ mod tests {
         }
     }
 
-    /// 把落库与广播按先后记进同一条日志
+    /// 把保存与广播按先后记进同一条日志
     struct OrderedPersist {
+        /// 保存与广播的先后标记
         log: Arc<Mutex<Vec<&'static str>>>,
     }
 
     #[async_trait::async_trait]
     impl Persist<TestDomain> for OrderedPersist {
         async fn save(&self, _node: NodeId, phase: &Phase<TestDomain>) -> Result<()> {
-            // 让出一次，订阅方的观察点才有可能落在落库之前
+            // 让出一次执行权，订阅方的观察点才有可能落在保存之前
             tokio::task::yield_now().await;
             let mark = match phase {
                 Phase::Running => "saved running",
@@ -427,12 +766,7 @@ mod tests {
     }
 
     fn hub() -> HubHandle<TestDomain> {
-        spawn(HubOptions {
-            behavior: Arc::new(ScriptedBehavior),
-            persist: Arc::new(NoopPersist),
-            grace: Duration::from_millis(50),
-            bus_capacity: BUS_CAPACITY,
-        })
+        spawn(options(Arc::new(ScriptedBehavior), Arc::new(NoopPersist)))
     }
 
     async fn wait_until<F>(
@@ -475,33 +809,15 @@ mod tests {
         let terminated = seen
             .iter()
             .position(|e| matches!(e, TreeEvent::Terminated { .. }))
-            .expect("必须收到终态事件");
+            .expect("receive terminal event");
         let sealed = seen
             .iter()
             .position(|e| matches!(e, TreeEvent::Sealed))
             .expect("seal");
-        assert!(terminated < sealed, "终态事件必须先于关流");
-    }
-
-    #[tokio::test]
-    async fn progress_reaches_the_bus() {
-        let hub = hub();
-        let mut rx = hub.subscribe();
-        hub.send(Event::Spawn {
-            id: 1,
-            parent: None,
-            spec: TestSpec::Noop,
-            detached: false,
-        })
-        .await
-        .expect("send");
-
-        let seen = wait_until(
-            &mut rx,
-            |e| matches!(e, TreeEvent::Progress { node, .. } if *node == 1),
-        )
-        .await;
-        assert!(!seen.is_empty());
+        assert!(
+            terminated < sealed,
+            "the terminal event must precede the stream close"
+        );
     }
 
     #[tokio::test]
@@ -569,18 +885,17 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert!(cancelled.contains(&root), "根节点必须被取消");
-        assert_eq!(cancelled.len(), 4, "整棵子树都要被取消: {cancelled:?}");
+        assert!(cancelled.contains(&root), "the root node must be cancelled");
+        assert_eq!(
+            cancelled.len(),
+            4,
+            "the whole subtree must be cancelled: {cancelled:?}"
+        );
     }
 
     #[tokio::test]
     async fn a_stop_effect_reaches_the_worker() {
-        let hub = spawn(HubOptions {
-            behavior: Arc::new(BlockingBehavior),
-            persist: Arc::new(NoopPersist),
-            grace: Duration::from_millis(50),
-            bus_capacity: BUS_CAPACITY,
-        });
+        let hub = spawn(options(Arc::new(BlockingBehavior), Arc::new(NoopPersist)));
         let mut rx = hub.subscribe();
         hub.send(Event::Spawn {
             id: 1,
@@ -600,7 +915,7 @@ mod tests {
             snapshot
                 .iter()
                 .any(|node| node.id == 1 && matches!(node.phase, Phase::Running)),
-            "取消前 worker 必须在跑，否则测不到 Stop"
+            "the worker must be running before cancellation, otherwise Stop is not exercised"
         );
 
         let mut rx2 = hub.subscribe();
@@ -618,21 +933,19 @@ mod tests {
                 TreeEvent::Terminated { node: 1, terminal }
                     if matches!(terminal, Terminal::Cancelled(_))
             )),
-            "在跑的节点必须在 worker 确认停止后落 Cancelled"
+            "a running node must land on Cancelled after the worker confirms it stopped"
         );
     }
 
     #[tokio::test]
     async fn persist_is_dispatched_for_the_running_and_done_phases() {
         let recorded = Arc::new(Mutex::new(Vec::new()));
-        let hub = spawn(HubOptions {
-            behavior: Arc::new(ScriptedBehavior),
-            persist: Arc::new(RecordingPersist {
+        let hub = spawn(options(
+            Arc::new(ScriptedBehavior),
+            Arc::new(RecordingPersist {
                 recorded: recorded.clone(),
             }),
-            grace: Duration::from_millis(50),
-            bus_capacity: BUS_CAPACITY,
-        });
+        ));
         let mut rx = hub.subscribe();
         hub.send(Event::Spawn {
             id: 1,
@@ -649,25 +962,23 @@ mod tests {
             recorded
                 .iter()
                 .any(|(node, phase)| *node == 1 && matches!(phase, Phase::Running)),
-            "启动必须落 Running"
+            "startup must persist Running"
         );
         assert!(
             recorded
                 .iter()
                 .any(|(node, phase)| *node == 1 && matches!(phase, Phase::Done(TestOutput::Ok))),
-            "完成必须落 Done"
+            "completion must persist Done"
         );
     }
 
     #[tokio::test]
     async fn a_suspension_is_durable_before_it_is_published() {
         let log = Arc::new(Mutex::new(Vec::new()));
-        let hub = spawn(HubOptions {
-            behavior: Arc::new(ScriptedBehavior),
-            persist: Arc::new(OrderedPersist { log: log.clone() }),
-            grace: Duration::from_millis(50),
-            bus_capacity: BUS_CAPACITY,
-        });
+        let hub = spawn(options(
+            Arc::new(ScriptedBehavior),
+            Arc::new(OrderedPersist { log: log.clone() }),
+        ));
         let mut rx = hub.subscribe();
         let watcher = {
             let log = log.clone();
@@ -702,25 +1013,26 @@ mod tests {
         let saved = log
             .iter()
             .position(|mark| *mark == "saved suspended")
-            .expect("挂起相必须先落库");
+            .expect("persist the suspended phase");
         let published = log
             .iter()
             .position(|mark| *mark == "published suspended")
-            .expect("挂起相必须广播");
-        assert!(saved < published, "落库必须先于广播: {log:?}");
+            .expect("publish the suspended phase");
+        assert!(
+            saved < published,
+            "persistence must precede publication: {log:?}"
+        );
     }
 
     #[tokio::test]
     async fn recovery_keeps_resting_phases_and_converges_in_flight_ones() {
         let recorded = Arc::new(Mutex::new(Vec::new()));
-        let hub = spawn(HubOptions {
-            behavior: Arc::new(ScriptedBehavior),
-            persist: Arc::new(RecordingPersist {
+        let hub = spawn(options(
+            Arc::new(ScriptedBehavior),
+            Arc::new(RecordingPersist {
                 recorded: recorded.clone(),
             }),
-            grace: Duration::from_millis(50),
-            bus_capacity: BUS_CAPACITY,
-        });
+        ));
         let mut rx = hub.subscribe();
         hub.recover(vec![
             NodeSnapshot {
@@ -729,7 +1041,7 @@ mod tests {
                 children: vec![2, 3],
                 phase: Phase::Running,
                 detached: false,
-                pending: None,
+                pending: Vec::new(),
             },
             NodeSnapshot {
                 id: 2,
@@ -737,7 +1049,7 @@ mod tests {
                 children: vec![],
                 phase: Phase::Suspended(TestSuspend::Ask),
                 detached: false,
-                pending: None,
+                pending: Vec::new(),
             },
             NodeSnapshot {
                 id: 3,
@@ -745,7 +1057,7 @@ mod tests {
                 children: vec![],
                 phase: Phase::Cancelling(CancelOrigin::Ancestor(1)),
                 detached: false,
-                pending: None,
+                pending: Vec::new(),
             },
         ])
         .await
@@ -755,26 +1067,34 @@ mod tests {
         let node_of = |id: NodeId| snapshot.iter().find(|n| n.id == id).expect("node");
         let phase_of = |id: NodeId| node_of(id).phase.clone();
 
-        assert_eq!(node_of(1).children, vec![2, 3], "子节点必须随快照重建");
-        assert_eq!(node_of(2).parent, Some(1), "父指针必须随快照重建");
+        assert_eq!(
+            node_of(1).children,
+            vec![2, 3],
+            "children must be rebuilt from the snapshot"
+        );
+        assert_eq!(
+            node_of(2).parent,
+            Some(1),
+            "the parent pointer must be rebuilt from the snapshot"
+        );
         assert_eq!(node_of(3).parent, Some(1));
         assert!(!node_of(1).detached);
 
         assert!(
             matches!(phase_of(2), Phase::Suspended(TestSuspend::Ask)),
-            "静息相必须无损保留"
+            "a resting phase must be preserved losslessly"
         );
         assert!(
             matches!(phase_of(3), Phase::Cancelled(CancelOrigin::Ancestor(1))),
-            "Cancelling 依赖一个永不到来的确认，必须收敛为 Cancelled 并保留原始来源"
+            "Cancelling depends on a confirmation that never arrives; it must converge to Cancelled and preserve the original origin"
         );
         assert!(
             matches!(phase_of(1), Phase::Aborted),
-            "重建出的 Running 节点没有 worker，必须收敛为 Aborted"
+            "a rebuilt Running node has no worker, so it must converge to Aborted"
         );
         assert!(
             hub.in_flight_nodes().await.expect("in flight").is_empty(),
-            "恢复后不得残留等不到回报的在途节点"
+            "recovery must not leave in-flight nodes that can never receive a report"
         );
 
         let seen = wait_until(&mut rx, |e| {
@@ -787,14 +1107,14 @@ mod tests {
                 TreeEvent::Terminated { node: 3, terminal }
                     if matches!(terminal, Terminal::Cancelled(CancelOrigin::Ancestor(1)))
             )),
-            "收敛必须广播带原始来源的终态事件"
+            "convergence must broadcast a terminal event carrying the original origin"
         );
 
         let recorded = recorded.lock().expect("lock");
         assert!(
             recorded.iter().any(|(node, phase)| *node == 3
                 && matches!(phase, Phase::Cancelled(CancelOrigin::Ancestor(1)))),
-            "收敛必须落库，否则持久化侧仍显示 Cancelling"
+            "convergence must be written back, otherwise persistence still shows Cancelling"
         );
     }
 
@@ -808,7 +1128,7 @@ mod tests {
             children: vec![],
             phase: Phase::Done(TestOutput::Ok),
             detached: false,
-            pending: None,
+            pending: Vec::new(),
         }])
         .await
         .expect("recover");
@@ -816,7 +1136,7 @@ mod tests {
         let seen = wait_until(&mut rx, |e| matches!(e, TreeEvent::Sealed)).await;
         assert!(
             seen.iter().any(|e| matches!(e, TreeEvent::Sealed)),
-            "安静的恢复树必须自行宣告 Sealed，否则等待方永远等不到"
+            "a quiet recovered tree must announce Sealed itself, otherwise waiters never see it"
         );
     }
 
@@ -825,23 +1145,14 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Behavior<TestDomain> for PanicBehavior {
-        async fn run(
-            &self,
-            _ctx: Ctx<'_, TestDomain>,
-            _input: Input<TestDomain>,
-        ) -> Outcome<TestDomain> {
+        async fn run(&self, _ctx: Ctx, _input: Input<TestDomain>) -> Outcome<TestDomain> {
             panic!("boom")
         }
     }
 
     #[tokio::test]
     async fn a_panicking_worker_terminates_its_node_as_aborted_and_seals() {
-        let hub = spawn(HubOptions {
-            behavior: Arc::new(PanicBehavior),
-            persist: Arc::new(NoopPersist),
-            grace: Duration::from_millis(50),
-            bus_capacity: BUS_CAPACITY,
-        });
+        let hub = spawn(options(Arc::new(PanicBehavior), Arc::new(NoopPersist)));
         let mut rx = hub.subscribe();
         hub.send(Event::Spawn {
             id: 1,
@@ -861,10 +1172,13 @@ mod tests {
                     terminal: Terminal::Aborted
                 }
             )),
-            "worker 崩了必须让节点落 Aborted，而不是把树卡在 Running"
+            "a panicking worker must land the node on Aborted instead of leaving the tree stuck in Running"
         );
         let snapshot = hub.snapshot().await.expect("snapshot");
-        assert!(snapshot[0].phase.is_terminal(), "节点必须落终态");
+        assert!(
+            snapshot[0].phase.is_terminal(),
+            "the node must reach a terminal phase"
+        );
     }
 
     #[tokio::test]
@@ -878,7 +1192,7 @@ mod tests {
                 children: vec![2],
                 phase: Phase::WaitingChildren,
                 detached: false,
-                pending: None,
+                pending: Vec::new(),
             },
             NodeSnapshot {
                 id: 2,
@@ -886,7 +1200,7 @@ mod tests {
                 children: vec![],
                 phase: Phase::Done(TestOutput::Ok),
                 detached: false,
-                pending: None,
+                pending: Vec::new(),
             },
         ])
         .await
@@ -899,14 +1213,14 @@ mod tests {
         assert!(
             seen.iter()
                 .any(|e| matches!(e, TreeEvent::PhaseChanged { node: 1, .. })),
-            "子节点已全部终态的父节点必须被重入，否则永久停靠"
+            "a parent whose children are all terminal must be re-entered, otherwise it parks forever"
         );
 
         wait_until(&mut rx, |e| matches!(e, TreeEvent::Sealed)).await;
         let snapshot = hub.snapshot().await.expect("snapshot");
         assert!(
             snapshot.iter().all(|node| node.phase.is_terminal()),
-            "重入后的树必须能收敛"
+            "the tree must converge after re-entry"
         );
     }
 
@@ -920,7 +1234,7 @@ mod tests {
             children: vec![],
             phase: Phase::Running,
             detached: false,
-            pending: None,
+            pending: Vec::new(),
         }])
         .await
         .expect("recover");
@@ -934,7 +1248,7 @@ mod tests {
                     terminal: Terminal::Aborted
                 }
             )),
-            "重建出的 Running 节点没有 worker 可确认，必须能走到终态"
+            "a rebuilt Running node has no worker to confirm it, so it must still reach a terminal phase"
         );
     }
 
@@ -948,7 +1262,7 @@ mod tests {
             children: vec![],
             phase: Phase::Running,
             detached: true,
-            pending: None,
+            pending: Vec::new(),
         }])
         .await
         .expect("recover");
@@ -962,11 +1276,11 @@ mod tests {
                     terminal: Terminal::Aborted
                 }
             )),
-            "重建出的 detached 在途节点同样没有 worker 可确认"
+            "a rebuilt detached in-flight node also has no worker to confirm it"
         );
         assert!(
             seen.iter().any(|e| matches!(e, TreeEvent::Sealed)),
-            "恢复收敛出的终态不得留下没人能释放的投递义务，否则该话题的流永久挂着"
+            "a terminal phase produced by recovery convergence must not leave a delivery obligation nobody can release, otherwise that topic's stream hangs forever"
         );
     }
 
@@ -978,29 +1292,25 @@ mod tests {
 
         let outcome = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
-            .expect("最后一个句柄放手后 hub 必须退出");
+            .expect("stop hub after last handle drop");
         assert!(
             matches!(outcome, Err(broadcast::error::RecvError::Closed)),
-            "hub 退出时事件流必须关闭"
+            "the event stream must close when the hub exits"
         );
     }
 
-    /// 事实驱动程序：根据输入决定派生、挂起还是完成
+    /// 按输入决定派生、挂起还是完成的脚本化行为
     struct TreeBehavior;
 
     #[async_trait::async_trait]
     impl Behavior<TestDomain> for TreeBehavior {
-        async fn run(
-            &self,
-            _ctx: Ctx<'_, TestDomain>,
-            input: Input<TestDomain>,
-        ) -> Outcome<TestDomain> {
+        async fn run(&self, _ctx: Ctx, input: Input<TestDomain>) -> Outcome<TestDomain> {
             match input {
                 Input::Fresh(TestSpec::Children(n)) => Outcome::Spawn {
                     spawn: (0..n)
                         .map(|_| SpawnRequest {
                             id: next_id(),
-                            // 子节点挂起，父节点才会稳定停在 WaitingChildren
+                            // 子节点挂起，父节点停在 WaitingChildren
                             spec: TestSpec::Suspend,
                             detached: false,
                         })
@@ -1010,19 +1320,14 @@ mod tests {
                 Input::Fresh(TestSpec::Noop) => Outcome::Completed(TestOutput::Ok),
                 Input::Fresh(TestSpec::Suspend) => Outcome::Suspend(TestSuspend::Ask),
                 Input::Fresh(TestSpec::Fail) => Outcome::Failed(TestError::Boom),
-                Input::External(_) => Outcome::Completed(TestOutput::Ok),
+                Input::External(_) | Input::Idle(_) => Outcome::Completed(TestOutput::Ok),
             }
         }
     }
 
     #[tokio::test]
     async fn cancelling_a_parent_with_children_loses_no_events_and_seals_once() {
-        let hub = spawn(HubOptions {
-            behavior: Arc::new(TreeBehavior),
-            persist: Arc::new(NoopPersist),
-            grace: Duration::from_millis(50),
-            bus_capacity: BUS_CAPACITY,
-        });
+        let hub = spawn(options(Arc::new(TreeBehavior), Arc::new(NoopPersist)));
         let mut rx = hub.subscribe();
         // root + 3 个子节点，共 4 个节点
         hub.send(Event::Spawn {
@@ -1047,7 +1352,7 @@ mod tests {
             .expect("root");
 
         let snapshot = hub.snapshot().await.expect("snapshot");
-        assert_eq!(snapshot.len(), 4, "根 + 3 个子节点");
+        assert_eq!(snapshot.len(), 4, "root plus 3 children");
 
         let mut rx2 = hub.subscribe();
         hub.send(Event::CancelRequest {
@@ -1058,7 +1363,7 @@ mod tests {
         .expect("send");
 
         let mut seen = wait_until(&mut rx2, |e| matches!(e, TreeEvent::Sealed)).await;
-        // 第一个 Sealed 之后再排空一次：逐节点多发的 Sealed 会落在这次排空里
+        // 首次 Sealed 之后排空一次，取到其余节点发出的 Sealed
         let _ = hub.snapshot().await.expect("snapshot");
         while let Ok(event) = rx2.try_recv() {
             seen.push(event);
@@ -1068,21 +1373,23 @@ mod tests {
             .iter()
             .filter(|e| matches!(e, TreeEvent::Sealed))
             .count();
-        assert_eq!(sealed, 1, "Sealed 只能发一次");
+        assert_eq!(sealed, 1, "Sealed must be sent only once");
 
         let cancelled: BTreeSet<NodeId> = seen
             .iter()
             .filter_map(|e| match e {
-                TreeEvent::Terminated { node, terminal }
-                    if matches!(terminal, Terminal::Cancelled(_)) =>
-                {
-                    Some(*node)
-                }
+                TreeEvent::Terminated {
+                    node,
+                    terminal: Terminal::Cancelled(_),
+                } => Some(*node),
                 _ => None,
             })
             .collect();
         let expected: BTreeSet<NodeId> = snapshot.iter().map(|n| n.id).collect();
-        assert_eq!(cancelled, expected, "每个节点都必须收到取消终态，一个不丢");
+        assert_eq!(
+            cancelled, expected,
+            "every node must receive a cancellation terminal, none may be lost"
+        );
     }
 
     #[tokio::test]
@@ -1110,20 +1417,13 @@ mod tests {
         hub.send(Event::Stopped { node, job: 1 })
             .await
             .expect("send");
-        hub.send(Event::Progress {
-            node,
-            job: 1,
-            chunk: TestProgress::Tick,
-        })
-        .await
-        .expect("send");
 
         let snapshot = hub.snapshot().await.expect("snapshot");
         assert!(snapshot[0].phase.is_terminal());
-        // snapshot 是屏障：此前入队的回报都已被处理，此后缓冲里不应再有任何事件
+        // `snapshot` 是屏障。此前入队的回报都已处理，此后缓冲里不应再有任何事件。
         assert!(
             matches!(rx.try_recv(), Err(broadcast::error::TryRecvError::Empty)),
-            "终态之后的杂乱回报不得产出任何对外事件"
+            "a stray report after the terminal phase must not produce any outward event"
         );
     }
 
@@ -1137,7 +1437,7 @@ mod tests {
             children: vec![],
             phase: Phase::Done(TestOutput::Ok),
             detached: true,
-            pending: None,
+            pending: Vec::new(),
         }])
         .await
         .expect("recover");
@@ -1145,26 +1445,102 @@ mod tests {
         let seen = wait_until(&mut rx, |e| matches!(e, TreeEvent::Sealed)).await;
         assert!(
             seen.iter().any(|e| matches!(e, TreeEvent::Sealed)),
-            "恢复出的终态 detached 节点不得带着投递义务，否则该话题的流永不关"
+            "a recovered terminal detached node must not carry a delivery obligation, otherwise that topic's stream never closes"
         );
         assert!(
             hub.in_flight_nodes().await.expect("in flight").is_empty(),
-            "恢复后不得残留等不到回报的在途节点"
+            "recovery must not leave in-flight nodes that can never receive a report"
         );
         assert!(
             hub.undelivered_nodes()
                 .await
                 .expect("undelivered")
                 .is_empty(),
-            "恢复后不得残留投递义务"
+            "recovery must not leave any delivery obligation"
         );
     }
 
     #[tokio::test]
     async fn a_hub_reports_itself_stopped_only_after_shutdown() {
         let hub = hub();
-        assert!(!hub.is_stopped(), "刚起来的 hub 不是停止态");
+        assert!(!hub.is_stopped(), "a freshly started hub is not stopped");
         hub.shutdown().await.expect("shutdown");
-        assert!(hub.is_stopped(), "shutdown 之后必须能观察到停止");
+        assert!(
+            hub.is_stopped(),
+            "stopping must be observable after shutdown"
+        );
+    }
+
+    /// 翻译可能产出的每一条事件都必须能派发出去
+    #[test]
+    fn every_translated_event_can_be_dispatched() {
+        let events = vec![
+            TreeEvent::<AgentDomain>::NodeCreated {
+                node: 1,
+                parent: None,
+            },
+            TreeEvent::<AgentDomain>::PhaseChanged {
+                node: 1,
+                to: Box::new(Phase::Running),
+            },
+            TreeEvent::<AgentDomain>::PhaseChanged {
+                node: 1,
+                to: Box::new(Phase::Suspended(SuspendedWait {
+                    instance_id: 1,
+                    kind: "approval".into(),
+                    message_id: 1,
+                    handle: "h-1".into(),
+                    payload: None,
+                })),
+            },
+            TreeEvent::<AgentDomain>::Terminated {
+                node: 1,
+                terminal: Terminal::Done(AgentOutcome { message_id: 1 }),
+            },
+            TreeEvent::<AgentDomain>::Terminated {
+                node: 1,
+                terminal: Terminal::Failed(AgentFailure {
+                    message_id: None,
+                    error: "boom".into(),
+                }),
+            },
+            TreeEvent::<AgentDomain>::Terminated {
+                node: 1,
+                terminal: Terminal::Cancelled(CancelOrigin::External),
+            },
+            TreeEvent::<AgentDomain>::Terminated {
+                node: 1,
+                terminal: Terminal::Aborted,
+            },
+            TreeEvent::<AgentDomain>::Sealed,
+        ];
+
+        for event in events {
+            for item in translate(&event) {
+                assert!(
+                    observe_def(item.name).is_some(),
+                    "{} must be dispatchable by name",
+                    item.name
+                );
+            }
+        }
+    }
+
+    /// 派发与否只由目录里的形态决定，不存在另立的名单
+    #[test]
+    fn the_dispatch_table_follows_the_catalog() {
+        let dir = directory();
+        for name in dir.names() {
+            let meta = dir.get(name).expect("find the name in the catalog");
+            assert_eq!(
+                observe_def(name).is_some(),
+                meta.is_observe(),
+                "{name} dispatchability must match its shape in the catalog"
+            );
+        }
+        assert!(
+            observe_def("core/not.a.real.event").is_none(),
+            "names outside the catalog are never dispatchable"
+        );
     }
 }

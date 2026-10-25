@@ -1,6 +1,5 @@
-use std::result::Result as StdResult;
+use wind_core::sandbox::SandboxError;
 
-/// 能力层错误码
 #[derive(thiserror::Error, Debug, strum::AsRefStr)]
 #[strum(serialize_all = "SCREAMING_SNAKE_CASE")]
 pub enum FsError {
@@ -28,11 +27,12 @@ pub enum FsError {
     #[error("io error: {0}")]
     Io(String),
 
+    #[error(transparent)]
+    Sandbox(#[from] SandboxError),
+
     #[error("command timed out")]
     Timeout,
 
     #[error("unsupported: {0}")]
     Unsupported(String),
 }
-
-pub type Result<T> = StdResult<T, FsError>;

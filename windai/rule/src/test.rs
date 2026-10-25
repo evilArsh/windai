@@ -102,7 +102,7 @@ fn path_remove_empty_segs() {
 
 #[test]
 fn path_remove_non_existent_silent() {
-    // HashMap::remove ignores missing keys — succeeds silently
+    // HashMap 的 remove 忽略不存在的键，静默成功
     let mut v = json!({"x": 1});
     assert!(path::remove(&mut v, &path::segments("missing")).is_ok());
 }
@@ -113,7 +113,7 @@ fn path_remove_through_non_object() {
     assert!(path::remove(&mut v, &path::segments("a.b")).is_err());
 }
 
-// ==================== condition compile errors ====================
+// ==================== 条件编译错误 ====================
 
 #[test]
 fn cond_compile_non_object() {
@@ -162,7 +162,7 @@ fn cond_compile_and_or_non_array() {
     assert!(CompiledCond::compile(&json!({"or": 1})).is_err());
 }
 
-// ==================== condition eval ====================
+// ==================== 条件求值 ====================
 
 #[test]
 fn cond_eval_eq_types() {
@@ -238,7 +238,7 @@ fn cond_eval_deeply_nested() {
     assert!(!c.eval(&json!({}), &EvalContext::new()).unwrap());
 }
 
-// ==================== RuleSet parse ====================
+// ==================== RuleSet 解析 ====================
 
 #[test]
 fn ruleset_invalid_json() {
@@ -411,7 +411,8 @@ fn map_value_no_match_no_default() {
     .unwrap();
     let mut body = json!({"x": "unknown"});
     rs.apply(&mut body, &EvalContext::new()).unwrap();
-    assert_eq!(body["x"], "unknown"); // source preserved (remove_source defaults false)
+    // remove_source 默认 false，源字段保留
+    assert_eq!(body["x"], "unknown");
     assert!(body.get("y").is_none());
 }
 
@@ -459,7 +460,8 @@ fn map_value_merge_deep() {
     rs.apply(&mut body, &EvalContext::new()).unwrap();
     assert_eq!(body["deep"]["nested"], 1);
     assert_eq!(body["deep"]["extra"], 2);
-    assert_eq!(body["deep"]["other"], 3); // existing sibling preserved
+    // 同级键保留
+    assert_eq!(body["deep"]["other"], 3);
 }
 
 // ==================== compute ====================
@@ -567,7 +569,7 @@ fn compute_multiple_ctx_vars() {
 
 #[test]
 fn compute_non_value_expr() {
-    // expr that ignores $value entirely
+    // 完全忽略 $value 的表达式
     let rs =
         RuleSet::from_json(r#"{"rules": [{"type": "compute", "path": "x", "expr": "1 + 2"}]}"#)
             .unwrap();
@@ -776,7 +778,7 @@ fn when_false_without_else_is_noop() {
     assert_eq!(body, json!({"y": 2}));
 }
 
-// ==================== chained rules ====================
+// ==================== 链式规则 ====================
 
 #[test]
 fn chained_rules_see_prior_changes() {
@@ -843,7 +845,7 @@ fn map_value_then_compute() {
     assert_eq!(body["count"], 200);
 }
 
-// ==================== misc ====================
+// ==================== 杂项 ====================
 
 #[test]
 fn neq_with_value_ref_body() {
@@ -880,4 +882,39 @@ fn multi_rule_all_types() {
     assert!(body.get("mode").is_none());
     assert_eq!(body["speed"], "high");
     assert_eq!(body["max_tokens"], 8192);
+}
+
+// ==================== 嵌套上下文路径 ====================
+
+#[test]
+fn a_context_variable_can_be_a_nested_path() {
+    // 规则里写 $ctx.provider.name，上下文按路径取
+    let ctx = EvalContext::new().with("provider", json!({ "name": "deepseek" }));
+    let rules = RuleSet::from_json(
+        r#"{"rules":[{"type":"when",
+             "cond":{"eq":["$ctx.provider.name","deepseek"]},
+             "then":[{"type":"set","path":"hit","value":true}]}]}"#,
+    )
+    .expect("compile");
+    let mut body = json!({});
+    rules.apply(&mut body, &ctx).expect("evaluate");
+    assert_eq!(body["hit"], json!(true));
+}
+
+#[test]
+fn a_context_path_that_does_not_resolve_is_not_an_error() {
+    // 条件取不到值时按不成立处理，不是让整条链路失败
+    let ctx = EvalContext::new();
+    let rules = RuleSet::from_json(
+        r#"{"rules":[{"type":"when",
+             "cond":{"eq":["$ctx.provider.name","deepseek"]},
+             "then":[{"type":"set","path":"hit","value":true}]}]}"#,
+    )
+    .expect("compile");
+    let mut body = json!({});
+    rules.apply(&mut body, &ctx).expect("evaluate");
+    assert!(
+        body.get("hit").is_none(),
+        "then must not run when the condition does not hold"
+    );
 }

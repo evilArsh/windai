@@ -1,306 +1,83 @@
-//! schema 与模型的契约回归测试
-//!
-//! 每张表断言一次它对应的模型实际读写到的列，覆盖 `schema.rs` 的全部 13 张表：
-//! 列名被改名或删除而模型未同步时，这里会先于运行期报错
-//!
-//! 只探测列是否存在，不依赖 SQLite 专有语法，可在 SQLite 与 PostgreSQL 上共用
+//! 验证建库可重复执行，以及表约束生效。
 
-#[path = "./common/lib.rs"]
-mod common;
+use sqlx::Row;
+use tempfile::TempDir;
+use wind_core::db::Db;
 
-use wind_core::db::DbPool;
-
-/// 初始化 schema 并断言 `table` 上存在全部 `cols` 指定的列
-///
-/// 通过 `SELECT ... WHERE 1 = 0` 让数据库自行校验列名，缺列时 prepare 失败
-async fn assert_table_columns(table: &str, cols: &[&str]) {
-    let pool = common::init_test_pool().await;
-    wind_core::schema::init_schema(&pool)
+async fn fresh() -> (TempDir, Db) {
+    let dir = TempDir::new().expect("create temp dir");
+    let db = Db::open(&dir.path().join("test.db"))
         .await
-        .expect("init schema");
-    let sql = format!("SELECT {} FROM {} WHERE 1 = 0", cols.join(", "), table);
-    sqlx::query(&sql)
-        .execute(&pool)
-        .await
-        .unwrap_or_else(|err| panic!("table `{table}` is missing a column: {err}"));
+        .expect("open database");
+    db.init_schema().await.expect("create table");
+    (dir, db)
 }
 
-/// 断言 `table.col` 已不存在
-///
-/// 列名必须写成 `table."col"` 的限定形式：裸双引号标识符解析不到列时，SQLite 会
-/// 兜底当成字符串字面量而不再报错，`index` 这类关键字更是无论列是否存在都直接语法错误 ——
-/// 两者都会让断言恒真；限定形式下缺列在 prepare 阶段报 no such column，两驱动都成立
-async fn assert_column_dropped(pool: &DbPool, table: &str, col: &str) {
-    let sql = format!("SELECT {table}.\"{col}\" FROM {table} WHERE 1 = 0");
+#[tokio::test]
+async fn building_the_schema_twice_succeeds() {
+    let (_dir, db) = fresh().await;
+    db.init_schema().await.expect("build schema twice");
+}
+
+#[tokio::test]
+async fn a_topic_cannot_hold_two_main_instances() {
+    let (_dir, db) = fresh().await;
+    let insert =
+        "INSERT INTO agent_instances (topic_id, role, phase) VALUES (1, 'main', 'running')";
+    sqlx::query(insert)
+        .execute(db.pool())
+        .await
+        .expect("insert first main instance");
     assert!(
-        sqlx::query(&sql).execute(pool).await.is_err(),
-        "column `{table}.{col}` should have been dropped"
+        sqlx::query(insert).execute(db.pool()).await.is_err(),
+        "a second main instance must be rejected by the unique index"
+    );
+
+    let count: i64 = sqlx::query("SELECT COUNT(*) AS n FROM agent_instances WHERE topic_id = 1")
+        .fetch_one(db.pool())
+        .await
+        .expect("query")
+        .get("n");
+    assert_eq!(
+        count, 1,
+        "a second main instance must be rejected by the unique index"
     );
 }
 
 #[tokio::test]
-async fn providers_columns_match_model() {
-    assert_table_columns(
-        "providers",
-        &[
-            "id",
-            "name",
-            "alias",
-            "description",
-            "base_url",
-            "doc",
-            "active",
-            "created_at",
-        ],
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn models_columns_match_model() {
-    assert_table_columns(
-        "models",
-        &[
-            "id",
-            "name",
-            "provider_id",
-            "alias",
-            "adapter",
-            "modalities",
-            "active",
-            "icon",
-            "endpoint",
-            "config",
-            "frequency",
-            "created_at",
-        ],
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn credentials_columns_match_model() {
-    assert_table_columns(
-        "credentials",
-        &["id", "provider_id", "key", "active", "created_at"],
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn topics_columns_match_model() {
-    assert_table_columns(
-        "topics",
-        &[
-            "id",
-            "parent_id",
-            "label",
-            "icon",
-            "model_id",
-            "tool_approval_policy",
-            "created_at",
-        ],
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn messages_columns_match_model() {
-    assert_table_columns(
-        "messages",
-        &[
-            "id",
-            "from_id",
-            "model_id",
-            "instance_id",
-            "is_boundary",
-            "is_excluded",
-            "created_at",
-        ],
-    )
-    .await;
-}
-
-/// `message_contents` 的列与模型字段一一对应
-#[tokio::test]
-async fn message_contents_columns_match_model() {
-    assert_table_columns(
-        "message_contents",
-        &[
-            "id",
-            "message_id",
-            "role",
-            "content",
-            "reasoning_content",
-            "tool_calls",
-            "input_tokens",
-            "output_tokens",
-            "created_at",
-        ],
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn mcp_servers_columns_match_model() {
-    assert_table_columns(
-        "mcp_servers",
-        &[
-            "id",
-            "type",
-            "name",
-            "url",
-            "description",
-            "command",
-            "args",
-            "env",
-            "created_at",
-        ],
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn json_rule_columns_match_model() {
-    assert_table_columns(
-        "json_rule",
-        &[
-            "id",
-            "provider_id",
-            "adapter",
-            "json_rule",
-            "active",
-            "created_at",
-        ],
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn prompt_modules_columns_match_model() {
-    assert_table_columns(
-        "prompt_modules",
-        &[
-            "id",
-            "alias",
-            "description",
-            "content",
-            "active",
-            "created_at",
-        ],
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn agent_definitions_columns_match_model() {
-    assert_table_columns(
-        "agent_definitions",
-        &[
-            "id",
-            "key",
-            "name",
-            "description",
-            "owner_topic_id",
-            "cloned_from_id",
-            "active",
-            "data",
-            "created_at",
-        ],
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn agent_instances_columns_match_model() {
-    assert_table_columns(
-        "agent_instances",
-        &[
-            "id",
-            "parent_id",
-            "topic_id",
-            "agent_id",
-            "user_id",
-            "assistant_id",
-            "role",
-            "status",
-            "mode",
-            "created_at",
-        ],
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn topic_agent_maps_columns_match_model() {
-    assert_table_columns(
-        "topic_agent_maps",
-        &["id", "topic_id", "agent_id", "created_at"],
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn tool_approval_requests_columns_match_model() {
-    assert_table_columns(
-        "tool_approval_requests",
-        &[
-            "id",
-            "topic_id",
-            "message_id",
-            "instance_id",
-            "tool_call_id",
-            "tool_name",
-            "arguments",
-            "status",
-            "created_at",
-        ],
-    )
-    .await;
-}
-
-/// 已被移除的历史概念不得随 schema 回流
-///
-/// `chat_configs` / `topic_agent_bindings` 两张表整体删除；其余为落在保留表上的废弃列
-#[tokio::test]
-async fn dropped_columns_are_absent() {
-    let pool = common::init_test_pool().await;
-    wind_core::schema::init_schema(&pool)
+async fn the_block_identifier_is_supplied_by_the_caller() {
+    let (_dir, db) = fresh().await;
+    sqlx::query("INSERT INTO message (id, turn_id, seq, role) VALUES (1, 1, 0, 'assistant')")
+        .execute(db.pool())
         .await
-        .expect("init schema");
-
-    for (table, col) in [
-        ("messages", "content"),
-        ("messages", "stream"),
-        // token 不再由服务端汇总，读取方按内容块累加
-        ("messages", "input_tokens"),
-        ("messages", "output_tokens"),
-        ("agent_instances", "chat_config_id"),
-        ("agent_instances", "tool_approval_policy"),
-        ("agent_instances", "enabled"),
-        ("agent_instances", "model_id"),
-        // 主 Agent 偏好已废弃：映射只表达「topic 拥有该能力」
-        ("topic_agent_maps", "role"),
-        // 块顺序改由自增 id 决定，索引列不再存在
-        ("message_contents", "index"),
-    ] {
-        assert_column_dropped(&pool, table, col).await;
-    }
+        .expect("insert message");
+    sqlx::query(
+        "INSERT INTO block (id, message_id, seq, kind) VALUES (9007199254740993, 1, 0, 'text')",
+    )
+    .execute(db.pool())
+    .await
+    .expect("insert block with explicit id");
 }
 
-/// 已删除的表整体不可查
 #[tokio::test]
-async fn dropped_tables_are_absent() {
-    let pool = common::init_test_pool().await;
-    wind_core::schema::init_schema(&pool)
+async fn two_blocks_cannot_share_a_position_in_a_message() {
+    let (_dir, db) = fresh().await;
+    sqlx::query("INSERT INTO message (id, turn_id, seq, role) VALUES (1, 1, 0, 'assistant')")
+        .execute(db.pool())
         .await
-        .expect("init schema");
-
-    for table in ["chat_configs", "topic_agent_bindings"] {
-        let sql = format!("SELECT id FROM {table} WHERE 1 = 0");
-        assert!(
-            sqlx::query(&sql).execute(&pool).await.is_err(),
-            "table `{table}` should have been dropped"
-        );
-    }
+        .expect("insert message");
+    let insert = "INSERT INTO block (id, message_id, seq, kind) VALUES (?, 1, 0, 'text')";
+    sqlx::query(insert)
+        .bind(1_i64)
+        .execute(db.pool())
+        .await
+        .expect("insert first block");
+    assert!(
+        sqlx::query(insert)
+            .bind(2_i64)
+            .execute(db.pool())
+            .await
+            .is_err(),
+        "a second block in the same message must not occupy the same position: a duplicate seq from the assembler must be reported at the write step"
+    );
 }

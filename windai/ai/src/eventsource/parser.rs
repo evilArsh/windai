@@ -4,7 +4,7 @@ use nom::combinator::opt;
 use nom::sequence::{preceded, terminated};
 use nom::{IResult, Parser};
 
-/// ; ABNF definition from HTML spec
+/// 本模块实现的事件流行语法（ABNF），摘自 HTML 规范
 ///
 /// stream        = [ bom ] *event
 /// event         = *( comment / field ) end-of-line

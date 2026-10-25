@@ -1,9 +1,7 @@
 use super::event_stream::EventStream;
 use futures::Stream;
 
-/// Main entrypoint for creating [`crate::Event`] streams
 pub trait Eventsource: Sized {
-    /// Create an event stream from a stream of bytes
     fn eventsource(self) -> EventStream<Self>;
 }
 

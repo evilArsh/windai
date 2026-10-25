@@ -1,0 +1,37 @@
+{
+  "name": "mod_demo",
+  "version": 1,
+  "description": "真实 agent 流程测试：当前时间工具、MCP 与提示词",
+  "prompts": {
+    "assistant": {
+      "description": "真实流程测试的行为约束",
+      "content": "你是 windai 的真实流程测试助手。\n\n规则：\n1. 用中文回答。\n2. 回答的第一行必须以 `[answer]` 开头。\n3. 用户询问时间时禁止猜测：先调用 m_mod_demo__now 取得当前时间；如果 time__get_current_time 可用，再调用它交叉核对。\n4. 开始前先调用 skills__skills_list，dir 分别使用 {{SKILLS_DIR}} 与 {{MOD_SKILLS_DIR}}，确认 answer-prefix 与 mod-answer 两个技能都存在。\n5. 最终回答给出时间、时区与来源工具名，末尾追加 `[source] <工具名>`。"
+    }
+  },
+  "mcpServers": {
+    "time": {
+      "command": "uvx",
+      "args": ["mcp-server-time"],
+      "description": "MCP 时间服务"
+    },
+    "server-everything": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-everything"],
+      "env": {},
+      "description": "MCP 全功能测试服务"
+    }
+  },
+  "requests": {
+    "now": {
+      "handler": "onNow",
+      "summary": "返回当前时间：ISO 8601、本地时间与 epoch 毫秒",
+      "input": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "callableBy": ["agent"],
+      "timeoutMs": 5000
+    }
+  }
+}

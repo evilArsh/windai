@@ -1,12 +1,10 @@
-use crate::{
-    db::{DbDriver, DbPool, DbRow, DbTransaction},
-    error::Result,
-};
-use sqlx::{
-    Database, Decode, FromRow, IntoArguments, Type,
-    query::{Query, QueryAs, QueryScalar},
-};
-use std::{future::Future, sync::Arc};
+use super::statement_count::StatementCount;
+use crate::db::{BEGIN_WRITE, DbDriver, DbPool, DbRow, DbTransaction};
+use crate::error::Result;
+use sqlx::query::{Query, QueryAs, QueryScalar};
+use sqlx::{Database, Decode, FromRow, IntoArguments, Type};
+use std::future::Future;
+use std::sync::Arc;
 use tokio::sync::Mutex;
 
 macro_rules! with_transaction {
@@ -54,24 +52,37 @@ macro_rules! with_connection {
 pub(crate) struct StorageExecutor {
     pool: DbPool,
     tx: Option<Arc<Mutex<Option<DbTransaction>>>>,
+    statements: StatementCount,
 }
 
 impl StorageExecutor {
-    /// 创建一个普通执行器
     pub(crate) fn new(pool: DbPool) -> Self {
-        Self { pool, tx: None }
+        Self {
+            pool,
+            tx: None,
+            statements: StatementCount::default(),
+        }
     }
 
-    /// 创建一个新的事务执行器
-    pub(crate) async fn new_transaction(pool: DbPool) -> Result<Self> {
+    pub(crate) async fn new_transaction(pool: DbPool, statements: StatementCount) -> Result<Self> {
+        let tx = pool.begin_with(BEGIN_WRITE).await?;
         Ok(Self {
-            tx: Some(Arc::new(Mutex::new(Some(pool.begin().await?)))),
+            tx: Some(Arc::new(Mutex::new(Some(tx)))),
             pool,
+            statements,
         })
     }
 
     pub(crate) fn pool(&self) -> &DbPool {
         &self.pool
+    }
+
+    pub(crate) fn statements(&self) -> StatementCount {
+        self.statements.clone()
+    }
+
+    pub(crate) fn statement_count(&self) -> u64 {
+        self.statements.get()
     }
 
     pub(crate) fn is_transaction(&self) -> bool {
@@ -87,7 +98,7 @@ impl StorageExecutor {
             return f(self.clone()).await;
         }
 
-        let tx_executor = Self::new_transaction(self.pool().clone()).await?;
+        let tx_executor = Self::new_transaction(self.pool().clone(), self.statements()).await?;
         let result = f(tx_executor.clone()).await;
         match result {
             Ok(value) => {
@@ -116,6 +127,7 @@ impl StorageExecutor {
     where
         <DbDriver as Database>::Arguments<'q>: IntoArguments<'q, DbDriver> + Send,
     {
+        self.statements.record();
         with_connection!(self, executor, Ok(query.execute(executor).await?))
     }
 
@@ -127,14 +139,12 @@ impl StorageExecutor {
         O: for<'r> FromRow<'r, DbRow> + Send + Unpin,
         <DbDriver as Database>::Arguments<'q>: IntoArguments<'q, DbDriver> + Send,
     {
+        self.statements.record();
         with_connection!(self, executor, {
             Ok(query.fetch_optional(executor).await?)
         })
     }
 
-    /// 查询多行原始结果。
-    /// 用于需要按列名取值、而不是映射到某个 `FromRow` 类型的场景
-    /// （例如 `INSERT ... RETURNING id, tool_call_id` 后按自然键组装）
     pub(crate) async fn fetch_all_rows<'q>(
         &self,
         query: Query<'q, DbDriver, <DbDriver as Database>::Arguments<'q>>,
@@ -142,11 +152,10 @@ impl StorageExecutor {
     where
         <DbDriver as Database>::Arguments<'q>: IntoArguments<'q, DbDriver> + Send,
     {
+        self.statements.record();
         with_connection!(self, executor, Ok(query.fetch_all(executor).await?))
     }
 
-    /// 查询单个标量值，无结果或结果多于一行时报错。
-    /// 用于 `INSERT ... RETURNING id` 这类必然返回一行的场景
     pub(crate) async fn fetch_one_scalar<'q, O>(
         &self,
         query: QueryScalar<'q, DbDriver, O, <DbDriver as Database>::Arguments<'q>>,
@@ -155,6 +164,7 @@ impl StorageExecutor {
         O: for<'r> Decode<'r, DbDriver> + Type<DbDriver> + Send + Unpin,
         <DbDriver as Database>::Arguments<'q>: IntoArguments<'q, DbDriver> + Send,
     {
+        self.statements.record();
         with_connection!(self, executor, Ok(query.fetch_one(executor).await?))
     }
 
@@ -166,6 +176,7 @@ impl StorageExecutor {
         O: for<'r> FromRow<'r, DbRow> + Send + Unpin,
         <DbDriver as Database>::Arguments<'q>: IntoArguments<'q, DbDriver> + Send,
     {
+        self.statements.record();
         with_connection!(self, executor, Ok(query.fetch_all(executor).await?))
     }
 }

@@ -10,7 +10,6 @@ pub use compile::RuleSet;
 pub use error::{Error, Result};
 use serde_json::{Map, Value};
 
-/// 规则求值的上下文，由调用方注入
 #[derive(Debug, Clone, Default)]
 pub struct EvalContext {
     vars: Map<String, Value>,
@@ -21,18 +20,20 @@ impl EvalContext {
         Self { vars: Map::new() }
     }
 
+    /// 键按字面量存入，因此含 `.` 的键用 `get` 取不到。
     pub fn with(mut self, key: &str, value: impl Into<Value>) -> Self {
         self.vars.insert(key.to_string(), value.into());
         self
     }
 
-    /// 获取变量值
-    ///
-    /// TODO: 获取嵌套路径值
     pub fn get(&self, key: &str) -> Option<&Value> {
-        self.vars.get(key)
-        // let segs = path::segments(key);
-        // path::get(&self.vars, &segs)
+        let segs = path::segments(key);
+        let (head, tail) = segs.split_first()?;
+        let root = self.vars.get(head)?;
+        if tail.is_empty() {
+            return Some(root);
+        }
+        path::get(root, tail).ok().flatten()
     }
 
     pub(crate) fn entries(&self) -> impl Iterator<Item = (&String, &Value)> {

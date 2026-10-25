@@ -1,521 +1,167 @@
-use super::{
-    executor::StorageExecutor,
-    message::MessageStorage,
-    utils::{self, ensure_affected, ensure_lte_one, now_ts},
+use super::Storage;
+use super::TableName;
+use super::utils::{
+    decode_enum, ensure_lte_one, execute_allowing_zero_rows, execute_expecting_rows, now_ts,
 };
-use crate::{
-    db::DbDriver,
-    delete_by_id,
-    error::{CoreError, Result},
-    get_by_id, insert,
-    models::{
-        AgentStatus, CreateTopicAgentMap, TopicAgentMap,
-        agent::{
-            AgentDefinition, AgentInstance, AgentRole, CreateAgentDefinition, CreateInstance,
-            UpdateAgentDefinition, UpdateInstance,
-        },
-    },
-    select_fields,
-    storage::TableName,
-    update, update_strict,
-};
+use crate::db::{DbDriver, DbRow};
+use crate::delete_by_id;
+use crate::error::Result;
+use crate::insert;
+use crate::models::{AgentInstance, AgentInstanceCreate, AgentMode, AgentPhase, AgentRole};
+use crate::select_fields;
+use crate::update_strict;
+use sqlx::{FromRow, QueryBuilder, Row};
 
-#[derive(Clone)]
-pub struct AgentStorage {
-    executor: StorageExecutor,
+fn select_instances<'a>() -> QueryBuilder<'a, DbDriver> {
+    select_fields!(
+        TableName::AGENT_INSTANCES,
+        (
+            "id",
+            "parent_id",
+            "topic_id",
+            "role",
+            "mode",
+            "phase",
+            "phase_payload",
+            "created_at"
+        )
+    )
 }
 
-impl AgentStorage {
-    const KEY_LEN: usize = 12;
-
-    const KEY_HEAD_ALPHABET: [char; 26] = [
-        'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r',
-        's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
-    ];
-
-    pub(crate) fn new(executor: StorageExecutor) -> Self {
-        Self { executor }
-    }
-
-    fn generate_key() -> String {
-        let head = nanoid::nanoid!(1, &Self::KEY_HEAD_ALPHABET);
-        let tail = nanoid::nanoid!(Self::KEY_LEN - 1, &nanoid::alphabet::SAFE);
-        format!("{head}{tail}")
-    }
-
-    /// 创建新的 AgentDefinition
-    pub async fn create_definition(&self, data: CreateAgentDefinition) -> Result<AgentDefinition> {
-        if data.name.trim().is_empty() {
-            return Err(CoreError::Validation("agent name cannot be empty".into()));
-        }
-        let key = Self::generate_key();
-        let now = now_ts();
-        let active = data.active.unwrap_or(true);
-        let mut qb = insert!(
-            TableName::AGENT_DEFINITION,
-            ("key", key.clone()),
-            ("name", data.name.clone()),
-            ("description", data.description.clone()),
-            ("owner_topic_id", data.owner_topic_id),
-            ("cloned_from_id", data.cloned_from_id),
-            ("active", active),
-            ("data", utils::map_to_str_default(Some(&data.data))?),
-            ("created_at", now)
-        );
-        qb.push(" RETURNING id");
-        let id: i64 = self
-            .executor
-            .fetch_one_scalar(qb.build_query_scalar::<i64>())
-            .await?;
-
-        Ok(AgentDefinition {
-            id,
-            key,
-            name: data.name,
-            description: data.description,
-            owner_topic_id: data.owner_topic_id,
-            cloned_from_id: data.cloned_from_id,
-            active: active,
-            data: data.data,
-            created_at: now,
+impl<'s> FromRow<'s, DbRow> for AgentInstance {
+    fn from_row(row: &'s DbRow) -> std::result::Result<Self, sqlx::Error> {
+        const ROLE: &str = "agent_instances.role";
+        const MODE: &str = "agent_instances.mode";
+        const PHASE: &str = "agent_instances.phase";
+        let role: String = row.try_get("role")?;
+        let mode: Option<String> = row.try_get("mode")?;
+        let phase: String = row.try_get("phase")?;
+        Ok(Self {
+            id: row.try_get("id")?,
+            parent_id: row.try_get("parent_id")?,
+            topic_id: row.try_get("topic_id")?,
+            role: decode_enum(ROLE, &role).map_err(|error| sqlx::Error::Decode(Box::new(error)))?,
+            mode: mode
+                .map(|text| decode_enum(MODE, &text))
+                .transpose()
+                .map_err(|error| sqlx::Error::Decode(Box::new(error)))?,
+            phase: decode_enum(PHASE, &phase)
+                .map_err(|error| sqlx::Error::Decode(Box::new(error)))?,
+            phase_payload: row.try_get("phase_payload")?,
+            created_at: row.try_get("created_at")?,
         })
     }
+}
 
-    /// 更新 AgentDefinition
-    pub async fn update_definition(&self, id: i64, data: UpdateAgentDefinition) -> Result<()> {
-        if data
-            .name
-            .as_ref()
-            .is_some_and(|name| name.trim().is_empty())
-        {
-            return Err(CoreError::Validation("agent name cannot be empty".into()));
-        }
-        let mut qb = update!(
-            TableName::AGENT_DEFINITION,
-            id,
-            ("name", data.name),
-            ("description", data.description),
-            ("owner_topic_id", data.owner_topic_id),
-            ("cloned_from_id", data.cloned_from_id),
-            ("active", data.active),
-            ("data", utils::map_to_str_optional(data.data.as_ref())?)
-        );
-        ensure_affected(self.executor.execute(qb.build()).await?)
-    }
-
-    pub async fn delete_definition(&self, id: i64) -> Result<()> {
-        let mut qb = delete_by_id!(TableName::AGENT_DEFINITION, id);
-        ensure_affected(self.executor.execute(qb.build()).await?)
-    }
-
-    pub async fn get_definition(&self, id: i64) -> Result<Option<AgentDefinition>> {
-        let row = self
-            .executor
-            .fetch_optional(
-                get_by_id!(TableName::AGENT_DEFINITION, id).build_query_as::<AgentDefinition>(),
-            )
-            .await?;
-        Ok(row)
-    }
-
-    /// 删除 topic 特有的 agent 定义
-    pub(crate) async fn batch_delete_definitions_by_topics(&self, topic_ids: &[i64]) -> Result<()> {
-        utils::batch_delete_in(
-            &self.executor,
-            TableName::AGENT_DEFINITION,
-            "owner_topic_id",
-            topic_ids,
-        )
-        .await
-    }
-
-    pub async fn get_definition_by_key(&self, key: &str) -> Result<Option<AgentDefinition>> {
-        let row = self
-            .executor
-            .fetch_optional(
-                Self::select_definitions()
-                    .push(" WHERE key = ")
-                    .push_bind(key)
-                    .build_query_as::<AgentDefinition>(),
-            )
-            .await?;
-        Ok(row)
-    }
-
-    pub async fn list_definitions(&self) -> Result<Vec<AgentDefinition>> {
-        let rows = self
-            .executor
-            .fetch_all(
-                Self::select_definitions()
-                    .push(" ORDER BY id DESC ")
-                    .build_query_as::<AgentDefinition>(),
-            )
-            .await?;
-        Ok(rows)
-    }
-
-    /// 创建新的 Agent 实例
-    pub async fn create_instance(&self, data: CreateInstance) -> Result<AgentInstance> {
-        let now = now_ts();
-        let role = data.role.unwrap_or(AgentRole::Child);
-        let status = data.status.unwrap_or(AgentStatus::Idle);
+impl Storage {
+    /// 插入实例并返回新 id
+    pub async fn agent_create(&self, input: AgentInstanceCreate) -> Result<i64> {
         let mut qb = insert!(
             TableName::AGENT_INSTANCES,
-            ("parent_id", data.parent_id),
-            ("topic_id", data.topic_id),
-            ("agent_id", data.agent_id),
-            ("role", role.to_string()),
-            ("mode", data.mode.map(|v| v.to_string())),
-            ("status", status.to_string()),
-            ("created_at", now)
+            ("parent_id", input.parent_id),
+            ("topic_id", input.topic_id),
+            ("role", input.role.to_string()),
+            ("mode", input.mode.map(|mode| mode.to_string())),
+            ("phase", input.phase.to_string()),
+            ("phase_payload", input.phase_payload),
+            ("created_at", now_ts()),
         );
         qb.push(" RETURNING id");
-        let id: i64 = self
-            .executor
-            .fetch_one_scalar(qb.build_query_scalar::<i64>())
-            .await?;
-
-        Ok(AgentInstance {
-            id,
-            parent_id: data.parent_id,
-            topic_id: data.topic_id,
-            agent_id: data.agent_id,
-            user_id: None,
-            assistant_id: None,
-            mode: data.mode,
-            role,
-            status,
-            created_at: now,
-        })
-    }
-
-    /// 更新 Agent 实例
-    pub async fn update_instance(&self, id: i64, data: UpdateInstance) -> Result<()> {
-        let mut qb = update!(
-            TableName::AGENT_INSTANCES,
-            id,
-            ("agent_id", data.agent_id),
-            ("status", data.status.map(|v| v.to_string())),
-            ("mode", data.mode.map(|v| v.to_string())),
-            ("user_id", data.user_id),
-            ("assistant_id", data.assistant_id),
-        );
-        ensure_affected(self.executor.execute(qb.build()).await?)
-    }
-
-    /// 把一条新的用户消息记成实例本轮的输入
-    pub async fn bind_unconsumed_input(&self, id: i64, user_message_id: i64) -> Result<()> {
-        let instance = self
-            .get_instance(id)
-            .await?
-            .ok_or_else(|| CoreError::RowNotFound(format!("instance_id: {}", id)))?;
-        let has_input = instance
-            .user_id
-            .is_some_and(|user_id| user_id > instance.assistant_id.unwrap_or(0));
-        if has_input {
-            return Ok(());
-        }
-        self.update_instance(
-            id,
-            UpdateInstance {
-                user_id: Some(user_message_id),
-                ..Default::default()
-            },
-        )
-        .await
-    }
-
-    /// 把实例的消息指针回退到末次配对
-    ///
-    /// `user_id` 回到 `assistant_id` 锚定的那条用户消息，还没跑过轮的实例两个指针都清空；
-    pub async fn rewind_instance_messages(&self, id: i64) -> Result<()> {
-        let instance = self
-            .get_instance(id)
-            .await?
-            .ok_or_else(|| CoreError::RowNotFound(format!("instance_id: {}", id)))?;
-        let user_id = match instance.assistant_id {
-            Some(assistant_id) => MessageStorage::new(self.executor.clone())
-                .get(assistant_id)
-                .await?
-                .and_then(|assistant| assistant.from_id),
-            None => None,
-        };
-        let mut qb = update_strict!(TableName::AGENT_INSTANCES, id, ("user_id", user_id));
-        ensure_affected(self.executor.execute(qb.build()).await?)
-    }
-
-    pub async fn delete_instances(&self, ids: &[i64]) -> Result<()> {
-        if ids.is_empty() {
-            return Ok(());
-        }
         self.executor
-            .with_tx(|executor| async move {
-                utils::batch_delete_in(
-                    &executor,
-                    TableName::TOOL_APPROVAL_REQUESTS,
-                    "instance_id",
-                    ids,
-                )
-                .await?;
-                MessageStorage::new(executor.clone())
-                    .delete_contents_by_instances(ids)
-                    .await?;
-                utils::batch_delete_in(&executor, TableName::MESSAGES, "instance_id", ids).await?;
-                utils::batch_delete_in(&executor, TableName::AGENT_INSTANCES, "id", ids).await?;
-                Ok(())
-            })
+            .fetch_one_scalar(qb.build_query_scalar::<i64>())
             .await
     }
 
-    pub async fn get_instance(&self, id: i64) -> Result<Option<AgentInstance>> {
-        let row = self
-            .executor
-            .fetch_optional(
-                get_by_id!(TableName::AGENT_INSTANCES, id).build_query_as::<AgentInstance>(),
-            )
-            .await?;
-        Ok(row)
-    }
-
-    pub(crate) async fn batch_get_instances_by_topics(
+    /// 该 topic 没有主实例时补建，返回已有或新建的 id
+    pub async fn agent_ensure_main(
         &self,
-        topic_ids: &[i64],
-    ) -> Result<Vec<AgentInstance>> {
-        if topic_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut qb = Self::select_instances();
-        qb.push(" WHERE topic_id IN ( ");
-        let mut separated = qb.separated(", ");
-        for id in topic_ids {
-            separated.push_bind(*id);
-        }
-        separated.push_unseparated(") ");
-        qb.push(" ORDER BY id ASC ");
-
-        let row = self
-            .executor
-            .fetch_all(qb.build_query_as::<AgentInstance>())
-            .await?;
-
-        Ok(row)
-    }
-
-    /// 获取 topic 的主 Agent 实例
-    pub async fn get_main_instance(&self, topic_id: i64) -> Result<Option<AgentInstance>> {
-        ensure_lte_one(
-            self.executor
-                .fetch_all(
-                    Self::select_instances()
+        topic_id: i64,
+        mode: AgentMode,
+        phase: AgentPhase,
+    ) -> Result<i64> {
+        let role = AgentRole::Main.to_string();
+        let mode = mode.to_string();
+        let phase = phase.to_string();
+        self.with_tx(move |storage| async move {
+            let mut insert = insert!(
+                TableName::AGENT_INSTANCES,
+                ("parent_id", Option::<i64>::None),
+                ("topic_id", topic_id),
+                ("role", role.clone()),
+                ("mode", Some(mode)),
+                ("phase", phase),
+                ("phase_payload", Option::<&str>::None),
+                ("created_at", now_ts()),
+            );
+            insert.push(" ON CONFLICT DO NOTHING");
+            execute_allowing_zero_rows(&storage.executor, insert).await?;
+            storage
+                .executor
+                .fetch_one_scalar(
+                    select_fields!(TableName::AGENT_INSTANCES, ("id",))
                         .push(" WHERE topic_id = ")
                         .push_bind(topic_id)
                         .push(" AND role = ")
-                        .push_bind(AgentRole::Main.to_string())
-                        .build_query_as::<AgentInstance>(),
+                        .push_bind(role)
+                        .build_query_scalar::<i64>(),
                 )
-                .await?,
-            Some(format!(
-                "Only one main instance allowed in a topic, topic_id: {}",
-                topic_id
-            )),
-        )
+                .await
+        })
+        .await
     }
 
-    /// 获取 topic 下的全部 Agent 实例，含主实例
-    pub async fn list_instances_by_topic(&self, topic_id: i64) -> Result<Vec<AgentInstance>> {
+    /// 删除实例，记录不存在时报错
+    pub async fn agent_delete(&self, id: i64) -> Result<()> {
+        execute_expecting_rows(
+            &self.executor,
+            delete_by_id!(TableName::AGENT_INSTANCES, id),
+        )
+        .await
+    }
+
+    /// 覆盖实例的阶段与载荷，记录不存在时报错
+    pub async fn agent_save_phase(
+        &self,
+        id: i64,
+        phase: AgentPhase,
+        phase_payload: Option<&str>,
+    ) -> Result<()> {
+        execute_expecting_rows(
+            &self.executor,
+            update_strict!(
+                TableName::AGENT_INSTANCES,
+                id,
+                ("phase", phase.to_string()),
+                ("phase_payload", phase_payload)
+            ),
+        )
+        .await
+    }
+
+    /// 按 id 取出实例，不存在时为 None
+    pub async fn agent_get(&self, id: i64) -> Result<Option<AgentInstance>> {
         let rows = self
             .executor
             .fetch_all(
-                Self::select_instances()
-                    .push(" WHERE topic_id = ")
-                    .push_bind(topic_id)
-                    .push(" ORDER BY id ASC ")
+                select_instances()
+                    .push(" WHERE id = ")
+                    .push_bind(id)
                     .build_query_as::<AgentInstance>(),
             )
             .await?;
-        Ok(rows)
+        ensure_lte_one(rows)
     }
 
-    /// 查找 topic 能力列表中的所有 AgentDefinition
-    pub async fn list_definitions_by_topic(&self, topic_id: i64) -> Result<Vec<AgentDefinition>> {
-        let mut qb = Self::select_definitions();
-        qb.push(" WHERE id IN (SELECT agent_id FROM ")
-            .push(TableName::TOPIC_AGENT_MAPS)
-            .push(" WHERE topic_id = ")
-            .push_bind(topic_id)
-            .push(") ORDER BY id ASC ");
-        let rows = self
-            .executor
-            .fetch_all(qb.build_query_as::<AgentDefinition>())
-            .await?;
-        Ok(rows)
-    }
-
-    /// 复制一份 `agent_id` 给新的 `owner_topic_id`
-    pub async fn clone_definition_for_topic(
-        &self,
-        agent_id: i64,
-        owner_topic_id: i64,
-    ) -> Result<AgentDefinition> {
-        let source = self
-            .get_definition(agent_id)
-            .await?
-            .ok_or_else(|| CoreError::RowNotFound(format!("agent definition {agent_id}")))?;
-        if source.owner_topic_id == Some(owner_topic_id) {
-            return Ok(source);
-        }
-
-        self.create_definition(CreateAgentDefinition {
-            name: format!("{}_copy", source.name),
-            description: source.description,
-            owner_topic_id: Some(owner_topic_id),
-            cloned_from_id: Some(source.id),
-            active: Some(source.active),
-            data: source.data,
-        })
-        .await
-    }
-
-    async fn get_agent_map_by_agent(
-        &self,
-        topic_id: i64,
-        agent_id: i64,
-    ) -> Result<Option<TopicAgentMap>> {
+    /// 列出 topic 下的实例，按 id 升序
+    pub async fn agent_list_by_topic(&self, topic_id: i64) -> Result<Vec<AgentInstance>> {
         self.executor
-            .fetch_optional(
-                Self::select_agent_maps()
-                    .push(" WHERE topic_id = ")
-                    .push_bind(topic_id)
-                    .push(" AND agent_id = ")
-                    .push_bind(agent_id)
-                    .build_query_as::<TopicAgentMap>(),
-            )
-            .await
-    }
-
-    /// 创建 topic 与 AgentDefinition 的能力映射
-    pub async fn create_topic_agent_map(&self, data: CreateTopicAgentMap) -> Result<TopicAgentMap> {
-        if self.get_definition(data.agent_id).await?.is_none() {
-            return Err(CoreError::Validation(format!(
-                "Agent definition not found: {}",
-                data.agent_id
-            )));
-        }
-        if self
-            .get_agent_map_by_agent(data.topic_id, data.agent_id)
-            .await?
-            .is_some()
-        {
-            return Err(CoreError::Validation(format!(
-                "Agent {} is already mapped in topic {}",
-                data.agent_id, data.topic_id
-            )));
-        }
-
-        let now = now_ts();
-        let mut qb = insert!(
-            TableName::TOPIC_AGENT_MAPS,
-            ("topic_id", data.topic_id),
-            ("agent_id", data.agent_id),
-            ("created_at", now)
-        );
-        qb.push(" RETURNING id");
-        let id: i64 = self
-            .executor
-            .fetch_one_scalar(qb.build_query_scalar::<i64>())
-            .await?;
-
-        Ok(TopicAgentMap {
-            id,
-            topic_id: data.topic_id,
-            agent_id: data.agent_id,
-            created_at: now,
-        })
-    }
-
-    /// 获取 topic 的能力映射列表
-    pub async fn list_agent_maps_by_topic(&self, topic_id: i64) -> Result<Vec<TopicAgentMap>> {
-        let rows = self
-            .executor
             .fetch_all(
-                Self::select_agent_maps()
+                select_instances()
                     .push(" WHERE topic_id = ")
                     .push_bind(topic_id)
-                    .push(" ORDER BY id ASC ")
-                    .build_query_as::<TopicAgentMap>(),
-            )
-            .await?;
-        Ok(rows)
-    }
-
-    /// 获取单个 topic 能力映射
-    pub async fn get_agent_map(&self, id: i64) -> Result<Option<TopicAgentMap>> {
-        self.executor
-            .fetch_optional(
-                Self::select_agent_maps()
-                    .push(" WHERE id = ")
-                    .push_bind(id)
-                    .build_query_as::<TopicAgentMap>(),
+                    .push(" ORDER BY id ASC")
+                    .build_query_as::<AgentInstance>(),
             )
             .await
-    }
-
-    /// 删除 topic 能力映射
-    pub async fn delete_topic_agent_map(&self, id: i64) -> Result<()> {
-        let mut qb = delete_by_id!(TableName::TOPIC_AGENT_MAPS, id);
-        ensure_affected(self.executor.execute(qb.build()).await?)
-    }
-
-    /// 删除 topic 的能力映射，供删除 topic 时级联调用
-    pub(crate) async fn batch_delete_agent_maps_by_topics(&self, topic_ids: &[i64]) -> Result<()> {
-        utils::batch_delete_in(
-            &self.executor,
-            TableName::TOPIC_AGENT_MAPS,
-            "topic_id",
-            topic_ids,
-        )
-        .await
-    }
-
-    pub fn select_definitions<'a>() -> sqlx::QueryBuilder<'a, DbDriver> {
-        select_fields!(
-            TableName::AGENT_DEFINITION,
-            (
-                "id",
-                "key",
-                "name",
-                "description",
-                "owner_topic_id",
-                "cloned_from_id",
-                "active",
-                "data",
-                "created_at"
-            )
-        )
-    }
-
-    fn select_instances<'a>() -> sqlx::QueryBuilder<'a, DbDriver> {
-        select_fields!(
-            TableName::AGENT_INSTANCES,
-            (
-                "id",
-                "parent_id",
-                "topic_id",
-                "agent_id",
-                "user_id",
-                "assistant_id",
-                "role",
-                "status",
-                "mode",
-                "created_at"
-            )
-        )
-    }
-
-    fn select_agent_maps<'a>() -> sqlx::QueryBuilder<'a, DbDriver> {
-        select_fields!(
-            TableName::TOPIC_AGENT_MAPS,
-            ("id", "topic_id", "agent_id", "created_at")
-        )
     }
 }

@@ -1,32 +1,23 @@
 [package]
 name = "wind-ai"
-description = """
-Conversation and provider adapter for windai
-"""
-edition.workspace = true
 version.workspace = true
-repository.workspace = true
-authors.workspace = true
+edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
-serde.workspace = true
-serde_json.workspace = true
-strum.workspace = true
-derive_builder.workspace = true
-thiserror.workspace = true
-chrono.workspace = true
-reqwest.workspace = true
-futures.workspace = true
-bytes.workspace = true
-async-stream.workspace = true
-log.workspace = true
-url.workspace = true
-tokio.workspace = true
-utoipa.workspace = true
-pin-project-lite.workspace = true
-nom.workspace = true
+wind-wire = { path = "../wire" }
+futures = { workspace = true }
+log = { workspace = true }
+nom = { workspace = true }
+pin-project-lite = { workspace = true }
+reqwest = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+strum = { workspace = true }
+thiserror = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
-env_logger.workspace = true
-test-case.workspace = true
+tokio = { workspace = true, features = ["test-util", "macros"] }

@@ -1,0 +1,29 @@
+[package]
+name = "wind-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+wind-core = { path = "../core" }
+wind-event = { path = "../event" }
+wind-mod = { path = "../mod" }
+wind-mcp = { path = "../mcp" }
+wind-script = { path = "../script" }
+wind-wire = { path = "../wire" }
+async-trait = { workspace = true }
+log = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+wind-ai = { path = "../ai" }
+tempfile = { version = "*" }
+tokio = { workspace = true, features = ["test-util", "macros"] }
+sqlx = { workspace = true }
+futures = { workspace = true }
+dotenvy = { workspace = true }
+dirs = { workspace = true }
+env_logger = { workspace = true }

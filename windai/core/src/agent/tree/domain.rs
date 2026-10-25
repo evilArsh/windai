@@ -1,10 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-/// 领域载荷定义
 pub trait Domain: 'static + Clone {
-    /// 节点启动参数
     type Spec: Serialize + for<'de> Deserialize<'de> + Clone + std::fmt::Debug + Send + Sync;
-    /// 挂起标记，外部输入需原样回显
     type Suspend: Serialize
         + for<'de> Deserialize<'de>
         + Clone
@@ -12,58 +9,60 @@ pub trait Domain: 'static + Clone {
         + std::fmt::Debug
         + Send
         + Sync;
-    /// 外部输入
     type Resume: std::fmt::Debug + Send + Sync;
-    /// 节点产出
     type Output: Serialize + for<'de> Deserialize<'de> + Clone + std::fmt::Debug + Send + Sync;
-    /// 领域错误
     type Error: Serialize + for<'de> Deserialize<'de> + Clone + std::fmt::Debug + Send + Sync;
-    /// 进度增量
-    type Progress: std::fmt::Debug + Send + Sync + Clone;
 }
 
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::Domain;
 
+    /// 脚本化的节点启动参数
     #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
     pub enum TestSpec {
+        /// 立刻完成
         Noop,
+        /// 派生给定数量的子节点
         Children(usize),
+        /// 立刻挂起
         Suspend,
+        /// 立刻失败
         Fail,
     }
 
+    /// 测试用的挂起标记
     #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
     pub enum TestSuspend {
+        /// 主挂起标记
         Ask,
         /// 与 Ask 相异的挂起标记，用于构造不匹配的回显
         Other,
     }
 
+    /// 测试用的外部输入
     #[derive(Debug, Clone, PartialEq)]
     pub enum TestResume {
+        /// 对挂起的应答
         Answer,
     }
 
+    /// 测试用的节点产出
     #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
     pub enum TestOutput {
+        /// 成功产出
         Ok,
     }
 
+    /// 测试用的领域错误
     #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
     pub enum TestError {
+        /// 一个失败
         Boom,
     }
 
-    #[derive(Debug, Clone, PartialEq)]
-    pub enum TestProgress {
-        Tick,
-        /// 取消之后才发的分片，用于区分门控前后的两片
-        Tock,
-    }
-
-    #[derive(Clone)]
+    /// 测试用的领域标签
+    #[derive(Debug, Clone)]
     pub struct TestDomain;
 
     impl Domain for TestDomain {
@@ -72,6 +71,5 @@ pub(crate) mod test_support {
         type Resume = TestResume;
         type Output = TestOutput;
         type Error = TestError;
-        type Progress = TestProgress;
     }
 }

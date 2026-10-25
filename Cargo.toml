@@ -1,7 +1,6 @@
 [workspace]
 members = [
     "windai/*",
-    # 
 ]
 resolver = "3"
 

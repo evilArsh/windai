@@ -1,214 +1,162 @@
-use super::eventsource::Eventsource;
-use super::{ProviderError, message::Message, provider::adapter::AdapterError, tool::Tools};
-use crate::client;
-use crate::model::Model;
-use crate::provider::adapter::{self, ChatAdapter};
-use async_stream::stream;
-use futures::stream::Stream;
-use log;
-use reqwest::Method;
+//! 一次非流式或流式请求的发送与响应读取
+
+use super::adapter::ChatAdapter;
+use super::client;
+use super::error::AdapterError;
+use super::eventsource::{Event, EventStreamError, Eventsource};
+use super::model::{ChatModel, Target};
+use futures::Stream;
+use pin_project_lite::pin_project;
+use reqwest::header;
+use reqwest::{Method, Response};
 use serde_json::Value;
-use url::Url;
+use std::fmt::Display;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use url::{ParseError, Url};
+use wind_wire::message::Message;
+use wind_wire::tool::Tools;
 
-/// 聊天统一响应事件
-#[derive(Debug, PartialEq, Eq, strum::Display)]
-pub enum ResEventStatus {
-    /// 用于流式消息
-    Partial,
-    /// 流式/非流式 数据接收完毕
-    Finish,
-    /// 发生错误后，终止请求并且返回具体错误
-    Error,
-}
-#[derive(Debug)]
-pub struct ResEvent {
-    pub status: ResEventStatus,
-    pub data: Option<Message>,
-    pub error: Option<ProviderError>,
-}
-impl ResEvent {
-    #[inline]
-    pub fn new_partial(data: Message) -> Self {
-        Self {
-            status: ResEventStatus::Partial,
-            data: Some(data),
-            error: None,
-        }
-    }
-    #[inline]
-    pub fn new_finish() -> Self {
-        Self {
-            status: ResEventStatus::Finish,
-            data: None,
-            error: None,
-        }
-    }
-    #[inline]
-    pub fn new_error(error: ProviderError) -> Self {
-        Self {
-            status: ResEventStatus::Error,
-            data: None,
-            error: Some(error),
-        }
-    }
+pub struct Request {
+    pub model: ChatModel,
+    pub target: Target,
+    pub contexts: Vec<Message>,
+    pub tools: Option<Vec<Tools>>,
 }
 
-impl From<client::ClientError> for ResEvent {
-    fn from(value: client::ClientError) -> Self {
-        ResEvent {
-            status: ResEventStatus::Error,
-            data: None,
-            error: Some(value.into()),
-        }
-    }
-}
-impl From<AdapterError> for ResEvent {
-    fn from(value: AdapterError) -> Self {
-        ResEvent {
-            status: ResEventStatus::Error,
-            data: None,
-            error: Some(value.into()),
-        }
-    }
-}
-impl From<url::ParseError> for ResEvent {
-    fn from(value: url::ParseError) -> Self {
-        ResEvent {
-            status: ResEventStatus::Error,
-            data: None,
-            error: Some(value.into()),
-        }
-    }
+#[derive(Debug, Clone)]
+pub enum Chunk {
+    Delta(Message),
+    Done,
 }
 
-/// 生成请求体
-pub fn build_request(
-    chat_adapter: &dyn ChatAdapter,
-    model: &Model,
-    contexts: &[Message],
-    tools: Option<&[Tools]>,
-) -> Result<Value, ProviderError> {
-    let req_body = match chat_adapter.build_request(model, contexts, tools) {
-        Ok(body) => body,
-        Err(e) => return Err(e.into()),
+#[derive(Debug, thiserror::Error)]
+pub enum ProviderError {
+    #[error("the provider answered {code}: {body}")]
+    Status { code: u16, body: String },
+    #[error("transfer failed: {0}")]
+    Transport(String),
+    #[error("the request url is invalid: {0}")]
+    Url(#[from] ParseError),
+    #[error(transparent)]
+    Adapter(#[from] AdapterError),
+}
+
+fn url_of(
+    adapter: &dyn ChatAdapter,
+    model: &ChatModel,
+    target: &Target,
+) -> Result<String, ProviderError> {
+    let base = target.base_url.trim_end_matches('/');
+    let path = model.endpoint.as_deref().unwrap_or_else(|| adapter.path());
+    let path = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
     };
-    Ok(req_body)
+    Ok(Url::parse(&format!("{base}{path}"))?.to_string())
 }
 
-fn parse_url(
-    chat_adapter: &dyn ChatAdapter,
-    api_base_url: &str,
-    api_endpoint: Option<&str>,
-) -> Result<Url, url::ParseError> {
-    let endpoint = api_endpoint.map_or(
-        adapter::get_default_endpoint(chat_adapter.get_type()),
-        |e| e.to_string(),
-    );
-
-    Url::parse(&format!(
-        "{}/{}",
-        api_base_url.trim_end_matches("/"),
-        endpoint.trim_start_matches("/")
-    ))
+pub async fn once(adapter: &dyn ChatAdapter, request: &Request) -> Result<Message, ProviderError> {
+    let url = url_of(adapter, &request.model, &request.target)?;
+    let body =
+        adapter.build_request(&request.model, &request.contexts, request.tools.as_deref())?;
+    let response = send(&url, &request.target, body).await?;
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| ProviderError::Transport(error.to_string()))?;
+    Ok(adapter.parse_response(&bytes)?)
 }
-/// 一次对话请求
-///
-/// 根据 `req_body` 中的 `stream` 字段来决定启用流式或者非流式对话请求
-pub fn handle_chat(
-    chat_adapter: &dyn ChatAdapter,
-    req_body: &Value,
-    api_base_url: &str,
-    api_key: &str,
-    api_endpoint: Option<&str>,
-) -> impl Stream<Item = ResEvent> {
-    stream! {
-        let api_url = match parse_url(chat_adapter, api_base_url, api_endpoint) {
-            Ok(api_url) => api_url,
-            Err(err) => {
-                yield err.into();
-                return;
-            }
-        };
-        let is_stream = req_body
-            .get("stream")
-            .and_then(|v| v.as_bool())
-            .unwrap_or_else(|| false);
-        match is_stream {
-            true => {
-                let api_url = match parse_url(chat_adapter, api_base_url, api_endpoint) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        yield e.into();
-                        return;
-                    }
-                };
 
-                let response = match client::request_sse(api_url.as_str(), Method::POST, |req| {
-                    req.json(req_body).bearer_auth(api_key)
-                })
-                .await
-                {
-                    Ok(r) => r,
-                    Err(e) => {
-                        yield e.into();
-                        return;
+pub async fn stream(
+    adapter: &dyn ChatAdapter,
+    request: &Request,
+) -> Result<impl Stream<Item = Result<Chunk, ProviderError>>, ProviderError> {
+    let body =
+        adapter.build_request(&request.model, &request.contexts, request.tools.as_deref())?;
+    stream_body(adapter, &request.model, &request.target, body).await
+}
+
+pub async fn stream_body(
+    adapter: &dyn ChatAdapter,
+    model: &ChatModel,
+    target: &Target,
+    body: Value,
+) -> Result<impl Stream<Item = Result<Chunk, ProviderError>>, ProviderError> {
+    let url = url_of(adapter, model, target)?;
+    let response = send(&url, target, body).await?;
+    let events = response.bytes_stream().eventsource();
+    Ok(EventsToChunks {
+        adapter,
+        events,
+        finished: false,
+    })
+}
+
+async fn send(url: &str, target: &Target, body: Value) -> Result<Response, ProviderError> {
+    let client = client::get().map_err(ProviderError::Transport)?;
+    let mut builder = client
+        .request(Method::POST, url)
+        .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
+        .header(header::ACCEPT, "text/event-stream");
+    if let Some(key) = &target.api_key {
+        builder = builder.header(header::AUTHORIZATION, format!("Bearer {key}"));
+    }
+    let response = builder
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| ProviderError::Transport(error.to_string()))?;
+    if !response.status().is_success() {
+        let code = response.status().as_u16();
+        let body = response.text().await.unwrap_or_default();
+        return Err(ProviderError::Status { code, body });
+    }
+    Ok(response)
+}
+
+pin_project! {
+struct EventsToChunks<'a, E> {
+    adapter: &'a dyn ChatAdapter,
+    #[pin]
+    events: E,
+    finished: bool,
+}
+}
+
+impl<'a, E, F> Stream for EventsToChunks<'a, E>
+where
+    E: Stream<Item = Result<Event, EventStreamError<F>>>,
+    F: Display,
+{
+    type Item = Result<Chunk, ProviderError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        if *this.finished {
+            return Poll::Ready(None);
+        }
+        loop {
+            match this.events.as_mut().poll_next(cx) {
+                Poll::Ready(Some(Ok(event))) => match this.adapter.parse_stream_chunk(&event) {
+                    Ok(Some(message)) => return Poll::Ready(Some(Ok(Chunk::Delta(message)))),
+                    Ok(None) => continue,
+                    Err(error) => {
+                        *this.finished = true;
+                        return Poll::Ready(Some(Err(error.into())));
                     }
-                };
-                for await result in response.bytes_stream().eventsource() {
-                    match result {
-                        Ok(event) => {
-                            match chat_adapter.parse_stream_chunk(&event) {
-                                Ok(Some(chunk)) => {
-                                    yield ResEvent::new_partial(chunk);
-                                },
-                                Ok(None)=>{
-                                    log::warn!("[parse_stream_chunk] Empty data")
-                                },
-                                Err(e) => {
-                                    log::error!("[parse_stream_chunk] Error\n{}", e.to_string());
-                                    yield e.into();
-                                    return;
-                                }
-                            };
-                        }
-                        Err(err) => {
-                            yield ResEvent::new_error(ProviderError::SSE(err.to_string()));
-                        }
-                    };
+                },
+                Poll::Ready(Some(Err(error))) => {
+                    *this.finished = true;
+                    return Poll::Ready(Some(Err(ProviderError::Transport(error.to_string()))));
                 }
-                yield ResEvent::new_finish();
-            }
-            _ => {
-                let response = match client::request(api_url.as_str(), Method::POST, |req| {
-                    req.json(req_body).bearer_auth(api_key)
-                })
-                .await
-                {
-                    Ok(r) => r,
-                    Err(e) => {
-                        log::error!("[response error] status:{}, text: {}", e.code, e.msg);
-                        yield e.into();
-                        return;
-                    }
-                };
-                let res = match client::handle_response(response).await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        log::error!("[handle_response error]\n{}", e);
-                        yield e.into();
-                        return;
-                    }
-                };
-                let response = match chat_adapter.parse_response(&res) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        log::error!("[parse response error]\n{}", e);
-                        yield e.into();
-                        return;
-                    }
-                };
-                yield ResEvent::new_partial(response);
-                yield ResEvent::new_finish();
+                Poll::Ready(None) => {
+                    // `[DONE]` 不会成为一个事件，事件流的自然结束就是整条流的结束
+                    *this.finished = true;
+                    return Poll::Ready(Some(Ok(Chunk::Done)));
+                }
+                Poll::Pending => return Poll::Pending,
             }
         }
     }

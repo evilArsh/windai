@@ -1,28 +1,69 @@
 pub mod fs;
 pub mod skills;
 
-use serde::Serialize;
+use super::registry::{McpError, Registry};
+use std::fs as std_fs;
+use std::path::{Path, PathBuf};
+use wind_event::context::DispatchCx;
+use wind_mod::dirs::AppDirs;
 
-#[derive(utoipa::ToSchema, Debug, Serialize, Clone, Copy)]
-pub struct BuiltinSpec {
-    /// registry 注册名
-    pub name: &'static str,
-    /// 描述
-    pub description: &'static str,
+/// 稳定的公开标识
+pub const NAMES: &[&str] = &["fs", "skills"];
+
+pub const FS: &str = "fs";
+pub const SKILLS: &str = "skills";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuiltinRoots {
+    /// 按顺序排列
+    pub skills: Vec<PathBuf>,
+    pub workspace: PathBuf,
 }
-pub const BUILTIN_FS: BuiltinSpec = BuiltinSpec {
-    name: "wind-mcp-fs",
-    description: "file and process capability",
-};
-pub const BUILTIN_SKILLS: BuiltinSpec = BuiltinSpec {
-    name: "wind-mcp-skills",
-    description: "skill discovery capability",
-};
-pub const BUILTIN_SERVERS: &[BuiltinSpec] = &[BUILTIN_FS, BUILTIN_SKILLS];
 
-/// 判断名字是否属于常驻内建服务
-///
-/// 供业务层在写入配置前做重名提示；存储层不依赖本模块，不做该校验
-pub fn is_builtin_name(name: &str) -> bool {
-    BUILTIN_SERVERS.iter().any(|s| s.name == name)
+pub fn roots_for(dirs: &AppDirs, topic_id: i64, mod_roots: &[PathBuf]) -> BuiltinRoots {
+    let mut skills: Vec<PathBuf> = mod_roots.iter().map(|root| root.join("skills")).collect();
+    skills.push(dirs.public_skills());
+    BuiltinRoots {
+        skills,
+        workspace: dirs.topic_dir(topic_id),
+    }
+}
+
+pub async fn register_builtin(
+    registry: &Registry,
+    cx: &DispatchCx,
+    topic_id: i64,
+    roots: &BuiltinRoots,
+) -> Result<(), McpError> {
+    std_fs_create(&roots.workspace)?;
+    for root in &roots.skills {
+        std_fs_create(root)?;
+    }
+    let scope = format!("topic:{topic_id}");
+    registry
+        .connect_builtin(
+            cx,
+            topic_id,
+            FS,
+            &scope,
+            fs::FsServer::new(vec![roots.workspace.clone()]),
+        )
+        .await?;
+    registry
+        .connect_builtin(
+            cx,
+            topic_id,
+            SKILLS,
+            &scope,
+            skills::SkillsServer::new(roots.skills.clone()),
+        )
+        .await?;
+    Ok(())
+}
+
+fn std_fs_create(path: &Path) -> Result<(), McpError> {
+    std_fs::create_dir_all(path).map_err(|error| McpError::Directory {
+        path: path.display().to_string(),
+        reason: error.to_string(),
+    })
 }

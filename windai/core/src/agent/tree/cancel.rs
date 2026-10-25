@@ -7,7 +7,6 @@ use super::{
 };
 
 impl<D: Domain> Tree<D> {
-    /// 后序展开子树并进入取消逻辑
     pub(super) fn reduce_cancel_request(
         &mut self,
         root: NodeId,
@@ -20,7 +19,7 @@ impl<D: Domain> Tree<D> {
             } else {
                 CancelOrigin::Ancestor(root)
             };
-            self.set_pending(id, None);
+            self.clear_pending(id);
             match self.phase(id) {
                 Some(Phase::Suspended(_) | Phase::WaitingChildren) => {
                     self.set_job(id, None);
@@ -52,7 +51,6 @@ impl<D: Domain> Tree<D> {
         effects
     }
 
-    /// 确认一个在跑的节点已停止
     pub(super) fn reduce_stopped(&mut self, node: NodeId, job: JobId) -> Vec<Effect<D>> {
         if self.job_of(node) != Some(job) {
             return Vec::new();
@@ -137,14 +135,14 @@ mod tests {
         assert_eq!(
             stop_order(&effects),
             vec![a1, a, root],
-            "必须后序：子先父后"
+            "must be post-order, children before parents"
         );
         for id in [root, a, a1] {
             assert!(
                 effects
                     .iter()
                     .any(|e| matches!(e, Effect::Persist { node } if *node == id)),
-                "每个进入 Cancelling 的节点都必须落库"
+                "every node that enters Cancelling must be persisted"
             );
             assert!(
                 effects.iter().any(|e| matches!(
@@ -152,7 +150,7 @@ mod tests {
                     Effect::Publish(TreeEvent::PhaseChanged { node, to })
                         if *node == id && matches!(**to, Phase::Cancelling(_))
                 )),
-                "每个进入 Cancelling 的节点都必须对外宣告相位迁移"
+                "every node that enters Cancelling must announce its Phase transition"
             );
         }
     }
@@ -180,7 +178,7 @@ mod tests {
         });
         assert!(
             stop_order(&effects).is_empty(),
-            "挂起节点没有 worker，不需要 Stop"
+            "a suspended node has no worker, so no Stop is needed"
         );
         assert!(matches!(tree.phase(root), Some(Phase::Cancelled(_))));
         assert!(
@@ -206,7 +204,7 @@ mod tests {
                 job: 999
             })
             .is_empty(),
-            "旧 job 的确认必须丢弃"
+            "a stale job's confirmation must be discarded"
         );
         assert!(matches!(tree.phase(root), Some(Phase::Cancelling(_))));
 
@@ -222,19 +220,23 @@ mod tests {
                     terminal: Terminal::Cancelled(CancelOrigin::External),
                 }) if *node == root
             )),
-            "确认必须对外宣告终态与取消来源"
+            "a confirmation must announce the terminal phase and the cancel origin"
         );
         assert!(
             confirmed
                 .iter()
                 .any(|e| matches!(e, Effect::Persist { node } if *node == root)),
-            "确认必须落库"
+            "a confirmation must be persisted"
         );
         assert!(matches!(
             tree.phase(root),
             Some(Phase::Cancelled(CancelOrigin::External))
         ));
-        assert_eq!(tree.job_of(root), None, "确认后 job 必须释放");
+        assert_eq!(
+            tree.job_of(root),
+            None,
+            "the job must be released after confirmation"
+        );
     }
 
     #[test]
@@ -248,7 +250,7 @@ mod tests {
 
         assert!(
             matches!(tree.phase(a), Some(Phase::Cancelling(_))),
-            "a 处于 Cancelling"
+            "a is in Cancelling"
         );
         let job = tree.node(a1).and_then(|n| n.job).expect("live job");
         let effects = tree.reduce(Event::Stopped { node: a1, job });
@@ -263,7 +265,7 @@ mod tests {
                     terminal: Terminal::Cancelled(CancelOrigin::Ancestor(ancestor)),
                 }) if *n == a1 && *ancestor == root
             )),
-            "级联取消的后代必须带上祖先来源"
+            "a descendant cancelled by cascade must carry the ancestor origin"
         );
     }
 
@@ -304,7 +306,7 @@ mod tests {
         });
 
         let mut sealed = 0;
-        // 故意乱序确认：root -> a1 -> a
+        // 故意乱序确认，依次为 root、a1、a
         for id in [root, a1, a] {
             let job = tree.node(id).and_then(|n| n.job).expect("live job");
             sealed += tree
@@ -313,7 +315,7 @@ mod tests {
                 .filter(|e| matches!(e, Effect::Publish(TreeEvent::Sealed)))
                 .count();
         }
-        assert_eq!(sealed, 0, "两个 detached 后代都还欠一次投递");
+        assert_eq!(sealed, 0, "both detached descendants still owe a delivery");
         for id in [a1, a] {
             sealed += tree
                 .reduce(Event::Deliver { node: id })
@@ -321,7 +323,10 @@ mod tests {
                 .filter(|e| matches!(e, Effect::Publish(TreeEvent::Sealed)))
                 .count();
         }
-        assert_eq!(sealed, 1, "Sealed 只在最后一个确认与投递都到达时发一次");
+        assert_eq!(
+            sealed, 1,
+            "Sealed is sent only once, when the last confirmation and delivery have both arrived"
+        );
         for id in [root, a, a1] {
             assert!(tree.phase(id).is_some_and(Phase::is_terminal));
         }
@@ -337,7 +342,7 @@ mod tests {
             detached: false,
         });
         let root_job = tree.node(1).and_then(|node| node.job).expect("job");
-        // detached 子节点不把父节点拖进屏障，父节点得以继续跑并落终态
+        // detached 子节点不把父节点拖进屏障，父节点得以继续跑并进入终态
         tree.reduce(Event::Spawned {
             node: 1,
             job: root_job,
@@ -362,12 +367,12 @@ mod tests {
         });
         assert!(
             !effects.is_empty(),
-            "子树级事件不得被入口的终态吸收吃掉，否则在跑的后代永远停不下来"
+            "subtree-scoped events must not be swallowed by entry terminal absorption, otherwise running descendants can never stop"
         );
         assert_eq!(
             stop_order(&effects),
             vec![2],
-            "根已终态，只该停还在跑的子节点"
+            "the root is already terminal, so only the still-running child should be stopped"
         );
     }
 
@@ -414,7 +419,7 @@ mod tests {
         assert_eq!(
             delivered,
             Some(1),
-            "挂起中被取消的子节点，结果必须交付给等待中的父节点"
+            "a child cancelled while suspended must still deliver its result to the waiting parent"
         );
         assert!(matches!(tree.phase(1), Some(Phase::Running)));
     }
@@ -454,24 +459,24 @@ mod tests {
         assert!(matches!(tree.phase(2), Some(Phase::Cancelled(_))));
         assert!(
             !effects.iter().any(|e| matches!(e, Effect::Launch { .. })),
-            "子树内部的父节点不得在取消途中被重入"
+            "a parent inside the subtree must not be re-entered mid-cancellation"
         );
         for id in [1, 2] {
             assert!(
                 effects
                     .iter()
                     .any(|e| matches!(e, Effect::Persist { node } if *node == id)),
-                "每个被取消的节点都必须落库"
+                "every cancelled node must be persisted"
             );
         }
-        assert!(tree.is_quiescent(), "整棵子树必须收敛");
+        assert!(tree.is_quiescent(), "the whole subtree must converge");
         assert_eq!(
             effects
                 .iter()
                 .filter(|e| matches!(e, Effect::Publish(TreeEvent::Sealed)))
                 .count(),
             1,
-            "收敛时恰好发一次 Sealed"
+            "Sealed is sent exactly once on convergence"
         );
     }
 
@@ -487,25 +492,32 @@ mod tests {
         let job = tree.node(1).and_then(|node| node.job).expect("job");
 
         let effects = tree.reduce(Event::Stopped { node: 1, job });
-        assert!(effects.is_empty(), "未请求取消的节点不接受停止确认");
+        assert!(
+            effects.is_empty(),
+            "a node that was not asked to cancel does not accept a stop confirmation"
+        );
         assert!(matches!(tree.phase(1), Some(Phase::Running)));
-        assert_eq!(tree.job_of(1), Some(job), "被拒的确认不得清掉 job");
+        assert_eq!(
+            tree.job_of(1),
+            Some(job),
+            "a rejected confirmation must not clear the job"
+        );
     }
 
     #[test]
     fn cancelling_a_subtree_drops_pending_on_every_node() {
         let mut tree = Tree::<TestDomain>::new();
         let (root, a, a1) = build_chain(&mut tree);
-        // 让 a1 先落终态，再补上恢复出来的「终态 + 待消费输入」
+        // 先让 a1 进入终态，再补上恢复出的终态与待消费输入
         let job = tree.node(a1).and_then(|n| n.job).expect("job");
         tree.reduce(Event::Completed {
             node: a1,
             job,
             output: TestOutput::Ok,
         });
-        tree.set_pending_for_test(a1, Some(TestSpec::Noop));
-        tree.set_pending_for_test(a, Some(TestSpec::Noop));
-        assert!(!tree.is_quiescent(), "有节点带着待消费输入");
+        tree.push_pending(a1, TestSpec::Noop);
+        tree.push_pending(a, TestSpec::Noop);
+        assert!(!tree.is_quiescent(), "a node still carries pending input");
 
         tree.reduce(Event::CancelRequest {
             root,
@@ -513,8 +525,8 @@ mod tests {
         });
         for id in [root, a, a1] {
             assert!(
-                tree.node(id).expect("node").pending.is_none(),
-                "取消必须清掉节点 {id} 的待消费输入，含已经终态的那个"
+                tree.node(id).expect("node").pending.is_empty(),
+                "cancellation must drop the pending input of node {id}, including nodes that are already terminal"
             );
         }
 
@@ -524,16 +536,16 @@ mod tests {
         }
         assert!(
             !tree.is_quiescent(),
-            "被取消的 detached 后代还欠一次投递，整棵树仍不安静"
+            "the cancelled detached descendant still owes a delivery, so the whole tree is still not quiet"
         );
 
-        // a1 的义务是它自己落终态时登记的，取消不释放；a 的是确认停止时登记的
+        // a1 的义务在它进入终态时登记，取消不释放；a 的义务在确认停止时登记
         for id in [a1, a] {
             tree.reduce(Event::Deliver { node: id });
         }
         assert!(
             tree.is_quiescent(),
-            "清掉待消费输入与投递义务后整棵子树必须能收敛"
+            "the whole subtree must converge after pending input and delivery obligations are cleared"
         );
     }
 
@@ -577,7 +589,7 @@ mod tests {
         });
         assert!(
             !tree.node(child).expect("child").delivered,
-            "终态 detached 子节点登记了义务"
+            "a terminal detached child has registered an obligation"
         );
 
         let effects = tree.reduce(Event::CancelRequest {
@@ -586,17 +598,27 @@ mod tests {
         });
         assert!(
             !tree.node(child).expect("child").delivered,
-            "取消不释放投递义务，含已经终态的那个"
+            "cancellation does not release delivery obligations, including for nodes that are already terminal"
         );
-        assert_eq!(sealed_count(&effects), 0, "还有节点在取消途中");
+        assert_eq!(
+            sealed_count(&effects),
+            0,
+            "some node is still mid-cancellation"
+        );
 
         let job = tree.node(root).and_then(|n| n.job).expect("live job");
         let sealed = tree.reduce(Event::Stopped { node: root, job });
-        assert!(!tree.is_quiescent(), "义务未释放，整棵树仍不安静");
+        assert!(
+            !tree.is_quiescent(),
+            "the obligation is unreleased, so the whole tree is still not quiet"
+        );
         assert_eq!(sealed_count(&sealed), 0);
 
         let delivered = tree.reduce(Event::Deliver { node: child });
-        assert!(tree.is_quiescent(), "投递到达后整棵树才能收敛");
+        assert!(
+            tree.is_quiescent(),
+            "the whole tree can only converge after the delivery arrives"
+        );
         assert_eq!(sealed_count(&delivered), 1);
     }
 
@@ -612,11 +634,11 @@ mod tests {
         });
         assert!(
             matches!(tree.phase(child), Some(Phase::Cancelling(_))),
-            "取消把一个在跑的子节点送进 Cancelling 等确认"
+            "cancellation puts a running child into Cancelling awaiting confirmation"
         );
         assert!(
             tree.node(child).expect("child").delivered,
-            "义务只在落终态时登记，取消途中不得提前登记"
+            "an obligation is registered only on entering a terminal phase, never mid-cancellation"
         );
 
         let stopped = tree.reduce(Event::Stopped {
@@ -626,7 +648,7 @@ mod tests {
         assert!(matches!(tree.phase(child), Some(Phase::Cancelled(_))));
         assert!(
             !tree.node(child).expect("child").delivered,
-            "被取消的后台子节点也要投递通知，义务在 reduce_stopped 里登记"
+            "a cancelled background child must deliver a notification too; the obligation is registered in reduce_stopped"
         );
         assert!(!tree.is_quiescent());
         assert_eq!(sealed_count(&stopped), 0);
@@ -636,7 +658,10 @@ mod tests {
             node: root,
             job: root_job,
         });
-        assert!(!tree.is_quiescent(), "义务未释放，整棵树仍不安静");
+        assert!(
+            !tree.is_quiescent(),
+            "the obligation is unreleased, so the whole tree is still not quiet"
+        );
 
         let delivered = tree.reduce(Event::Deliver { node: child });
         assert!(tree.is_quiescent());
@@ -653,14 +678,17 @@ mod tests {
             job: child_job,
             payload: TestSuspend::Ask,
         });
-        // 主节点先跑完，后台子节点单独挂着
+        // 主节点先跑完，后台子节点单独处于挂起状态
         let root_job = tree.node(root).and_then(|n| n.job).expect("job");
         tree.reduce(Event::Completed {
             node: root,
             job: root_job,
             output: TestOutput::Ok,
         });
-        assert!(!tree.is_quiescent(), "子节点挂起，整棵树不安静");
+        assert!(
+            !tree.is_quiescent(),
+            "the child is suspended, so the whole tree is not quiet"
+        );
 
         let effects = tree.reduce(Event::CancelRequest {
             root: child,
@@ -669,10 +697,13 @@ mod tests {
         assert!(matches!(tree.phase(child), Some(Phase::Cancelled(_))));
         assert!(
             !tree.node(child).expect("child").delivered,
-            "取消一个挂起的后台子节点照样要投递通知"
+            "cancelling a suspended background child must still deliver a notification"
         );
-        assert!(!tree.is_quiescent(), "义务未释放，整棵树不安静");
-        assert_eq!(sealed_count(&effects), 0, "不得抢跑关流");
+        assert!(
+            !tree.is_quiescent(),
+            "the obligation is unreleased, so the whole tree is not quiet"
+        );
+        assert_eq!(sealed_count(&effects), 0, "must not race the stream close");
 
         let delivered = tree.reduce(Event::Deliver { node: child });
         assert!(tree.is_quiescent());
@@ -708,17 +739,20 @@ mod tests {
         assert!(matches!(tree.phase(child), Some(Phase::Cancelled(_))));
         assert!(
             !tree.node(child).expect("child").delivered,
-            "取消一个等子任务的 detached 子节点照样要投递通知"
+            "cancelling a detached child that is waiting on a subtask must still deliver a notification"
         );
         assert!(!tree.is_quiescent());
-        assert_eq!(sealed_count(&effects), 0, "不得抢跑关流");
+        assert_eq!(sealed_count(&effects), 0, "must not race the stream close");
 
         let grandchild_job = tree.node(3).and_then(|n| n.job).expect("live job");
         tree.reduce(Event::Stopped {
             node: 3,
             job: grandchild_job,
         });
-        assert!(!tree.is_quiescent(), "义务未释放，整棵树仍不安静");
+        assert!(
+            !tree.is_quiescent(),
+            "the obligation is unreleased, so the whole tree is still not quiet"
+        );
 
         let delivered = tree.reduce(Event::Deliver { node: child });
         assert!(tree.is_quiescent());

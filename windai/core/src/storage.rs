@@ -1,73 +1,61 @@
-pub mod agent;
-pub mod approval;
-mod executor;
-pub mod mcp;
-pub mod message;
-pub mod model;
-pub mod prompt;
-pub mod provider;
-pub mod topic;
-pub mod utils;
-
-use self::{
-    agent::AgentStorage, approval::ToolApprovalStorage, executor::StorageExecutor, mcp::McpStorage,
-    message::MessageStorage, model::ModelStorage, prompt::PromptStorage, provider::ProviderStorage,
-    topic::TopicStorage,
-};
-use super::db::DbPool;
-use crate::error::Result;
+use self::executor::StorageExecutor;
+use super::db::{Db, DbPool};
+use super::error::Result;
 use std::future::Future;
 
-#[derive(Clone)]
-pub struct Storage {
-    executor: StorageExecutor,
-    provider: provider::ProviderStorage,
-    topic: topic::TopicStorage,
-    model: model::ModelStorage,
-    message: message::MessageStorage,
-    mcp: mcp::McpStorage,
-    agent: agent::AgentStorage,
-    prompt: prompt::PromptStorage,
-    approval: approval::ToolApprovalStorage,
-}
+pub mod agent;
+pub mod config;
+pub mod conversation;
+pub(crate) mod executor;
+pub mod log;
+pub mod module;
+pub mod pending;
+pub mod rule;
+pub mod spawn;
+pub mod statement_count;
+pub mod utils;
+pub mod wait;
 
 pub(crate) struct TableName;
 
 impl TableName {
+    pub const TURN: &'static str = "turn";
+    pub const MESSAGE: &'static str = "message";
+    pub const BLOCK: &'static str = "block";
+    pub const AGENT_INSTANCES: &'static str = "agent_instances";
+    pub const AGENT_PENDING: &'static str = "agent_pending";
+    pub const SPAWN_CALLS: &'static str = "spawn_calls";
+    pub const EXTERNAL_WAITS: &'static str = "external_waits";
     pub const TOPICS: &'static str = "topics";
     pub const PROVIDERS: &'static str = "providers";
     pub const CREDENTIALS: &'static str = "credentials";
-    pub const JSONRULE: &'static str = "json_rule";
     pub const MODELS: &'static str = "models";
-    pub const MESSAGES: &'static str = "messages";
-    pub const MESSAGE_CONTENTS: &'static str = "message_contents";
+    pub const JSON_RULE: &'static str = "json_rule";
+    #[allow(dead_code)]
     pub const MCP_SERVERS: &'static str = "mcp_servers";
-    pub const TOOL_APPROVAL_REQUESTS: &'static str = "tool_approval_requests";
-    pub const PROMPT_MODULES: &'static str = "prompt_modules";
-    pub const AGENT_DEFINITION: &'static str = "agent_definitions";
-    pub const AGENT_INSTANCES: &'static str = "agent_instances";
-    pub const TOPIC_AGENT_MAPS: &'static str = "topic_agent_maps";
+    pub const MODS: &'static str = "mods";
+    pub const MOD_VERSIONS: &'static str = "mod_versions";
+    pub const TOPIC_MODS: &'static str = "topic_mods";
+    pub const MOD_STATE: &'static str = "mod_state";
+    pub const EVENT_LOG: &'static str = "event_log";
+}
+
+#[derive(Clone)]
+pub struct Storage {
+    executor: StorageExecutor,
 }
 
 impl Storage {
-    pub fn new(db: DbPool) -> Self {
-        Self::from_executor(StorageExecutor::new(db))
+    /// 用数据库句柄建立存储
+    pub fn new(db: Db) -> Self {
+        Self::from_executor(StorageExecutor::new(db.pool().clone()))
     }
 
     fn from_executor(executor: StorageExecutor) -> Self {
-        Self {
-            provider: ProviderStorage::new(executor.clone()),
-            topic: TopicStorage::new(executor.clone()),
-            model: ModelStorage::new(executor.clone()),
-            message: MessageStorage::new(executor.clone()),
-            mcp: McpStorage::new(executor.clone()),
-            agent: AgentStorage::new(executor.clone()),
-            prompt: PromptStorage::new(executor.clone()),
-            approval: ToolApprovalStorage::new(executor.clone()),
-            executor,
-        }
+        Self { executor }
     }
 
+    /// 在单个事务中执行闭包，闭包收到事务内的存储
     pub async fn with_tx<F, Fut, T>(&self, f: F) -> Result<T>
     where
         F: FnOnce(Storage) -> Fut,
@@ -78,47 +66,27 @@ impl Storage {
             .await
     }
 
+    /// 开启事务并返回事务句柄
     pub async fn begin(&self) -> Result<StorageTx> {
         Ok(StorageTx {
             storage: Self::from_executor(
-                StorageExecutor::new_transaction(self.executor.pool().clone()).await?,
+                StorageExecutor::new_transaction(
+                    self.executor.pool().clone(),
+                    self.executor.statements(),
+                )
+                .await?,
             ),
         })
     }
-    pub fn provider(&self) -> &ProviderStorage {
-        &self.provider
-    }
-    pub fn topic(&self) -> &TopicStorage {
-        &self.topic
-    }
-    pub fn model(&self) -> &ModelStorage {
-        &self.model
-    }
-    pub fn message(&self) -> &MessageStorage {
-        &self.message
+
+    /// 取出底层连接池
+    pub fn pool(&self) -> &DbPool {
+        self.executor.pool()
     }
 
-    pub fn mcp(&self) -> &McpStorage {
-        &self.mcp
-    }
-
-    pub fn agent(&self) -> &AgentStorage {
-        &self.agent
-    }
-
-    pub fn prompt(&self) -> &PromptStorage {
-        &self.prompt
-    }
-
-    pub fn approval(&self) -> &ToolApprovalStorage {
-        &self.approval
-    }
-
-    pub async fn close(&self) {
-        let pool = self.executor.pool();
-        if !pool.is_closed() {
-            pool.close().await;
-        }
+    /// 累计执行的 SQL 语句数
+    pub fn statement_count(&self) -> u64 {
+        self.executor.statement_count()
     }
 }
 

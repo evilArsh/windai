@@ -3,15 +3,12 @@ use super::error::{Error, Result};
 use super::path;
 use serde_json::Value;
 
-/// 条件参数：字面量或变量引用
 #[derive(Debug, Clone)]
 pub enum Arg {
     Literal(Value),
-    Variable(String), // $xxx 去掉 $ 前缀
+    Variable(String),
 }
 
-/// 编译后的条件
-///
 /// # examples
 ///
 /// 1. [CompiledCond::Eq]
@@ -65,7 +62,6 @@ pub enum Arg {
 pub enum CompiledCond {
     Eq(Arg, Arg),
     Neq(Arg, Arg),
-    // target 中的路径段
     Exists(Vec<String>),
     And(Vec<CompiledCond>),
     Or(Vec<CompiledCond>),
@@ -73,10 +69,6 @@ pub enum CompiledCond {
 }
 
 impl CompiledCond {
-    /// 从原始 JSON value 中编译出条件语句
-    ///
-    /// JSON 格式: `{"op": args}`，如 `{"eq": ["$value", "deepseek"]}`
-    /// 每个条件对象恰好有一个 key
     pub fn compile(raw: &Value) -> Result<Self> {
         let obj = raw
             .as_object()
@@ -88,7 +80,10 @@ impl CompiledCond {
                 obj.keys().collect::<Vec<_>>()
             )));
         }
-        let (op, args) = obj.iter().next().unwrap();
+        let (op, args) = obj
+            .iter()
+            .next()
+            .ok_or_else(|| Error::Condition("condition object must have exactly one key".into()))?;
         match op.as_str() {
             "eq" => {
                 let (a, b) = parse_two_args(args)?;
@@ -135,7 +130,6 @@ impl CompiledCond {
         }
     }
 
-    /// 对目标 body 和上下文求值
     pub fn eval(&self, body: &Value, ctx: &super::EvalContext) -> Result<bool> {
         match self {
             CompiledCond::Eq(a, b) => {
@@ -186,12 +180,11 @@ fn parse_two_args(args: &Value) -> Result<(Arg, Arg)> {
     Ok((parse_arg(&arr[0]), parse_arg(&arr[1])))
 }
 
-/// 根据 `$` 前缀判断参数类型
 fn parse_arg(val: &Value) -> Arg {
-    if let Some(s) = val.as_str() {
-        if s.starts_with('$') {
-            return Arg::Variable(s.to_string());
-        }
+    if let Some(s) = val.as_str()
+        && s.starts_with('$')
+    {
+        return Arg::Variable(s.to_string());
     }
     Arg::Literal(val.clone())
 }
@@ -203,10 +196,10 @@ fn resolve_arg(arg: &Arg, body: &Value, ctx: &EvalContext) -> Value {
             if name == "$value" {
                 return body.clone();
             }
-            if let Some(rest) = name.strip_prefix("$ctx.") {
-                if let Some(v) = ctx.get(rest) {
-                    return v.clone();
-                }
+            if let Some(rest) = name.strip_prefix("$ctx.")
+                && let Some(v) = ctx.get(rest)
+            {
+                return v.clone();
             }
             Value::Null
         }

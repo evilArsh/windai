@@ -8,30 +8,22 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-/// worker 回报通道的容量
 pub const REPORT_CAPACITY: usize = 256;
 
-/// job 向 hub 回报的通道
 pub type JobSink<D> = mpsc::Sender<Event<D>>;
 
-/// 启动一个 worker 所需的全部信息
 pub struct JobRequest<D: Domain> {
     pub node: NodeId,
     pub job: JobId,
     pub input: Input<D>,
 }
 
-/// worker 任务结束的方式
 enum Ended<D: Domain> {
-    /// 正常交还判定
     Verdict(Outcome<D>),
-    /// 被取消，或在宽限期内被回收
     Stopped,
-    /// `run` 自己 panic
     Aborted,
 }
 
-/// worker 的生命周期管理
 pub struct Jobs<D: Domain> {
     behavior: Arc<dyn Behavior<D>>,
     sink: JobSink<D>,
@@ -49,7 +41,6 @@ impl<D: Domain> Jobs<D> {
         }
     }
 
-    /// 启动一个 worker
     pub fn launch(&self, request: JobRequest<D>) {
         let JobRequest { node, job, input } = request;
         let cancel = CancellationToken::new();
@@ -62,13 +53,9 @@ impl<D: Domain> Jobs<D> {
         let grace = self.grace;
         let running = self.running.clone();
         let ctx_cancel = cancel.clone();
-        let emit_sink = sink.clone();
 
         tokio::spawn(async move {
-            let emit = move |chunk| {
-                let _ = emit_sink.try_send(Event::Progress { node, job, chunk });
-            };
-            let ctx = Ctx::new(node, job, ctx_cancel, &emit);
+            let ctx = Ctx::new(node, job, ctx_cancel);
             let mut runner = std::pin::pin!(
                 std::panic::AssertUnwindSafe(behavior.run(ctx, input)).catch_unwind()
             );
@@ -99,7 +86,6 @@ impl<D: Domain> Jobs<D> {
             };
             let removed = running.lock().ok().map(|mut map| map.remove(&(node, job)));
             let report = match removed {
-                // 取消期间交还的判定一律让位给停止确认；panic 不是判定，不在此列
                 Some(Some(_))
                     if cancel.is_cancelled() && !matches!(verdict, Event::Aborted { .. }) =>
                 {
@@ -107,18 +93,11 @@ impl<D: Domain> Jobs<D> {
                 }
                 _ => verdict,
             };
-            // 判定是事实，通道满时阻塞等待，不能丢
             let _ = sink.send(report).await;
         });
     }
 
-    /// 请求停止一个 worker
-    ///
-    /// 幂等：重复调用同一个 `(node, job)` 只补一条确认，不会产生第二次副作用。
-    /// 任务已经结束并报告过的，直接补一条 `Stopped` —— 归约器靠它把取消中的节点落终态
     pub fn stop(&self, node: NodeId, job: JobId) {
-        // 持锁取消：放锁后再 cancel 会让尾部有机会先判定并回报真实判定，
-        // 而此处已看到条目、不会再补报，节点就等不到确认
         let Ok(running) = self.running.lock() else {
             return;
         };
@@ -131,9 +110,6 @@ impl<D: Domain> Jobs<D> {
         }
     }
 
-    /// 补一条确认
-    ///
-    /// hub 是本通道唯一的接收方，在 hub 循环里阻塞等待会自锁：满则交给独立任务等待空位
     fn report(&self, event: Event<D>) {
         if let Err(mpsc::error::TrySendError::Full(event)) = self.sink.try_send(event) {
             let sink = self.sink.clone();
@@ -143,9 +119,6 @@ impl<D: Domain> Jobs<D> {
         }
     }
 
-    /// 停止全部 worker
-    ///
-    /// `shutdown` 之后才启动的 worker 不受它影响
     pub fn shutdown(&self) {
         if let Ok(running) = self.running.lock() {
             for cancel in running.values() {
@@ -159,27 +132,20 @@ impl<D: Domain> Jobs<D> {
 mod tests {
     use super::*;
     use crate::agent::behavior::{Behavior, Ctx, Input, Outcome};
-    use crate::agent::tree::domain::test_support::{
-        TestDomain, TestOutput, TestProgress, TestSpec,
-    };
+    use crate::agent::tree::domain::test_support::{TestDomain, TestOutput, TestSpec};
     use crate::agent::tree::event::Event;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     /// 永不返回的 worker，用于验证宽限期回收
-    ///
-    /// `observed` 记录取消信号是否真的到过这里
     struct UnresponsiveBehavior {
+        /// 取消信号是否真的到过这里
         observed: Arc<AtomicBool>,
     }
 
     #[async_trait::async_trait]
     impl Behavior<TestDomain> for UnresponsiveBehavior {
-        async fn run(
-            &self,
-            ctx: Ctx<'_, TestDomain>,
-            _input: Input<TestDomain>,
-        ) -> Outcome<TestDomain> {
-            // 记录取消信号真的到过这里
+        async fn run(&self, ctx: Ctx, _input: Input<TestDomain>) -> Outcome<TestDomain> {
+            // 等到取消信号再睡过宽限期，模拟不响应取消
             ctx.cancel.cancelled().await;
             self.observed.store(true, Ordering::SeqCst);
             tokio::time::sleep(Duration::from_secs(30)).await;
@@ -191,11 +157,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Behavior<TestDomain> for PanickingBehavior {
-        async fn run(
-            &self,
-            _ctx: Ctx<'_, TestDomain>,
-            _input: Input<TestDomain>,
-        ) -> Outcome<TestDomain> {
+        async fn run(&self, _ctx: Ctx, _input: Input<TestDomain>) -> Outcome<TestDomain> {
             panic!("boom")
         }
     }
@@ -204,11 +166,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Behavior<TestDomain> for ImmediateBehavior {
-        async fn run(
-            &self,
-            _ctx: Ctx<'_, TestDomain>,
-            _input: Input<TestDomain>,
-        ) -> Outcome<TestDomain> {
+        async fn run(&self, _ctx: Ctx, _input: Input<TestDomain>) -> Outcome<TestDomain> {
             Outcome::Completed(TestOutput::Ok)
         }
     }
@@ -241,11 +199,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Behavior<TestDomain> for CancelAwareBehavior {
-        async fn run(
-            &self,
-            ctx: Ctx<'_, TestDomain>,
-            _input: Input<TestDomain>,
-        ) -> Outcome<TestDomain> {
+        async fn run(&self, ctx: Ctx, _input: Input<TestDomain>) -> Outcome<TestDomain> {
             ctx.cancel.cancelled().await;
             Outcome::Completed(TestOutput::Ok)
         }
@@ -262,7 +216,7 @@ mod tests {
             tx,
             Duration::from_millis(50),
         );
-        // node 与 job 必须取不同的值：相同则注册表三元组里两个 id 互换也测不出来
+        // node 与 job 取不同的值，注册表键里的两个 id 可区分
         jobs.launch(JobRequest {
             node: 3,
             job: 4,
@@ -273,12 +227,12 @@ mod tests {
 
         let report = tokio::time::timeout(Duration::from_secs(2), rx.recv())
             .await
-            .expect("宽限期必须回收不响应取消的 worker")
+            .expect("reclaim an unresponsive worker")
             .expect("report");
         assert!(matches!(report, Event::Stopped { node: 3, job: 4 }));
         assert!(
             observed.load(Ordering::SeqCst),
-            "worker 必须真的收到过取消信号，否则补报的 Stopped 会掩盖写错的注册表键"
+            "the worker must actually have received the cancellation signal, otherwise a synthesised Stopped would mask a wrong registry key"
         );
     }
 
@@ -296,7 +250,7 @@ mod tests {
 
         let report = tokio::time::timeout(Duration::from_secs(2), rx.recv())
             .await
-            .expect("取消期间 worker 交还的判定不得顶替 Stopped")
+            .expect("report stopped during cancellation")
             .expect("report");
         assert!(matches!(report, Event::Stopped { node: 5, job: 6 }));
     }
@@ -328,7 +282,7 @@ mod tests {
 
         let second = tokio::time::timeout(Duration::from_secs(2), rx.recv())
             .await
-            .expect("已结束的 job 也必须补一条确认")
+            .expect("confirm a finished job")
             .expect("report");
         assert!(matches!(second, Event::Stopped { node: 7, job: 8 }));
     }
@@ -345,11 +299,11 @@ mod tests {
 
         let report = tokio::time::timeout(Duration::from_secs(2), rx.recv())
             .await
-            .expect("panic 不得让树卡死")
+            .expect("survive a worker panic")
             .expect("report");
         assert!(
             matches!(report, Event::Aborted { node: 2, job: 7 }),
-            "panic 是「没有交出判定就死了」，不得记成被停"
+            "a panic means it died without delivering a verdict, so it must not be recorded as stopped"
         );
     }
 
@@ -361,61 +315,43 @@ mod tests {
 
         assert!(
             matches!(rx.try_recv(), Ok(Event::Stopped { node: 99, job: 99 })),
-            "未知键也要补一条确认，归约器靠它把取消中的节点落终态"
+            "an unknown key must also get a confirmation; the reducer relies on it to drive cancelling nodes to a terminal phase"
         );
     }
 
-    /// 一次 run 里连发大量进度，再来一个判定
-    struct FloodBehavior;
-
-    #[async_trait::async_trait]
-    impl Behavior<TestDomain> for FloodBehavior {
-        async fn run(
-            &self,
-            ctx: Ctx<'_, TestDomain>,
-            _input: Input<TestDomain>,
-        ) -> Outcome<TestDomain> {
-            for _ in 0..64 {
-                ctx.emit(TestProgress::Tick);
-            }
-            Outcome::Completed(TestOutput::Ok)
-        }
-    }
-
+    /// 回报通道满时判定只能被推迟，不得被丢掉
     #[tokio::test]
-    async fn a_full_report_channel_drops_progress_but_never_the_verdict() {
-        // 容量 1：进度必然溢出，判定必须阻塞等到空位
+    async fn a_verdict_is_never_dropped_when_the_report_channel_is_full() {
+        // 通道容量为 1。先用一条补发的确认占满通道，且不排空。
         let (tx, mut rx) = mpsc::channel(1);
-        let jobs = Jobs::new(Arc::new(FloodBehavior), tx, Duration::from_millis(50));
+        let jobs = Jobs::new(Arc::new(ImmediateBehavior), tx, Duration::from_millis(50));
+        jobs.stop(99, 99);
         jobs.launch(JobRequest {
-            node: 4,
-            job: 9,
+            node: 1,
+            job: 1,
             input: Input::Fresh(TestSpec::Noop),
         });
 
-        // 先不排空，让通道停在满的状态上
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // 排空之前先让 worker 跑到发送判定的位置，通道满时 worker 只能等待空位
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let mut drained = Vec::new();
-        while let Ok(Some(event)) =
-            tokio::time::timeout(Duration::from_millis(500), rx.recv()).await
-        {
-            let is_verdict = matches!(event, Event::Completed { .. });
-            drained.push(event);
-            if is_verdict {
-                break;
+        let filler = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("receive the filler confirmation")
+            .expect("report");
+        assert!(matches!(filler, Event::Stopped { node: 99, job: 99 }));
+
+        let verdict = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("keep the verdict when full")
+            .expect("report");
+        assert!(matches!(
+            verdict,
+            Event::Completed {
+                node: 1,
+                job: 1,
+                ..
             }
-        }
-        assert!(
-            matches!(
-                drained.last(),
-                Some(Event::Completed {
-                    node: 4,
-                    job: 9,
-                    ..
-                })
-            ),
-            "判定不能因为通道满而丢"
-        );
+        ));
     }
 }
