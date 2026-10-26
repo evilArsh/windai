@@ -1,5 +1,3 @@
-//! 提供商中立的消息词汇
-
 pub mod message;
 pub mod tool;
 
