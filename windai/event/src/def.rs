@@ -1,5 +1,10 @@
+use serde_json::{Value, to_value};
 use std::collections::HashMap;
 use std::marker::PhantomData;
+
+pub fn schema<T: schemars::JsonSchema>() -> Value {
+    to_value(schemars::schema_for!(T)).expect("the generated schema is valid JSON")
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::AsRefStr)]
 #[strum(serialize_all = "snake_case")]

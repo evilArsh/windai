@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::context::DispatchCx;
-use crate::def::EventDef;
+use crate::def::{EventDef, EventMeta};
 
 /// 触发操作的作用域
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -74,7 +74,7 @@ impl<P> Envelope<P> {
             .unwrap_or(0)
     }
 
-    pub fn of(def: &EventDef<P>, cx: &DispatchCx, value: P) -> Self {
+    pub fn of(def: &EventMeta, cx: &DispatchCx, value: P) -> Self {
         Self {
             time: Self::now_ms(),
             name: def.name.to_string(),

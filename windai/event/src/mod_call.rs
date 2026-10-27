@@ -1,6 +1,4 @@
 use super::envelope::Scope;
-use crate::subscription::{EnabledSet, Subscription};
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -46,26 +44,4 @@ pub enum CallError {
     Handler(String),
     #[error("mod failure: {0}")]
     Internal(String),
-}
-
-/// 调用 mod js模块的接口
-#[async_trait::async_trait]
-pub trait ModCaller: Send + Sync {
-    async fn call(
-        &self,
-        sub: &Subscription,
-        payload: serde_json::Value,
-        cx: CallCx,
-    ) -> Result<Option<serde_json::Value>, CallError>;
-}
-
-/// 某个作用域下启用的 mod 清单
-pub trait ModRoster: Send + Sync {
-    fn enabled(&self, scope: &Scope) -> EnabledSet;
-}
-
-impl<T: ModRoster + ?Sized> ModRoster for Arc<T> {
-    fn enabled(&self, scope: &Scope) -> EnabledSet {
-        (**self).enabled(scope)
-    }
 }

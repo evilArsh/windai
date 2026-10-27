@@ -12,7 +12,7 @@ pub struct Subscription {
     /// 单次调用的时间预算，与剩余总预算冲突时总预算优先
     pub timeout_ms: u64,
     /// 同阶段内按此值排序
-    pub registration_seq: u64,
+    pub rank: u64,
 }
 
 impl Subscription {
@@ -24,38 +24,28 @@ impl Subscription {
 /// mod 清单
 #[derive(Debug, Clone)]
 pub struct EnabledSet {
-    all: bool,
     names: HashSet<String>,
 }
 
 impl EnabledSet {
-    pub fn all() -> Self {
-        Self {
-            all: true,
-            names: HashSet::new(),
-        }
-    }
-
     pub fn none() -> Self {
         Self {
-            all: false,
             names: HashSet::new(),
         }
     }
 
     pub fn from_names(names: impl IntoIterator<Item = String>) -> Self {
         Self {
-            all: false,
             names: names.into_iter().collect(),
         }
     }
 
     pub fn contains(&self, name: &str) -> bool {
-        self.all || self.names.contains(name)
+        self.names.contains(name)
     }
 
     pub fn is_empty(&self) -> bool {
-        !self.all && self.names.is_empty()
+        self.names.is_empty()
     }
 }
 
@@ -89,7 +79,7 @@ impl SubscriptionIndex {
         }
         for list in self.by_event.values_mut() {
             // 从小到大排序
-            list.sort_by_key(|s| s.registration_seq);
+            list.sort_by_key(|s| s.rank);
         }
     }
 
