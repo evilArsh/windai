@@ -14,8 +14,8 @@ pub enum Shape {
 }
 
 impl Shape {
-    pub const fn visible_to_frontend(&self, shape: Shape) -> bool {
-        matches!(shape, Self::Observe)
+    pub const fn visible_to_frontend(self) -> bool {
+        matches!(self, Self::Observe)
     }
 }
 

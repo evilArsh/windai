@@ -4,13 +4,22 @@ use tokio::time::Instant;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
-    /// 起因链深度上限
+    /// 嵌套派发的层数限制
+    ///
+    /// mod 在处理函数里再产生事件：
+    /// ```text
+    /// 宿主发 core/llm.request
+    ///   → mod A 的拦截函数顺手发一条 core/rule.matched
+    ///      → mod B 订阅了它，又发一条 core/llm.request
+    ///          → 回到第一步
+    ///  一个 mod 只要“订阅自己发出的事件”，就是无限循环；
+    /// ```
     pub max_depth: u32,
-    /// 单次触发产生的事件数上限
+    /// 一次触发总共能产生多少条事件
     pub max_events_per_trigger: u32,
-    /// 逐 mod 速率限制的时间窗
+    /// 速率限制的时间窗
     pub window: Duration,
-    /// 每个时间窗内允许产生的事件数
+    /// 单个 mod 在 `window` 事件内最多产生 `per_window` 条事件
     pub per_window: u32,
 }
 
@@ -25,12 +34,12 @@ impl Default for Limits {
     }
 }
 
-pub struct RateLimiter {
+pub struct Guards {
     limits: Limits,
-    buckets: HashMap<String, (Instant, u32)>,
+    buckets: HashMap<String, (Instant, u32)>, // mod 名 -> (窗口起点, 已用次数)
 }
 
-impl RateLimiter {
+impl Guards {
     pub fn new(limits: Limits) -> Self {
         Self {
             limits,
@@ -38,21 +47,27 @@ impl RateLimiter {
         }
     }
 
-    pub fn depth_ok(&self, depth: u32) -> bool {
-        depth <= self.limits.max_depth
+    pub fn limits(&self) -> Limits {
+        self.limits
     }
 
     pub fn allow_emit(&mut self, mod_name: &str) -> bool {
         let now = Instant::now();
-        let entry = self.buckets.entry(mod_name.to_string()).or_insert((now, 0));
-        if now.duration_since(entry.0) >= self.limits.window {
-            *entry = (now, 0);
+        let window = self.limits.window;
+        let per_window = self.limits.per_window;
+
+        if let Some(entry) = self.buckets.get_mut(mod_name) {
+            if now.duration_since(entry.0) >= window {
+                *entry = (now, 0);
+            }
+            if entry.1 >= per_window {
+                return false;
+            }
+            entry.1 += 1;
+            return true;
         }
-        if entry.1 >= self.limits.per_window {
-            return false;
-        }
-        entry.1 += 1;
-        true
+        self.buckets.insert(mod_name.to_string(), (now, 1));
+        per_window >= 1
     }
 
     pub fn evict_stale(&mut self) -> usize {

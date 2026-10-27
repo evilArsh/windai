@@ -57,7 +57,7 @@ impl Default for EnabledSet {
 
 /// 事件名到订阅者的倒排索引
 ///
-/// ```
+/// ```text
 /// event_x → [订阅者 A, 订阅者 C]
 /// ```
 #[derive(Debug, Default)]

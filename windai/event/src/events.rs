@@ -1,6 +1,7 @@
 use crate::def::{Directory, EventDef, Shape, schema};
 use serde::{Deserialize, Serialize};
 
+/// 一次投递的接收方
 #[derive(
     Debug, Clone, PartialEq, Eq, Serialize, Deserialize, strum::AsRefStr, schemars::JsonSchema,
 )]
@@ -38,7 +39,7 @@ pub enum DispatchFailure {
     BadRewrite,
     /// 处理函数抛错
     HandlerError,
-    /// mod js调用错误
+    /// mod 运行时自身出错
     CallError,
     /// 嵌套派发超过深度上限
     TooDeep,
@@ -52,6 +53,7 @@ pub enum DispatchFailure {
     NotInDirectory,
 }
 
+/// 一次投递超时
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct DispatchTimeout {
     /// 被超时的订阅事件名
@@ -60,8 +62,6 @@ pub struct DispatchTimeout {
     pub target: DeliveryTarget,
     /// 订阅方耗掉的时间
     pub duration_ms: u64,
-    /// 事件标识
-    pub event_id: Option<i64>,
 }
 
 /// 一次派发失败

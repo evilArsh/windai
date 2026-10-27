@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::context::DispatchCx;
-use crate::def::{EventDef, EventMeta};
+use crate::def::EventDef;
 
 /// 触发操作的作用域
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -66,22 +66,41 @@ pub struct Envelope<P> {
     pub payload: P,
 }
 
+impl Envelope<serde_json::Value> {
+    pub fn new(
+        name: &'static str,
+        scope: Scope,
+        origin: Origin,
+        source: Source,
+        payload: serde_json::Value,
+    ) -> Self {
+        Self {
+            time: Self::now_ms(),
+            name: name.to_string(),
+            scope,
+            origin,
+            source,
+            payload,
+        }
+    }
+
+    /// 沿调用方的上下文组信封
+    pub fn of(def: &EventDef<impl Sized>, cx: &DispatchCx, payload: serde_json::Value) -> Self {
+        Self::new(
+            def.name,
+            cx.scope.clone(),
+            cx.origin,
+            cx.source.clone(),
+            payload,
+        )
+    }
+}
+
 impl<P> Envelope<P> {
     pub fn now_ms() -> i64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0)
-    }
-
-    pub fn of(def: &EventMeta, cx: &DispatchCx, value: P) -> Self {
-        Self {
-            time: Self::now_ms(),
-            name: def.name.to_string(),
-            scope: cx.scope.clone(),
-            origin: cx.origin,
-            source: cx.source.clone(),
-            payload: value,
-        }
     }
 }
