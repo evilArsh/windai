@@ -20,6 +20,14 @@ impl DispatchGuard {
             emitted: AtomicU32::new(0),
         }
     }
+
+    pub fn bump_emitted(&self) -> u32 {
+        self.emitted.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    pub fn emitted(&self) -> u32 {
+        self.emitted.load(Ordering::Relaxed)
+    }
 }
 
 /// 一次派发上下文
@@ -75,19 +83,7 @@ impl DispatchCx {
         self.guard.deadline
     }
 
-    pub fn depth_ok(&self, max_depth: u32) -> bool {
-        self.depth <= max_depth
-    }
-
     pub fn cancel(&self) -> &CancellationToken {
         &self.guard.cancel
-    }
-
-    pub fn count_emitted(&self, max: u32) -> bool {
-        self.guard.emitted.fetch_add(1, Ordering::Relaxed) < max
-    }
-
-    pub fn emitted_count(&self) -> u32 {
-        self.guard.emitted.load(Ordering::Relaxed)
     }
 }

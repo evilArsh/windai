@@ -45,6 +45,8 @@ pub enum DispatchFailure {
     TooDeep,
     /// 单次触发的事件预算耗尽
     TooManyEvents,
+    /// mod 产生的事件超过窗口内的速率上限
+    RateLimited,
     /// 载荷无法序列化
     BadPayload,
     /// 调用方用错了形态

@@ -1,4 +1,6 @@
+use super::context::DispatchCx;
 use std::collections::HashMap;
+use std::sync::Mutex;
 use std::time::Duration;
 use tokio::time::Instant;
 
@@ -34,16 +36,44 @@ impl Default for Limits {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverLimit {
+    TooDeep { max: u32, depth: u32 },
+    TooManyEvents { max: u32 },
+    TooFast { per_window: u32, window: Duration },
+}
+
+impl std::fmt::Display for OverLimit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OverLimit::TooDeep { max, depth } => {
+                write!(f, "event chain reached depth {depth}, limit {max}")
+            }
+            OverLimit::TooManyEvents { max } => {
+                write!(f, "single trigger exceeded {max} events")
+            }
+            OverLimit::TooFast { per_window, window } => {
+                write!(f, "mod exceeded {per_window} events in {window:?}")
+            }
+        }
+    }
+}
+
+struct Window {
+    start: Instant,
+    used: u32,
+}
+
 pub struct Guards {
     limits: Limits,
-    buckets: HashMap<String, (Instant, u32)>, // mod 名 -> (窗口起点, 已用次数)
+    buckets: Mutex<HashMap<String, Window>>, // mod 名 -> 窗口
 }
 
 impl Guards {
     pub fn new(limits: Limits) -> Self {
         Self {
             limits,
-            buckets: HashMap::new(),
+            buckets: Mutex::new(HashMap::new()),
         }
     }
 
@@ -51,30 +81,52 @@ impl Guards {
         self.limits
     }
 
-    pub fn allow_emit(&mut self, mod_name: &str) -> bool {
+    pub fn admit(&self, cx: &DispatchCx) -> Result<(), OverLimit> {
+        if cx.depth > self.limits.max_depth {
+            return Err(OverLimit::TooDeep {
+                max: self.limits.max_depth,
+                depth: cx.depth,
+            });
+        }
+        if cx.guard.bump_emitted() > self.limits.max_events_per_trigger {
+            return Err(OverLimit::TooManyEvents {
+                max: self.limits.max_events_per_trigger,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn admit_mod_emit(&self, mod_name: &str) -> Result<(), OverLimit> {
         let now = Instant::now();
         let window = self.limits.window;
         let per_window = self.limits.per_window;
-
-        if let Some(entry) = self.buckets.get_mut(mod_name) {
-            if now.duration_since(entry.0) >= window {
-                *entry = (now, 0);
+        let mut buckets = self
+            .buckets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(entry) = buckets.get_mut(mod_name) else {
+            if per_window == 0 {
+                return Err(OverLimit::TooFast { per_window, window });
             }
-            if entry.1 >= per_window {
-                return false;
-            }
-            entry.1 += 1;
-            return true;
+            buckets.insert(
+                mod_name.to_string(),
+                Window {
+                    start: now,
+                    used: 1,
+                },
+            );
+            return Ok(());
+        };
+        if now.duration_since(entry.start) >= window {
+            *entry = Window {
+                start: now,
+                used: 0,
+            };
         }
-        self.buckets.insert(mod_name.to_string(), (now, 1));
-        per_window >= 1
-    }
-
-    pub fn evict_stale(&mut self) -> usize {
-        let window = self.limits.window;
-        let before = self.buckets.len();
-        self.buckets
-            .retain(|_, (start, _)| start.elapsed() < window);
-        before - self.buckets.len()
+        if entry.used >= per_window {
+            return Err(OverLimit::TooFast { per_window, window });
+        }
+        entry.used += 1;
+        Ok(())
     }
 }

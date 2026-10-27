@@ -5,7 +5,7 @@ use crate::events::{
     CORE_DISPATCH_FAILED, CORE_DISPATCH_TIMEOUT, DeliveryTarget, DispatchFailed, DispatchFailure,
     DispatchTimeout,
 };
-use crate::guard::{Guards, Limits};
+use crate::guard::{Guards, Limits, OverLimit};
 use crate::mod_call::{CallCx, CallError, CallMode};
 use crate::outlet::{Committed, EventOutlet, Pending};
 use crate::pool::{Job, ObservePool};
@@ -14,7 +14,7 @@ use crate::{ModCaller, ModRoster, Observer};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use tokio::time::Instant;
 
 fn to_json<P: Serialize>(event: &'static str, payload: &P) -> Result<Value, BusError> {
@@ -35,16 +35,17 @@ enum BusError {
     NotInDirectory { name: &'static str },
 }
 
+/// 事件派发总线
 pub struct Dispatcher {
     directory: Directory,
     index: RwLock<SubscriptionIndex>,
     /// mod 清单索引
     mod_roster: Arc<dyn ModRoster>,
     mod_caller: Arc<dyn ModCaller>,
+    /// mod observe 事件投递
+    mod_ob: Arc<ObservePool>,
     ev_out: Arc<dyn EventOutlet>,
-    pool: Arc<ObservePool>,
-    rate: Mutex<Guards>,
-    limits: Limits,
+    guards: Arc<Guards>,
 }
 
 impl Dispatcher {
@@ -59,15 +60,18 @@ impl Dispatcher {
             directory,
             index: RwLock::new(SubscriptionIndex::new()),
             mod_roster,
-            pool: Arc::new(ObservePool::start(
+            mod_ob: Arc::new(ObservePool::start(
                 Arc::clone(&mod_caller),
                 Arc::clone(&ev_out),
             )),
             mod_caller,
             ev_out,
-            rate: Mutex::new(Guards::new(limits)),
-            limits,
+            guards: Arc::new(Guards::new(limits)),
         }
+    }
+
+    pub fn guards(&self) -> Arc<Guards> {
+        Arc::clone(&self.guards)
     }
 
     pub fn directory(&self) -> &Directory {
@@ -75,7 +79,7 @@ impl Dispatcher {
     }
 
     pub fn limits(&self) -> Limits {
-        self.limits
+        self.guards.limits()
     }
 
     /// 重建订阅索引
@@ -96,17 +100,8 @@ impl Dispatcher {
             self.failed(def.name, cx, failure_of(&error), None, error.to_string());
             return;
         }
-        if !self.reserve(cx) {
-            self.failed(
-                def.name,
-                cx,
-                DispatchFailure::TooManyEvents,
-                None,
-                format!(
-                    "single trigger exceeded {} events",
-                    self.limits.max_events_per_trigger
-                ),
-            );
+        if let Err(over) = self.guards.admit(cx) {
+            self.over_limit(def.name, cx, over);
             return;
         }
         self.emit(def, cx, &payload);
@@ -132,27 +127,8 @@ impl Dispatcher {
             self.failed(def.name, cx, failure_of(&error), None, error.to_string());
             return payload;
         }
-        if !cx.depth_ok(self.limits.max_depth) {
-            self.failed(
-                def.name,
-                cx,
-                DispatchFailure::TooDeep,
-                None,
-                format!("event chain exceeded max depth {}", self.limits.max_depth),
-            );
-            return payload;
-        }
-        if !self.reserve(cx) {
-            self.failed(
-                def.name,
-                cx,
-                DispatchFailure::TooManyEvents,
-                None,
-                format!(
-                    "single trigger exceeded {} events",
-                    self.limits.max_events_per_trigger
-                ),
-            );
+        if let Err(over) = self.guards.admit(cx) {
+            self.over_limit(def.name, cx, over);
             return payload;
         }
 
@@ -228,22 +204,6 @@ impl Dispatcher {
         accumulated
     }
 
-    /// 某个 mod 在同一窗口内允许发多少条自定义事件
-    /// TODO gurad
-    pub fn allow_mod_emit(&self, mod_name: &str) -> bool {
-        match self.rate.lock() {
-            Ok(mut rate) => rate.allow_emit(mod_name),
-            Err(_) => false,
-        }
-    }
-
-    /// TODO gurad
-    pub fn evict_stale_rates(&self) {
-        if let Ok(mut rate) = self.rate.lock() {
-            rate.evict_stale();
-        }
-    }
-
     /// 指定事件的订阅清单，顺序由索引给出
     fn chain_of(&self, event: &'static str, cx: &DispatchCx) -> Option<Vec<Subscription>> {
         self.chain_for(event, &cx.scope)
@@ -265,10 +225,6 @@ impl Dispatcher {
                 .cloned()
                 .collect(),
         )
-    }
-
-    fn reserve(&self, cx: &DispatchCx) -> bool {
-        cx.count_emitted(self.limits.max_events_per_trigger)
     }
 
     fn emit<P: Serialize>(&self, def: &EventDef<P>, cx: &DispatchCx, payload: &P) {
@@ -320,6 +276,15 @@ impl Dispatcher {
         );
     }
 
+    fn over_limit(&self, event: &'static str, cx: &DispatchCx, over: OverLimit) {
+        let failure = match over {
+            OverLimit::TooDeep { .. } => DispatchFailure::TooDeep,
+            OverLimit::TooManyEvents { .. } => DispatchFailure::TooManyEvents,
+            OverLimit::TooFast { .. } => DispatchFailure::RateLimited,
+        };
+        self.failed(event, cx, failure, None, over.to_string());
+    }
+
     fn timeout(&self, event: &'static str, cx: &DispatchCx, target: &str, duration_ms: u64) {
         log::warn!("[event] mod {target} timed out on {event}");
         self.notice(
@@ -362,7 +327,7 @@ impl Observer for Dispatcher {
             return;
         };
         for sub in chain {
-            self.pool.enqueue(Job {
+            self.mod_ob.enqueue(Job {
                 event: meta.name,
                 scope: committed.envelope.scope.clone(),
                 payload: committed.envelope.payload.clone(),

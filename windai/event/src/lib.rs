@@ -6,7 +6,7 @@ pub use events::{
     CORE_DISPATCH_FAILED, CORE_DISPATCH_TIMEOUT, DeliveryTarget, DispatchFailed, DispatchFailure,
     DispatchTimeout, directory,
 };
-pub use guard::Limits;
+pub use guard::{Guards, Limits, OverLimit};
 pub use mod_call::{CallCx, CallError, CallMode};
 pub use outlet::{Committed, EventOutlet, Pending};
 pub use pool::{Job, ObservePool};
