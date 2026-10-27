@@ -25,7 +25,7 @@ pub enum Role {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct AudioContent {
-    /// 编码，例如 mp3、wav
+    /// mp3、wav
     pub format: String,
     pub content: String,
 }
