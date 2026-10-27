@@ -113,7 +113,7 @@ async fn deliver(batch: Vec<Job>, caller: &Arc<dyn ModCaller>, outlet: &Arc<dyn 
         HashMap::new();
 
     for job in batch {
-        let key = (job.sub.mod_name.clone(), job.event, job.scope.clone());
+        let key = (job.sub.mod_name.clone(), job.event, job.scope);
         if !groups.contains_key(&key) {
             order.push(key.clone());
         }
@@ -123,17 +123,14 @@ async fn deliver(batch: Vec<Job>, caller: &Arc<dyn ModCaller>, outlet: &Arc<dyn 
             .1
             .push(job.payload);
     }
-
     for key in order {
         let Some((sub, mut payloads)) = groups.remove(&key) else {
             continue;
         };
-        let payload = if payloads.len() > 1 {
-            Value::Array(payloads)
-        } else if let Some(one) = payloads.pop() {
-            one
-        } else {
-            continue;
+        let payload = match payloads.len() {
+            0 => continue,
+            1 => payloads.pop().unwrap(),
+            _ => Value::Array(payloads),
         };
         call_one(caller, outlet, &sub, key.1, key.2, payload).await;
     }
