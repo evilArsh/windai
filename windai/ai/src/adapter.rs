@@ -1,6 +1,7 @@
 use super::error::AdapterError;
 use super::eventsource::Event;
-use super::model::{AdapterType, ChatModel};
+use super::model::ChatModel;
+use wind_wire::AdapterType;
 use wind_wire::message::Message;
 use wind_wire::tool::Tools;
 

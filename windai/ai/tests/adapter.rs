@@ -1,9 +1,10 @@
 //! 适配器的种类解析与请求构造
 
 use wind_ai::adapter::adapter_of;
-use wind_ai::model::{AdapterType, ChatModel};
+use wind_ai::model::ChatModel;
 use wind_ai::schema::openai_completion::ChatCompletion;
 use wind_ai::schema::openai_responses::Response;
+use wind_wire::AdapterType;
 use wind_wire::message::{Content, Message, Role};
 use wind_wire::tool::{FunctionCall, FunctionTool, Tools};
 

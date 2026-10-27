@@ -10,4 +10,4 @@ pub mod schema;
 
 pub use adapter::{ChatAdapter, adapter_of};
 pub use error::AdapterError;
-pub use model::{AdapterType, ChatModel, Target};
+pub use model::{ChatModel, Target};

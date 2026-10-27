@@ -3,6 +3,29 @@ use serde::{Deserialize, Serialize};
 
 #[derive(
     Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    strum::AsRefStr,
+    strum::EnumString,
+    strum::Display,
+)]
+#[strum(serialize_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+pub enum BlockKind {
+    Text,
+    Reasoning,
+    ToolCall,
+    ToolResult,
+    Media,
+}
+
+#[derive(
+    Debug,
     Serialize,
     Deserialize,
     PartialEq,

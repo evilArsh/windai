@@ -1,4 +1,4 @@
-use super::model::AdapterTypeError;
+use wind_wire::AdapterTypeError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AdapterError {

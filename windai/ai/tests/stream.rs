@@ -7,7 +7,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use wind_ai::adapter::{ChatAdapter, adapter_of};
 use wind_ai::chat::{Chunk, Request, once, stream};
-use wind_ai::model::{AdapterType, ChatModel, Target};
+use wind_ai::model::{ChatModel, Target};
+use wind_wire::AdapterType;
 use wind_wire::message::{Content, Message, Role};
 
 #[tokio::test]
