@@ -1,10 +1,10 @@
-use std::collections::BTreeMap;
 use wind_wire::{Block, BlockKind, Content, FunctionCall, Message, Role};
 
 #[derive(Debug, Default)]
 pub struct BlockAbsorb {
-    messages: BTreeMap<i64, Vec<Block>>,
-    touched: Vec<usize>,
+    blocks: Vec<Block>,
+    // 下一块的序号
+    seq: i64,
 }
 
 impl BlockAbsorb {
@@ -12,196 +12,137 @@ impl BlockAbsorb {
         Self::default()
     }
 
-    /// 把一条消息并入它分解出的块，返回本次变更的块及其在消息内的序号
-    pub fn absorb(&mut self, message_id: i64, partial: Message) -> Vec<(i64, Block)> {
+    /// 把一条消息的片段并入它分解出的块，返回本次变更的块
+    pub fn absorb(&mut self, partial: Message) -> Vec<Block> {
         let role = partial.role;
-        self.touched.clear();
+        let mut changed: Vec<Block> = Vec::new();
         if let Some(reasoning) = partial.reasoning_content {
-            if let Some(index) = self.extend(
-                message_id,
-                BlockKind::Reasoning,
-                || Block::new_reasoning(role),
-                &reasoning,
-            ) {
-                self.touched.push(index);
-            }
+            let open = |seq| Block::new_reasoning(role, seq);
+            self.extend(&mut changed, BlockKind::Reasoning, open, &reasoning);
         }
         for item in partial.content {
             match item {
                 Content::Text { data } => {
-                    let open = || Block::new_text(role);
-                    if let Some(index) = self.extend(message_id, BlockKind::Text, open, &data) {
-                        self.touched.push(index);
-                    }
+                    let open = |seq| Block::new_text(role, seq);
+                    self.extend(&mut changed, BlockKind::Text, open, &data);
                 }
                 Content::Image { data } => {
-                    let index = self.open(message_id, Block::new_image(role, data));
-                    self.touched.push(index);
+                    self.open(&mut changed, |seq| Block::new_image(role, seq, data));
                 }
                 Content::File { data } => {
-                    let index = self.open(message_id, Block::new_file(role, data));
-                    self.touched.push(index);
+                    self.open(&mut changed, |seq| Block::new_file(role, seq, data));
                 }
                 Content::Audio { data } => {
-                    let index = self.open(
-                        message_id,
-                        Block::new_audio(role, data.format, data.content),
-                    );
-                    self.touched.push(index);
+                    self.open(&mut changed, |seq| {
+                        Block::new_audio(role, seq, data.format, data.content)
+                    });
                 }
                 Content::FunctionCall { data } => {
-                    let index = self.result(message_id, role, data.id, data.content);
-                    self.touched.push(index);
+                    self.result(&mut changed, role, data.id, data.content);
                 }
             }
         }
         for call in partial.tool_calls.into_iter().flatten() {
-            let index = self.call(message_id, role, call);
-            self.touched.push(index);
+            self.call(&mut changed, role, call);
         }
-
-        let mut touched = std::mem::take(&mut self.touched);
-        if touched.len() > 1 {
-            touched.sort_unstable();
-            touched.dedup();
-        }
-        let blocks = self.messages.get(&message_id);
-        let changed = touched
-            .iter()
-            .filter_map(|index| {
-                blocks
-                    .and_then(|blocks| blocks.get(*index))
-                    .map(|block| (*index as i64, block.clone()))
-            })
-            .collect();
-        touched.clear();
-        self.touched = touched;
         changed
     }
 
-    /// 取出一条消息的块，下标即序号
-    pub fn settle(&mut self, message_id: i64) -> Vec<Block> {
-        self.messages.remove(&message_id).unwrap_or_default()
+    /// 取走块并把序号归零，供下一条消息复用
+    pub fn settle(&mut self) -> Vec<Block> {
+        self.seq = 0;
+        std::mem::take(&mut self.blocks)
     }
 
-    /// 取走全部消息的块，每条消息内仍按序号排列
-    pub fn settle_all(&mut self) -> Vec<(i64, Vec<Block>)> {
-        let messages: Vec<i64> = self.messages.keys().copied().collect();
-        messages
-            .into_iter()
-            .map(|message_id| (message_id, self.settle(message_id)))
-            .collect()
-    }
-
-    /// 某条消息当前的块，不移出累加器
-    pub fn blocks(&self, message_id: i64) -> &[Block] {
-        self.messages
-            .get(&message_id)
-            .map(Vec::as_slice)
-            .unwrap_or_default()
+    /// 当前的块，不移出累加器
+    pub fn blocks(&self) -> &[Block] {
+        &self.blocks
     }
 
     pub fn is_empty(&self) -> bool {
-        self.messages.values().all(Vec::is_empty)
+        self.blocks.is_empty()
     }
 
     /// 清空数据
     pub fn clean(&mut self) {
-        self.messages.clear();
-        self.touched.clear();
+        self.blocks.clear();
+        self.seq = 0;
     }
 
-    fn open(&mut self, message_id: i64, block: Block) -> usize {
-        place(self.messages.entry(message_id).or_default(), block)
+    fn open(&mut self, changed: &mut Vec<Block>, open: impl FnOnce(i64) -> Block) {
+        let seq = self.seq;
+        self.seq += 1;
+        let block = open(seq);
+        changed.push(block.clone());
+        self.blocks.push(block);
     }
 
     fn extend(
         &mut self,
-        message_id: i64,
+        changed: &mut Vec<Block>,
         kind: BlockKind,
-        open: impl FnOnce() -> Block,
+        open: impl FnOnce(i64) -> Block,
         fragment: &str,
-    ) -> Option<usize> {
+    ) {
         if fragment.is_empty() {
-            return None;
+            return;
         }
-        let blocks = self.messages.entry(message_id).or_default();
-        let index = match blocks.iter().position(|block| block.is(kind)) {
+        let index = match self.blocks.iter().position(|block| block.is(kind)) {
             Some(index) => index,
-            None => place(blocks, open()),
+            None => {
+                let seq = self.seq;
+                self.seq += 1;
+                self.blocks.push(open(seq));
+                self.blocks.len() - 1
+            }
         };
-        blocks[index].append_text(fragment);
-        Some(index)
+        let block = &mut self.blocks[index];
+        block.append_text(fragment);
+        changed.push(block.clone());
     }
 
-    fn call(&mut self, message_id: i64, role: Role, call: FunctionCall) -> usize {
-        let blocks = self.messages.entry(message_id).or_default();
+    fn call(&mut self, changed: &mut Vec<Block>, role: Role, call: FunctionCall) {
         let found = if call.id.is_empty() {
-            blocks
+            self.blocks
                 .iter()
                 .rposition(|block| block.is(BlockKind::ToolCall))
         } else {
-            blocks.iter().position(|block| {
+            self.blocks.iter().position(|block| {
                 block.is(BlockKind::ToolCall) && block.call_id() == Some(call.id.as_str())
             })
         };
         let index = match found {
             Some(index) => index,
-            None => place(
-                blocks,
-                Block::new_tool_call(role, call.id.clone(), call.name.clone(), None),
-            ),
+            None => {
+                let seq = self.seq;
+                self.seq += 1;
+                self.blocks.push(Block::new_tool_call(
+                    role,
+                    seq,
+                    call.id.clone(),
+                    call.name.clone(),
+                    None,
+                ));
+                self.blocks.len() - 1
+            }
         };
-        let block = &mut blocks[index];
+        let block = &mut self.blocks[index];
         block.fill_call(&call.id, &call.name);
         block.append_arguments(&call.arguments);
-        index
+        changed.push(block.clone());
     }
 
     fn result(
         &mut self,
-        message_id: i64,
+        changed: &mut Vec<Block>,
         role: Role,
         call_id: String,
         content: serde_json::Value,
-    ) -> usize {
-        let blocks = self.messages.entry(message_id).or_default();
-        let found = blocks.iter().position(|block| {
-            block.is(BlockKind::ToolResult) && block.call_id() == Some(call_id.as_str())
-        });
-        let index = match found {
-            Some(index) => index,
-            None => return place(blocks, Block::new_tool_result(role, call_id, content)),
-        };
-        blocks[index].set_result(content);
-        index
+    ) {
+        let seq = self.seq;
+        self.seq += 1;
+        let block = Block::new_tool_result(role, seq, call_id, content);
+        changed.push(block.clone());
+        self.blocks.push(block);
     }
-}
-
-/// 按块种类插入，同种类内保持开块顺序
-fn place(blocks: &mut Vec<Block>, block: Block) -> usize {
-    let rank = rank(block.kind());
-    let index = blocks
-        .iter()
-        .position(|existing| rank_of(existing) > rank)
-        .unwrap_or(blocks.len());
-    blocks.insert(index, block);
-    index
-}
-
-/// 块在消息内的种类顺序
-fn rank(kind: BlockKind) -> u8 {
-    match kind {
-        BlockKind::Reasoning => 0,
-        BlockKind::Text => 1,
-        BlockKind::Image => 2,
-        BlockKind::File => 3,
-        BlockKind::Audio => 4,
-        BlockKind::ToolCall => 5,
-        BlockKind::ToolResult => 6,
-    }
-}
-
-fn rank_of(block: &Block) -> u8 {
-    rank(block.kind())
 }

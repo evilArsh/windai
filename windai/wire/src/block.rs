@@ -1,5 +1,5 @@
 use super::tool::{FunctionCall, FunctionCallOutput};
-use crate::{AudioContent, Content, Message, Role};
+use crate::{AudioContent, Content, Role};
 use serde::{Deserialize, Serialize};
 
 #[derive(
@@ -37,6 +37,9 @@ pub struct Block {
     /// 块所属消息的角色
     role: Role,
 
+    /// 块在消息内的位置，从 0 开始按吸收顺序递增
+    seq: i64,
+
     /// 被改到第几版，每次追加递增
     revision: i64,
 
@@ -66,41 +69,42 @@ pub struct Block {
 }
 
 impl Block {
-    pub fn new_reasoning(role: Role) -> Self {
-        Self::blank(role, BlockKind::Reasoning)
+    pub fn new_reasoning(role: Role, seq: i64) -> Self {
+        Self::blank(role, seq, BlockKind::Reasoning)
     }
 
-    pub fn new_text(role: Role) -> Self {
-        Self::blank(role, BlockKind::Text)
+    pub fn new_text(role: Role, seq: i64) -> Self {
+        Self::blank(role, seq, BlockKind::Text)
     }
 
-    pub fn new_image(role: Role, data: String) -> Self {
+    pub fn new_image(role: Role, seq: i64, data: String) -> Self {
         Self {
             content: Some(data),
             revision: 1,
-            ..Self::blank(role, BlockKind::Image)
+            ..Self::blank(role, seq, BlockKind::Image)
         }
     }
 
-    pub fn new_file(role: Role, data: String) -> Self {
+    pub fn new_file(role: Role, seq: i64, data: String) -> Self {
         Self {
             content: Some(data),
             revision: 1,
-            ..Self::blank(role, BlockKind::File)
+            ..Self::blank(role, seq, BlockKind::File)
         }
     }
 
-    pub fn new_audio(role: Role, format: String, content: String) -> Self {
+    pub fn new_audio(role: Role, seq: i64, format: String, content: String) -> Self {
         Self {
             format: Some(format),
             content: Some(content),
             revision: 1,
-            ..Self::blank(role, BlockKind::Audio)
+            ..Self::blank(role, seq, BlockKind::Audio)
         }
     }
 
     pub fn new_tool_call(
         role: Role,
+        seq: i64,
         call_id: String,
         name: String,
         arguments: Option<String>,
@@ -109,16 +113,21 @@ impl Block {
             call_id: (!call_id.is_empty()).then_some(call_id),
             call_name: (!name.is_empty()).then_some(name),
             call_arguments: arguments,
-            ..Self::blank(role, BlockKind::ToolCall)
+            ..Self::blank(role, seq, BlockKind::ToolCall)
         }
     }
 
-    pub fn new_tool_result(role: Role, call_id: String, content: serde_json::Value) -> Self {
+    pub fn new_tool_result(
+        role: Role,
+        seq: i64,
+        call_id: String,
+        content: serde_json::Value,
+    ) -> Self {
         Self {
             call_id: Some(call_id),
             call_res: Some(content),
             revision: 1,
-            ..Self::blank(role, BlockKind::ToolResult)
+            ..Self::blank(role, seq, BlockKind::ToolResult)
         }
     }
 
@@ -151,6 +160,10 @@ impl Block {
 
     pub fn role(&self) -> Role {
         self.role
+    }
+
+    pub fn seq(&self) -> i64 {
+        self.seq
     }
 
     pub fn is(&self, kind: BlockKind) -> bool {
@@ -253,56 +266,11 @@ impl Block {
         self.revision = 1;
     }
 
-    /// 把一段块还原成消息，相邻且 role 相同的块并入同一条消息
-    pub fn compose(blocks: Vec<Block>) -> Vec<Message> {
-        let mut messages: Vec<Message> = Vec::new();
-        for block in blocks {
-            let role = block.role();
-            match messages.last_mut() {
-                Some(message) if message.role == role => block.append_to(message),
-                _ => {
-                    let mut message = Message {
-                        role,
-                        ..Message::default()
-                    };
-                    block.append_to(&mut message);
-                    messages.push(message);
-                }
-            }
-        }
-        messages
-    }
-
-    fn append_to(&self, message: &mut Message) {
-        match self.kind() {
-            BlockKind::Reasoning => {
-                let text = self.reasoning().unwrap_or_default();
-                message
-                    .reasoning_content
-                    .get_or_insert_with(String::new)
-                    .push_str(text);
-            }
-            BlockKind::ToolCall => {
-                if let Some(call) = self.tool_call() {
-                    message.tool_calls.get_or_insert_with(Vec::new).push(call);
-                }
-            }
-            BlockKind::Text
-            | BlockKind::Image
-            | BlockKind::File
-            | BlockKind::Audio
-            | BlockKind::ToolResult => {
-                if let Some(content) = self.content() {
-                    message.content.push(content);
-                }
-            }
-        }
-    }
-
-    fn blank(role: Role, kind: BlockKind) -> Self {
+    fn blank(role: Role, seq: i64, kind: BlockKind) -> Self {
         Self {
             kind,
             role,
+            seq,
             revision: 0,
             content: None,
             format: None,

@@ -58,19 +58,6 @@ impl Storage {
         todo!()
     }
 
-    /// TODO: 批量插入块，顺序必须和blocks一致，id也是
-    pub async fn create_blocks(&self, message_id: i64, blocks: &[Block]) -> Result<Vec<i64>> {
-        self.with_tx(|storage| async move {
-            // seq 取下标，写入与读回都按它排
-            let ordered: Vec<(i64, &Block)> = blocks
-                .iter()
-                .enumerate()
-                .map(|(seq, block)| (seq as i64, block))
-                .collect();
-            // 一次事务内：多行 INSERT，再 SELECT id .. WHERE message_id = ? ORDER BY seq
-            let _ = (storage, message_id, ordered);
-            todo!()
-        })
-        .await
-    }
+    /// TODO: 批量插入块，根据 seq 确保返回的id顺序 blocks顺序一致
+    pub async fn create_blocks(&self, message_id: i64, blocks: &[Block]) -> Result<Vec<i64>> {}
 }

@@ -168,9 +168,8 @@ pub async fn prepare(_stroage: &Storage, _topic_id: i64, _instance_id: i64) -> R
 pub async fn exchange(
     prepared: &Prepared,
     absorber: &mut BlockAbsorb,
-    message_id: i64,
     body: Value,
-    mut emit: impl FnMut(i64, Block),
+    mut emit: impl FnMut(Block),
 ) -> Result<Vec<Block>> {
     let chunks = stream_body(
         prepared.adapter.as_ref(),
@@ -191,23 +190,20 @@ pub async fn exchange(
             Ok(Chunk::Done) => todo!(),
             Ok(Chunk::Delta(delta)) => {
                 usage = add_usage(usage, &delta);
-                for (seq, block) in absorber.absorb(message_id, delta) {
-                    emit(seq, block);
+                for block in absorber.absorb(delta) {
+                    emit(block);
                 }
             }
             Err(error) => {
-                absorber.absorb(
-                    message_id,
-                    Message {
-                        role: Role::Assistant,
-                        content: vec![Content::new_text(error.to_string())],
-                        reasoning_content: None,
-                        created_at: 0,
-                        input_tokens: 0,
-                        output_tokens: 0,
-                        tool_calls: None,
-                    },
-                );
+                absorber.absorb(Message {
+                    role: Role::Assistant,
+                    content: vec![Content::new_text(error.to_string())],
+                    reasoning_content: None,
+                    created_at: 0,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    tool_calls: None,
+                });
                 break;
             }
         }
@@ -215,7 +211,7 @@ pub async fn exchange(
     assembled.input_tokens = usage.input_tokens;
     assembled.output_tokens = usage.output_tokens;
     // Ok(intercept_response(runner, cx, prepared.model_id, assembled, usage).await)
-    Ok(absorber.settle(message_id))
+    Ok(absorber.settle())
 }
 
 // TODO: 待补，按调用标识一次查出子实例的状态与收尾回复

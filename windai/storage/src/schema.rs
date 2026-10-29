@@ -92,11 +92,14 @@ use super::error::Result;
 //     message_id      BIGINT  NOT NULL,
 //     seq             BIGINT  NOT NULL,
 //     kind            TEXT    NOT NULL,
-//     call_id         TEXT,
+//     role            TEXT    NOT NULL,
 //     revision        BIGINT  NOT NULL DEFAULT 0,
-//     content         TEXT    NOT NULL DEFAULT '',
-//     data            TEXT,
-//     finished        BOOLEAN NOT NULL DEFAULT FALSE
+//     content         TEXT,
+//     format          TEXT,
+//     call_id         TEXT,
+//     call_name       TEXT,
+//     call_arguments  TEXT,
+//     call_res        TEXT
 // );
 // CREATE INDEX IF NOT EXISTS idx_turn_instance ON turn(instance_id, id);
 // CREATE INDEX IF NOT EXISTS idx_turn_topic ON turn(topic_id, id);

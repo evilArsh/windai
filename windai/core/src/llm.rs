@@ -113,7 +113,6 @@ impl LlmRunner {
         mut contexts: Vec<Message>,
     ) -> Result<Outcome<LlmDomain>, LlmFailure> {
         let mut rounds = 0;
-        let mut absorber = BlockAbsorb::new();
         let prepared = turn::prepare(&self.storage, topic.id, instance_id)
             .await
             .map_err(|error| failure(error, None))?;
@@ -128,6 +127,7 @@ impl LlmRunner {
         );
         loop {
             let cx = turn::round_cx(topic.id);
+            let mut absorber = BlockAbsorb::new();
             rounds += 1;
             if rounds > self.max_rounds {
                 return Err(LlmFailure {
@@ -171,21 +171,20 @@ impl LlmRunner {
             };
             body = self.bus.decide(&CORE_RULE_APPLY, &cx, payload).await.body;
 
-            let blocks =
-                turn::exchange(&prepared, &mut absorber, message_id, body, |seq, block| {
-                    // TODO: Writer 旁路通知
-                    // self.bus.notify(
-                    //     &CORE_BLOCK_DELTA,
-                    //     &cx,
-                    //     BlockDelta {
-                    //         message_id,
-                    //         seq,
-                    //         delta: block,
-                    //     },
-                    // );
-                })
-                .await
-                .map_err(|error| failure(error, None))?;
+            let blocks = turn::exchange(&prepared, &mut absorber, body, |block| {
+                // TODO: Writer 旁路通知
+                // self.bus.notify(
+                //     &CORE_BLOCK_DELTA,
+                //     &cx,
+                //     BlockDelta {
+                //         message_id,
+                //         seq,
+                //         delta: block,
+                //     },
+                // );
+            })
+            .await
+            .map_err(|error| failure(error, None))?;
             // TODO:
             // 1. 批量有序插入 blocks 并且返回id
             // 2. 发送CORE_BLOCK_COMMITED

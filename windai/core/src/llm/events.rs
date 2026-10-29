@@ -48,8 +48,6 @@ pub struct ToolCalls {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct BlockDelta {
     pub message_id: i64,
-    /// block 序列
-    pub seq: i64,
     #[serde(flatten)]
     pub delta: Block,
 }

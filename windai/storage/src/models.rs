@@ -189,8 +189,11 @@ pub struct Message {
 pub struct Block {
     pub id: i64,
     pub message_id: i64,
+    /// 块在消息内的位置
+    pub seq: i64,
     pub kind: BlockKind,
-    pub finished: bool,
+    pub role: Role,
+    pub revision: i64,
     pub content: Option<String>,
     pub format: Option<String>,
     pub call_id: Option<String>,
