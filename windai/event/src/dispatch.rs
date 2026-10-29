@@ -26,7 +26,7 @@ fn to_json<P: Serialize>(event: &'static str, payload: &P) -> Result<Value, BusE
 
 /// 派发失败，被拒绝不在此列
 #[derive(Debug, thiserror::Error)]
-enum BusError {
+pub enum BusError {
     #[error("event {name} has the wrong shape for this call")]
     WrongShape { name: &'static str },
     #[error("payload for {event} could not be serialized: {detail}")]
@@ -107,18 +107,20 @@ impl Dispatcher {
         self.emit(def, cx, &payload);
     }
 
-    /// 批量通知事件
-    pub fn notify_all<P, I>(&self, def: &EventDef<P>, cx: &DispatchCx, payloads: I)
-    where
-        P: Serialize + Send + Sync,
-        I: IntoIterator<Item = P>,
-    {
-        for payload in payloads {
-            self.notify(def, cx, payload);
-        }
-    }
+    // /// 批量通知事件
+    // pub fn notify_all<P, I>(&self, def: &EventDef<P>, cx: &DispatchCx, payloads: I)
+    // where
+    //     P: Serialize + Send + Sync,
+    //     I: IntoIterator<Item = P>,
+    // {
+    //     for payload in payloads {
+    //         self.notify(def, cx, payload);
+    //     }
+    // }
 
     /// 允许 mod 改写载荷的事件；返回改写后的值
+    /// 
+    /// mod 改写失败时，将原值返回
     pub async fn decide<P>(&self, def: &EventDef<P>, cx: &DispatchCx, payload: P) -> P
     where
         P: Serialize + DeserializeOwned + Send + Sync,

@@ -1,27 +1,10 @@
 use super::tool::{FunctionCall, FunctionCallOutput};
 use serde::{Deserialize, Serialize};
 
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    Serialize,
-    Deserialize,
-    strum::AsRefStr,
-    strum::EnumString,
-    strum::Display,
-)]
-#[strum(serialize_all = "snake_case")]
-#[serde(rename_all = "snake_case")]
-pub enum BlockKind {
-    Text,
-    Reasoning,
-    ToolCall,
-    ToolResult,
-    Media,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct Usage {
+    pub input_tokens: i32,
+    pub output_tokens: i32,
 }
 
 #[derive(
@@ -35,6 +18,7 @@ pub enum BlockKind {
     strum::AsRefStr,
     strum::EnumString,
     strum::Display,
+    schemars::JsonSchema,
 )]
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "lowercase")]
@@ -46,14 +30,14 @@ pub enum Role {
     Developer,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, schemars::JsonSchema)]
 pub struct AudioContent {
     /// mp3、wav
     pub format: String,
     pub content: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Content {
     Text { data: String },
@@ -97,7 +81,7 @@ impl Content {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, schemars::JsonSchema)]
 pub struct Message {
     pub role: Role,
     pub content: Vec<Content>,

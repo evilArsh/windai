@@ -37,7 +37,6 @@ pub enum AgentRole {
 pub enum AgentMode {
     Sync,
     Background,
-    Fork,
 }
 
 #[derive(

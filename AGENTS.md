@@ -4,15 +4,11 @@
 
 ./windai-bak 目录只读
 
----
-
 ## 文档写作要求
 
 - 面向未来开发者，使用规范文体。不使用口语化表述
 - 引用同一文档内的章节使用**具名引用**，不使用编号引用
 - 概念在首次使用处就地定义，不依赖读者已读过其他文档
-
----
 
 ## 代码注释
 
@@ -27,8 +23,18 @@
 
 测试代码不在该规范范围内。完整规则、正反例与自检命令见 `docs/comment-style.md`。
 
----
-
 ## 文档
 
 - `.env` 包含真实的提供商信息，可用于真实agent请求
+
+可参考设计文档：
+
+- `docs/architecture.md`
+- `docs/event-design-qa.md`
+- `docs/event-flow.md`
+- `docs/event-identity.md`
+
+门面契约参考：
+
+- `docs/facade.d.ts`
+- `docs/manifest.schema.json`

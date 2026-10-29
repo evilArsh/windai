@@ -4,13 +4,15 @@ use self::executor::StorageExecutor;
 
 use std::future::Future;
 
-pub mod models;
 pub(crate) mod db;
 pub mod error;
 pub(crate) mod executor;
+pub mod models;
 pub(crate) mod schema;
 pub(crate) mod utils;
 pub mod vendors;
+
+pub use models::*;
 
 // TODO: 不再需要
 // pub(crate) struct TableName;

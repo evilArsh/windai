@@ -1,7 +1,5 @@
 [workspace]
-members = [
-    "windai/*",
-]
+members = ["windai/*"]
 resolver = "3"
 
 [workspace.package]
@@ -47,14 +45,10 @@ rmcp = { version = "3.1", features = [
     "transport-streamable-http-server",
 ] }
 
-# rquickjs = { version = "0.11" }
 evalexpr = { version = "13.0" }
 
-# rusqlite = { version = "0.39", features = ["bundled", "backup", "hooks"] }
 sqlx = { version = "0.8", features = [
     "runtime-tokio",
-    # "sqlite",
-    # "postgres"
     "derive",
     "chrono",
     "json",

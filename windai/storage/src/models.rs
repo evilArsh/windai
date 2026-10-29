@@ -4,26 +4,6 @@ use wind_wire::{
     AdapterType, AgentMode, AgentPhase, AgentRole, BlockKind, Content, PendingKind, Role,
 };
 
-macro_rules! impl_display {
-    ($ty:ident { $($field:ident),+ $(,)? }) => {
-        #[allow(unused_assignments)]
-        impl std::fmt::Display for $ty {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, concat!(stringify!($ty), " {{ "))?;
-                let mut first = true;
-                $(
-                    if !first {
-                        write!(f, ", ")?;
-                    }
-                    first = false;
-                    write!(f, concat!(stringify!($field), ": {:?}"), &self.$field)?;
-                )+
-                write!(f, " }}")
-            }
-        }
-    };
-}
-
 /// 工具放行策略
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AllowPolicy {
@@ -166,7 +146,7 @@ pub struct Model {
 
 /// 提供商结构规则
 #[derive(Debug, Clone, PartialEq)]
-pub struct RuleRow {
+pub struct Rule {
     /// 规则标识
     pub id: i64,
     /// 所属提供商
@@ -184,7 +164,6 @@ pub struct Turn {
     pub instance_id: i64,
     pub topic_id: i64,
     pub from_id: Option<i64>,
-    pub is_boundary: bool,
     pub created_at: Option<i64>,
 }
 
@@ -195,7 +174,6 @@ pub struct Turn {
 pub struct Message {
     pub id: i64,
     pub turn_id: i64,
-    pub seq: i64,
     pub role: Role,
     pub model_id: Option<i64>,
     pub finish_reason: Option<String>,
@@ -211,22 +189,14 @@ pub struct Message {
 pub struct Block {
     pub id: i64,
     pub message_id: i64,
-    pub seq: i64,
     pub kind: BlockKind,
+    pub finished: bool,
+    pub content: Option<String>,
+    pub format: Option<String>,
     pub call_id: Option<String>,
-    pub revision: i64,
-    pub content: String,
-    pub data: Option<serde_json::Value>,
-}
-
-impl Block {
-    pub fn encode_data(&self) -> Result<Option<String>, serde_json::Error> {
-        self.data.as_ref().map(serde_json::to_string).transpose()
-    }
-
-    pub fn decode_data(raw: Option<&str>) -> Result<Option<serde_json::Value>, serde_json::Error> {
-        raw.map(serde_json::from_str).transpose()
-    }
+    pub call_name: Option<String>,
+    pub call_arguments: Option<String>,
+    pub call_res: Option<serde_json::Value>,
 }
 
 /// mod 基础信息

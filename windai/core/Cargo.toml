@@ -6,11 +6,12 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-# wind-ai = { path = "../ai" }
-wind-event = { path = "../event" }
 # wind-stream = { path = "../stream" }
+wind-ai = { path = "../ai" }
+wind-event = { path = "../event" }
 wind-wire = { path = "../wire" }
 wind-rule = { path = "../rule" }
+wind-storage = { path = "../storage" }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
