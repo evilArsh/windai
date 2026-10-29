@@ -1,6 +1,8 @@
 use self::block::BlockAbsorb;
 use self::domain::{LlmDomain, LlmFailure, LlmSpec, WaitAnswer};
-use self::events::{CORE_LLM_REQUEST, CORE_RULE_APPLY, LlmRequest, RuleApply};
+use self::events::{
+    BlockDelta, CORE_BLOCK_DELTA, CORE_LLM_REQUEST, CORE_RULE_APPLY, LlmRequest, RuleApply,
+};
 use self::ports::{McpService, ModService};
 use self::rule::{apply_rules, context_of};
 use crate::agent::{Ctx, Input, Outcome, Runner};
@@ -64,9 +66,8 @@ impl LlmRunner {
         let topic = turn::topic_of(&self.storage, instance_id)
             .await
             .map_err(|error| failure(error, message_id))?;
-        let cx = turn::round_cx(topic.id);
 
-        let composed = turn::compose_pending(&self.storage, &cx, topic.id, instance_id, &specs)
+        let composed = turn::compose_pending(&self.storage, topic.id, instance_id, &specs)
             .await
             .map_err(|error| failure(error, message_id))?;
 
@@ -101,13 +102,11 @@ impl LlmRunner {
             },
         };
 
-        self.rounds(&cx, topic, instance_id, turn_id, contexts)
-            .await
+        self.rounds(topic, instance_id, turn_id, contexts).await
     }
 
     async fn rounds(
         &self,
-        cx: &DispatchCx,
         topic: Topic,
         instance_id: i64,
         turn_id: i64,
@@ -115,7 +114,7 @@ impl LlmRunner {
     ) -> Result<Outcome<LlmDomain>, LlmFailure> {
         let mut rounds = 0;
         let mut absorber = BlockAbsorb::new();
-        let prepared = turn::prepare(&self.storage, cx, topic.id, instance_id)
+        let prepared = turn::prepare(&self.storage, topic.id, instance_id)
             .await
             .map_err(|error| failure(error, None))?;
         // 组装 mod 提示词；只在每次请求前组装一次
@@ -128,6 +127,7 @@ impl LlmRunner {
             },
         );
         loop {
+            let cx = turn::round_cx(topic.id);
             rounds += 1;
             if rounds > self.max_rounds {
                 return Err(LlmFailure {
@@ -146,7 +146,7 @@ impl LlmRunner {
                 .bus
                 .decide(
                     &CORE_LLM_REQUEST,
-                    cx,
+                    &cx,
                     LlmRequest {
                         contexts: contexts.clone(),
                         tools: Some(prepared.catalog.declarations()),
@@ -169,14 +169,26 @@ impl LlmRunner {
                 adapter: prepared.model.adapter,
                 body,
             };
-            body = self.bus.decide(&CORE_RULE_APPLY, cx, payload).await.body;
+            body = self.bus.decide(&CORE_RULE_APPLY, &cx, payload).await.body;
 
-            let blocks = turn::exchange(&prepared, &mut absorber, message_id, body, || {
-                // TODO: 对外发送 core/block.delta
-                todo!()
-            })
-            .await
-            .map_err(|error| failure(error, None))?;
+            let blocks =
+                turn::exchange(&prepared, &mut absorber, message_id, body, |seq, block| {
+                    // TODO: Writer 旁路通知
+                    // self.bus.notify(
+                    //     &CORE_BLOCK_DELTA,
+                    //     &cx,
+                    //     BlockDelta {
+                    //         message_id,
+                    //         seq,
+                    //         delta: block,
+                    //     },
+                    // );
+                })
+                .await
+                .map_err(|error| failure(error, None))?;
+            // TODO:
+            // 1. 批量有序插入 blocks 并且返回id
+            // 2. 发送CORE_BLOCK_COMMITED
         }
         todo!()
     }

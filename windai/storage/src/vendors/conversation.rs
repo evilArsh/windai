@@ -1,4 +1,4 @@
-use wind_wire::Role;
+use wind_wire::{Block, Role};
 
 use crate::error::Result;
 use crate::{AgentPending, Storage, Turn};
@@ -56,5 +56,21 @@ impl Storage {
     /// TODO: 读取该消息所在的turn
     pub async fn get_turn_of(&self, _message_id: i64) -> Result<Option<Turn>> {
         todo!()
+    }
+
+    /// TODO: 批量插入块，顺序必须和blocks一致，id也是
+    pub async fn create_blocks(&self, message_id: i64, blocks: &[Block]) -> Result<Vec<i64>> {
+        self.with_tx(|storage| async move {
+            // seq 取下标，写入与读回都按它排
+            let ordered: Vec<(i64, &Block)> = blocks
+                .iter()
+                .enumerate()
+                .map(|(seq, block)| (seq as i64, block))
+                .collect();
+            // 一次事务内：多行 INSERT，再 SELECT id .. WHERE message_id = ? ORDER BY seq
+            let _ = (storage, message_id, ordered);
+            todo!()
+        })
+        .await
     }
 }

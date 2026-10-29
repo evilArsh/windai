@@ -29,7 +29,7 @@ pub enum BlockKind {
 }
 
 /// 一个 Message 被拆分成多个独立的 Block
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Block {
     /// 块类型
     kind: BlockKind,
@@ -254,8 +254,6 @@ impl Block {
     }
 
     /// 把一段块还原成消息，相邻且 role 相同的块并入同一条消息
-    /// 入参须已按 (message_id, seq) 排好序，块的顺序即内容的顺序
-    /// role 之外的创建时间与 token 用量不在块里，由调用方回填
     pub fn compose(blocks: Vec<Block>) -> Vec<Message> {
         let mut messages: Vec<Message> = Vec::new();
         for block in blocks {

@@ -1,7 +1,7 @@
 use crate::agent::tree::Phase;
 use crate::error::{CoreError, Result};
 use crate::llm::block::BlockAbsorb;
-use futures::{StreamExt, TryStreamExt};
+use futures::StreamExt;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::pin::pin;
@@ -65,7 +65,6 @@ pub async fn topic_of(storage: &Storage, instance_id: i64) -> Result<Topic> {
 /// 将 pending 数据合并成一条 user 消息
 pub async fn compose_pending(
     storage: &Storage,
-    _cx: &DispatchCx,
     topic_id: i64,
     instance_id: i64,
     specs: &[LlmSpec],
@@ -161,12 +160,7 @@ pub async fn report_spawns(
     Ok(spawn_turn)
 }
 
-pub async fn prepare(
-    _stroage: &Storage,
-    _cx: &DispatchCx,
-    _topic_id: i64,
-    _instance_id: i64,
-) -> Result<Prepared> {
+pub async fn prepare(_stroage: &Storage, _topic_id: i64, _instance_id: i64) -> Result<Prepared> {
     todo!()
 }
 
@@ -176,7 +170,7 @@ pub async fn exchange(
     absorber: &mut BlockAbsorb,
     message_id: i64,
     body: Value,
-    mut emit: impl FnMut(BlockChange),
+    mut emit: impl FnMut(i64, Block),
 ) -> Result<Vec<Block>> {
     let chunks = stream_body(
         prepared.adapter.as_ref(),
@@ -196,9 +190,10 @@ pub async fn exchange(
         match chunk {
             Ok(Chunk::Done) => todo!(),
             Ok(Chunk::Delta(delta)) => {
-                // TODO: 对外发送 core/block.delta
                 usage = add_usage(usage, &delta);
-                absorber.absorb(message_id, delta)
+                for (seq, block) in absorber.absorb(message_id, delta) {
+                    emit(seq, block);
+                }
             }
             Err(error) => {
                 absorber.absorb(
@@ -274,7 +269,7 @@ fn usage_of(input_tokens: i32, output_tokens: i32) -> Usage {
 
 fn add_usage(usage: Usage, delta: &Message) -> Usage {
     usage_of(
-        usage.input_tokens.max(i32::from(delta.input_tokens)),
-        usage.output_tokens.max(i32::from(delta.output_tokens)),
+        usage.input_tokens.max(delta.input_tokens),
+        usage.output_tokens.max(delta.output_tokens),
     )
 }

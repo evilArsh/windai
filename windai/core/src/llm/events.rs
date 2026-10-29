@@ -3,7 +3,7 @@ use wind_event::def::{Directory, EventDef, Shape};
 use wind_event::schema;
 use wind_wire::message::Message;
 use wind_wire::tool::{FunctionCall, Tools};
-use wind_wire::{AdapterType, BlockKind, Role, Usage};
+use wind_wire::{AdapterType, Block, Usage};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PromptCollect {
@@ -46,41 +46,20 @@ pub struct ToolCalls {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct BlockOpened {
-    pub block_id: i64,
-    pub message_id: i64,
-    pub role: Role,
-    pub kind: BlockKind,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub call_id: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct BlockDelta {
-    pub block_id: i64,
     pub message_id: i64,
-    pub revision: u64,
-    pub fragment: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct BlockCommit {
-    pub block_id: i64,
-    pub message_id: i64,
-    pub kind: BlockKind,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub call_id: Option<String>,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub content: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub raw: Option<serde_json::Value>,
+    /// block 序列
+    pub seq: i64,
+    #[serde(flatten)]
+    pub delta: Block,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct BlockCommitted {
-    #[serde(flatten)]
-    pub block: BlockCommit,
-    pub revision: u64,
+    pub message_id: i64,
+    /// block 序列
+    pub seq: i64,
+    pub block_id: i64,
 }
 
 /// 一次模型 API 往返的结束标记
@@ -146,13 +125,6 @@ pub const CORE_MESSAGE_SEAL: EventDef<MessageSeal> = EventDef::new(
     schema::<MessageSeal>,
 );
 
-pub const CORE_BLOCK_OPEN: EventDef<BlockOpened> = EventDef::new(
-    "core/block.open",
-    Shape::Observe,
-    true,
-    schema::<BlockOpened>,
-);
-
 pub const CORE_BLOCK_DELTA: EventDef<BlockDelta> = EventDef::new(
     "core/block.delta",
     Shape::Observe,
@@ -189,7 +161,6 @@ pub fn directory() -> Directory {
         CORE_LLM_RESPONSE.meta(),
         CORE_LLM_TOOLCALL.meta(),
         CORE_MESSAGE_SEAL.meta(),
-        CORE_BLOCK_OPEN.meta(),
         CORE_BLOCK_DELTA.meta(),
         CORE_BLOCK_COMMITTED.meta(),
         CORE_INPUT_ACCEPTED.meta(),
