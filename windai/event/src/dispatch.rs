@@ -119,7 +119,7 @@ impl Dispatcher {
     // }
 
     /// 允许 mod 改写载荷的事件；返回改写后的值
-    /// 
+    ///
     /// mod 改写失败时，将原值返回
     pub async fn decide<P>(&self, def: &EventDef<P>, cx: &DispatchCx, payload: P) -> P
     where

@@ -7,7 +7,7 @@ pub struct LlmDomain;
 
 impl Domain for LlmDomain {
     type Spec = LlmSpec;
-    type Suspend = SuspendedWait;
+    type Suspend = Suspended;
     type Resume = WaitAnswer;
     type Output = LlmOutcome;
     type Error = LlmFailure;
@@ -26,21 +26,11 @@ pub struct LlmSpec {
     pub turn_id: Option<i64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::EnumString, strum::Display)]
-#[strum(serialize_all = "snake_case")]
-pub enum WaitKind {
-    Approval,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SuspendedWait {
+pub struct Suspended {
     pub instance_id: i64,
-    pub kind: String,
     pub message_id: i64,
-    pub handle: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub payload: Option<serde_json::Value>,
 }
 
 // pub fn pending_call_ids(payload: &serde_json::Value) -> Vec<String> {

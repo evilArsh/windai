@@ -4,21 +4,6 @@ use wind_wire::{
     AdapterType, AgentMode, AgentPhase, AgentRole, BlockKind, Content, PendingKind, Role,
 };
 
-/// 工具放行策略
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct AllowPolicy {
-    /// 无需审批的工具名，`"*"` 表示全部
-    pub allow: Vec<String>,
-}
-
-impl Default for AllowPolicy {
-    fn default() -> Self {
-        Self {
-            allow: vec!["*".into()],
-        }
-    }
-}
-
 /// 话题
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Topic {
@@ -30,8 +15,6 @@ pub struct Topic {
     pub label: String,
     /// 使用的模型
     pub model_id: Option<i64>,
-    /// 放行策略
-    pub tool_approval_policy: AllowPolicy,
     /// 图标
     pub icon: Option<String>,
 }
@@ -189,6 +172,8 @@ pub struct Message {
 pub struct Block {
     pub id: i64,
     pub message_id: i64,
+    /// 不完整的块不进入上下文
+    pub finished: bool,
     /// 块在消息内的位置
     pub seq: i64,
     pub kind: BlockKind,

@@ -16,7 +16,9 @@ impl BlockAbsorb {
     pub fn absorb(&mut self, partial: Message) -> Vec<Block> {
         let role = partial.role;
         let mut changed: Vec<Block> = Vec::new();
-        if let Some(reasoning) = partial.reasoning_content {
+        if let Some(reasoning) = partial.reasoning_content
+            && !reasoning.is_empty()
+        {
             let open = |seq| Block::new_reasoning(role, seq);
             self.extend(&mut changed, BlockKind::Reasoning, open, &reasoning);
         }
@@ -46,6 +48,11 @@ impl BlockAbsorb {
             self.call(&mut changed, role, call);
         }
         changed
+    }
+
+    /// 组装成完整 Message
+    pub fn compose(&mut self) -> Message {
+        todo!()
     }
 
     /// 取走块并把序号归零，供下一条消息复用

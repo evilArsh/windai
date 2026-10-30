@@ -3,6 +3,13 @@ pub(crate) mod tree;
 use self::tree::{Domain, JobId, NodeId, Terminal};
 use tokio_util::sync::CancellationToken;
 
+/// 系统 tool_call 预留关键字
+///
+/// TODO: 设想 new feature：
+/// mod系统通过实现这些关键工具使 agent 拥有核心功能。
+/// 系统拥有默认的实现以保证基础功能运转
+pub const SPAWN_AGENT_NAME: &str = "wind_spawn_agent";
+
 #[derive(Debug, Clone)]
 pub struct ChildResult<D: Domain> {
     pub node: NodeId,

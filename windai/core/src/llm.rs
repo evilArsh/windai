@@ -1,21 +1,19 @@
-use self::block::BlockAbsorb;
-use self::domain::{LlmDomain, LlmFailure, LlmSpec, WaitAnswer};
+use self::domain::{LlmDomain, LlmFailure, LlmOutcome, LlmSpec, Suspended, WaitAnswer};
 use self::events::{
-    BlockDelta, CORE_BLOCK_DELTA, CORE_LLM_REQUEST, CORE_RULE_APPLY, LlmRequest, RuleApply,
+    CORE_LLM_REQUEST, CORE_LLM_TOOLCALL, CORE_RULE_APPLY, LlmRequest, RuleApply, ToolCalls,
 };
-use self::ports::{McpService, ModService};
 use self::rule::{apply_rules, context_of};
+use self::tools::DeclaredTool;
 use crate::agent::{Ctx, Input, Outcome, Runner};
 use crate::error::CoreError;
 use std::sync::Arc;
-use wind_event::{DispatchCx, Dispatcher};
+use wind_event::{DispatchCx, Dispatcher, Scope};
 use wind_storage::{Storage, Topic};
-use wind_wire::{Content, Message, Role};
+use wind_wire::{Content, FunctionCall, Message, Role, tool};
 
 pub mod block;
 pub mod domain;
 pub mod events;
-pub mod ports;
 pub mod tools;
 
 pub(crate) mod rule;
@@ -24,19 +22,46 @@ pub(crate) mod turn;
 /// 一次请求最多跑几轮工具调用
 pub const DEFAULT_MAX_ROUNDS: u32 = 40;
 
+#[async_trait::async_trait]
+pub trait ModService: Send + Sync {
+    async fn prompt_fragments(&self, topic_id: i64) -> Result<Vec<String>, CoreError>;
+    async fn agent_tools(&self, topic_id: i64) -> Result<Vec<DeclaredTool>, CoreError>;
+    async fn version_of(&self, mod_name: &str) -> Result<i64, CoreError>;
+    /// 调用 mod 中的 scripts 脚本。调用入口为 `request` handler
+    async fn call(
+        &self,
+        scope: &Scope,
+        mod_name: &str,
+        version: i64,
+        request: &str,
+        input: serde_json::Value,
+    ) -> Result<serde_json::Value, CoreError>;
+}
+
+#[async_trait::async_trait]
+pub trait McpService: Send + Sync {
+    async fn declarations(
+        &self,
+        cx: &DispatchCx,
+        topic_id: i64,
+    ) -> Result<Vec<DeclaredTool>, CoreError>;
+
+    async fn call(
+        &self,
+        cx: &DispatchCx,
+        call_id: &str,
+        server: &str,
+        tool: &str,
+        arguments: serde_json::Value,
+    ) -> Result<serde_json::Value, CoreError>;
+}
+
 pub struct LlmRunner {
     pub(crate) bus: Arc<Dispatcher>,
     pub(crate) storage: Storage,
     pub(crate) max_rounds: u32,
     pub(crate) mod_service: Arc<dyn ModService>,
     pub(crate) mcp_service: Arc<dyn McpService>,
-}
-
-fn failure(error: CoreError, message_id: Option<i64>) -> LlmFailure {
-    LlmFailure {
-        message_id,
-        error: error.to_string(),
-    }
 }
 
 impl LlmRunner {
@@ -96,7 +121,7 @@ impl LlmRunner {
                 Some(turn_id) => turn_id,
                 None => self
                     .storage
-                    .create_new_turn(instance_id, topic.id, None)
+                    .create_turn(instance_id, topic.id, None)
                     .await
                     .map_err(|error| failure(error.into(), None))?,
             },
@@ -127,7 +152,6 @@ impl LlmRunner {
         );
         loop {
             let cx = turn::round_cx(topic.id);
-            let mut absorber = BlockAbsorb::new();
             rounds += 1;
             if rounds > self.max_rounds {
                 return Err(LlmFailure {
@@ -135,9 +159,10 @@ impl LlmRunner {
                     error: format!("tool calls exceed max rounds: {}", self.max_rounds),
                 });
             }
+
             let message_id = self
                 .storage
-                .create_new_message(turn_id, Role::Assistant, Some(prepared.model_id))
+                .create_message(turn_id, Role::Assistant, Some(prepared.model_id))
                 .await
                 .map_err(|error| failure(error.into(), None))?;
 
@@ -171,8 +196,8 @@ impl LlmRunner {
             };
             body = self.bus.decide(&CORE_RULE_APPLY, &cx, payload).await.body;
 
-            let blocks = turn::exchange(&prepared, &mut absorber, body, |block| {
-                // TODO: Writer 旁路通知
+            let mut absorber = turn::exchange(&prepared, body, |_delta| {
+                // TODO: Writer 旁路通知，旁路日志不能落库，WriteHandle如何做？
                 // self.bus.notify(
                 //     &CORE_BLOCK_DELTA,
                 //     &cx,
@@ -185,9 +210,88 @@ impl LlmRunner {
             })
             .await
             .map_err(|error| failure(error, None))?;
-            // TODO:
-            // 1. 批量有序插入 blocks 并且返回id
-            // 2. 发送CORE_BLOCK_COMMITED
+            let blocks = absorber.settle();
+            let _block_ids = self
+                .storage
+                .create_blocks(message_id, &blocks)
+                .await
+                .map_err(|error| failure(error.into(), Some(message_id)))?;
+            // TODO: Writer 发送CORE_BLOCK_COMMITED，和记录日志
+            // 或者提交给writer后执行 create_blocks？
+
+            let calls: Vec<FunctionCall> = blocks.into_iter().flat_map(|b| b.tool_call()).collect();
+            if calls.is_empty() {
+                return Ok(Outcome::Completed(LlmOutcome { message_id }));
+            }
+
+            let call_payload = ToolCalls {
+                instance_id,
+                calls,
+                suspend: None,
+            };
+            // ! 一批 tool_calls 只允许全通过或者全部挂起等审批
+            let call_res = self.bus.decide(&CORE_LLM_TOOLCALL, &cx, call_payload).await;
+            if call_res.suspend == Some(true) {
+                // TODO: 机制：待审批入库，前端审批完放入上下文
+                // TODO:(设想) "询问" 原语
+                //     Question {
+                //      id: string                 // 唯一id
+                //      kind: string               // 定位位置归属 "core/approval" | "m_<mod>/<name>"
+                //      subject: Subject           // 谁被阻塞：{ kind: "instance", id } | { kind: "none" }
+                //      ask: Value                 // 具体问题的 payload
+                //      answer: Value              // 回答
+                //      state: Open | Answered{answer, by, at} | Closed{reason, at}
+                //    }
+                return Ok(Outcome::Suspend(Suspended {
+                    instance_id,
+                    message_id,
+                }));
+            }
+
+            // 如果没有mod拦截 core/llm.toolcall 则自动执行：
+            // 1. 先执行普通的 tool_call，将结果入库
+            // 2. block 开块，commit，日志通知
+            // 再执行spawn 子agent, 返回spawn 状态
+            let executed = tools::execute_plan(
+                call_res.calls,
+                &prepared.catalog,
+                &cx,
+                &*self.mcp_service,
+                &*self.mod_service,
+            )
+            .await
+            .map_err(|error| failure(error.into(), Some(message_id)))?;
+
+            let tool_res_id = self
+                .storage
+                .create_message(turn_id, Role::Tool, None)
+                .await
+                .map_err(|error| failure(error.into(), None))?;
+            absorber.clean();
+
+            // TODO: 是否能和 report_spawns 形成闭环？
+
+            if !executed.results.is_empty() {
+                for result in executed.results {
+                    for block in absorber.absorb(Message {
+                        role: Role::Tool,
+                        content: vec![Content::new_function_call(result.id, result.content)],
+                        ..Message::default()
+                    }) {
+                        // CORE_BLOCK_DELTA 旁路通知
+                    }
+                }
+                let blocks = absorber.settle();
+                let _block_ids = self
+                    .storage
+                    .create_blocks(message_id, &blocks)
+                    .await
+                    .map_err(|error| failure(error.into(), Some(message_id)))?;
+                // TODO: Writer 发送CORE_BLOCK_COMMITED，和记录日志
+                contexts.push(absorber.compose());
+            }
+
+            if !executed.spawns.is_empty() {}
         }
         todo!()
     }
@@ -212,5 +316,12 @@ impl Runner<LlmDomain> for LlmRunner {
         //     Ok(outcome) => outcome,
         //     Err(failure) => Outcome::Failed(failure),
         // }
+    }
+}
+
+fn failure(error: CoreError, message_id: Option<i64>) -> LlmFailure {
+    LlmFailure {
+        message_id,
+        error: error.to_string(),
     }
 }

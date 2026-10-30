@@ -40,9 +40,8 @@ pub struct LlmResponse {
 pub struct ToolCalls {
     pub instance_id: i64,
     pub calls: Vec<FunctionCall>,
-    /// 需要转交用户答复的调用 id
-    #[serde(default)]
-    pub suspended: Vec<String>,
+    /// 本批调用是否挂起。
+    pub suspend: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -102,12 +101,13 @@ pub const CORE_LLM_REQUEST: EventDef<LlmRequest> = EventDef::new(
     schema::<LlmRequest>,
 );
 
-pub const CORE_LLM_RESPONSE: EventDef<LlmResponse> = EventDef::new(
-    "core/llm.response",
-    Shape::Intercept,
-    true,
-    schema::<LlmResponse>,
-);
+// TODO: 不再需要
+// pub const CORE_LLM_RESPONSE: EventDef<LlmResponse> = EventDef::new(
+//     "core/llm.response",
+//     Shape::Intercept,
+//     true,
+//     schema::<LlmResponse>,
+// );
 
 pub const CORE_LLM_TOOLCALL: EventDef<ToolCalls> = EventDef::new(
     "core/llm.toolcall",
@@ -155,8 +155,8 @@ pub fn directory() -> Directory {
     Directory::from_metas([
         CORE_PROMPT_COLLECT.meta(),
         CORE_RULE_APPLY.meta(),
-        CORE_LLM_REQUEST.meta(),
-        CORE_LLM_RESPONSE.meta(),
+        // CORE_LLM_REQUEST.meta(),
+        // CORE_LLM_RESPONSE.meta(),
         CORE_LLM_TOOLCALL.meta(),
         CORE_MESSAGE_SEAL.meta(),
         CORE_BLOCK_DELTA.meta(),

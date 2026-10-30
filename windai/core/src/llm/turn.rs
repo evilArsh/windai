@@ -1,4 +1,7 @@
+use super::domain::{LlmDomain, LlmSpec};
+use super::tools::{SpawnAgentAction, ToolCatalog};
 use crate::agent::tree::Phase;
+use crate::agent::{SPAWN_AGENT_NAME, SpawnRequest};
 use crate::error::{CoreError, Result};
 use crate::llm::block::BlockAbsorb;
 use futures::StreamExt;
@@ -13,10 +16,9 @@ use wind_event::{DispatchCx, Origin, Scope, Source};
 use wind_rule::RuleSet;
 use wind_storage::error::Result as StorageResult;
 use wind_storage::{Storage, Topic};
-use wind_wire::{AgentMode, Block, Content, FunctionCallOutput, Message, Role, Usage};
-
-use super::domain::{LlmDomain, LlmSpec};
-use super::tools::{SPAWN_AGENT_NAME, ToolCatalog};
+use wind_wire::{
+    AgentMode, AgentPhase, AgentRole, Block, Content, FunctionCallOutput, Message, Role, Usage,
+};
 
 struct ChildState {
     child_id: i64,
@@ -91,10 +93,8 @@ pub async fn compose_pending(
         content: rows.into_iter().flat_map(|row| row.payload).collect(),
         ..Message::default()
     };
-    let turn_id = storage.create_new_turn(instance_id, topic_id, None).await?;
-    let message_id = storage
-        .create_new_message(turn_id, Role::User, None)
-        .await?;
+    let turn_id = storage.create_turn(instance_id, topic_id, None).await?;
+    let message_id = storage.create_message(turn_id, Role::User, None).await?;
     // TODO：
     // 1. 需要一个 absorb 将 partial 分解为多个无id的Block数组，排序方式为BlockKind枚举字段从上到下的固定顺序（决定数据库对每条数据id的分配）
     // 2. 批量插入这些块，并返回完整的Block实体（带id）
@@ -117,7 +117,7 @@ pub async fn compose_pending(
     }))
 }
 
-/// 父 agent 被唤醒时，将 agent tool_call 结果回补
+/// agent 被唤醒时，将 agent tool_call 的执行结果回补
 pub async fn report_spawns(
     storage: &Storage,
     topic_id: i64,
@@ -167,10 +167,10 @@ pub async fn prepare(_stroage: &Storage, _topic_id: i64, _instance_id: i64) -> R
 /// 一次模型调用
 pub async fn exchange(
     prepared: &Prepared,
-    absorber: &mut BlockAbsorb,
     body: Value,
-    mut emit: impl FnMut(Block),
-) -> Result<Vec<Block>> {
+    mut emit_delta: impl FnMut(Block),
+) -> Result<BlockAbsorb> {
+    let mut absorber = BlockAbsorb::new();
     let chunks = stream_body(
         prepared.adapter.as_ref(),
         &prepared.model,
@@ -191,7 +191,7 @@ pub async fn exchange(
             Ok(Chunk::Delta(delta)) => {
                 usage = add_usage(usage, &delta);
                 for block in absorber.absorb(delta) {
-                    emit(block);
+                    emit_delta(block);
                 }
             }
             Err(error) => {
@@ -211,7 +211,57 @@ pub async fn exchange(
     assembled.input_tokens = usage.input_tokens;
     assembled.output_tokens = usage.output_tokens;
     // Ok(intercept_response(runner, cx, prepared.model_id, assembled, usage).await)
-    Ok(absorber.settle())
+    Ok(absorber)
+}
+
+pub async fn create_spawn_requests(
+    storage: &Storage,
+    cx: &DispatchCx,
+    topic_id: i64,
+    instance_id: i64,
+    actions: Vec<SpawnAgentAction>,
+) -> Result<Vec<SpawnRequest<LlmDomain>>> {
+    let phase = AgentPhase::Running;
+    let written = storage
+        .with_tx(|storage| async move {
+            let mut built = Vec::with_capacity(actions.len());
+            for action in actions {
+                let child_id = storage
+                    .create_child_agent_instance(
+                        topic_id,
+                        Some(instance_id),
+                        Some(action.data.mode),
+                    )
+                    .await?;
+                // storage
+                //     .spawn_call_insert(instance_id, &action.call_id, child_id)
+                //     .await?;
+                // let (turn_id, blocks) =
+                //     write_task(runner, storage, topic_id, child_id, &action.data.task).await?;
+                // let request = SpawnRequest {
+                //     id: child_id,
+                //     spec: LlmSpec {
+                //         instance_id: child_id,
+                //         message_id: None,
+                //         pending_id: None,
+                //         turn_id: Some(turn_id),
+                //     },
+                //     detached: action.data.mode.as_str() == AgentMode::Background.as_ref(),
+                // };
+                // built.push((request, blocks));
+            }
+            Ok(built)
+        })
+        .await?;
+    // let mut spawn = Vec::with_capacity(written.len());
+    // let mut blocks = Vec::new();
+    // for (request, task_blocks) in written {
+    //     spawn.push(request);
+    //     blocks.extend(task_blocks);
+    // }
+    // runner.writer.announce_atomic(cx, &blocks).await;
+    // Ok(spawn)
+    todo!()
 }
 
 // TODO: 待补，按调用标识一次查出子实例的状态与收尾回复
