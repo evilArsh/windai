@@ -302,7 +302,7 @@ async fn committed_observe_events_reach_subscribed_mods() {
     bus.on_committed(
         &OBSERVED.meta(),
         &Committed {
-            pos: 1,
+            log_id: 1,
             shape: Shape::Observe,
             envelope: Envelope::new(
                 "test/observed",
@@ -328,7 +328,7 @@ async fn a_timed_out_mod_is_reported_as_a_notice() {
     bus.on_committed(
         &OBSERVED.meta(),
         &Committed {
-            pos: 2,
+            log_id: 2,
             shape: Shape::Observe,
             envelope: Envelope::new(
                 "test/observed",
@@ -353,7 +353,7 @@ async fn intercept_events_are_not_delivered_by_the_observer_path() {
     bus.on_committed(
         &INTERCEPTED.meta(),
         &Committed {
-            pos: 3,
+            log_id: 3,
             shape: Shape::Intercept,
             envelope: Envelope::new(
                 "test/intercepted",

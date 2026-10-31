@@ -9,10 +9,10 @@ pub struct Pending {
     pub envelope: Envelope<Value>,
 }
 
-/// 一条已提交的事件，带上了在日志中的位置
+/// 一条已提交的事件，带上了日志id
 pub struct Committed {
     /// 日志 id
-    pub pos: i64,
+    pub log_id: i64,
     pub shape: Shape,
     pub envelope: Envelope<Value>,
 }

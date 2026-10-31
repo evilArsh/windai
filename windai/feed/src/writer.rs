@@ -33,6 +33,7 @@ pub enum Work {
 pub struct WriteHandle {
     tx: mpsc::Sender<Work>,
 }
+impl WriteHandle {}
 
 impl EventOutlet for WriteHandle {
     fn submit(&self, pending: Pending) {

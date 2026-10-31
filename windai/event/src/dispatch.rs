@@ -314,6 +314,7 @@ impl Dispatcher {
     }
 }
 
+// TODO: 考虑放到 feed 层，事件层只负责派发？
 impl Observer for Dispatcher {
     fn on_committed(&self, meta: &EventMeta, committed: &Committed) {
         if !meta.is_observe() {
