@@ -88,6 +88,7 @@ impl LlmRunner {
         specs: Vec<LlmSpec>,
         message_id: Option<i64>,
         turn_id: Option<i64>,
+        reentry: bool,
     ) -> Result<Outcome<LlmDomain>, LlmFailure> {
         let topic = turn::topic_of(&self.storage, instance_id)
             .await
@@ -104,7 +105,6 @@ impl LlmRunner {
         // TODO: 获取上下文
         let contexts = vec![];
 
-        // 这次唤醒续在哪个 turn
         let turn_id = match (turn_id, message_id, composed) {
             (Some(turn_id), ..) => turn_id,
             (None, Some(message_id), _) => self
@@ -118,14 +118,16 @@ impl LlmRunner {
                     error: format!("message {message_id} belongs to no turn"),
                 })?,
             (None, None, Some(input)) => input.turn_id,
-            (None, None, None) => match spawn_turn {
-                Some(turn_id) => turn_id,
-                None => self
-                    .storage
-                    .create_turn(topic.id, instance_id, None)
-                    .await
-                    .map_err(|error| failure(error.into(), None))?,
-            },
+            (None, None, None) => {
+                if reentry && let Some(turn_id) = spawn_turn {
+                    turn_id
+                } else {
+                    self.storage
+                        .create_turn(topic.id, instance_id, None)
+                        .await
+                        .map_err(|error| failure(error.into(), None))?
+                }
+            }
         };
 
         self.rounds(topic, instance_id, turn_id, contexts).await
@@ -346,13 +348,36 @@ impl LlmRunner {
 // TODO: agent运行时 llm 侧的实现
 #[async_trait::async_trait]
 impl Runner<LlmDomain> for LlmRunner {
-    async fn run(&self, _ctx: Ctx, _input: Input<LlmDomain>) -> Outcome<LlmDomain> {
-        // reentry
-        todo!()
-        // match self.serve(instance_id, specs, message_id, turn_id).await {
-        //     Ok(outcome) => outcome,
-        //     Err(failure) => Outcome::Failed(failure),
-        // }
+    async fn run(&self, ctx: Ctx, input: Input<LlmDomain>) -> Outcome<LlmDomain> {
+        let instance_id = ctx.node;
+        let (message_id, turn_id, reentry, specs) = match input {
+            Input::Fresh(spec) => (spec.message_id, spec.turn_id, false, vec![spec]),
+            Input::Children(_) => (
+                None,
+                None,
+                true,
+                vec![LlmSpec {
+                    instance_id,
+                    message_id: None,
+                    pending_id: None,
+                    turn_id: None,
+                }],
+            ),
+            Input::External(answer) => {
+                return match self.resume(instance_id, answer).await {
+                    Ok(outcome) => outcome,
+                    Err(failure) => Outcome::Failed(failure),
+                };
+            }
+            Input::Idle(specs) => (None, None, false, specs),
+        };
+        match self
+            .serve(instance_id, specs, message_id, turn_id, reentry)
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(failure) => Outcome::Failed(failure),
+        }
     }
 }
 
