@@ -29,8 +29,7 @@ pub struct LlmSpec {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Suspended {
-    pub instance_id: i64,
-    pub message_id: i64,
+    pub external_wait_id: i64,
 }
 
 // pub fn pending_call_ids(payload: &serde_json::Value) -> Vec<String> {

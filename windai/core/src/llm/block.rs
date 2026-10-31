@@ -1,3 +1,4 @@
+use std::vec::IntoIter;
 use wind_wire::{Block, BlockKind, Content, FunctionCall, Message, Role};
 
 #[derive(Debug, Default)]
@@ -5,6 +6,21 @@ pub struct BlockAbsorb {
     blocks: Vec<Block>,
     // 下一块的序号
     seq: i64,
+    input_tokens: i32,
+    output_tokens: i32,
+    created_at: i64,
+}
+
+pub struct Changed<'a> {
+    blocks: &'a [Block],
+    indices: IntoIter<usize>,
+}
+
+impl<'a> Iterator for Changed<'a> {
+    type Item = &'a Block;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.indices.next().map(|index| &self.blocks[index])
+    }
 }
 
 impl BlockAbsorb {
@@ -13,9 +29,14 @@ impl BlockAbsorb {
     }
 
     /// 把一条消息的片段并入它分解出的块，返回本次变更的块
-    pub fn absorb(&mut self, partial: Message) -> Vec<Block> {
+    pub fn absorb(&mut self, partial: Message) -> Changed<'_> {
         let role = partial.role;
-        let mut changed: Vec<Block> = Vec::new();
+        self.input_tokens = self.input_tokens.max(partial.input_tokens);
+        self.output_tokens = self.output_tokens.max(partial.output_tokens);
+        if self.created_at == 0 {
+            self.created_at = partial.created_at;
+        }
+        let mut changed: Vec<usize> = Vec::new();
         if let Some(reasoning) = partial.reasoning_content
             && !reasoning.is_empty()
         {
@@ -47,18 +68,56 @@ impl BlockAbsorb {
         for call in partial.tool_calls.into_iter().flatten() {
             self.call(&mut changed, role, call);
         }
-        changed
+        Changed {
+            blocks: &self.blocks,
+            indices: changed.into_iter(),
+        }
     }
 
     /// 组装成完整 Message
-    pub fn compose(&mut self) -> Message {
-        todo!()
+    pub fn compose(&self) -> Message {
+        let mut content = Vec::new();
+        let mut reasoning = String::new();
+        let mut calls = Vec::new();
+        for block in &self.blocks {
+            match block.kind() {
+                BlockKind::Reasoning => {
+                    if let Some(text) = block.reasoning() {
+                        reasoning.push_str(text);
+                    }
+                }
+                BlockKind::ToolCall => {
+                    if let Some(call) = block.tool_call() {
+                        calls.push(call);
+                    }
+                }
+                _ => {
+                    if let Some(item) = block.content() {
+                        content.push(item);
+                    }
+                }
+            }
+        }
+        Message {
+            role: self
+                .blocks
+                .first()
+                .map(Block::role)
+                .unwrap_or(Role::Assistant),
+            content,
+            reasoning_content: (!reasoning.is_empty()).then_some(reasoning),
+            created_at: self.created_at,
+            input_tokens: self.input_tokens,
+            output_tokens: self.output_tokens,
+            tool_calls: (!calls.is_empty()).then_some(calls),
+        }
     }
 
     /// 取走块并把序号归零，供下一条消息复用
     pub fn settle(&mut self) -> Vec<Block> {
-        self.seq = 0;
-        std::mem::take(&mut self.blocks)
+        let blocks = std::mem::take(&mut self.blocks);
+        self.clean();
+        blocks
     }
 
     /// 当前的块，不移出累加器
@@ -74,19 +133,22 @@ impl BlockAbsorb {
     pub fn clean(&mut self) {
         self.blocks.clear();
         self.seq = 0;
+        self.input_tokens = 0;
+        self.output_tokens = 0;
+        self.created_at = 0;
     }
 
-    fn open(&mut self, changed: &mut Vec<Block>, open: impl FnOnce(i64) -> Block) {
+    fn open(&mut self, changed: &mut Vec<usize>, open: impl FnOnce(i64) -> Block) {
         let seq = self.seq;
         self.seq += 1;
-        let block = open(seq);
-        changed.push(block.clone());
-        self.blocks.push(block);
+        let index = self.blocks.len();
+        self.blocks.push(open(seq));
+        changed.push(index);
     }
 
     fn extend(
         &mut self,
-        changed: &mut Vec<Block>,
+        changed: &mut Vec<usize>,
         kind: BlockKind,
         open: impl FnOnce(i64) -> Block,
         fragment: &str,
@@ -103,12 +165,11 @@ impl BlockAbsorb {
                 self.blocks.len() - 1
             }
         };
-        let block = &mut self.blocks[index];
-        block.append_text(fragment);
-        changed.push(block.clone());
+        self.blocks[index].append_text(fragment);
+        changed.push(index);
     }
 
-    fn call(&mut self, changed: &mut Vec<Block>, role: Role, call: FunctionCall) {
+    fn call(&mut self, changed: &mut Vec<usize>, role: Role, call: FunctionCall) {
         let found = if call.id.is_empty() {
             self.blocks
                 .iter()
@@ -136,20 +197,21 @@ impl BlockAbsorb {
         let block = &mut self.blocks[index];
         block.fill_call(&call.id, &call.name);
         block.append_arguments(&call.arguments);
-        changed.push(block.clone());
+        changed.push(index);
     }
 
     fn result(
         &mut self,
-        changed: &mut Vec<Block>,
+        changed: &mut Vec<usize>,
         role: Role,
         call_id: String,
         content: serde_json::Value,
     ) {
         let seq = self.seq;
         self.seq += 1;
-        let block = Block::new_tool_result(role, seq, call_id, content);
-        changed.push(block.clone());
-        self.blocks.push(block);
+        let index = self.blocks.len();
+        self.blocks
+            .push(Block::new_tool_result(role, seq, call_id, content));
+        changed.push(index);
     }
 }

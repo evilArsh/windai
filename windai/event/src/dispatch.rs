@@ -107,17 +107,6 @@ impl Dispatcher {
         self.emit(def, cx, &payload);
     }
 
-    // /// 批量通知事件
-    // pub fn notify_all<P, I>(&self, def: &EventDef<P>, cx: &DispatchCx, payloads: I)
-    // where
-    //     P: Serialize + Send + Sync,
-    //     I: IntoIterator<Item = P>,
-    // {
-    //     for payload in payloads {
-    //         self.notify(def, cx, payload);
-    //     }
-    // }
-
     /// 允许 mod 改写载荷的事件；返回改写后的值
     ///
     /// mod 改写失败时，将原值返回
@@ -134,76 +123,81 @@ impl Dispatcher {
             return payload;
         }
 
-        let mut accumulated = payload;
-        for sub in self.chain_of(def.name, cx).unwrap_or_default() {
-            let budget = sub.timeout().min(cx.remaining_budget());
-            if budget.is_zero() {
-                log::debug!(
-                    "[event] budget exhausted, skipping {} for {}",
-                    sub.mod_name,
-                    def.name
-                );
-                continue;
-            }
+        if let Some(subs) = self.chain_of(def.name, cx)
+            && !subs.is_empty()
+        {
+            let mut accumulated = payload;
+            for sub in self.chain_of(def.name, cx).unwrap_or_default() {
+                let budget = sub.timeout().min(cx.remaining_budget());
+                if budget.is_zero() {
+                    log::debug!(
+                        "[event] budget exhausted, skipping {} for {}",
+                        sub.mod_name,
+                        def.name
+                    );
+                    continue;
+                }
 
-            let Ok(value) = to_json(def.name, &accumulated) else {
-                self.failed(
-                    def.name,
-                    cx,
-                    DispatchFailure::BadPayload,
-                    None,
-                    "the payload could not be serialized".to_string(),
-                );
-                break;
-            };
-
-            let started = Instant::now();
-            let call_cx = CallCx {
-                deadline: Instant::now() + budget,
-                cancel: cx.cancel().clone(),
-                mode: CallMode::Intercept,
-                scope: cx.scope.clone(),
-            };
-
-            let outcome = tokio::select! {
-                biased;
-                _ = cx.cancel().cancelled() => continue,
-                result = tokio::time::timeout(budget, self.mod_caller.call(&sub, value, call_cx)) => result,
-            };
-            let duration_ms = started.elapsed().as_millis() as u64;
-
-            match outcome {
-                Err(_) => self.timeout(def.name, cx, &sub.mod_name, duration_ms),
-                Ok(Err(CallError::Handler(message))) => self.failed(
-                    def.name,
-                    cx,
-                    DispatchFailure::HandlerError,
-                    Some(&sub.mod_name),
-                    message,
-                ),
-                Ok(Err(CallError::Internal(message))) => self.failed(
-                    def.name,
-                    cx,
-                    DispatchFailure::CallError,
-                    Some(&sub.mod_name),
-                    message,
-                ),
-                Ok(Ok(None)) => {}
-                Ok(Ok(Some(value))) => match serde_json::from_value::<P>(value) {
-                    Ok(next) => accumulated = next,
-                    Err(error) => self.failed(
+                let Ok(value) = to_json(def.name, &accumulated) else {
+                    self.failed(
                         def.name,
                         cx,
-                        DispatchFailure::BadRewrite,
-                        Some(&sub.mod_name),
-                        error.to_string(),
-                    ),
-                },
-            }
-        }
+                        DispatchFailure::BadPayload,
+                        None,
+                        "the payload could not be serialized".to_string(),
+                    );
+                    break;
+                };
 
-        self.emit(def, cx, &accumulated);
-        accumulated
+                let started = Instant::now();
+                let call_cx = CallCx {
+                    deadline: Instant::now() + budget,
+                    cancel: cx.cancel().clone(),
+                    mode: CallMode::Intercept,
+                    scope: cx.scope.clone(),
+                };
+
+                let outcome = tokio::select! {
+                    biased;
+                    _ = cx.cancel().cancelled() => continue,
+                    result = tokio::time::timeout(budget, self.mod_caller.call(&sub, value, call_cx)) => result,
+                };
+                let duration_ms = started.elapsed().as_millis() as u64;
+
+                match outcome {
+                    Err(_) => self.timeout(def.name, cx, &sub.mod_name, duration_ms),
+                    Ok(Err(CallError::Handler(message))) => self.failed(
+                        def.name,
+                        cx,
+                        DispatchFailure::HandlerError,
+                        Some(&sub.mod_name),
+                        message,
+                    ),
+                    Ok(Err(CallError::Internal(message))) => self.failed(
+                        def.name,
+                        cx,
+                        DispatchFailure::CallError,
+                        Some(&sub.mod_name),
+                        message,
+                    ),
+                    Ok(Ok(None)) => {}
+                    Ok(Ok(Some(value))) => match serde_json::from_value::<P>(value) {
+                        Ok(next) => accumulated = next,
+                        Err(error) => self.failed(
+                            def.name,
+                            cx,
+                            DispatchFailure::BadRewrite,
+                            Some(&sub.mod_name),
+                            error.to_string(),
+                        ),
+                    },
+                }
+            }
+            self.emit(def, cx, &accumulated);
+            accumulated
+        } else {
+            payload
+        }
     }
 
     /// 指定事件的订阅清单，顺序由索引给出

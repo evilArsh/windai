@@ -1,3 +1,4 @@
+use super::ModService;
 use super::domain::{LlmDomain, LlmSpec};
 use super::tools::{SpawnAgentAction, ToolCatalog};
 use crate::agent::tree::Phase;
@@ -17,7 +18,7 @@ use wind_rule::RuleSet;
 use wind_storage::error::Result as StorageResult;
 use wind_storage::{Storage, Topic};
 use wind_wire::{
-    AgentMode, AgentPhase, AgentRole, Block, Content, FunctionCallOutput, Message, Role, Usage,
+    AgentMode, AgentPhase, AgentRole, Block, Content, FunctionCallOutput, Message, Role,
 };
 
 struct ChildState {
@@ -76,6 +77,7 @@ pub async fn compose_pending(
         return Ok(None);
     }
 
+    let mut absorber = BlockAbsorb::new();
     let tx = storage.begin().await?;
     let storage = tx.storage();
     let rows: Vec<_> = storage
@@ -88,28 +90,21 @@ pub async fn compose_pending(
         return Ok(None);
     }
     let ids: Vec<i64> = rows.iter().map(|row| row.id).collect();
-    let _partial = Message {
+    let partial = Message {
         role: Role::User,
         content: rows.into_iter().flat_map(|row| row.payload).collect(),
         ..Message::default()
     };
-    let turn_id = storage.create_turn(instance_id, topic_id, None).await?;
+    absorber.absorb(partial);
+    let blocks = absorber.settle();
+    let turn_id = storage.create_turn(topic_id, instance_id, None).await?;
     let message_id = storage.create_message(turn_id, Role::User, None).await?;
-    // TODO：
-    // 1. 需要一个 absorb 将 partial 分解为多个无id的Block数组，排序方式为BlockKind枚举字段从上到下的固定顺序（决定数据库对每条数据id的分配）
-    // 2. 批量插入这些块，并返回完整的Block实体（带id）
-    // 3. 创建每个块的日志，payload为block id
-    // 4. 删除pending数据
-    // 当事务失败，所有数据都没有丢失
+    let _block_ids = storage.create_blocks(message_id, &blocks).await?;
     storage.delete_pending_by_ids(&ids).await?;
     tx.commit().await?;
-    // TODO:
-    // 5. 发送BlockOpen事件
-    // 6. 发送BlockGrow事件
-    // 7. 发送BlockCommit事件 （这些是用于回放，保证整个流程和sse流程一致）
-    // 8. 发送日志事件，注意日志已经有id了（Work需要对已落库的日志支持？）
-    // 注意： absorb 累加器是否要全局？这种情况下是没有blockid的
-    // sse流会先开块再进入absorb累加器，是有block id的
+    // 1. 发送CORE_BLOCK_DELTA （delta block 无id）
+    // 2. block_ids 发送CORE_BLOCK_COMMITED （这些是用于回放，保证整个流程和sse流程一致）
+    // 3. （writer 日志记录机制）
 
     Ok(Some(ComposedInput {
         turn_id,
@@ -160,7 +155,14 @@ pub async fn report_spawns(
     Ok(spawn_turn)
 }
 
-pub async fn prepare(_stroage: &Storage, _topic_id: i64, _instance_id: i64) -> Result<Prepared> {
+pub async fn prepare(
+    mod_service: &dyn ModService,
+    _stroage: &Storage,
+    topic_id: i64,
+    _instance_id: i64,
+) -> Result<Prepared> {
+    let mod_prompts = mod_service.prompt_fragments(topic_id).await?;
+    // TODO: 查出 prepare 数据
     todo!()
 }
 
@@ -168,7 +170,7 @@ pub async fn prepare(_stroage: &Storage, _topic_id: i64, _instance_id: i64) -> R
 pub async fn exchange(
     prepared: &Prepared,
     body: Value,
-    mut emit_delta: impl FnMut(Block),
+    mut emit_delta: impl FnMut(&Block),
 ) -> Result<BlockAbsorb> {
     let mut absorber = BlockAbsorb::new();
     let chunks = stream_body(
@@ -179,17 +181,11 @@ pub async fn exchange(
     )
     .await?;
 
-    let mut assembled = Message {
-        role: Role::Assistant,
-        ..Message::default()
-    };
-    let mut usage = usage_of(0, 0);
     let mut chunks = pin!(chunks);
     while let Some(chunk) = chunks.next().await {
         match chunk {
-            Ok(Chunk::Done) => todo!(),
+            Ok(Chunk::Done) => break,
             Ok(Chunk::Delta(delta)) => {
-                usage = add_usage(usage, &delta);
                 for block in absorber.absorb(delta) {
                     emit_delta(block);
                 }
@@ -198,70 +194,81 @@ pub async fn exchange(
                 absorber.absorb(Message {
                     role: Role::Assistant,
                     content: vec![Content::new_text(error.to_string())],
-                    reasoning_content: None,
-                    created_at: 0,
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    tool_calls: None,
+                    ..Message::default()
                 });
                 break;
             }
         }
     }
-    assembled.input_tokens = usage.input_tokens;
-    assembled.output_tokens = usage.output_tokens;
-    // Ok(intercept_response(runner, cx, prepared.model_id, assembled, usage).await)
     Ok(absorber)
 }
 
 pub async fn create_spawn_requests(
     storage: &Storage,
-    cx: &DispatchCx,
-    topic_id: i64,
+    _cx: &DispatchCx,
+    topic: &Topic,
     instance_id: i64,
     actions: Vec<SpawnAgentAction>,
 ) -> Result<Vec<SpawnRequest<LlmDomain>>> {
-    let phase = AgentPhase::Running;
     let written = storage
-        .with_tx(|storage| async move {
-            let mut built = Vec::with_capacity(actions.len());
+        .with_tx(move |storage| async move {
+            let mut built: Vec<(SpawnRequest<LlmDomain>, i64, Vec<Block>, Vec<i64>)> =
+                Vec::with_capacity(actions.len());
             for action in actions {
-                let child_id = storage
-                    .create_child_agent_instance(
-                        topic_id,
+                let mode = action.data.mode;
+                let task = action.data.task;
+                let child_instance_id = storage
+                    .create_agent_instance(
+                        topic.id,
                         Some(instance_id),
-                        Some(action.data.mode),
+                        AgentRole::Child,
+                        Some(mode),
+                        AgentPhase::Running,
+                        None,
                     )
                     .await?;
-                // storage
-                //     .spawn_call_insert(instance_id, &action.call_id, child_id)
-                //     .await?;
-                // let (turn_id, blocks) =
-                //     write_task(runner, storage, topic_id, child_id, &action.data.task).await?;
-                // let request = SpawnRequest {
-                //     id: child_id,
-                //     spec: LlmSpec {
-                //         instance_id: child_id,
-                //         message_id: None,
-                //         pending_id: None,
-                //         turn_id: Some(turn_id),
-                //     },
-                //     detached: action.data.mode.as_str() == AgentMode::Background.as_ref(),
-                // };
-                // built.push((request, blocks));
+                storage
+                    .spawn_call_map_insert(instance_id, &action.call_id, child_instance_id)
+                    .await?;
+
+                let mut absorber = BlockAbsorb::new();
+                absorber.absorb(Message {
+                    role: Role::User,
+                    content: vec![Content::new_text(task)],
+                    ..Message::default()
+                });
+                let blocks = absorber.settle();
+                let turn_id = storage
+                    .create_turn(topic.id, child_instance_id, None)
+                    .await?;
+                let message_id = storage
+                    .create_message(turn_id, Role::User, topic.model_id)
+                    .await?;
+                let block_ids = storage.create_blocks(message_id, &blocks).await?;
+                let request = SpawnRequest {
+                    id: child_instance_id,
+                    spec: LlmSpec {
+                        instance_id: child_instance_id,
+                        message_id: Some(message_id),
+                        pending_id: None,
+                        turn_id: Some(turn_id),
+                    },
+                    detached: mode == AgentMode::Background,
+                };
+                built.push((request, message_id, blocks, block_ids));
             }
             Ok(built)
         })
         .await?;
-    // let mut spawn = Vec::with_capacity(written.len());
-    // let mut blocks = Vec::new();
-    // for (request, task_blocks) in written {
-    //     spawn.push(request);
-    //     blocks.extend(task_blocks);
-    // }
-    // runner.writer.announce_atomic(cx, &blocks).await;
-    // Ok(spawn)
-    todo!()
+
+    let mut spawn = Vec::with_capacity(written.len());
+    for (request, _message_id, _blocks, _block_ids) in written {
+        // 1. 每块一条 CORE_BLOCK_DELTA：块行已提交，内容一次给全，revision 不再增长
+        // 2. 再发 CORE_BLOCK_COMMITTED，携带 block_ids，供回放拼回与 SSE 一致的状态
+        // 3. 块的 finished 置位与 block.committed 日志行由 writer 在同一事务写
+        spawn.push(request);
+    }
+    todo!("send one delta per block, then commit the blocks")
 }
 
 // TODO: 待补，按调用标识一次查出子实例的状态与收尾回复
@@ -304,18 +311,4 @@ fn spawn_output(call_id: String, state: Option<ChildState>) -> FunctionCallOutpu
         id: call_id,
         content,
     }
-}
-
-fn usage_of(input_tokens: i32, output_tokens: i32) -> Usage {
-    Usage {
-        input_tokens,
-        output_tokens,
-    }
-}
-
-fn add_usage(usage: Usage, delta: &Message) -> Usage {
-    usage_of(
-        usage.input_tokens.max(delta.input_tokens),
-        usage.output_tokens.max(delta.output_tokens),
-    )
 }

@@ -39,6 +39,7 @@ pub struct LlmResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ToolCalls {
     pub instance_id: i64,
+    pub message_id: i64,
     pub calls: Vec<FunctionCall>,
     /// 本批调用是否挂起。
     pub suspend: Option<bool>,
