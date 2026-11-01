@@ -154,7 +154,7 @@ impl LlmRunner {
             },
         );
         loop {
-            let cx = turn::round_cx(topic.id);
+            let cx = turn::round_cx(topic.id, instance_id);
             rounds += 1;
             if rounds > self.max_rounds {
                 return Err(LlmFailure {

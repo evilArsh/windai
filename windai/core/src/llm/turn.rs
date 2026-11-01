@@ -48,10 +48,13 @@ pub struct ComposedInput {
 /// 一轮操作的期限
 const ROUND_BUDGET: Duration = Duration::from_secs(120);
 
-pub fn round_cx(topic_id: i64) -> DispatchCx {
+pub fn round_cx(topic_id: i64, instance_id: i64) -> DispatchCx {
     DispatchCx::root(
         Origin::Agent,
-        Scope::Topic { topic_id },
+        Scope::Topic {
+            topic_id,
+            instance_id,
+        },
         Source::core("llm"),
         ROUND_BUDGET,
     )
@@ -228,7 +231,7 @@ pub async fn create_spawn_requests(
                     )
                     .await?;
                 storage
-                    .spawn_call_map_insert(instance_id, &action.call_id, child_instance_id)
+                    .create_spawn_call_map(instance_id, &action.call_id, child_instance_id)
                     .await?;
 
                 let mut absorber = BlockAbsorb::new();

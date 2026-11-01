@@ -12,9 +12,9 @@ sqlite = ["sqlx/sqlite"]
 
 [dependencies]
 # wind-ai = { path = "../ai" }
-# wind-event = { path = "../event" }
 # wind-block = { path = "../block" }
 # wind-rule = { path = "../rule" }
+wind-event = { path = "../event" }
 wind-wire = { path = "../wire" }
 async-trait = { workspace = true }
 chrono = { workspace = true }

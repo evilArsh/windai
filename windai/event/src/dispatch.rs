@@ -91,7 +91,7 @@ impl Dispatcher {
         index.rebuild(subs);
     }
 
-    /// 只观测、不等待结果的事件
+    /// 发送一条未落库的日志
     pub fn notify<P>(&self, def: &EventDef<P>, cx: &DispatchCx, payload: P)
     where
         P: Serialize + Send + Sync,
@@ -105,6 +105,14 @@ impl Dispatcher {
             return;
         }
         self.emit(def, cx, &payload);
+    }
+
+    /// 发送一条已落库的日志
+    pub fn notify_commited<P>(&self, commited: Committed)
+    where
+        P: Serialize + Send + Sync,
+    {
+        self.ev_out.submit_committed(commited);
     }
 
     /// 允许 mod 改写载荷的事件；返回改写后的值
@@ -226,7 +234,6 @@ impl Dispatcher {
     fn emit<P: Serialize>(&self, def: &EventDef<P>, cx: &DispatchCx, payload: &P) {
         match to_json(def.name, payload) {
             Ok(value) => self.ev_out.submit(Pending {
-                shape: def.shape,
                 log: def.log,
                 envelope: Envelope::of(def, cx, value),
             }),
@@ -301,7 +308,6 @@ impl Dispatcher {
             return;
         };
         self.ev_out.submit(Pending {
-            shape: Shape::Observe,
             log: true,
             envelope: Envelope::new(
                 name,
@@ -309,6 +315,7 @@ impl Dispatcher {
                 Origin::Internal,
                 Source::core("event"),
                 value,
+                Shape::Observe,
             ),
         });
     }

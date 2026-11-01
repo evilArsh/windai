@@ -186,7 +186,6 @@ async fn call_one(
             .ok();
             if let Some(value) = value {
                 outlet.submit(Pending {
-                    shape: Shape::Observe,
                     log: true,
                     envelope: Envelope::new(
                         CORE_DISPATCH_TIMEOUT.name,
@@ -194,6 +193,7 @@ async fn call_one(
                         Origin::Internal,
                         Source::core("event"),
                         value,
+                        Shape::Observe,
                     ),
                 });
             }
@@ -219,7 +219,6 @@ fn failed(
     .ok();
     if let Some(value) = value {
         outlet.submit(Pending {
-            shape: Shape::Observe,
             log: true,
             envelope: Envelope::new(
                 CORE_DISPATCH_FAILED.name,
@@ -227,6 +226,7 @@ fn failed(
                 Origin::Internal,
                 Source::core("event"),
                 value,
+                Shape::Observe,
             ),
         });
     }

@@ -30,7 +30,7 @@ impl Storage {
     /// 父实例唤醒时按 (parent_id, call_id) 取 child_id，用它回补 tool_result；
     /// 后台子实例终止时按 child_id 取 parent_id，用它把结果写入父实例的待消费队列，
     /// 同事务写 result_delivered_at。该列为空即未交付，重复的终止事件不会再投递。
-    pub async fn spawn_call_map_insert(
+    pub async fn create_spawn_call_map(
         &self,
         parent_instance_id: i64,
         _call_id: &str,

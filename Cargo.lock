@@ -2769,6 +2769,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
+ "wind-event",
  "wind-wire",
 ]
 

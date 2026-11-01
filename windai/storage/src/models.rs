@@ -1,5 +1,7 @@
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
+use serde_json::Value;
+use wind_event::{Origin, Scope, Shape, Source};
 use wind_wire::{
     AdapterType, AgentMode, AgentPhase, AgentRole, BlockKind, Content, PendingKind, Role,
 };
@@ -242,4 +244,21 @@ pub struct AgentPending {
     /// `background` 时是 child_id
     pub source_id: Option<i64>,
     pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LogRecord {
+    pub id: i64,
+    /// 产生时刻，epoch 毫秒
+    pub create_time: i64,
+    pub name: String,
+    pub shape: Shape,
+    // pub scope: Scope,
+    pub topic_id: Option<i64>,
+    pub instance_id: Option<i64>,
+    pub origin: Origin,
+    // pub source: Source,
+    pub mod_name: String,
+    pub mod_version: String,
+    pub payload: Value,
 }

@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::Shape;
 use crate::context::DispatchCx;
 use crate::def::EventDef;
 
@@ -9,14 +10,14 @@ use crate::def::EventDef;
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Scope {
     Global,
-    Topic { topic_id: i64 },
+    Topic { topic_id: i64, instance_id: i64 },
 }
 
 impl Scope {
     pub fn topic_id(&self) -> Option<i64> {
         match self {
             Scope::Global => None,
-            Scope::Topic { topic_id } => Some(*topic_id),
+            Scope::Topic { topic_id, .. } => Some(*topic_id),
         }
     }
 }
@@ -64,6 +65,7 @@ pub struct Envelope<P> {
     pub origin: Origin,
     pub source: Source,
     pub payload: P,
+    pub shape: Shape,
 }
 
 impl Envelope<serde_json::Value> {
@@ -73,6 +75,7 @@ impl Envelope<serde_json::Value> {
         origin: Origin,
         source: Source,
         payload: serde_json::Value,
+        shape: Shape,
     ) -> Self {
         Self {
             time: Self::now_ms(),
@@ -81,6 +84,7 @@ impl Envelope<serde_json::Value> {
             origin,
             source,
             payload,
+            shape,
         }
     }
 
@@ -92,6 +96,7 @@ impl Envelope<serde_json::Value> {
             cx.origin,
             cx.source.clone(),
             payload,
+            def.shape,
         )
     }
 }
