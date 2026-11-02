@@ -1,5 +1,5 @@
 use std::vec::IntoIter;
-use wind_wire::{Block, BlockKind, Content, FunctionCall, Message, Role};
+use wind_wire::{Block, BlockKind, Content, FunctionCall, Message, Role, Usage};
 
 #[derive(Debug, Default)]
 pub struct BlockAbsorb {
@@ -9,6 +9,7 @@ pub struct BlockAbsorb {
     input_tokens: i32,
     output_tokens: i32,
     created_at: i64,
+    finish_reason: String,
 }
 
 pub struct Changed<'a> {
@@ -129,6 +130,23 @@ impl BlockAbsorb {
         self.blocks.is_empty()
     }
 
+    /// 本次模型往返的用量
+    pub fn usage(&self) -> Usage {
+        Usage {
+            input_tokens: self.input_tokens,
+            output_tokens: self.output_tokens,
+        }
+    }
+
+    pub fn finish_reason(&self) -> &str {
+        &self.finish_reason
+    }
+
+    /// 记录停止原因
+    pub fn set_finish_reason(&mut self, reason: impl ToString) {
+        self.finish_reason = reason.to_string();
+    }
+
     /// 清空数据
     pub fn clean(&mut self) {
         self.blocks.clear();
@@ -136,6 +154,7 @@ impl BlockAbsorb {
         self.input_tokens = 0;
         self.output_tokens = 0;
         self.created_at = 0;
+        self.finish_reason.clear();
     }
 
     fn open(&mut self, changed: &mut Vec<usize>, open: impl FnOnce(i64) -> Block) {

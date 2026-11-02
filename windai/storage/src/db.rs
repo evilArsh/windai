@@ -3,7 +3,6 @@ use crate::schema;
 use std::path::Path;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
-use std::str::FromStr;
 use std::time::Duration;
 pub type DbPool = sqlx::SqlitePool;
 pub type DbDriver = sqlx::Sqlite;
@@ -13,7 +12,8 @@ pub type DbQueryResult = <DbDriver as sqlx::Database>::QueryResult;
 pub(crate) const BEGIN_WRITE: &str = "BEGIN IMMEDIATE";
 
 pub async fn open_pool(path: &Path) -> Result<DbPool> {
-    let options = SqliteConnectOptions::from_str(&format!("sqlite://{}", path.display()))?
+    let options = SqliteConnectOptions::new()
+        .filename(path)
         .create_if_missing(true)
         .journal_mode(SqliteJournalMode::Wal)
         .busy_timeout(Duration::from_secs(8));

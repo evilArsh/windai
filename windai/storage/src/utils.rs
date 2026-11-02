@@ -70,18 +70,6 @@ pub fn decode_adapter(column: &str, text: &str) -> Result<AdapterType> {
     })
 }
 
-pub fn decode_enum<T>(column: &str, text: &str) -> Result<T>
-where
-    T: std::str::FromStr,
-    T::Err: std::fmt::Display,
-{
-    text.parse::<T>()
-        .map_err(|error| StorageError::MalformedColumn {
-            column: column.into(),
-            detail: error.to_string(),
-        })
-}
-
 pub fn ensure_affected(result: DbQueryResult) -> Result<()> {
     if result.rows_affected() == 0 {
         return Err(StorageError::NoRowsAffected);

@@ -1,4 +1,3 @@
-use crate::def::Shape;
 use crate::envelope::Envelope;
 use serde_json::Value;
 

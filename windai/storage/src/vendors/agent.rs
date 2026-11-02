@@ -1,13 +1,25 @@
 use crate::error::Result;
+use crate::utils::now_ts;
 use crate::{AgentInstance, Storage};
 use wind_wire::{AgentMode, AgentPhase, AgentRole};
 
 impl Storage {
-    pub async fn get_instance_by_id(&self, _instance_id: i64) -> Result<Option<AgentInstance>> {
-        todo!()
+    pub async fn get_instance_by_id(&self, instance_id: i64) -> Result<Option<AgentInstance>> {
+        let instance = self
+            .executor
+            .fetch_optional(
+                sqlx::query_as::<_, AgentInstance>(
+                    "SELECT id, parent_id, topic_id, role, mode, phase, phase_payload, created_at
+                       FROM agent_instances
+                      WHERE id = ?",
+                )
+                .bind(instance_id),
+            )
+            .await?;
+        Ok(instance)
     }
 
-    /// TODO: 创建 main agent 实例,
+    /// 创建 agent 实例
     pub async fn create_agent_instance(
         &self,
         topic_id: i64,
@@ -17,11 +29,28 @@ impl Storage {
         phase: AgentPhase,
         phase_payload: Option<String>,
     ) -> Result<i64> {
-        // AgentRole::Main
-        todo!()
+        let id = self
+            .executor
+            .fetch_one_scalar(
+                sqlx::query_scalar::<_, i64>(
+                    "INSERT INTO agent_instances
+                        (parent_id, topic_id, role, mode, phase, phase_payload, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)
+                     RETURNING id",
+                )
+                .bind(parent_id)
+                .bind(topic_id)
+                .bind(role.as_ref())
+                .bind(mode.map(|mode| mode.as_ref().to_string()))
+                .bind(phase.as_ref())
+                .bind(phase_payload)
+                .bind(now_ts()),
+            )
+            .await?;
+        Ok(id)
     }
 
-    /// TODO: 写一行派生调用的配对
+    /// 写一行派生调用的配对
     ///
     /// 一行 = 父实例的一次 tool_call id 及其 spawn 出的子实例。
     ///
@@ -33,9 +62,22 @@ impl Storage {
     pub async fn create_spawn_call_map(
         &self,
         parent_instance_id: i64,
-        _call_id: &str,
+        call_id: &str,
         child_instance_id: i64,
     ) -> Result<()> {
-        todo!()
+        self.executor
+            .execute(
+                sqlx::query(
+                    "INSERT INTO spawn_calls
+                        (parent_id, call_id, child_id, created_at)
+                     VALUES (?, ?, ?, ?)",
+                )
+                .bind(parent_instance_id)
+                .bind(call_id)
+                .bind(child_instance_id)
+                .bind(now_ts()),
+            )
+            .await?;
+        Ok(())
     }
 }

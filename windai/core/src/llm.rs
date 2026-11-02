@@ -1,6 +1,7 @@
 use self::domain::{LlmDomain, LlmFailure, LlmOutcome, LlmSpec, Suspended, WaitAnswer};
 use self::events::{
-    CORE_LLM_REQUEST, CORE_LLM_TOOLCALL, CORE_RULE_APPLY, LlmRequest, RuleApply, ToolCalls,
+    BlockDelta, CORE_BLOCK_DELTA, CORE_LLM_REQUEST, CORE_LLM_TOOLCALL, CORE_RULE_APPLY, LlmRequest,
+    RuleApply, ToolCalls,
 };
 use self::rule::{apply_rules, context_of};
 use self::tools::DeclaredTool;
@@ -94,9 +95,11 @@ impl LlmRunner {
             .await
             .map_err(|error| failure(error, message_id))?;
 
-        let composed = turn::compose_pending(&self.storage, topic.id, instance_id, &specs)
-            .await
-            .map_err(|error| failure(error, message_id))?;
+        let cx = turn::round_cx(topic.id, instance_id);
+        let composed =
+            turn::compose_pending(&self.storage, &self.bus, &cx, topic.id, instance_id, &specs)
+                .await
+                .map_err(|error| failure(error, message_id))?;
 
         let spawn_turn = turn::report_spawns(&self.storage, topic.id, instance_id)
             .await
@@ -141,7 +144,7 @@ impl LlmRunner {
         mut contexts: Vec<Message>,
     ) -> Result<Outcome<LlmDomain>, LlmFailure> {
         let mut rounds = 0;
-        let prepared = turn::prepare(&*self.mod_service, &self.storage, topic.id, instance_id)
+        let prepared = turn::prepare(&self.storage, &*self.mod_service, topic.id, instance_id)
             .await
             .map_err(|error| failure(error, None))?;
         // 组装 mod 提示词；只在每次请求前组装一次
@@ -199,31 +202,50 @@ impl LlmRunner {
             };
             body = self.bus.decide(&CORE_RULE_APPLY, &cx, payload).await.body;
 
-            let mut absorber = turn::exchange(&prepared, body, |_delta| {
-                // TODO: Writer 旁路通知，旁路日志不能落库，WriteHandle如何做？
-                // self.bus.notify(
-                //     &CORE_BLOCK_DELTA,
-                //     &cx,
-                //     BlockDelta {
-                //         message_id,
-                //         seq,
-                //         delta: block,
-                //     },
-                // );
+            let mut absorber = turn::exchange(&prepared, body, |block| {
+                self.bus.notify(
+                    &CORE_BLOCK_DELTA,
+                    &cx,
+                    BlockDelta {
+                        message_id,
+                        delta: block.clone(),
+                    },
+                );
             })
             .await
             .map_err(|error| failure(error, None))?;
+            let usage = absorber.usage();
+            let finish_reason = absorber.finish_reason().to_string();
             contexts.push(absorber.compose());
             let blocks = absorber.settle();
-            let _block_ids = self
+            let calls: Vec<FunctionCall> =
+                blocks.iter().flat_map(|block| block.tool_call()).collect();
+
+            let event_cx = cx.clone();
+            let committed = self
                 .storage
-                .create_blocks(message_id, &blocks)
+                .with_tx(async move |tx| {
+                    let block_ids = tx.create_blocks(message_id, &blocks).await?;
+                    tx.seal_message(
+                        message_id,
+                        &finish_reason,
+                        usage.input_tokens,
+                        usage.output_tokens,
+                    )
+                    .await?;
+                    let mut events =
+                        turn::log_blocks(&tx, &event_cx, message_id, &blocks, &block_ids).await?;
+                    events.push(
+                        turn::log_message_seal(&tx, &event_cx, message_id, &finish_reason, usage)
+                            .await?,
+                    );
+                    Ok(events)
+                })
                 .await
                 .map_err(|error| failure(error.into(), Some(message_id)))?;
-            // TODO: Writer 发送 CORE_BLOCK_COMMITTED，同事务置 finished 并落 event_log
-            // TODO: Writer 发送 CORE_MESSAGE_SEAL（finish_reason 与 usage）
-
-            let calls: Vec<FunctionCall> = blocks.into_iter().flat_map(|b| b.tool_call()).collect();
+            for event in committed {
+                self.bus.notify_committed(event);
+            }
             if calls.is_empty() {
                 return Ok(Outcome::Completed(LlmOutcome { message_id }));
             }
@@ -235,41 +257,17 @@ impl LlmRunner {
                 suspend: None,
             };
             // ! 一批 tool_calls 只允许全通过或者全部挂起等审批
-            // 0. mod 后端半侧改写了 suspend == true
-            let call_res = self.bus.decide(&CORE_LLM_TOOLCALL, &cx, call_payload).await;
-            if call_res.suspend == Some(true) {
-                // 1. mod 后端半侧js脚本：向本mod ui侧发送自定义pending事件，带上tool_calls payload （需要有挂起记录，UI 刷新/重连后要重画弹框）
-                // 2. mod 前端半侧UI受到pending事件，展示给用户
-                // 3. 前端宿主添加新hook,ctx.agent.resolve(wait_id, decisions) 调用后端
-                /*
-                    │
-                    ▼ core：条件写 waits.answer + 校验 wait_id == 当前 suspended
-                    Event::Resume { expect: Suspended{wait_id}, input: decisions }
-                    │
-                    ▼ resume：按 decisions 执行/拒绝，回到 rounds
-                    之后 core/agent.status 变为 running，UI 据此收起弹框
-                */
-                // 注意：sse数据快照也要包含mod 的 stateful
-                // 旧代码里面有 external_waits 实现了
-
-                // 如果存在 mod_approval
-                // 1. mod js 发送自定事件给前端UI侧（通过系统bus推送），前端弹窗让用户一次性审核
-                // 2. 现在将instance payload message 入库 external_waits，将id 放到Suspended，这一轮llm结束
-                // 注意：如果用户在后端还没有保存这条wait前就点击,则会报错，保持幂等
+            let decided_calls = self.bus.decide(&CORE_LLM_TOOLCALL, &cx, call_payload).await;
+            if decided_calls.suspend == Some(true) {
                 let external_wait_id = self
                     .storage
-                    .create_external_wait(instance_id, message_id, json!(call_res.calls))
+                    .create_external_wait(instance_id, message_id, json!(decided_calls.calls))
                     .await
                     .map_err(|error| failure(error.into(), Some(message_id)))?;
-
                 return Ok(Outcome::Suspend(Suspended { external_wait_id }));
             }
-            // 如果没有mod拦截 core/llm.toolcall 则自动执行：
-            // 1. 先执行普通的 tool_call，将结果入库
-            // 2. block 开块，commit，日志通知
-            // 再执行spawn 子agent, 返回spawn 状态
             let executed = tools::execute_plan(
-                call_res.calls,
+                decided_calls.calls,
                 &prepared.catalog,
                 &cx,
                 &*self.mcp_service,
@@ -277,8 +275,6 @@ impl LlmRunner {
             )
             .await
             .map_err(|error| failure(error, Some(message_id)))?;
-
-            // TODO: 是否能和 report_spawns 形成闭环？
 
             let has_results = !executed.results.is_empty();
             let mut spawn = None;
@@ -288,7 +284,7 @@ impl LlmRunner {
                     .create_message(turn_id, Role::Tool, None)
                     .await
                     .map_err(|error| failure(error.into(), None))?;
-                for _block in absorber.absorb(Message {
+                absorber.absorb(Message {
                     role: Role::Tool,
                     content: executed
                         .results
@@ -298,17 +294,25 @@ impl LlmRunner {
                         })
                         .collect(),
                     ..Message::default()
-                }) {
-                    // TODO: Writer 发送 CORE_BLOCK_DELTA（整块内容，一条即完整）
-                }
+                });
                 let tool_message = absorber.compose();
                 let blocks = absorber.settle();
-                let _block_ids = self
+                let event_cx = cx.clone();
+                let (blocks, committed) = self
                     .storage
-                    .create_blocks(tool_res_id, &blocks)
+                    .with_tx(async move |tx| {
+                        let block_ids = tx.create_blocks(tool_res_id, &blocks).await?;
+                        let events =
+                            turn::log_blocks(&tx, &event_cx, tool_res_id, &blocks, &block_ids)
+                                .await?;
+                        Ok((blocks, events))
+                    })
                     .await
                     .map_err(|error| failure(error.into(), Some(tool_res_id)))?;
-                // TODO: Writer 发送 CORE_BLOCK_COMMITTED，同事务置 finished 并落 event_log
+                turn::emit_block_deltas(&self.bus, &cx, tool_res_id, &blocks);
+                for event in committed {
+                    self.bus.notify_committed(event);
+                }
                 contexts.push(tool_message);
             }
 
@@ -316,6 +320,7 @@ impl LlmRunner {
                 spawn = Some(
                     turn::create_spawn_requests(
                         &self.storage,
+                        &self.bus,
                         &cx,
                         &topic,
                         instance_id,
@@ -345,7 +350,7 @@ impl LlmRunner {
     }
 }
 
-// TODO: agent运行时 llm 侧的实现
+/// agent运行时 llm 侧的实现
 #[async_trait::async_trait]
 impl Runner<LlmDomain> for LlmRunner {
     async fn run(&self, ctx: Ctx, input: Input<LlmDomain>) -> Outcome<LlmDomain> {

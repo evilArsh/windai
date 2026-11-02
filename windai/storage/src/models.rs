@@ -1,13 +1,19 @@
+use crate::db::DbRow;
+use crate::error::StorageError;
+use serde::de::DeserializeOwned;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
+use sqlx::types::Json;
+use sqlx::{FromRow, Row};
+use std::str::FromStr;
 use wind_event::{Origin, Scope, Shape, Source};
 use wind_wire::{
     AdapterType, AgentMode, AgentPhase, AgentRole, BlockKind, Content, PendingKind, Role,
 };
 
 /// 话题
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema, sqlx::FromRow)]
 pub struct Topic {
     /// 话题标识
     pub id: i64,
@@ -143,7 +149,7 @@ pub struct Rule {
 }
 
 /// 对话轮
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Turn {
     pub id: i64,
     pub instance_id: i64,
@@ -167,6 +173,22 @@ pub struct Message {
     pub created_at: Option<i64>,
 }
 
+impl<'r> FromRow<'r, DbRow> for Message {
+    fn from_row(row: &'r DbRow) -> sqlx::Result<Self> {
+        let role: String = row.try_get("role")?;
+        Ok(Self {
+            id: row.try_get("id")?,
+            turn_id: row.try_get("turn_id")?,
+            role: parse_enum("role", &role)?,
+            model_id: row.try_get("model_id")?,
+            finish_reason: row.try_get("finish_reason")?,
+            input_tokens: row.try_get("input_tokens")?,
+            output_tokens: row.try_get("output_tokens")?,
+            created_at: row.try_get("created_at")?,
+        })
+    }
+}
+
 /// 消息块
 ///
 /// 一个 Message 可分为多个消息块
@@ -187,6 +209,29 @@ pub struct Block {
     pub call_name: Option<String>,
     pub call_arguments: Option<String>,
     pub call_res: Option<serde_json::Value>,
+}
+
+impl<'r> FromRow<'r, DbRow> for Block {
+    fn from_row(row: &'r DbRow) -> sqlx::Result<Self> {
+        let kind: String = row.try_get("kind")?;
+        let role: String = row.try_get("role")?;
+        let call_res: Option<Json<Value>> = row.try_get("call_res")?;
+        Ok(Self {
+            id: row.try_get("id")?,
+            message_id: row.try_get("message_id")?,
+            finished: row.try_get("finished")?,
+            seq: row.try_get("seq")?,
+            kind: parse_enum("kind", &kind)?,
+            role: parse_enum("role", &role)?,
+            revision: row.try_get("revision")?,
+            content: row.try_get("content")?,
+            format: row.try_get("format")?,
+            call_id: row.try_get("call_id")?,
+            call_name: row.try_get("call_name")?,
+            call_arguments: row.try_get("call_arguments")?,
+            call_res: call_res.map(|Json(value)| value),
+        })
+    }
 }
 
 /// mod 基础信息
@@ -233,6 +278,27 @@ pub struct AgentInstance {
     pub created_at: Option<i64>,
 }
 
+impl<'r> FromRow<'r, DbRow> for AgentInstance {
+    fn from_row(row: &'r DbRow) -> sqlx::Result<Self> {
+        let role: String = row.try_get("role")?;
+        let mode: Option<String> = row.try_get("mode")?;
+        let phase: String = row.try_get("phase")?;
+        Ok(Self {
+            id: row.try_get("id")?,
+            parent_id: row.try_get("parent_id")?,
+            topic_id: row.try_get("topic_id")?,
+            role: parse_enum("role", &role)?,
+            mode: mode
+                .as_deref()
+                .map(|text| parse_enum("mode", text))
+                .transpose()?,
+            phase: parse_enum("phase", &phase)?,
+            phase_payload: row.try_get("phase_payload")?,
+            created_at: row.try_get("created_at")?,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentPending {
     /// 同时是队列顺序
@@ -246,6 +312,21 @@ pub struct AgentPending {
     pub created_at: i64,
 }
 
+impl<'r> FromRow<'r, DbRow> for AgentPending {
+    fn from_row(row: &'r DbRow) -> sqlx::Result<Self> {
+        let kind: String = row.try_get("kind")?;
+        let payload_json: String = row.try_get("payload_json")?;
+        Ok(Self {
+            id: row.try_get("id")?,
+            instance_id: row.try_get("instance_id")?,
+            kind: parse_enum("kind", &kind)?,
+            payload: parse_json("payload_json", &payload_json)?,
+            source_id: row.try_get("source_id")?,
+            created_at: row.try_get("created_at")?,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogRecord {
     pub id: i64,
@@ -253,12 +334,98 @@ pub struct LogRecord {
     pub create_time: i64,
     pub name: String,
     pub shape: Shape,
-    // pub scope: Scope,
-    pub topic_id: Option<i64>,
-    pub instance_id: Option<i64>,
+    pub scope: Scope,
     pub origin: Origin,
-    // pub source: Source,
-    pub mod_name: String,
-    pub mod_version: String,
+    pub source: Source,
     pub payload: Value,
+}
+
+impl<'r> FromRow<'r, DbRow> for LogRecord {
+    fn from_row(row: &'r DbRow) -> sqlx::Result<Self> {
+        let shape: String = row.try_get("shape")?;
+        let origin: String = row.try_get("origin")?;
+        let topic_id: Option<i64> = row.try_get("topic_id")?;
+        let instance_id: Option<i64> = row.try_get("instance_id")?;
+        let scope = match (topic_id, instance_id) {
+            (None, None) => Scope::Global,
+            (Some(topic_id), Some(instance_id)) => Scope::Topic {
+                topic_id,
+                instance_id,
+            },
+            _ => {
+                return Err(column_error(
+                    "topic_id/instance_id",
+                    StorageError::MalformedColumn {
+                        column: "topic_id/instance_id".into(),
+                        detail: "topic and instance must both be set or both be empty".into(),
+                    },
+                ));
+            }
+        };
+
+        let source_kind: String = row.try_get("source_kind")?;
+        let source_name: String = row.try_get("source_name")?;
+        let source_version: i64 = row.try_get("source_version")?;
+        let source = match source_kind.as_str() {
+            "core" => Source::core(source_name),
+            "mod" => {
+                let version = u32::try_from(source_version).map_err(|_| {
+                    column_error(
+                        "source_version",
+                        StorageError::MalformedColumn {
+                            column: "source_version".into(),
+                            detail: "mod version is out of range".into(),
+                        },
+                    )
+                })?;
+                Source::module(source_name, version)
+            }
+            other => {
+                return Err(column_error(
+                    "source_kind",
+                    StorageError::MalformedColumn {
+                        column: "source_kind".into(),
+                        detail: format!("unknown source kind: {other}"),
+                    },
+                ));
+            }
+        };
+
+        let payload: String = row.try_get("payload")?;
+        Ok(Self {
+            id: row.try_get("id")?,
+            create_time: row.try_get("create_time")?,
+            name: row.try_get("name")?,
+            shape: parse_enum("shape", &shape)?,
+            scope,
+            origin: parse_enum("origin", &origin)?,
+            source,
+            payload: parse_json("payload", &payload)?,
+        })
+    }
+}
+
+fn parse_enum<T>(column: &str, text: &str) -> sqlx::Result<T>
+where
+    T: FromStr,
+    T::Err: std::error::Error + Send + Sync + 'static,
+{
+    text.parse().map_err(|error| column_error(column, error))
+}
+
+fn parse_json<T>(column: &str, text: &str) -> sqlx::Result<T>
+where
+    T: DeserializeOwned,
+{
+    serde_json::from_str(text).map_err(|error| column_error(column, error))
+}
+
+fn column_error(
+    column: &str,
+    error: impl std::error::Error + Send + Sync + 'static,
+) -> sqlx::Error {
+    sqlx::Error::ColumnDecode {
+        index: column.to_string(),
+        source: Box::new(error),
+    }
 }

@@ -25,9 +25,9 @@ pub mod outlet;
 pub mod pool;
 pub mod subscription;
 
-/// 已提交事件的接收者；写入者按 pos 顺序调用，实现方不得阻塞
+/// 已提交事件的接收者；写入者按 log_id 顺序调用，实现方不得阻塞
 pub trait Observer: Send + Sync {
-    fn on_committed(&self, meta: &EventMeta, committed: &Committed);
+    fn on_committed(&self, committed: &Committed);
 }
 
 /// 调用 mod 处理函数的入口

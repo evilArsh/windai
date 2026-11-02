@@ -7,7 +7,18 @@ pub fn schema<T: schemars::JsonSchema>() -> Value {
     to_value(schemars::schema_for!(T)).expect("the generated schema is valid JSON")
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::AsRefStr, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    strum::AsRefStr,
+    strum::EnumString,
+    Serialize,
+    Deserialize,
+)]
 #[strum(serialize_all = "snake_case")]
 pub enum Shape {
     Intercept,

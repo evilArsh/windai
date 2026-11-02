@@ -3,6 +3,7 @@ use self::error::Result;
 use self::executor::StorageExecutor;
 
 use std::future::Future;
+use std::path::Path;
 
 pub(crate) mod db;
 pub mod error;
@@ -14,7 +15,6 @@ pub mod vendors;
 
 pub use models::*;
 
-// TODO: 不再需要
 // pub(crate) struct TableName;
 // impl TableName {
 //     pub const TURN: &'static str = "turn";
@@ -44,8 +44,15 @@ pub struct Storage {
 }
 
 impl Storage {
+    /// 打开数据库并确保 schema 就绪
+    pub async fn open(path: &Path) -> Result<Self> {
+        let db = Db::open(path).await?;
+        db.init_schema().await?;
+        Ok(Self::new(db))
+    }
+
     /// 用数据库句柄建立存储
-    pub fn new(db: Db) -> Self {
+    pub(crate) fn new(db: Db) -> Self {
         Self::from_executor(StorageExecutor::new(db.pool().clone()))
     }
 
@@ -74,7 +81,7 @@ impl Storage {
     }
 
     /// 取出底层连接池
-    pub fn pool(&self) -> &DbPool {
+    pub(crate) fn pool(&self) -> &DbPool {
         self.executor.pool()
     }
 }

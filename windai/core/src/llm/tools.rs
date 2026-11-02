@@ -1,5 +1,5 @@
 use super::{McpService, ModService};
-use crate::error::Result;
+use crate::{agent::SPAWN_AGENT_NAME, error::Result};
 use serde::{Deserialize, Serialize};
 use wind_event::DispatchCx;
 use wind_wire::{

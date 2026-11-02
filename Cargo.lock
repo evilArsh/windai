@@ -2737,6 +2737,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "wind-event",
+ "wind-storage",
  "wind-wire",
 ]
 

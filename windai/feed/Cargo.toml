@@ -7,6 +7,7 @@ repository.workspace = true
 
 [dependencies]
 wind-event = { path = "../event" }
+wind-storage = { path = "../storage" }
 wind-wire = { path = "../wire" }
 async-trait = { workspace = true }
 chrono = { workspace = true }

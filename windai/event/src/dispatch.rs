@@ -1,5 +1,5 @@
 use crate::context::DispatchCx;
-use crate::def::{Directory, EventDef, EventMeta, Shape};
+use crate::def::{Directory, EventDef, Shape};
 use crate::envelope::{Envelope, Origin, Scope, Source};
 use crate::events::{
     CORE_DISPATCH_FAILED, CORE_DISPATCH_TIMEOUT, DeliveryTarget, DispatchFailed, DispatchFailure,
@@ -108,11 +108,8 @@ impl Dispatcher {
     }
 
     /// 发送一条已落库的日志
-    pub fn notify_commited<P>(&self, commited: Committed)
-    where
-        P: Serialize + Send + Sync,
-    {
-        self.ev_out.submit_committed(commited);
+    pub fn notify_committed(&self, committed: Committed) {
+        self.ev_out.submit_committed(committed);
     }
 
     /// 允许 mod 改写载荷的事件；返回改写后的值
@@ -323,7 +320,10 @@ impl Dispatcher {
 
 // TODO: 考虑放到 feed 层，事件层只负责派发？
 impl Observer for Dispatcher {
-    fn on_committed(&self, meta: &EventMeta, committed: &Committed) {
+    fn on_committed(&self, committed: &Committed) {
+        let Some(meta) = self.directory.get(&committed.envelope.name) else {
+            return;
+        };
         if !meta.is_observe() {
             return;
         }

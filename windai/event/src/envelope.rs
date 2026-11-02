@@ -20,10 +20,19 @@ impl Scope {
             Scope::Topic { topic_id, .. } => Some(*topic_id),
         }
     }
+
+    pub fn instance_id(&self) -> Option<i64> {
+        match self {
+            Scope::Global => None,
+            Scope::Topic { instance_id, .. } => Some(*instance_id),
+        }
+    }
 }
 
 /// 操作从哪条路径来
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::AsRefStr)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::AsRefStr, strum::EnumString,
+)]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum Origin {
@@ -48,7 +57,7 @@ impl Source {
         }
     }
 
-    pub fn mod_(name: impl Into<String>, version: u32) -> Self {
+    pub fn module(name: impl Into<String>, version: u32) -> Self {
         Source::Mod {
             name: name.into(),
             version,
