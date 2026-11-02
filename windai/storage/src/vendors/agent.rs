@@ -1,6 +1,7 @@
 use crate::error::Result;
 use crate::utils::now_ts;
-use crate::{AgentInstance, Storage};
+use crate::{AgentInstance, ChildStateRow, Storage};
+use sqlx::{QueryBuilder, Sqlite};
 use wind_wire::{AgentMode, AgentPhase, AgentRole};
 
 impl Storage {
@@ -79,5 +80,46 @@ impl Storage {
             )
             .await?;
         Ok(())
+    }
+
+    /// 按调用标识读取子实例状态与收尾回复
+    pub async fn list_child_states(
+        &self,
+        parent_id: i64,
+        call_ids: &[&str],
+    ) -> Result<Vec<ChildStateRow>> {
+        if call_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT s.call_id,
+                    i.id AS child_id,
+                    i.mode,
+                    i.phase,
+                    i.phase_payload,
+                    b.content AS reply_part
+               FROM spawn_calls s
+               JOIN agent_instances i ON i.id = s.child_id
+               LEFT JOIN block b
+                 ON b.message_id = CASE
+                      WHEN json_valid(i.phase_payload)
+                      THEN json_extract(i.phase_payload, '$.message_id')
+                      ELSE NULL
+                    END
+                AND b.kind = 'text'
+                AND b.finished = TRUE
+              WHERE s.parent_id = ",
+        );
+        query.push_bind(parent_id);
+        query.push(" AND s.call_id IN (");
+        {
+            let mut separated = query.separated(", ");
+            for call_id in call_ids {
+                separated.push_bind(*call_id);
+            }
+        }
+        query.push(") ORDER BY s.call_id, b.seq");
+        let rows = self.executor.fetch_all(query.build_query_as()).await?;
+        Ok(rows)
     }
 }

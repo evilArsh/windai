@@ -55,7 +55,7 @@ use tokio_util::sync::CancellationToken;
 pub struct Job {
     pub event: &'static str,
     pub scope: Scope,
-    pub payload: Value,
+    pub payload: Option<Value>,
     pub sub: Subscription,
 }
 
@@ -121,7 +121,7 @@ async fn deliver(batch: Vec<Job>, caller: &Arc<dyn ModCaller>, outlet: &Arc<dyn 
             .entry(key)
             .or_insert_with(|| (job.sub, Vec::new()))
             .1
-            .push(job.payload);
+            .push(job.payload.unwrap_or(Value::Null));
     }
     for key in order {
         let Some((sub, mut payloads)) = groups.remove(&key) else {
@@ -192,7 +192,7 @@ async fn call_one(
                         scope,
                         Origin::Internal,
                         Source::core("event"),
-                        value,
+                        Some(value),
                         Shape::Observe,
                     ),
                 });
@@ -225,7 +225,7 @@ fn failed(
                 scope.clone(),
                 Origin::Internal,
                 Source::core("event"),
-                value,
+                Some(value),
                 Shape::Observe,
             ),
         });

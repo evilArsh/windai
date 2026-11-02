@@ -1,34 +1,30 @@
 use super::{McpService, ModService};
 use crate::{agent::SPAWN_AGENT_NAME, error::Result};
 use serde::{Deserialize, Serialize};
-use wind_event::DispatchCx;
+use wind_event::{DispatchCx, schema};
 use wind_wire::{
     AgentMode, FunctionCallOutput,
     tool::{FunctionCall, FunctionTool, Tools},
 };
 
-// pub fn tool_declarations() -> Vec<Tools> {
-//     vec![function_tool(
-//         SPAWN_AGENT_NAME,
-//         "Create an agent by spawning a child instance to complete a specified task.",
-//         serde_json::json!({
-//             "type": "object",
-//             "properties": {
-//                 "mode": {
-//                     "type": "string",
-//                     "enum": AgentMode::iter().map(|mode| mode.to_string()).collect::<Vec<_>>(),
-//                     "description": "Agent run mode."
-//                 },
-//                 "task": {
-//                     "type": "string",
-//                     "description": "Description of the task to be completed by this agent"
-//                 }
-//             },
-//             "required": ["mode", "task"],
-//             "additionalProperties": false
-//         }),
-//     )]
-// }
+/// Create an agent by spawning a child instance to complete a specified task.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SpawnAgentSchema {
+    /// Agent run mode
+    pub mode: AgentMode,
+    /// Description of the task to be completed by this agent
+    pub task: String,
+    /// Whether to fork parent agent's contexts
+    pub fork: bool,
+}
+
+fn tool_declarations() -> Vec<Tools> {
+    vec![function_tool(
+        SPAWN_AGENT_NAME,
+        "Create an agent by spawning a child instance to complete a specified task.",
+        schema::<SpawnAgentSchema>(),
+    )]
+}
 
 #[derive(Debug)]
 pub struct ExecutedPlan {
@@ -47,6 +43,7 @@ pub struct SpawnAgentRequest {
     pub mode: AgentMode,
     pub task: String,
     /// 继承父实例上下文
+    #[serde(default)]
     pub fork: bool,
 }
 
@@ -98,16 +95,15 @@ pub struct ToolCatalog {
 impl ToolCatalog {
     pub fn assemble(from_mods: Vec<DeclaredTool>, from_mcp: Vec<DeclaredTool>) -> Self {
         let mut entries: Vec<(ToolOrigin, Tools)> = Vec::new();
-        // TODO: 内建 SPAWN_AGENT_NAME，
-        // todo: mod可以覆盖该工具的实现
-        // for tool in tool_declarations() {
-        //     let name = match &tool {
-        //         Tools::Function(function) => function.name.clone(),
-        //     };
-        //     entries.push((ToolOrigin::Agent { name }, tool));
-        // }
         for declared in from_mods.into_iter().chain(from_mcp) {
             entries.push((declared.origin, declared.declaration));
+        }
+        for tool in tool_declarations() {
+            let name = tool_name(&tool);
+            if entries.iter().any(|(origin, _)| origin.exposed() == name) {
+                continue;
+            }
+            entries.push((ToolOrigin::Agent { name }, tool));
         }
         Self { entries }
     }
@@ -185,6 +181,12 @@ fn function_tool(name: &str, description: &str, parameters: serde_json::Value) -
     })
 }
 
+fn tool_name(tool: &Tools) -> String {
+    match tool {
+        Tools::Function(function) => function.name.clone(),
+    }
+}
+
 fn parse_arguments(arguments: &str) -> serde_json::Value {
     match serde_json::from_str(arguments) {
         Ok(value) => value,
@@ -216,9 +218,9 @@ fn done_result(call_id: &str, value: serde_json::Value) -> FunctionCallOutput {
     }
 }
 
-fn denied_result(call_id: &str, reason: &str) -> FunctionCallOutput {
+pub(crate) fn denied_result(call_id: impl Into<String>, reason: &str) -> FunctionCallOutput {
     FunctionCallOutput {
-        id: call_id.to_string(),
+        id: call_id.into(),
         content: serde_json::json!({ "refused": true, "reason": reason }),
     }
 }

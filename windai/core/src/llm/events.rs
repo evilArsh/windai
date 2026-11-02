@@ -156,7 +156,7 @@ pub fn directory() -> Directory {
     Directory::from_metas([
         CORE_PROMPT_COLLECT.meta(),
         CORE_RULE_APPLY.meta(),
-        // CORE_LLM_REQUEST.meta(),
+        CORE_LLM_REQUEST.meta(),
         // CORE_LLM_RESPONSE.meta(),
         CORE_LLM_TOOLCALL.meta(),
         CORE_MESSAGE_SEAL.meta(),

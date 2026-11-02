@@ -104,7 +104,7 @@ impl Dispatcher {
             self.over_limit(def.name, cx, over);
             return;
         }
-        self.emit(def, cx, &payload);
+        self.emit(def, cx, Some(&payload));
     }
 
     /// 发送一条已落库的日志
@@ -116,6 +116,32 @@ impl Dispatcher {
     ///
     /// mod 改写失败时，将原值返回
     pub async fn decide<P>(&self, def: &EventDef<P>, cx: &DispatchCx, payload: P) -> P
+    where
+        P: Serialize + DeserializeOwned + Send + Sync,
+    {
+        self.decide_inner(def, cx, payload, true).await
+    }
+
+    /// 允许 mod 改写载荷的事件；事件信封不携带载荷
+    pub async fn decide_without_payload<P>(
+        &self,
+        def: &EventDef<P>,
+        cx: &DispatchCx,
+        payload: P,
+    ) -> P
+    where
+        P: Serialize + DeserializeOwned + Send + Sync,
+    {
+        self.decide_inner(def, cx, payload, false).await
+    }
+
+    async fn decide_inner<P>(
+        &self,
+        def: &EventDef<P>,
+        cx: &DispatchCx,
+        payload: P,
+        keep_payload: bool,
+    ) -> P
     where
         P: Serialize + DeserializeOwned + Send + Sync,
     {
@@ -198,9 +224,10 @@ impl Dispatcher {
                     },
                 }
             }
-            self.emit(def, cx, &accumulated);
+            self.emit(def, cx, keep_payload.then_some(&accumulated));
             accumulated
         } else {
+            self.emit(def, cx, keep_payload.then_some(&payload));
             payload
         }
     }
@@ -228,20 +255,34 @@ impl Dispatcher {
         )
     }
 
-    fn emit<P: Serialize>(&self, def: &EventDef<P>, cx: &DispatchCx, payload: &P) {
-        match to_json(def.name, payload) {
-            Ok(value) => self.ev_out.submit(Pending {
-                log: def.log,
-                envelope: Envelope::of(def, cx, value),
-            }),
-            Err(error) => self.failed(
+    fn emit<P: Serialize>(&self, def: &EventDef<P>, cx: &DispatchCx, payload: Option<&P>) {
+        let value = match payload {
+            Some(payload) => match to_json(def.name, payload) {
+                Ok(value) => Some(value),
+                Err(error) => {
+                    self.failed(
+                        def.name,
+                        cx,
+                        DispatchFailure::BadPayload,
+                        None,
+                        error.to_string(),
+                    );
+                    return;
+                }
+            },
+            None => None,
+        };
+        self.ev_out.submit(Pending {
+            log: def.log,
+            envelope: Envelope::new(
                 def.name,
-                cx,
-                DispatchFailure::BadPayload,
-                None,
-                error.to_string(),
+                cx.scope.clone(),
+                cx.origin,
+                cx.source.clone(),
+                value,
+                def.shape,
             ),
-        }
+        });
     }
 
     fn require_shape(&self, def: &EventDef<impl Sized>, want: Shape) -> Result<(), BusError> {
@@ -311,7 +352,7 @@ impl Dispatcher {
                 scope.clone(),
                 Origin::Internal,
                 Source::core("event"),
-                value,
+                Some(value),
                 Shape::Observe,
             ),
         });

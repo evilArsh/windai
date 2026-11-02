@@ -26,7 +26,7 @@ impl Frame {
                 scope: record.scope,
                 origin: record.origin,
                 source: record.source,
-                payload: payload.unwrap_or(record.payload),
+                payload: Some(payload.unwrap_or(record.payload)),
                 shape: record.shape,
             },
         }

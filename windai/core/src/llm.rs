@@ -4,20 +4,23 @@ use self::events::{
     RuleApply, ToolCalls,
 };
 use self::rule::{apply_rules, context_of};
-use self::tools::DeclaredTool;
+use self::tools::{DeclaredTool, ExecutedPlan, SpawnAgentAction, denied_result};
 use crate::agent::{Ctx, Input, Outcome, Runner};
 use crate::error::CoreError;
 use serde_json::json;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use wind_event::{DispatchCx, Dispatcher, Scope};
+use wind_storage::error::StorageError;
 use wind_storage::{Storage, Topic};
-use wind_wire::{Content, FunctionCall, Message, Role};
+use wind_wire::{Content, FunctionCall, FunctionCallOutput, Message, Role};
 
 pub mod block;
 pub mod domain;
 pub mod events;
 pub mod tools;
 
+pub(crate) mod contexts;
 pub(crate) mod rule;
 pub(crate) mod turn;
 
@@ -101,12 +104,13 @@ impl LlmRunner {
                 .await
                 .map_err(|error| failure(error, message_id))?;
 
-        let spawn_turn = turn::report_spawns(&self.storage, topic.id, instance_id)
+        let spawn_turn = turn::report_spawns(&self.storage, &self.bus, topic.id, instance_id)
             .await
             .map_err(|error| failure(error, message_id))?;
 
-        // TODO: 获取上下文
-        let contexts = vec![];
+        let contexts = contexts::assemble(&self.storage, instance_id)
+            .await
+            .map_err(|error| failure(error, message_id))?;
 
         let turn_id = match (turn_id, message_id, composed) {
             (Some(turn_id), ..) => turn_id,
@@ -133,7 +137,8 @@ impl LlmRunner {
             }
         };
 
-        self.rounds(topic, instance_id, turn_id, contexts).await
+        self.rounds(topic, instance_id, turn_id, contexts, None)
+            .await
     }
 
     async fn rounds(
@@ -142,11 +147,26 @@ impl LlmRunner {
         instance_id: i64,
         turn_id: i64,
         mut contexts: Vec<Message>,
+        prepared: Option<turn::Prepared>,
     ) -> Result<Outcome<LlmDomain>, LlmFailure> {
         let mut rounds = 0;
-        let prepared = turn::prepare(&self.storage, &*self.mod_service, topic.id, instance_id)
-            .await
-            .map_err(|error| failure(error, None))?;
+        let prepared = match prepared {
+            Some(prepared) => prepared,
+            None => {
+                let prepare_cx = turn::round_cx(topic.id, instance_id);
+                turn::prepare(
+                    &self.storage,
+                    &self.bus,
+                    &prepare_cx,
+                    &*self.mod_service,
+                    &*self.mcp_service,
+                    &topic,
+                    instance_id,
+                )
+                .await
+                .map_err(|error| failure(error, None))?
+            }
+        };
         // 组装 mod 提示词；只在每次请求前组装一次
         contexts.insert(
             0,
@@ -175,7 +195,7 @@ impl LlmRunner {
             // body patch
             let body = self
                 .bus
-                .decide(
+                .decide_without_payload(
                     &CORE_LLM_REQUEST,
                     &cx,
                     LlmRequest {
@@ -200,7 +220,11 @@ impl LlmRunner {
                 adapter: prepared.model.adapter,
                 body,
             };
-            body = self.bus.decide(&CORE_RULE_APPLY, &cx, payload).await.body;
+            body = self
+                .bus
+                .decide_without_payload(&CORE_RULE_APPLY, &cx, payload)
+                .await
+                .body;
 
             let mut absorber = turn::exchange(&prepared, body, |block| {
                 self.bus.notify(
@@ -250,6 +274,7 @@ impl LlmRunner {
                 return Ok(Outcome::Completed(LlmOutcome { message_id }));
             }
 
+            let original_calls = calls.clone();
             let call_payload = ToolCalls {
                 instance_id,
                 message_id,
@@ -261,13 +286,14 @@ impl LlmRunner {
             if decided_calls.suspend == Some(true) {
                 let external_wait_id = self
                     .storage
-                    .create_external_wait(instance_id, message_id, json!(decided_calls.calls))
+                    .create_external_wait(instance_id, message_id, json!(original_calls))
                     .await
                     .map_err(|error| failure(error.into(), Some(message_id)))?;
                 return Ok(Outcome::Suspend(Suspended { external_wait_id }));
             }
+            let calls = filter_calls(&original_calls, &decided_calls.calls);
             let executed = tools::execute_plan(
-                decided_calls.calls,
+                calls,
                 &prepared.catalog,
                 &cx,
                 &*self.mcp_service,
@@ -276,47 +302,40 @@ impl LlmRunner {
             .await
             .map_err(|error| failure(error, Some(message_id)))?;
 
-            let has_results = !executed.results.is_empty();
+            let ExecutedPlan { spawns, results } = executed;
+            let has_results = !results.is_empty();
             let mut spawn = None;
             if has_results {
-                let tool_res_id = self
-                    .storage
-                    .create_message(turn_id, Role::Tool, None)
-                    .await
-                    .map_err(|error| failure(error.into(), None))?;
-                absorber.absorb(Message {
+                let tool_message = Message {
                     role: Role::Tool,
-                    content: executed
-                        .results
+                    content: results
                         .iter()
                         .map(|result| {
                             Content::new_function_call(result.id.clone(), result.content.clone())
                         })
                         .collect(),
                     ..Message::default()
-                });
-                let tool_message = absorber.compose();
-                let blocks = absorber.settle();
+                };
+                let mut batches = BTreeMap::new();
+                batches.insert((turn_id, message_id), results);
                 let event_cx = cx.clone();
-                let (blocks, committed) = self
+                let written = self
                     .storage
                     .with_tx(async move |tx| {
-                        let block_ids = tx.create_blocks(tool_res_id, &blocks).await?;
-                        let events =
-                            turn::log_blocks(&tx, &event_cx, tool_res_id, &blocks, &block_ids)
-                                .await?;
-                        Ok((blocks, events))
+                        turn::write_tool_results(&tx, &event_cx, &batches).await
                     })
                     .await
-                    .map_err(|error| failure(error.into(), Some(tool_res_id)))?;
-                turn::emit_block_deltas(&self.bus, &cx, tool_res_id, &blocks);
-                for event in committed {
-                    self.bus.notify_committed(event);
+                    .map_err(|error| failure(error.into(), Some(message_id)))?;
+                for written in written {
+                    turn::emit_block_deltas(&self.bus, &cx, written.message_id, &written.blocks);
+                    for event in written.committed {
+                        self.bus.notify_committed(event);
+                    }
                 }
                 contexts.push(tool_message);
             }
 
-            if !executed.spawns.is_empty() {
+            if !spawns.is_empty() {
                 spawn = Some(
                     turn::create_spawn_requests(
                         &self.storage,
@@ -324,7 +343,7 @@ impl LlmRunner {
                         &cx,
                         &topic,
                         instance_id,
-                        executed.spawns,
+                        spawns,
                     )
                     .await
                     .map_err(|error| failure(error, Some(message_id)))?,
@@ -343,10 +362,138 @@ impl LlmRunner {
     /// 恢复一轮会话
     async fn resume(
         &self,
-        _instance_id: i64,
-        _answer: WaitAnswer,
+        instance_id: i64,
+        answer: WaitAnswer,
     ) -> Result<Outcome<LlmDomain>, LlmFailure> {
-        todo!()
+        let (turn, wait, answer) = self
+            .storage
+            .with_tx(async move |tx| {
+                let wait_id = answer.external_wait_id;
+                let wait = tx.get_external_wait(wait_id).await?.ok_or_else(|| {
+                    StorageError::Internal(format!("external wait {} is unknown", wait_id))
+                })?;
+                let turn = self
+                    .storage
+                    .get_turn_of(wait.message_id)
+                    .await?
+                    .ok_or_else(|| {
+                        StorageError::Internal(format!(
+                            "message {} belongs to no turn",
+                            wait.message_id
+                        ))
+                    })?;
+                if turn.instance_id != instance_id {
+                    return Err(StorageError::Internal(format!(
+                        "turn {} does not belong to instance {instance_id}",
+                        turn.id
+                    )));
+                }
+                if wait.instance_id != instance_id {
+                    return Err(StorageError::Internal(format!(
+                        "external wait {} does not belong to instance {instance_id}",
+                        wait.id
+                    )));
+                }
+                if wait.answered_at.is_some() && wait.decision.is_some() {
+                    return Err(StorageError::Internal(format!(
+                        "external wait {} answered",
+                        wait.id
+                    )));
+                }
+                if tx
+                    .answer_external_wait(wait_id, serde_json::to_value(&answer.decisions)?)
+                    .await?
+                {
+                    return Ok((turn, wait, answer));
+                } else {
+                    return Err(StorageError::Internal(format!(
+                        "external wait {} answer failed, the answer existed",
+                        wait.id
+                    )));
+                }
+            })
+            .await
+            .map_err(|error| failure(error.into(), None))?;
+
+        let calls: Vec<FunctionCall> =
+            serde_json::from_value(wait.payload).map_err(|error| LlmFailure {
+                message_id: Some(wait.message_id),
+                error: format!(
+                    "external wait {} has an unreadable payload: {error}",
+                    wait.id
+                ),
+            })?;
+        let topic = turn::topic_of(&self.storage, instance_id)
+            .await
+            .map_err(|error| failure(error, Some(wait.message_id)))?;
+        let cx = turn::round_cx(topic.id, instance_id);
+        let prepared = turn::prepare(
+            &self.storage,
+            &self.bus,
+            &cx,
+            &*self.mod_service,
+            &*self.mcp_service,
+            &topic,
+            instance_id,
+        )
+        .await
+        .map_err(|error| failure(error, Some(wait.message_id)))?;
+
+        let mut decisions: HashMap<String, bool> = answer
+            .decisions
+            .into_iter()
+            .map(|decision| (decision.call_id, decision.allow))
+            .collect();
+        // 未表态的默认允许
+        let allowed: Vec<FunctionCall> = calls
+            .iter()
+            .filter(|call| decisions.get(&call.id).copied().unwrap_or(true))
+            .cloned()
+            .collect();
+        let executed = tools::execute_plan(
+            allowed,
+            &prepared.catalog,
+            &cx,
+            &*self.mcp_service,
+            &*self.mod_service,
+        )
+        .await
+        .map_err(|error| failure(error, Some(wait.message_id)))?;
+        let (ordered, spawns) = merge_resume_results(calls, &mut decisions, executed);
+        if !ordered.is_empty() {
+            let mut batches = BTreeMap::new();
+            batches.insert((turn.id, wait.message_id), ordered);
+            let event_cx = cx.clone();
+            let written = self
+                .storage
+                .with_tx(async move |tx| turn::write_tool_results(&tx, &event_cx, &batches).await)
+                .await
+                .map_err(|error| failure(error.into(), Some(wait.message_id)))?;
+            for written in written {
+                turn::emit_block_deltas(&self.bus, &cx, written.message_id, &written.blocks);
+                for event in written.committed {
+                    self.bus.notify_committed(event);
+                }
+            }
+        }
+        if !spawns.is_empty() {
+            let spawn = turn::create_spawn_requests(
+                &self.storage,
+                &self.bus,
+                &cx,
+                &topic,
+                instance_id,
+                spawns,
+            )
+            .await
+            .map_err(|error| failure(error, Some(wait.message_id)))?;
+            return Ok(Outcome::Spawn { spawn });
+        }
+        let contexts = contexts::assemble(&self.storage, instance_id)
+            .await
+            .map_err(|error| failure(error, Some(wait.message_id)))?;
+        self.rounds(topic, instance_id, turn.id, contexts, Some(prepared))
+            .await
     }
 }
 
@@ -391,4 +538,48 @@ fn failure(error: CoreError, message_id: Option<i64>) -> LlmFailure {
         message_id,
         error: error.to_string(),
     }
+}
+
+fn filter_calls(original: &[FunctionCall], decided: &[FunctionCall]) -> Vec<FunctionCall> {
+    original
+        .iter()
+        .enumerate()
+        .map(|(index, call)| match decided.get(index) {
+            Some(decided) if decided.id == call.id && decided.name == call.name => decided.clone(),
+            _ => call.clone(),
+        })
+        .collect()
+}
+
+fn merge_resume_results(
+    calls: Vec<FunctionCall>,
+    decisions: &mut HashMap<String, bool>,
+    executed: ExecutedPlan,
+) -> (Vec<FunctionCallOutput>, Vec<SpawnAgentAction>) {
+    let ExecutedPlan { spawns, results } = executed;
+    let mut results = results;
+    let spawn_ids: HashSet<&str> = spawns.iter().map(|spawn| spawn.call_id.as_str()).collect();
+    let mut ordered = Vec::with_capacity(calls.len());
+    for call in calls {
+        match decisions.remove(&call.id) {
+            Some(false) => {
+                ordered.push(denied_result(call.id, "the user did not allow this call"));
+            }
+            Some(true) | None => {
+                let result = results
+                    .iter()
+                    .position(|result| result.id == call.id)
+                    .map(|index| results.swap_remove(index));
+                if let Some(result) = result {
+                    ordered.push(result);
+                } else if !spawn_ids.contains(call.id.as_str()) {
+                    ordered.push(FunctionCallOutput {
+                        id: call.id,
+                        content: json!({ "error": "the call produced no result" }),
+                    });
+                }
+            }
+        }
+    }
+    (ordered, spawns)
 }

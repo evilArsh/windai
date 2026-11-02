@@ -47,8 +47,8 @@ pub struct Suspended {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WaitAnswer {
-    /// TODO: 结果paylod句柄。是id？
-    pub handle: String,
+    /// 外部等待标识
+    pub external_wait_id: i64,
     /// tool call 调用审批判据
     pub decisions: Vec<CallDecision>,
 }

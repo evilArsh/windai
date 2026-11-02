@@ -2,7 +2,7 @@ use crate::Block as StoredBlock;
 use crate::db::{DbDriver, DbRow};
 use crate::error::Result;
 use crate::utils::{ensure_affected, now_ts};
-use crate::{AgentPending, Message, Storage, Turn};
+use crate::{AgentPending, ContextRow, Message, Storage, Turn};
 use serde_json::{Value, json};
 use sqlx::types::Json;
 use sqlx::{FromRow, QueryBuilder, Row};
@@ -81,6 +81,41 @@ impl Storage {
             )
             .await?;
         Ok(message)
+    }
+
+    /// 读取实例全部历史 turn 已提交的块
+    pub async fn list_instance_context(&self, instance_id: i64) -> Result<Vec<ContextRow>> {
+        let rows = self
+            .executor
+            .fetch_all(
+                sqlx::query_as::<_, ContextRow>(
+                    "SELECT m.id AS message_id,
+                            m.turn_id,
+                            m.role,
+                            m.model_id,
+                            m.input_tokens,
+                            m.output_tokens,
+                            m.created_at AS message_created_at,
+                            b.id AS block_id,
+                            b.seq,
+                            b.kind,
+                            b.content,
+                            b.format,
+                            b.call_id,
+                            b.call_name,
+                            b.call_arguments,
+                            b.call_res
+                       FROM turn t
+                       JOIN message m ON m.turn_id = t.id
+                       JOIN block b ON b.message_id = m.id
+                      WHERE t.instance_id = ?
+                        AND b.finished = TRUE
+                      ORDER BY m.id, b.seq",
+                )
+                .bind(instance_id),
+            )
+            .await?;
+        Ok(rows)
     }
 
     pub async fn get_block(&self, block_id: i64) -> Result<Option<StoredBlock>> {

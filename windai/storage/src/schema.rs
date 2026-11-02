@@ -200,6 +200,48 @@ use super::error::Result;
 // "#;
 
 pub const SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS providers (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT    NOT NULL UNIQUE,
+    alias       TEXT,
+    description TEXT,
+    base_url    TEXT    NOT NULL,
+    doc         TEXT,
+    active      BOOLEAN NOT NULL,
+    created_at  BIGINT  NOT NULL,
+    updated_at  BIGINT  NOT NULL
+);
+CREATE TABLE IF NOT EXISTS models (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider_id BIGINT  NOT NULL,
+    name        TEXT    NOT NULL,
+    alias       TEXT,
+    adapter     TEXT    NOT NULL,
+    modalities  TEXT,
+    active      BOOLEAN NOT NULL,
+    icon        TEXT,
+    endpoint    TEXT,
+    config      TEXT,
+    frequency   BIGINT,
+    created_at  BIGINT  NOT NULL,
+    updated_at  BIGINT  NOT NULL
+);
+CREATE TABLE IF NOT EXISTS credentials (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider_id BIGINT  NOT NULL,
+    key         TEXT    NOT NULL,
+    active      BOOLEAN NOT NULL,
+    created_at  BIGINT  NOT NULL,
+    updated_at  BIGINT  NOT NULL
+);
+CREATE TABLE IF NOT EXISTS json_rule (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider_id BIGINT  NOT NULL,
+    adapter     TEXT    NOT NULL,
+    json_rule   TEXT    NOT NULL,
+    created_at  BIGINT  NOT NULL,
+    updated_at  BIGINT  NOT NULL
+);
 CREATE TABLE IF NOT EXISTS topics (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     parent_id   BIGINT,
@@ -294,6 +336,11 @@ CREATE TABLE IF NOT EXISTS event_log (
 );
 CREATE INDEX IF NOT EXISTS idx_turn_instance ON turn(instance_id, id);
 CREATE INDEX IF NOT EXISTS idx_turn_topic ON turn(topic_id, id);
+CREATE INDEX IF NOT EXISTS idx_message_turn ON message(turn_id, id);
+CREATE INDEX IF NOT EXISTS idx_credentials_active
+    ON credentials(provider_id) WHERE active = TRUE;
+CREATE INDEX IF NOT EXISTS idx_json_rule_provider_adapter
+    ON json_rule(provider_id, adapter);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_block_message ON block(message_id, seq);
 CREATE INDEX IF NOT EXISTS idx_block_call_id ON block(call_id);
 CREATE INDEX IF NOT EXISTS idx_block_tool_result ON block(call_id) WHERE kind = 'tool_result';

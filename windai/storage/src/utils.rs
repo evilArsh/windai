@@ -1,10 +1,10 @@
 use super::executor::StorageExecutor;
 use crate::db::{DbDriver, DbQueryResult};
 use crate::error::{Result, StorageError};
-// use crate::models::AdapterType;
 use chrono::Utc;
 use serde::{Serialize, de::DeserializeOwned};
 use sqlx::QueryBuilder;
+use std::str::FromStr;
 use wind_wire::AdapterType;
 
 /// 当前时刻的秒级时间戳
@@ -63,13 +63,6 @@ where
     text.parse::<T>().map_err(Into::into)
 }
 
-pub fn decode_adapter(column: &str, text: &str) -> Result<AdapterType> {
-    AdapterType::parse(text).map_err(|error| StorageError::MalformedColumn {
-        column: column.into(),
-        detail: error.to_string(),
-    })
-}
-
 pub fn ensure_affected(result: DbQueryResult) -> Result<()> {
     if result.rows_affected() == 0 {
         return Err(StorageError::NoRowsAffected);
@@ -101,184 +94,38 @@ pub(crate) async fn execute_allowing_zero_rows<'q>(
     Ok(())
 }
 
-// /// 拼接单行 UPDATE，并自动追加 `updated_at`
-// ///
-// /// 每个值都用 `Option` 包装，为 `None` 的字段跳过。全部字段都是 `None` 时
-// /// 不生成任何 SQL
-// #[macro_export]
-// macro_rules! update {
-//     ($table:expr, $id:expr, $(($col:literal, $val:expr)),+ $(,)?) => {{
-//         let mut __qb:sqlx::QueryBuilder<'_, $crate::db::DbDriver> = sqlx::QueryBuilder::new("");
-//         let mut __count = 0usize;
-//         let mut __need_prefix = true;
-//         $(
-//             if let Some(__v) = $val {
-//                 if __need_prefix {
-//                     __qb.push("UPDATE ").push($table).push(" SET ");
-//                     __need_prefix = false;
-//                 } else {
-//                     __qb.push(", ");
-//                 }
-//                 __qb.push($col).push(" = ").push_bind(__v);
-//                 __count += 1;
-//             }
-//         )+
-//         if __count > 0 {
-//             __qb.push(", updated_at = ");
-//             __qb.push_bind($crate::utils::now_ts());
-//             __qb.push(" WHERE id = ").push_bind($id);
-//         }
-//         __qb
-//     }};
-// }
+pub(crate) fn parse_enum<T>(column: &str, text: &str) -> sqlx::Result<T>
+where
+    T: FromStr,
+    T::Err: std::error::Error + Send + Sync + 'static,
+{
+    text.parse().map_err(|error| column_error(column, error))
+}
 
-// /// 拼接单行 UPDATE，并自动追加 `updated_at`
-// ///
-// /// 传入的值不做 `Option` 解包，`None` 会写入 NULL
-// #[macro_export]
-// macro_rules! update_strict {
-//     ($table:expr, $id:expr, $(($col:literal, $val:expr)),+ $(,)?) => {{
-//         let mut __qb: sqlx::QueryBuilder<'_, $crate::db::DbDriver> = sqlx::QueryBuilder::new("");
-//         let mut __first = true;
-//         $(
-//             if __first {
-//                 __qb.push("UPDATE ").push($table).push(" SET ");
-//                 __first = false;
-//             } else {
-//                 __qb.push(", ");
-//             }
-//             __qb.push($col).push(" = ").push_bind($val);
-//         )+
-//         __qb.push(", updated_at = ");
-//         __qb.push_bind($crate::utils::now_ts());
-//         __qb.push(" WHERE id = ").push_bind($id);
-//         __qb
-//     }};
-// }
+pub(crate) fn parse_json<T>(column: &str, text: &str) -> sqlx::Result<T>
+where
+    T: DeserializeOwned,
+{
+    serde_json::from_str(text).map_err(|error| column_error(column, error))
+}
 
-// /// UPDATE 语句拼接，只拼 SET，不拼 WHERE
-// #[macro_export]
-// macro_rules! update_fields {
-//     ($table:expr, $(($col:literal, $val:expr)),+ $(,)?) => {{
-//         let mut __qb:sqlx::QueryBuilder<'_, $crate::db::DbDriver> = sqlx::QueryBuilder::new("");
-//         let mut __need_prefix = true;
-//         $(
-//             if let Some(__v) = $val {
-//                 if __need_prefix {
-//                     __qb.push("UPDATE ").push($table).push(" SET ");
-//                     __need_prefix = false;
-//                 } else {
-//                     __qb.push(", ");
-//                 }
-//                 __qb.push($col).push(" = ").push_bind(__v);
-//             }
-//         )+
-//         __qb
-//     }};
-// }
+pub(crate) fn parse_optional_json<T>(column: &str, text: Option<String>) -> sqlx::Result<Option<T>>
+where
+    T: DeserializeOwned,
+{
+    text.map(|text| parse_json(column, &text)).transpose()
+}
 
-// /// INSERT 语句的列前缀拼接
-// #[macro_export]
-// macro_rules! insert_fields {
-//     ($table:expr, ($($field:literal),+ $(,)?)) => {{
-//         let mut __qb:sqlx::QueryBuilder<'_, $crate::db::DbDriver> = sqlx::QueryBuilder::new("");
-//         __qb.push("INSERT INTO ").push($table).push(" (");
-//         {
-//             let mut __sep = __qb.separated(", ");
-//             $(
-//                 __sep.push($field);
-//             )+
-//         }
-//         __qb.push(") ");
-//         __qb
-//     }};
-// }
+pub(crate) fn decode_adapter(column: &str, text: &str) -> sqlx::Result<AdapterType> {
+    AdapterType::parse(text).map_err(|error| column_error(column, error))
+}
 
-// /// 单行 INSERT
-// #[macro_export]
-// macro_rules! insert {
-//     ($table:expr, $(($col:literal, $val:expr)),+ $(,)?) => {{
-//         let mut __qb:sqlx::QueryBuilder<'_, $crate::db::DbDriver> = sqlx::QueryBuilder::new("");
-//         __qb.push("INSERT INTO ").push($table).push(" (");
-//         {
-//             let mut __sep = __qb.separated(", ");
-//             $(
-//                 __sep.push($col);
-//             )+
-//         }
-//         __qb.push(") VALUES (");
-//         {
-//             let mut __sep = __qb.separated(", ");
-//             $(
-//                 __sep.push_bind($val);
-//             )+
-//         }
-//         __qb.push(")");
-//         __qb
-//     }};
-// }
-
-// /// 单行主键 id 删除
-// #[macro_export]
-// macro_rules! delete_by_id {
-//     ($table:expr, $id:expr) => {{
-//         let mut __qb = $crate::delete_from!($table);
-//         __qb.push(" WHERE id = ");
-//         __qb.push_bind($id);
-//         __qb
-//     }};
-// }
-
-// /// DELETE 语句前缀拼接，不带条件
-// #[macro_export]
-// macro_rules! delete_from {
-//     ($table:expr) => {{
-//         let mut __qb: sqlx::QueryBuilder<'_, $crate::db::DbDriver> = sqlx::QueryBuilder::new("");
-//         __qb.push("DELETE FROM ");
-//         __qb.push($table);
-//         __qb
-//     }};
-// }
-
-// /// SELECT 查询字段
-// #[macro_export]
-// macro_rules! select_fields {
-//     ($table:expr, ($($field:literal),+ $(,)?)) => {{
-//         let mut __qb:sqlx::QueryBuilder<'_, $crate::db::DbDriver> = sqlx::QueryBuilder::new("");
-//         __qb.push("SELECT ");
-//         {
-//             let mut __first = true;
-//             $(
-//                 if !__first { __qb.push(", "); }
-//                 __first = false;
-//                 __qb.push($field);
-//             )+
-//         }
-//         __qb.push(" FROM ");
-//         __qb.push($table);
-//         __qb.push(" ");
-//         __qb
-//     }};
-// }
-
-// /// 单行主键 id 查询
-// #[macro_export]
-// macro_rules! get_by_id {
-//     // 不指定字段时，查询所有字段
-//     ($table:expr, $id:expr) => {{
-//         let mut __qb:sqlx::QueryBuilder<'_, $crate::db::DbDriver> = sqlx::QueryBuilder::new("");
-//         __qb.push("SELECT * FROM ");
-//         __qb.push($table);
-//         __qb.push(" WHERE id = ");
-//         __qb.push_bind($id);
-//         __qb
-//     }};
-
-//     // 指定查询字段
-//     ($table:expr, $id:expr, ($($field:literal),+ $(,)?)) => {{
-//         let mut __qb = $crate::select_fields!($table, ($($field),+));
-//         __qb.push("WHERE id = ");
-//         __qb.push_bind($id);
-//         __qb
-//     }};
-// }
+pub(crate) fn column_error(
+    column: &str,
+    error: impl std::error::Error + Send + Sync + 'static,
+) -> sqlx::Error {
+    sqlx::Error::ColumnDecode {
+        index: column.to_string(),
+        source: Box::new(error),
+    }
+}

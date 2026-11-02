@@ -1,8 +1,7 @@
-use serde_json::Value;
-
-use crate::Storage;
 use crate::error::Result;
-use crate::utils::{ensure_affected, now_ts};
+use crate::utils::now_ts;
+use crate::{ExternalWait, Storage};
+use serde_json::Value;
 
 impl Storage {
     pub async fn create_external_wait(
@@ -30,21 +29,42 @@ impl Storage {
         Ok(id)
     }
 
-    pub async fn answer_external_wait(&self, id: i64, decisions: Value) -> Result<()> {
-        let decisions = serde_json::to_string(&decisions)?;
-        let result = self
+    pub async fn get_external_wait(&self, id: i64) -> Result<Option<ExternalWait>> {
+        let wait = self
             .executor
-            .execute(
-                sqlx::query(
+            .fetch_optional(
+                sqlx::query_as::<_, ExternalWait>(
+                    "SELECT id, instance_id, message_id, payload_json, created_at,
+                            answered_at, decision_json
+                       FROM external_waits
+                      WHERE id = ?",
+                )
+                .bind(id),
+            )
+            .await?;
+        Ok(wait)
+    }
+
+    /// 记录一次等待的答复
+    ///
+    /// 只有尚未答复的等待会被更新，返回是否由本次调用写入
+    pub async fn answer_external_wait(&self, id: i64, decisions: Value) -> Result<bool> {
+        let decisions = serde_json::to_string(&decisions)?;
+        let answered = self
+            .executor
+            .fetch_optional(
+                sqlx::query_as::<_, (i64,)>(
                     "UPDATE external_waits
-                    SET answered_at = ?, decision_json = ?
-                      WHERE id = ? AND answered_at IS NULL",
+                        SET answered_at = ?, decision_json = ?
+                      WHERE id = ? AND answered_at IS NULL
+                      AND decision_json IS NULL
+                    RETURNING id",
                 )
                 .bind(now_ts())
                 .bind(decisions)
                 .bind(id),
             )
             .await?;
-        ensure_affected(result)
+        Ok(answered.is_some())
     }
 }

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::Shape;
@@ -73,7 +74,7 @@ pub struct Envelope<P> {
     pub scope: Scope,
     pub origin: Origin,
     pub source: Source,
-    pub payload: P,
+    pub payload: Option<P>,
     pub shape: Shape,
 }
 
@@ -83,7 +84,7 @@ impl Envelope<serde_json::Value> {
         scope: Scope,
         origin: Origin,
         source: Source,
-        payload: serde_json::Value,
+        payload: Option<Value>,
         shape: Shape,
     ) -> Self {
         Self {
@@ -98,13 +99,13 @@ impl Envelope<serde_json::Value> {
     }
 
     /// 沿调用方的上下文组信封
-    pub fn of(def: &EventDef<impl Sized>, cx: &DispatchCx, payload: serde_json::Value) -> Self {
+    pub fn of(def: &EventDef<impl Sized>, cx: &DispatchCx, payload: Value) -> Self {
         Self::new(
             def.name,
             cx.scope.clone(),
             cx.origin,
             cx.source.clone(),
-            payload,
+            Some(payload),
             def.shape,
         )
     }

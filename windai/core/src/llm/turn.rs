@@ -1,26 +1,30 @@
-use super::ModService;
-use super::domain::{LlmDomain, LlmSpec};
+use super::domain::{LlmDomain, LlmFailure, LlmOutcome, LlmSpec, Suspended};
 use super::events::{
     BlockCommitted, BlockDelta, CORE_BLOCK_COMMITTED, CORE_BLOCK_DELTA, CORE_MESSAGE_SEAL,
-    MessageSeal,
+    CORE_PROMPT_COLLECT, MessageSeal, PromptCollect,
 };
+use super::rule::compile_rules;
 use super::tools::{SpawnAgentAction, ToolCatalog};
+use super::{McpService, ModService};
+use crate::agent::SPAWN_AGENT_NAME;
+use crate::agent::SpawnRequest;
 use crate::agent::tree::Phase;
-use crate::agent::{SPAWN_AGENT_NAME, SpawnRequest};
+use crate::agent::tree::phase::CancelOrigin;
 use crate::error::{CoreError, Result};
 use crate::llm::block::BlockAbsorb;
 use futures::StreamExt;
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::pin::pin;
 use std::sync::Arc;
 use std::time::Duration;
 use wind_ai::chat::{Chunk, stream_body};
-use wind_ai::{ChatAdapter, ChatModel, Target};
+use wind_ai::{ChatAdapter, ChatModel, Target, adapter_of};
 use wind_event::{Committed, DispatchCx, Dispatcher, Envelope, Origin, Scope, Source};
 use wind_rule::RuleSet;
 use wind_storage::error::Result as StorageResult;
-use wind_storage::{Storage, Topic};
+use wind_storage::vendors::config::ModelConfig;
+use wind_storage::{ChildStateRow, Storage, Topic};
 use wind_wire::{
     AgentMode, AgentPhase, AgentRole, Block, Content, FunctionCallOutput, Message, Role, Usage,
 };
@@ -28,7 +32,7 @@ use wind_wire::{
 struct ChildState {
     child_id: i64,
     mode: Option<AgentMode>,
-    phase: Phase<LlmDomain>,
+    phase: std::result::Result<Phase<LlmDomain>, String>,
     reply: String,
 }
 
@@ -41,6 +45,13 @@ pub struct Prepared {
     pub(crate) rules: RuleSet,
     pub(crate) prompt: String,
     pub(crate) catalog: Arc<ToolCatalog>,
+}
+
+pub struct WrittenToolResults {
+    pub message_id: i64,
+    pub blocks: Vec<Block>,
+    /// 已提交的块事件
+    pub committed: Vec<Committed>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -129,7 +140,7 @@ pub(crate) fn emit_block_deltas(
     }
 }
 
-/// TODO: 查询 instance_id 所在的 topic
+/// 查询 instance_id 所在的 topic
 pub async fn topic_of(storage: &Storage, instance_id: i64) -> Result<Topic> {
     storage
         .get_topic_by_instance(instance_id)
@@ -194,10 +205,13 @@ pub async fn compose_pending(
 /// 子 agent 实例的结果属于父 agent tool_call 结果
 pub async fn report_spawns(
     storage: &Storage,
+    bus: &Dispatcher,
     topic_id: i64,
     instance_id: i64,
 ) -> Result<Option<i64>> {
-    let spawn_turn = storage
+    let cx = round_cx(topic_id, instance_id);
+    let log_cx = cx.clone();
+    let (written, spawn_turn) = storage
         .with_tx(async move |tx| {
             let unpaired: Vec<_> = tx
                 .tool_calls_without_results(instance_id)
@@ -212,13 +226,13 @@ pub async fn report_spawns(
                 })
                 .collect();
             if unpaired.is_empty() {
-                return Ok(None);
+                return Ok((Vec::new(), None));
             }
 
             let call_ids: Vec<&str> = unpaired.iter().map(|call| call.call_id.as_str()).collect();
-            let mut states = child_states(&tx, topic_id, &call_ids).await?;
+            let mut states = child_states(&tx, instance_id, &call_ids).await?;
             // (turn, message) -> 该消息下待回补的结果
-            let mut batches: HashMap<(i64, i64), Vec<FunctionCallOutput>> = HashMap::new();
+            let mut batches: BTreeMap<(i64, i64), Vec<FunctionCallOutput>> = BTreeMap::new();
             for call in unpaired {
                 let state = states.remove(&call.call_id);
                 let output = spawn_output(call.call_id, state);
@@ -227,22 +241,80 @@ pub async fn report_spawns(
                     .or_default()
                     .push(output);
             }
-            write_tool_results(&tx, &batches).await?;
-            Ok(batches.keys().map(|(turn_id, _)| *turn_id).max())
+            let spawn_turn = batches.keys().map(|(turn_id, _)| *turn_id).max();
+            let written = write_tool_results(&tx, &log_cx, &batches).await?;
+            Ok((written, spawn_turn))
         })
         .await?;
+
+    for written in written {
+        emit_block_deltas(bus, &cx, written.message_id, &written.blocks);
+        for event in written.committed {
+            bus.notify_committed(event);
+        }
+    }
     Ok(spawn_turn)
 }
 
 pub async fn prepare(
-    _stroage: &Storage,
+    storage: &Storage,
+    bus: &Dispatcher,
+    cx: &DispatchCx,
     mod_service: &dyn ModService,
-    topic_id: i64,
-    _instance_id: i64,
+    mcp_service: &dyn McpService,
+    topic: &Topic,
+    instance_id: i64,
 ) -> Result<Prepared> {
-    let mod_prompts = mod_service.prompt_fragments(topic_id).await?;
-    // TODO: 查出 prepare 数据
-    todo!()
+    let model_id = topic
+        .model_id
+        .ok_or_else(|| CoreError::Denied(format!("topic {} names no model", topic.id)))?;
+    let config = storage
+        .get_model_config(model_id)
+        .await?
+        .ok_or_else(|| CoreError::Denied(format!("model {model_id} is unknown")))?;
+    let ModelConfig {
+        model,
+        provider,
+        api_key,
+    } = config;
+    let provider = provider
+        .ok_or_else(|| CoreError::Denied(format!("provider {} is unknown", model.provider_id)))?;
+    let rules = compile_rules(&storage.list_rules(provider.id, model.adapter).await?)?;
+    let fragments = mod_service.prompt_fragments(topic.id).await?;
+    let prompt = bus
+        .decide(
+            &CORE_PROMPT_COLLECT,
+            cx,
+            PromptCollect {
+                topic_id: topic.id,
+                instance_id,
+                fragments,
+            },
+        )
+        .await
+        .fragments
+        .join("\n\n");
+    let from_mods = mod_service.agent_tools(topic.id).await?;
+    let from_mcp = mcp_service.declarations(cx, topic.id).await?;
+    let catalog = Arc::new(ToolCatalog::assemble(from_mods, from_mcp));
+    Ok(Prepared {
+        adapter: adapter_of(model.adapter),
+        model: ChatModel {
+            name: model.name,
+            adapter: model.adapter,
+            endpoint: model.endpoint,
+            config: model.config,
+        },
+        model_id,
+        provider: provider.name,
+        target: Target {
+            base_url: provider.base_url,
+            api_key,
+        },
+        rules,
+        prompt,
+        catalog,
+    })
 }
 
 /// 一次模型调用
@@ -360,21 +432,108 @@ pub async fn create_spawn_requests(
     Ok(spawn)
 }
 
-// TODO: 待补，按调用标识一次查出子实例的状态与收尾回复
 async fn child_states(
-    _storage: &Storage,
-    _topic_id: i64,
-    _call_ids: &[&str],
+    storage: &Storage,
+    parent_id: i64,
+    call_ids: &[&str],
 ) -> StorageResult<HashMap<String, ChildState>> {
-    todo!()
+    let rows = storage.list_child_states(parent_id, call_ids).await?;
+    let mut states: HashMap<String, ChildState> = HashMap::new();
+    for row in rows {
+        let ChildStateRow {
+            call_id,
+            child_id,
+            mode,
+            phase,
+            phase_payload,
+            reply_part,
+        } = row;
+        let state = states.entry(call_id).or_insert_with(|| ChildState {
+            child_id,
+            mode: mode.as_deref().and_then(|text| text.parse().ok()),
+            phase: decode_phase(&phase, phase_payload.as_deref()),
+            reply: String::new(),
+        });
+        if let Some(part) = reply_part {
+            state.reply.push_str(&part);
+        }
+    }
+    Ok(states)
 }
 
-// TODO: 待补，每批落一条 tool 消息 （批量写入）
-async fn write_tool_results(
-    _storage: &Storage,
-    _batches: &HashMap<(i64, i64), Vec<FunctionCallOutput>>,
-) -> StorageResult<()> {
-    todo!()
+pub(crate) async fn write_tool_results(
+    tx: &Storage,
+    cx: &DispatchCx,
+    batches: &BTreeMap<(i64, i64), Vec<FunctionCallOutput>>,
+) -> StorageResult<Vec<WrittenToolResults>> {
+    let mut written = Vec::with_capacity(batches.len());
+    for ((turn_id, _message_id), results) in batches {
+        if results.is_empty() {
+            continue;
+        }
+        let message_id = tx.create_message(*turn_id, Role::Tool, None).await?;
+        let mut absorber = BlockAbsorb::new();
+        absorber.absorb(Message {
+            role: Role::Tool,
+            content: results
+                .iter()
+                .map(|result| Content::new_function_call(result.id.clone(), result.content.clone()))
+                .collect(),
+            ..Message::default()
+        });
+        let blocks = absorber.settle();
+        let block_ids = tx.create_blocks(message_id, &blocks).await?;
+        let committed = log_blocks(tx, cx, message_id, &blocks, &block_ids).await?;
+        written.push(WrittenToolResults {
+            message_id,
+            blocks,
+            committed,
+        });
+    }
+    Ok(written)
+}
+
+fn decode_phase(
+    name: &str,
+    payload: Option<&str>,
+) -> std::result::Result<Phase<LlmDomain>, String> {
+    let phase: AgentPhase = name
+        .parse()
+        .map_err(|_| format!("unknown phase name: {name}"))?;
+    let payload =
+        match payload {
+            Some(text) => Some(serde_json::from_str::<Value>(text).map_err(|error| {
+                format!("payload for phase {name} could not be decoded: {error}")
+            })?),
+            None => None,
+        };
+    if !phase.takes_payload() {
+        if payload.is_some() {
+            return Err(format!("phase {name} does not take a payload"));
+        }
+        return match phase {
+            AgentPhase::Running => Ok(Phase::Running),
+            AgentPhase::WaitingChildren => Ok(Phase::WaitingChildren),
+            AgentPhase::Aborted => Ok(Phase::Aborted),
+            _ => Err(format!("phase {name} does not take a payload")),
+        };
+    }
+    let payload = payload.ok_or_else(|| format!("phase {name} requires a payload"))?;
+    let decoded = match phase {
+        AgentPhase::Suspended => serde_json::from_value::<Suspended>(payload).map(Phase::Suspended),
+        AgentPhase::Cancelling => {
+            serde_json::from_value::<CancelOrigin>(payload).map(Phase::Cancelling)
+        }
+        AgentPhase::Done => serde_json::from_value::<LlmOutcome>(payload).map(Phase::Done),
+        AgentPhase::Failed => serde_json::from_value::<LlmFailure>(payload).map(Phase::Failed),
+        AgentPhase::Cancelled => {
+            serde_json::from_value::<CancelOrigin>(payload).map(Phase::Cancelled)
+        }
+        AgentPhase::Running | AgentPhase::WaitingChildren | AgentPhase::Aborted => {
+            return Err(format!("phase {name} does not take a payload"));
+        }
+    };
+    decoded.map_err(|error| format!("payload for phase {name} could not be decoded: {error}"))
 }
 
 fn spawn_output(call_id: String, state: Option<ChildState>) -> FunctionCallOutput {
@@ -384,15 +543,20 @@ fn spawn_output(call_id: String, state: Option<ChildState>) -> FunctionCallOutpu
             json!({ "instance_id": state.child_id, "phase": "running" })
         }
         Some(state) => match &state.phase {
-            Phase::Done(_) => Value::String(state.reply.clone()),
-            Phase::Suspended(wait) => {
-                json!({ "instance_id": state.child_id, "phase": "suspended", "phase_payload": wait })
-            }
-            Phase::Failed(_) | Phase::Cancelled(_) | Phase::Aborted => {
-                json!({ "error": "child task did not complete" })
-            }
-            Phase::Running | Phase::WaitingChildren | Phase::Cancelling(_) => {
-                json!({ "instance_id": state.child_id, "phase": "running" })
+            Ok(phase) => match phase {
+                Phase::Done(_) => Value::String(state.reply.clone()),
+                Phase::Suspended(wait) => {
+                    json!({ "instance_id": state.child_id, "phase": "suspended", "phase_payload": wait })
+                }
+                Phase::Failed(_) | Phase::Cancelled(_) | Phase::Aborted => {
+                    json!({ "error": "child task did not complete" })
+                }
+                Phase::Running | Phase::WaitingChildren | Phase::Cancelling(_) => {
+                    json!({ "instance_id": state.child_id, "phase": "running" })
+                }
+            },
+            Err(detail) => {
+                json!({ "error": format!("child {} has an unreadable phase: {detail}", state.child_id) })
             }
         },
     };

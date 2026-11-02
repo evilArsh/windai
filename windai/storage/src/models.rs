@@ -1,12 +1,11 @@
 use crate::db::DbRow;
 use crate::error::StorageError;
-use serde::de::DeserializeOwned;
+use crate::utils::{column_error, decode_adapter, parse_enum, parse_json, parse_optional_json};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 use sqlx::types::Json;
 use sqlx::{FromRow, Row};
-use std::str::FromStr;
 use wind_event::{Origin, Scope, Shape, Source};
 use wind_wire::{
     AdapterType, AgentMode, AgentPhase, AgentRole, BlockKind, Content, PendingKind, Role,
@@ -28,7 +27,7 @@ pub struct Topic {
 }
 
 /// 提供商
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema, sqlx::FromRow)]
 pub struct Provider {
     /// 提供商标识
     pub id: i64,
@@ -44,13 +43,17 @@ pub struct Provider {
     pub doc: Option<String>,
     /// 是否启用
     pub active: bool,
+    /// 创建时刻
+    pub created_at: i64,
+    /// 更新时刻
+    pub updated_at: i64,
 }
 
 /// 一份凭证
 ///
 /// 明文密钥只留在字段里。`Debug`、`Display`、`Serialize` 三处实现一致地按长度
 /// 打星号
-#[derive(Deserialize, Clone, schemars::JsonSchema)]
+#[derive(Deserialize, Clone, schemars::JsonSchema, sqlx::FromRow)]
 pub struct Credentials {
     /// 唯一标识
     pub id: i64,
@@ -60,6 +63,8 @@ pub struct Credentials {
     pub key: String,
     /// 创建时刻
     pub created_at: i64,
+    /// 更新时刻
+    pub updated_at: i64,
     /// 是否启用
     pub active: bool,
 }
@@ -74,11 +79,12 @@ impl std::fmt::Display for Credentials {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Credentials {{ id: {}, provider_id: {}, key: {}, created_at: {}, active: {} }}",
+            "Credentials {{ id: {}, provider_id: {}, key: {}, created_at: {}, updated_at: {}, active: {} }}",
             self.id,
             self.provider_id,
             self.masked_key(),
             self.created_at,
+            self.updated_at,
             self.active
         )
     }
@@ -91,6 +97,7 @@ impl std::fmt::Debug for Credentials {
             .field("provider_id", &self.provider_id)
             .field("key", &self.masked_key())
             .field("created_at", &self.created_at)
+            .field("updated_at", &self.updated_at)
             .field("active", &self.active)
             .finish()
     }
@@ -98,11 +105,12 @@ impl std::fmt::Debug for Credentials {
 
 impl Serialize for Credentials {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-        let mut state = serializer.serialize_struct("Credentials", 5)?;
+        let mut state = serializer.serialize_struct("Credentials", 6)?;
         state.serialize_field("id", &self.id)?;
         state.serialize_field("provider_id", &self.provider_id)?;
         state.serialize_field("key", &self.masked_key())?;
         state.serialize_field("created_at", &self.created_at)?;
+        state.serialize_field("updated_at", &self.updated_at)?;
         state.serialize_field("active", &self.active)?;
         state.end()
     }
@@ -133,6 +141,33 @@ pub struct Model {
     pub config: Option<serde_json::Value>,
     /// 使用计数
     pub frequency: Option<i64>,
+    /// 创建时刻
+    pub created_at: i64,
+    /// 更新时刻
+    pub updated_at: i64,
+}
+
+impl<'r> FromRow<'r, DbRow> for Model {
+    fn from_row(row: &'r DbRow) -> sqlx::Result<Self> {
+        let adapter: String = row.try_get("adapter")?;
+        let modalities: Option<String> = row.try_get("modalities")?;
+        let config: Option<String> = row.try_get("config")?;
+        Ok(Self {
+            id: row.try_get("id")?,
+            provider_id: row.try_get("provider_id")?,
+            name: row.try_get("name")?,
+            alias: row.try_get("alias")?,
+            adapter: decode_adapter("adapter", &adapter)?,
+            modalities: parse_optional_json("modalities", modalities)?,
+            active: row.try_get("active")?,
+            icon: row.try_get("icon")?,
+            endpoint: row.try_get("endpoint")?,
+            config: parse_optional_json("config", config)?,
+            frequency: row.try_get("frequency")?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    }
 }
 
 /// 提供商结构规则
@@ -146,6 +181,24 @@ pub struct Rule {
     pub adapter: AdapterType,
     /// 规则原文
     pub json_rule: String,
+    /// 创建时刻
+    pub created_at: i64,
+    /// 更新时刻
+    pub updated_at: i64,
+}
+
+impl<'r> FromRow<'r, DbRow> for Rule {
+    fn from_row(row: &'r DbRow) -> sqlx::Result<Self> {
+        let adapter: String = row.try_get("adapter")?;
+        Ok(Self {
+            id: row.try_get("id")?,
+            provider_id: row.try_get("provider_id")?,
+            adapter: decode_adapter("adapter", &adapter)?,
+            json_rule: row.try_get("json_rule")?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    }
 }
 
 /// 对话轮
@@ -230,6 +283,104 @@ impl<'r> FromRow<'r, DbRow> for Block {
             call_name: row.try_get("call_name")?,
             call_arguments: row.try_get("call_arguments")?,
             call_res: call_res.map(|Json(value)| value),
+        })
+    }
+}
+
+/// 上下文投影的一行
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContextRow {
+    pub message_id: i64,
+    pub turn_id: i64,
+    pub role: Role,
+    pub model_id: Option<i64>,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub message_created_at: Option<i64>,
+    pub block_id: i64,
+    pub seq: i64,
+    pub kind: BlockKind,
+    /// 文本、推理或媒体内容
+    pub content: Option<String>,
+    /// 音频格式
+    pub format: Option<String>,
+    pub call_id: Option<String>,
+    pub call_name: Option<String>,
+    /// 调用参数的 JSON
+    pub call_arguments: Option<String>,
+    /// 工具结果内容
+    pub call_res: Option<Value>,
+}
+
+impl<'r> FromRow<'r, DbRow> for ContextRow {
+    fn from_row(row: &'r DbRow) -> sqlx::Result<Self> {
+        let role: String = row.try_get("role")?;
+        let kind: String = row.try_get("kind")?;
+        let call_res: Option<Json<Value>> = row.try_get("call_res")?;
+        Ok(Self {
+            message_id: row.try_get("message_id")?,
+            turn_id: row.try_get("turn_id")?,
+            role: parse_enum("role", &role)?,
+            model_id: row.try_get("model_id")?,
+            input_tokens: row.try_get("input_tokens")?,
+            output_tokens: row.try_get("output_tokens")?,
+            message_created_at: row.try_get("message_created_at")?,
+            block_id: row.try_get("block_id")?,
+            seq: row.try_get("seq")?,
+            kind: parse_enum("kind", &kind)?,
+            content: row.try_get("content")?,
+            format: row.try_get("format")?,
+            call_id: row.try_get("call_id")?,
+            call_name: row.try_get("call_name")?,
+            call_arguments: row.try_get("call_arguments")?,
+            call_res: call_res.map(|Json(value)| value),
+        })
+    }
+}
+
+/// 子实例状态的一行
+#[derive(Debug, Clone, PartialEq, sqlx::FromRow)]
+pub struct ChildStateRow {
+    pub call_id: String,
+    pub child_id: i64,
+    /// 运行模式名
+    pub mode: Option<String>,
+    /// 阶段名
+    pub phase: String,
+    /// 阶段载荷的 JSON
+    pub phase_payload: Option<String>,
+    /// 子实例回复的一个文本块
+    pub reply_part: Option<String>,
+}
+
+/// 一次外部等待
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExternalWait {
+    pub id: i64,
+    pub instance_id: i64,
+    /// 挂起时所在的消息
+    pub message_id: i64,
+    /// 模型给出的原始调用
+    pub payload: Value,
+    pub created_at: i64,
+    /// 答复时间
+    pub answered_at: Option<i64>,
+    /// 工具调用判定
+    pub decision: Option<Value>,
+}
+
+impl<'r> FromRow<'r, DbRow> for ExternalWait {
+    fn from_row(row: &'r DbRow) -> sqlx::Result<Self> {
+        let payload_json: String = row.try_get("payload_json")?;
+        let decision_json: Option<String> = row.try_get("decision_json")?;
+        Ok(Self {
+            id: row.try_get("id")?,
+            instance_id: row.try_get("instance_id")?,
+            message_id: row.try_get("message_id")?,
+            payload: parse_json("payload_json", &payload_json)?,
+            created_at: row.try_get("created_at")?,
+            answered_at: row.try_get("answered_at")?,
+            decision: parse_optional_json("decision_json", decision_json)?,
         })
     }
 }
@@ -402,30 +553,5 @@ impl<'r> FromRow<'r, DbRow> for LogRecord {
             source,
             payload: parse_json("payload", &payload)?,
         })
-    }
-}
-
-fn parse_enum<T>(column: &str, text: &str) -> sqlx::Result<T>
-where
-    T: FromStr,
-    T::Err: std::error::Error + Send + Sync + 'static,
-{
-    text.parse().map_err(|error| column_error(column, error))
-}
-
-fn parse_json<T>(column: &str, text: &str) -> sqlx::Result<T>
-where
-    T: DeserializeOwned,
-{
-    serde_json::from_str(text).map_err(|error| column_error(column, error))
-}
-
-fn column_error(
-    column: &str,
-    error: impl std::error::Error + Send + Sync + 'static,
-) -> sqlx::Error {
-    sqlx::Error::ColumnDecode {
-        index: column.to_string(),
-        source: Box::new(error),
     }
 }
