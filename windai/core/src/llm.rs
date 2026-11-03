@@ -404,12 +404,12 @@ impl LlmRunner {
                     .answer_external_wait(wait_id, serde_json::to_value(&answer.decisions)?)
                     .await?
                 {
-                    return Ok((turn, wait, answer));
+                    Ok((turn, wait, answer))
                 } else {
-                    return Err(StorageError::Internal(format!(
+                    Err(StorageError::Internal(format!(
                         "external wait {} answer failed, the answer existed",
                         wait.id
-                    )));
+                    )))
                 }
             })
             .await

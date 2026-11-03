@@ -90,7 +90,7 @@ pub(crate) async fn log_blocks(
             cx,
             json!(BlockCommitted {
                 message_id,
-                seq: block.seq(),
+                seq: block.seq,
                 block_id,
             }),
         );

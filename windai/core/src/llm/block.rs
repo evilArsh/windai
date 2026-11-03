@@ -1,5 +1,5 @@
 use std::vec::IntoIter;
-use wind_wire::{Block, BlockKind, Content, FunctionCall, Message, Role, Usage};
+use wind_wire::{Block, Body, Content, FunctionCall, Message, Role, Usage};
 
 #[derive(Debug, Default)]
 pub struct BlockAbsorb {
@@ -41,14 +41,22 @@ impl BlockAbsorb {
         if let Some(reasoning) = partial.reasoning_content
             && !reasoning.is_empty()
         {
-            let open = |seq| Block::new_reasoning(role, seq);
-            self.extend(&mut changed, BlockKind::Reasoning, open, &reasoning);
+            self.extend(
+                &mut changed,
+                |body| matches!(body, Body::Reasoning { .. }),
+                |seq| Block::new_reasoning(role, seq),
+                &reasoning,
+            );
         }
         for item in partial.content {
             match item {
                 Content::Text { data } => {
-                    let open = |seq| Block::new_text(role, seq);
-                    self.extend(&mut changed, BlockKind::Text, open, &data);
+                    self.extend(
+                        &mut changed,
+                        |body| matches!(body, Body::Text { .. }),
+                        |seq| Block::new_text(role, seq),
+                        &data,
+                    );
                 }
                 Content::Image { data } => {
                     self.open(&mut changed, |seq| Block::new_image(role, seq, data));
@@ -77,41 +85,21 @@ impl BlockAbsorb {
 
     /// 组装成完整 Message
     pub fn compose(&self) -> Message {
-        let mut content = Vec::new();
-        let mut reasoning = String::new();
-        let mut calls = Vec::new();
-        for block in &self.blocks {
-            match block.kind() {
-                BlockKind::Reasoning => {
-                    if let Some(text) = block.reasoning() {
-                        reasoning.push_str(text);
-                    }
-                }
-                BlockKind::ToolCall => {
-                    if let Some(call) = block.tool_call() {
-                        calls.push(call);
-                    }
-                }
-                _ => {
-                    if let Some(item) = block.content() {
-                        content.push(item);
-                    }
-                }
-            }
-        }
-        Message {
+        let mut message = Message {
             role: self
                 .blocks
                 .first()
-                .map(Block::role)
+                .map(|block| block.role)
                 .unwrap_or(Role::Assistant),
-            content,
-            reasoning_content: (!reasoning.is_empty()).then_some(reasoning),
             created_at: self.created_at,
             input_tokens: self.input_tokens,
             output_tokens: self.output_tokens,
-            tool_calls: (!calls.is_empty()).then_some(calls),
+            ..Message::default()
+        };
+        for block in &self.blocks {
+            message.push_block(block);
         }
+        message
     }
 
     /// 取走块并把序号归零，供下一条消息复用
@@ -168,14 +156,14 @@ impl BlockAbsorb {
     fn extend(
         &mut self,
         changed: &mut Vec<usize>,
-        kind: BlockKind,
+        same: impl Fn(&Body) -> bool,
         open: impl FnOnce(i64) -> Block,
         fragment: &str,
     ) {
         if fragment.is_empty() {
             return;
         }
-        let index = match self.blocks.iter().position(|block| block.is(kind)) {
+        let index = match self.blocks.iter().position(|block| same(&block.body)) {
             Some(index) => index,
             None => {
                 let seq = self.seq;
@@ -192,10 +180,10 @@ impl BlockAbsorb {
         let found = if call.id.is_empty() {
             self.blocks
                 .iter()
-                .rposition(|block| block.is(BlockKind::ToolCall))
+                .rposition(|block| matches!(block.body, Body::ToolCall { .. }))
         } else {
             self.blocks.iter().position(|block| {
-                block.is(BlockKind::ToolCall) && block.call_id() == Some(call.id.as_str())
+                matches!(&block.body, Body::ToolCall { call_id, .. } if call_id == &call.id)
             })
         };
         let index = match found {
@@ -208,7 +196,6 @@ impl BlockAbsorb {
                     seq,
                     call.id.clone(),
                     call.name.clone(),
-                    None,
                 ));
                 self.blocks.len() - 1
             }

@@ -1,9 +1,7 @@
 use crate::error::Result;
-use serde_json::{Value, json};
+use serde_json::json;
 use wind_storage::{ContextRow, Storage};
-use wind_wire::{
-    AudioContent, BlockKind, Content, FunctionCall, FunctionCallOutput, Message, Role,
-};
+use wind_wire::{Block, Content, Message, Role};
 
 /// 装配实例的全部历史上下文
 pub async fn assemble(storage: &Storage, instance_id: i64) -> Result<Vec<Message>> {
@@ -15,72 +13,22 @@ fn project(rows: Vec<ContextRow>) -> Vec<Message> {
     let mut messages: Vec<Message> = Vec::new();
     let mut last_message_id: Option<i64> = None;
     for row in rows {
-        if last_message_id != Some(row.message_id) {
-            messages.push(new_message(&row));
-            last_message_id = Some(row.message_id);
+        if last_message_id != Some(row.block.message_id) {
+            messages.push(Message {
+                role: row.block.role,
+                created_at: row.message_created_at.unwrap_or(0),
+                input_tokens: row.input_tokens,
+                output_tokens: row.output_tokens,
+                ..Message::default()
+            });
+            last_message_id = Some(row.block.message_id);
         }
+        let block = Block::from(row.block);
         if let Some(message) = messages.last_mut() {
-            apply_block(message, &row);
+            message.push_block(&block);
         }
     }
     normalize(messages)
-}
-
-fn new_message(row: &ContextRow) -> Message {
-    Message {
-        role: row.role,
-        content: Vec::new(),
-        reasoning_content: None,
-        created_at: row.message_created_at.unwrap_or(0),
-        input_tokens: token_count(row.input_tokens),
-        output_tokens: token_count(row.output_tokens),
-        tool_calls: None,
-    }
-}
-
-fn apply_block(message: &mut Message, row: &ContextRow) {
-    match row.kind {
-        BlockKind::Text => message.content.push(Content::Text {
-            data: row.content.clone().unwrap_or_default(),
-        }),
-        BlockKind::Image => message.content.push(Content::Image {
-            data: row.content.clone().unwrap_or_default(),
-        }),
-        BlockKind::File => message.content.push(Content::File {
-            data: row.content.clone().unwrap_or_default(),
-        }),
-        BlockKind::Audio => message.content.push(Content::Audio {
-            data: AudioContent {
-                format: row.format.clone().unwrap_or_default(),
-                content: row.content.clone().unwrap_or_default(),
-            },
-        }),
-        BlockKind::Reasoning => {
-            let part = row.content.as_deref().unwrap_or_default();
-            if !part.is_empty() {
-                message
-                    .reasoning_content
-                    .get_or_insert_with(String::new)
-                    .push_str(part);
-            }
-        }
-        BlockKind::ToolCall => {
-            message
-                .tool_calls
-                .get_or_insert_with(Vec::new)
-                .push(FunctionCall {
-                    id: row.call_id.clone().unwrap_or_default(),
-                    name: row.call_name.clone().unwrap_or_default(),
-                    arguments: row.call_arguments.clone().unwrap_or_default(),
-                });
-        }
-        BlockKind::ToolResult => message.content.push(Content::FunctionCall {
-            data: FunctionCallOutput {
-                id: row.call_id.clone().unwrap_or_default(),
-                content: row.call_res.clone().unwrap_or(Value::Null),
-            },
-        }),
-    }
 }
 
 fn normalize(messages: Vec<Message>) -> Vec<Message> {
@@ -229,8 +177,4 @@ fn merge_adjacent(messages: Vec<Message>) -> Vec<Message> {
         }
     }
     out
-}
-
-fn token_count(value: i64) -> i32 {
-    i32::try_from(value).unwrap_or(i32::MAX)
 }

@@ -1,3 +1,4 @@
+use super::block::{Block, Body};
 use super::tool::{FunctionCall, FunctionCallOutput};
 use serde::{Deserialize, Serialize};
 
@@ -90,6 +91,56 @@ pub struct Message {
     pub input_tokens: i32,
     pub output_tokens: i32,
     pub tool_calls: Option<Vec<FunctionCall>>,
+}
+
+impl Message {
+    pub fn push_block(&mut self, block: &Block) {
+        match &block.body {
+            Body::Reasoning { content } => {
+                if !content.is_empty() {
+                    self.reasoning_content
+                        .get_or_insert_with(String::new)
+                        .push_str(content);
+                }
+            }
+            Body::ToolCall {
+                call_id,
+                call_name,
+                call_arguments,
+            } => {
+                self.tool_calls
+                    .get_or_insert_with(Vec::new)
+                    .push(FunctionCall {
+                        id: call_id.clone(),
+                        name: call_name.clone(),
+                        arguments: call_arguments.clone(),
+                    });
+            }
+            Body::Text { content } => self.content.push(Content::Text {
+                data: content.clone(),
+            }),
+            Body::Image { content } => self.content.push(Content::Image {
+                data: content.clone(),
+            }),
+            Body::File { content } => self.content.push(Content::File {
+                data: content.clone(),
+            }),
+            Body::Audio { format, content } => self.content.push(Content::Audio {
+                data: AudioContent {
+                    format: format.clone(),
+                    content: content.clone(),
+                },
+            }),
+            Body::ToolResult { call_id, call_res } => {
+                self.content.push(Content::FunctionCall {
+                    data: FunctionCallOutput {
+                        id: call_id.clone(),
+                        content: call_res.clone(),
+                    },
+                });
+            }
+        }
+    }
 }
 
 impl Default for Message {

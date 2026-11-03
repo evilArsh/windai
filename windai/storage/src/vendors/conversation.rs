@@ -1,10 +1,9 @@
-use crate::Block as StoredBlock;
 use crate::db::{DbDriver, DbRow};
 use crate::error::Result;
+use crate::models::BlockColumns;
 use crate::utils::{ensure_affected, now_ts};
-use crate::{AgentPending, ContextRow, Message, Storage, Turn};
+use crate::{AgentPending, ContextRow, Storage, Turn};
 use serde_json::{Value, json};
-use sqlx::types::Json;
 use sqlx::{FromRow, QueryBuilder, Row};
 use wind_wire::{Block, Content, PendingKind, Role};
 
@@ -67,38 +66,22 @@ impl Storage {
         Ok(id)
     }
 
-    pub async fn get_message(&self, message_id: i64) -> Result<Option<Message>> {
-        let message = self
-            .executor
-            .fetch_optional(
-                sqlx::query_as::<_, Message>(
-                    "SELECT id, turn_id, role, model_id, finish_reason,
-                            input_tokens, output_tokens, created_at
-                       FROM message
-                      WHERE id = ?",
-                )
-                .bind(message_id),
-            )
-            .await?;
-        Ok(message)
-    }
-
     /// 读取实例全部历史 turn 已提交的块
     pub async fn list_instance_context(&self, instance_id: i64) -> Result<Vec<ContextRow>> {
         let rows = self
             .executor
             .fetch_all(
                 sqlx::query_as::<_, ContextRow>(
-                    "SELECT m.id AS message_id,
-                            m.turn_id,
-                            m.role,
-                            m.model_id,
-                            m.input_tokens,
+                    "SELECT m.input_tokens,
                             m.output_tokens,
-                            m.created_at AS message_created_at,
-                            b.id AS block_id,
+                            m.created_at,
+                            b.id,
+                            b.message_id,
+                            b.finished,
                             b.seq,
                             b.kind,
+                            b.role,
+                            b.revision,
                             b.content,
                             b.format,
                             b.call_id,
@@ -116,22 +99,6 @@ impl Storage {
             )
             .await?;
         Ok(rows)
-    }
-
-    pub async fn get_block(&self, block_id: i64) -> Result<Option<StoredBlock>> {
-        let block = self
-            .executor
-            .fetch_optional(
-                sqlx::query_as::<_, StoredBlock>(
-                    "SELECT id, message_id, finished, seq, kind, role, revision,
-                            content, format, call_id, call_name, call_arguments, call_res
-                       FROM block
-                      WHERE id = ?",
-                )
-                .bind(block_id),
-            )
-            .await?;
-        Ok(block)
     }
 
     pub async fn create_pending(
@@ -289,28 +256,20 @@ impl Storage {
                  call_id, call_name, call_arguments, call_res)",
         );
         query.push_values(blocks, |mut separated, block| {
-            let call = block.tool_call();
-            let audio = block.audio();
-            let output = block.call_output();
+            let columns = BlockColumns::of(&block.body);
             separated
                 .push_bind(message_id)
                 .push_bind(true)
-                .push_bind(block.seq())
-                .push_bind(block.kind().to_string())
-                .push_bind(block.role().to_string())
-                .push_bind(block.revision())
-                .push_bind(
-                    block
-                        .text()
-                        .or_else(|| block.reasoning())
-                        .or_else(|| block.media())
-                        .map(str::to_string),
-                )
-                .push_bind(audio.map(|audio| audio.format))
-                .push_bind(block.call_id().map(str::to_string))
-                .push_bind(call.as_ref().map(|call| call.name.clone()))
-                .push_bind(call.map(|call| call.arguments))
-                .push_bind(output.map(|output| Json(output.content)));
+                .push_bind(block.seq)
+                .push_bind(block.tag())
+                .push_bind(block.role.as_ref())
+                .push_bind(block.revision)
+                .push_bind(columns.content)
+                .push_bind(columns.format)
+                .push_bind(columns.call_id)
+                .push_bind(columns.call_name)
+                .push_bind(columns.call_arguments)
+                .push_bind(columns.call_res);
         });
         query.push(" RETURNING seq, id");
 

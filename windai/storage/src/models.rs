@@ -8,7 +8,8 @@ use sqlx::types::Json;
 use sqlx::{FromRow, Row};
 use wind_event::{Origin, Scope, Shape, Source};
 use wind_wire::{
-    AdapterType, AgentMode, AgentPhase, AgentRole, BlockKind, Content, PendingKind, Role,
+    AdapterType, AgentMode, AgentPhase, AgentRole, Block as WireBlock, Body, Content, PendingKind,
+    Role,
 };
 
 /// 话题
@@ -211,129 +212,164 @@ pub struct Turn {
     pub created_at: Option<i64>,
 }
 
-/// 消息
-///
-/// 一轮对话有多个 Message
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Message {
-    pub id: i64,
-    pub turn_id: i64,
-    pub role: Role,
-    pub model_id: Option<i64>,
-    pub finish_reason: Option<String>,
-    pub input_tokens: i64,
-    pub output_tokens: i64,
-    pub created_at: Option<i64>,
-}
-
-impl<'r> FromRow<'r, DbRow> for Message {
-    fn from_row(row: &'r DbRow) -> sqlx::Result<Self> {
-        let role: String = row.try_get("role")?;
-        Ok(Self {
-            id: row.try_get("id")?,
-            turn_id: row.try_get("turn_id")?,
-            role: parse_enum("role", &role)?,
-            model_id: row.try_get("model_id")?,
-            finish_reason: row.try_get("finish_reason")?,
-            input_tokens: row.try_get("input_tokens")?,
-            output_tokens: row.try_get("output_tokens")?,
-            created_at: row.try_get("created_at")?,
-        })
-    }
-}
-
 /// 消息块
 ///
 /// 一个 Message 可分为多个消息块
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Block {
     pub id: i64,
     pub message_id: i64,
     /// 不完整的块不进入上下文
     pub finished: bool,
+    pub role: Role,
     /// 块在消息内的位置
     pub seq: i64,
-    pub kind: BlockKind,
-    pub role: Role,
     pub revision: i64,
+    pub body: Body,
+}
+
+/// 块载荷在 block 表的六列
+#[derive(Debug, Default)]
+pub(crate) struct BlockColumns {
     pub content: Option<String>,
     pub format: Option<String>,
     pub call_id: Option<String>,
     pub call_name: Option<String>,
     pub call_arguments: Option<String>,
-    pub call_res: Option<serde_json::Value>,
+    pub call_res: Option<Json<Value>>,
+}
+
+impl BlockColumns {
+    pub(crate) fn of(body: &Body) -> Self {
+        match body {
+            Body::Reasoning { content }
+            | Body::Text { content }
+            | Body::Image { content }
+            | Body::File { content } => Self {
+                content: present(content),
+                ..Self::default()
+            },
+            Body::Audio { format, content } => Self {
+                content: present(content),
+                format: present(format),
+                ..Self::default()
+            },
+            Body::ToolCall {
+                call_id,
+                call_name,
+                call_arguments,
+            } => Self {
+                call_id: present(call_id),
+                call_name: present(call_name),
+                call_arguments: present(call_arguments),
+                ..Self::default()
+            },
+            Body::ToolResult { call_id, call_res } => Self {
+                call_id: present(call_id),
+                call_res: Some(Json(call_res.clone())),
+                ..Self::default()
+            },
+        }
+    }
+
+    fn into_body(self, kind: &str) -> sqlx::Result<Body> {
+        Ok(match kind {
+            "reasoning" => Body::Reasoning {
+                content: self.content.unwrap_or_default(),
+            },
+            "text" => Body::Text {
+                content: self.content.unwrap_or_default(),
+            },
+            "image" => Body::Image {
+                content: self.content.unwrap_or_default(),
+            },
+            "file" => Body::File {
+                content: self.content.unwrap_or_default(),
+            },
+            "audio" => Body::Audio {
+                format: self.format.unwrap_or_default(),
+                content: self.content.unwrap_or_default(),
+            },
+            "tool_call" => Body::ToolCall {
+                call_id: self.call_id.unwrap_or_default(),
+                call_name: self.call_name.unwrap_or_default(),
+                call_arguments: self.call_arguments.unwrap_or_default(),
+            },
+            "tool_result" => Body::ToolResult {
+                call_id: self.call_id.unwrap_or_default(),
+                call_res: self
+                    .call_res
+                    .map(|Json(value)| value)
+                    .unwrap_or(Value::Null),
+            },
+            other => {
+                return Err(column_error(
+                    "kind",
+                    StorageError::MalformedColumn {
+                        column: "kind".into(),
+                        detail: format!("unknown block kind: {other}"),
+                    },
+                ));
+            }
+        })
+    }
+}
+
+fn present(text: &str) -> Option<String> {
+    (!text.is_empty()).then(|| text.to_owned())
 }
 
 impl<'r> FromRow<'r, DbRow> for Block {
     fn from_row(row: &'r DbRow) -> sqlx::Result<Self> {
         let kind: String = row.try_get("kind")?;
         let role: String = row.try_get("role")?;
-        let call_res: Option<Json<Value>> = row.try_get("call_res")?;
-        Ok(Self {
-            id: row.try_get("id")?,
-            message_id: row.try_get("message_id")?,
-            finished: row.try_get("finished")?,
-            seq: row.try_get("seq")?,
-            kind: parse_enum("kind", &kind)?,
-            role: parse_enum("role", &role)?,
-            revision: row.try_get("revision")?,
+        let columns = BlockColumns {
             content: row.try_get("content")?,
             format: row.try_get("format")?,
             call_id: row.try_get("call_id")?,
             call_name: row.try_get("call_name")?,
             call_arguments: row.try_get("call_arguments")?,
-            call_res: call_res.map(|Json(value)| value),
+            call_res: row.try_get("call_res")?,
+        };
+        Ok(Self {
+            id: row.try_get("id")?,
+            message_id: row.try_get("message_id")?,
+            finished: row.try_get("finished")?,
+            role: parse_enum("role", &role)?,
+            seq: row.try_get("seq")?,
+            revision: row.try_get("revision")?,
+            body: columns.into_body(&kind)?,
         })
+    }
+}
+
+impl From<Block> for WireBlock {
+    fn from(block: Block) -> Self {
+        Self {
+            role: block.role,
+            seq: block.seq,
+            revision: block.revision,
+            body: block.body,
+        }
     }
 }
 
 /// 上下文投影的一行
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContextRow {
-    pub message_id: i64,
-    pub turn_id: i64,
-    pub role: Role,
-    pub model_id: Option<i64>,
-    pub input_tokens: i64,
-    pub output_tokens: i64,
+    pub input_tokens: i32,
+    pub output_tokens: i32,
     pub message_created_at: Option<i64>,
-    pub block_id: i64,
-    pub seq: i64,
-    pub kind: BlockKind,
-    /// 文本、推理或媒体内容
-    pub content: Option<String>,
-    /// 音频格式
-    pub format: Option<String>,
-    pub call_id: Option<String>,
-    pub call_name: Option<String>,
-    /// 调用参数的 JSON
-    pub call_arguments: Option<String>,
-    /// 工具结果内容
-    pub call_res: Option<Value>,
+    pub block: Block,
 }
 
 impl<'r> FromRow<'r, DbRow> for ContextRow {
     fn from_row(row: &'r DbRow) -> sqlx::Result<Self> {
-        let role: String = row.try_get("role")?;
-        let kind: String = row.try_get("kind")?;
-        let call_res: Option<Json<Value>> = row.try_get("call_res")?;
         Ok(Self {
-            message_id: row.try_get("message_id")?,
-            turn_id: row.try_get("turn_id")?,
-            role: parse_enum("role", &role)?,
-            model_id: row.try_get("model_id")?,
             input_tokens: row.try_get("input_tokens")?,
             output_tokens: row.try_get("output_tokens")?,
-            message_created_at: row.try_get("message_created_at")?,
-            block_id: row.try_get("block_id")?,
-            seq: row.try_get("seq")?,
-            kind: parse_enum("kind", &kind)?,
-            content: row.try_get("content")?,
-            format: row.try_get("format")?,
-            call_id: row.try_get("call_id")?,
-            call_name: row.try_get("call_name")?,
-            call_arguments: row.try_get("call_arguments")?,
-            call_res: call_res.map(|Json(value)| value),
+            message_created_at: row.try_get("created_at")?,
+            block: Block::from_row(row)?,
         })
     }
 }
