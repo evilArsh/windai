@@ -495,13 +495,8 @@ impl LlmRunner {
         self.rounds(topic, instance_id, turn.id, contexts, Some(prepared))
             .await
     }
-}
 
-/// agent运行时 llm 侧的实现
-#[async_trait::async_trait]
-impl Runner<LlmDomain> for LlmRunner {
-    async fn run(&self, ctx: Ctx, input: Input<LlmDomain>) -> Outcome<LlmDomain> {
-        let instance_id = ctx.node;
+    async fn run_inner(&self, instance_id: i64, input: Input<LlmDomain>) -> Outcome<LlmDomain> {
         let (message_id, turn_id, reentry, specs) = match input {
             Input::Fresh(spec) => (spec.message_id, spec.turn_id, false, vec![spec]),
             Input::Children(_) => (
@@ -533,10 +528,29 @@ impl Runner<LlmDomain> for LlmRunner {
     }
 }
 
+/// agent运行时 llm 侧的实现
+#[async_trait::async_trait]
+impl Runner<LlmDomain> for LlmRunner {
+    async fn run(&self, ctx: Ctx, input: Input<LlmDomain>) -> Outcome<LlmDomain> {
+        tokio::select! {
+            biased;
+            () = ctx.cancel.cancelled() => Outcome::Failed(cancel_failure(None)),
+            outcome = self.run_inner(ctx.node, input) => outcome,
+        }
+    }
+}
+
 fn failure(error: CoreError, message_id: Option<i64>) -> LlmFailure {
     LlmFailure {
         message_id,
         error: error.to_string(),
+    }
+}
+
+fn cancel_failure(message_id: Option<i64>) -> LlmFailure {
+    LlmFailure {
+        message_id,
+        error: "run cancelled".to_string(),
     }
 }
 
