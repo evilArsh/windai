@@ -17,8 +17,8 @@ impl Storage {
                 sqlx::query_scalar::<_, i64>(
                     "INSERT INTO external_waits
                         (instance_id, message_id, payload_json, created_at)
-                     VALUES (?, ?, ?, ?)
-                     RETURNING id",
+                    VALUES (?, ?, ?, ?)
+                    RETURNING id",
                 )
                 .bind(instance_id)
                 .bind(message_id)
@@ -36,8 +36,8 @@ impl Storage {
                 sqlx::query_as::<_, ExternalWait>(
                     "SELECT id, instance_id, message_id, payload_json, created_at,
                             answered_at, decision_json
-                       FROM external_waits
-                      WHERE id = ?",
+                    FROM external_waits
+                    WHERE id = ?",
                 )
                 .bind(id),
             )
@@ -55,9 +55,9 @@ impl Storage {
             .fetch_optional(
                 sqlx::query_as::<_, (i64,)>(
                     "UPDATE external_waits
-                        SET answered_at = ?, decision_json = ?
-                      WHERE id = ? AND answered_at IS NULL
-                      AND decision_json IS NULL
+                    SET answered_at = ?, decision_json = ?
+                    WHERE id = ? AND answered_at IS NULL
+                        AND decision_json IS NULL
                     RETURNING id",
                 )
                 .bind(now_ts())

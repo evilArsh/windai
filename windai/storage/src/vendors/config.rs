@@ -55,8 +55,8 @@ impl Storage {
                 sqlx::query_scalar::<_, i64>(
                     "INSERT INTO topics
                         (parent_id, label, model_id, icon, created_at)
-                     VALUES (?, ?, ?, ?, ?)
-                     RETURNING id",
+                    VALUES (?, ?, ?, ?, ?)
+                    RETURNING id",
                 )
                 .bind(parent_id)
                 .bind(label)
@@ -74,8 +74,8 @@ impl Storage {
             .fetch_optional(
                 sqlx::query_as::<_, Topic>(
                     "SELECT id, parent_id, label, model_id, icon
-                       FROM topics
-                      WHERE id = ?",
+                    FROM topics
+                    WHERE id = ?",
                 )
                 .bind(topic_id),
             )
@@ -89,9 +89,9 @@ impl Storage {
             .fetch_optional(
                 sqlx::query_as::<_, Topic>(
                     "SELECT t.id, t.parent_id, t.label, t.model_id, t.icon
-                       FROM topics t
-                       JOIN agent_instances i ON i.topic_id = t.id
-                      WHERE i.id = ?",
+                    FROM topics t
+                    JOIN agent_instances i ON i.topic_id = t.id
+                    WHERE i.id = ?",
                 )
                 .bind(instance_id),
             )
@@ -106,28 +106,28 @@ impl Storage {
             .fetch_optional(
                 sqlx::query_as::<_, ModelConfig>(
                     "SELECT m.id, m.provider_id, m.name, m.alias, m.adapter,
-                            m.modalities, m.active, m.icon, m.endpoint, m.config,
-                            m.frequency, m.created_at, m.updated_at,
-                            p.id AS provider_pk,
-                            p.name AS provider_name,
-                            p.alias AS provider_alias,
-                            p.description AS provider_description,
-                            p.base_url AS provider_base_url,
-                            p.doc AS provider_doc,
-                            p.active AS provider_active,
-                            p.created_at AS provider_created_at,
-                            p.updated_at AS provider_updated_at,
-                            c.key AS api_key
-                       FROM models m
-                       LEFT JOIN providers p ON p.id = m.provider_id
-                       LEFT JOIN credentials c ON c.id = (
-                            SELECT id
-                              FROM credentials
-                             WHERE provider_id = p.id AND active = TRUE
-                             ORDER BY id
-                             LIMIT 1
-                       )
-                      WHERE m.id = ?",
+                        m.modalities, m.active, m.icon, m.endpoint, m.config,
+                        m.frequency, m.created_at, m.updated_at,
+                        p.id AS provider_pk,
+                        p.name AS provider_name,
+                        p.alias AS provider_alias,
+                        p.description AS provider_description,
+                        p.base_url AS provider_base_url,
+                        p.doc AS provider_doc,
+                        p.active AS provider_active,
+                        p.created_at AS provider_created_at,
+                        p.updated_at AS provider_updated_at,
+                        c.key AS api_key
+                    FROM models m
+                    LEFT JOIN providers p ON p.id = m.provider_id
+                    LEFT JOIN credentials c ON c.id = (
+                        SELECT id
+                        FROM credentials
+                        WHERE provider_id = p.id AND active = TRUE
+                        ORDER BY id
+                        LIMIT 1
+                    )
+                    WHERE m.id = ?",
                 )
                 .bind(model_id),
             )
@@ -141,9 +141,9 @@ impl Storage {
             .fetch_all(
                 sqlx::query_as::<_, Rule>(
                     "SELECT id, provider_id, adapter, json_rule, created_at, updated_at
-                       FROM json_rule
-                      WHERE provider_id = ? AND adapter = ?
-                      ORDER BY id ASC",
+                    FROM json_rule
+                    WHERE provider_id = ? AND adapter = ?
+                    ORDER BY id ASC",
                 )
                 .bind(provider_id)
                 .bind(adapter.as_ref()),
@@ -160,8 +160,8 @@ impl Storage {
                 sqlx::query_scalar::<_, i64>(
                     "INSERT INTO providers
                         (name, base_url, active, created_at, updated_at)
-                     VALUES (?, ?, TRUE, ?, ?)
-                     RETURNING id",
+                    VALUES (?, ?, TRUE, ?, ?)
+                    RETURNING id",
                 )
                 .bind(name)
                 .bind(base_url)
@@ -189,8 +189,8 @@ impl Storage {
                     "INSERT INTO models
                         (provider_id, name, adapter, active, endpoint, config, frequency,
                          created_at, updated_at)
-                     VALUES (?, ?, ?, TRUE, ?, ?, 0, ?, ?)
-                     RETURNING id",
+                    VALUES (?, ?, ?, TRUE, ?, ?, 0, ?, ?)
+                    RETURNING id",
                 )
                 .bind(provider_id)
                 .bind(name)
@@ -212,8 +212,8 @@ impl Storage {
                 sqlx::query_scalar::<_, i64>(
                     "INSERT INTO credentials
                         (provider_id, key, active, created_at, updated_at)
-                     VALUES (?, ?, TRUE, ?, ?)
-                     RETURNING id",
+                    VALUES (?, ?, TRUE, ?, ?)
+                    RETURNING id",
                 )
                 .bind(provider_id)
                 .bind(key)
@@ -237,8 +237,8 @@ impl Storage {
                 sqlx::query_scalar::<_, i64>(
                     "INSERT INTO json_rule
                         (provider_id, adapter, json_rule, created_at, updated_at)
-                     VALUES (?, ?, ?, ?, ?)
-                     RETURNING id",
+                    VALUES (?, ?, ?, ?, ?)
+                    RETURNING id",
                 )
                 .bind(provider_id)
                 .bind(adapter.as_ref())

@@ -102,7 +102,6 @@ pub const CORE_LLM_REQUEST: EventDef<LlmRequest> = EventDef::new(
     schema::<LlmRequest>,
 );
 
-// TODO: 不再需要
 // pub const CORE_LLM_RESPONSE: EventDef<LlmResponse> = EventDef::new(
 //     "core/llm.response",
 //     Shape::Intercept,

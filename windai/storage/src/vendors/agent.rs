@@ -11,8 +11,8 @@ impl Storage {
             .fetch_optional(
                 sqlx::query_as::<_, AgentInstance>(
                     "SELECT id, parent_id, topic_id, role, mode, phase, phase_payload, created_at
-                       FROM agent_instances
-                      WHERE id = ?",
+                    FROM agent_instances
+                    WHERE id = ?",
                 )
                 .bind(instance_id),
             )
@@ -36,8 +36,8 @@ impl Storage {
                 sqlx::query_scalar::<_, i64>(
                     "INSERT INTO agent_instances
                         (parent_id, topic_id, role, mode, phase, phase_payload, created_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?)
-                     RETURNING id",
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    RETURNING id",
                 )
                 .bind(parent_id)
                 .bind(topic_id)
@@ -71,7 +71,7 @@ impl Storage {
                 sqlx::query(
                     "INSERT INTO spawn_calls
                         (parent_id, call_id, child_id, created_at)
-                     VALUES (?, ?, ?, ?)",
+                    VALUES (?, ?, ?, ?)",
                 )
                 .bind(parent_instance_id)
                 .bind(call_id)
@@ -98,17 +98,17 @@ impl Storage {
                     i.phase,
                     i.phase_payload,
                     b.content AS reply_part
-               FROM spawn_calls s
-               JOIN agent_instances i ON i.id = s.child_id
-               LEFT JOIN block b
-                 ON b.message_id = CASE
-                      WHEN json_valid(i.phase_payload)
-                      THEN json_extract(i.phase_payload, '$.message_id')
-                      ELSE NULL
-                    END
+            FROM spawn_calls s
+            JOIN agent_instances i ON i.id = s.child_id
+            LEFT JOIN block b
+                ON b.message_id = CASE
+                    WHEN json_valid(i.phase_payload)
+                    THEN json_extract(i.phase_payload, '$.message_id')
+                    ELSE NULL
+                END
                 AND b.kind = 'text'
                 AND b.finished = TRUE
-              WHERE s.parent_id = ",
+            WHERE s.parent_id = ",
         );
         query.push_bind(parent_id);
         query.push(" AND s.call_id IN (");

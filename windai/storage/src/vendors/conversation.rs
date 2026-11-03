@@ -28,9 +28,10 @@ impl Storage {
             .executor
             .fetch_one_scalar(
                 sqlx::query_scalar::<_, i64>(
-                    "INSERT INTO turn (instance_id, topic_id, from_id, created_at)
-                     VALUES (?, ?, ?, ?)
-                     RETURNING id",
+                    "INSERT INTO turn
+                        (instance_id, topic_id, from_id, created_at)
+                    VALUES (?, ?, ?, ?)
+                    RETURNING id",
                 )
                 .bind(instance_id)
                 .bind(topic_id)
@@ -54,8 +55,8 @@ impl Storage {
                 sqlx::query_scalar::<_, i64>(
                     "INSERT INTO message
                         (turn_id, role, model_id, created_at)
-                     VALUES (?, ?, ?, ?)
-                     RETURNING id",
+                    VALUES (?, ?, ?, ?)
+                    RETURNING id",
                 )
                 .bind(turn_id)
                 .bind(role.as_ref())
@@ -88,12 +89,12 @@ impl Storage {
                             b.call_name,
                             b.call_arguments,
                             b.call_res
-                       FROM turn t
-                       JOIN message m ON m.turn_id = t.id
-                       JOIN block b ON b.message_id = m.id
-                      WHERE t.instance_id = ?
+                    FROM turn t
+                    JOIN message m ON m.turn_id = t.id
+                    JOIN block b ON b.message_id = m.id
+                    WHERE t.instance_id = ?
                         AND b.finished = TRUE
-                      ORDER BY m.id, b.seq",
+                    ORDER BY m.id, b.seq",
                 )
                 .bind(instance_id),
             )
@@ -115,8 +116,8 @@ impl Storage {
                 sqlx::query_scalar::<_, i64>(
                     "INSERT INTO agent_pending
                         (instance_id, kind, payload_json, source_id, created_at)
-                     VALUES (?, ?, ?, ?, ?)
-                     RETURNING id",
+                    VALUES (?, ?, ?, ?, ?)
+                    RETURNING id",
                 )
                 .bind(instance_id)
                 .bind(kind.as_ref())
@@ -142,19 +143,19 @@ impl Storage {
                             b.call_id,
                             b.call_name,
                             b.call_arguments
-                       FROM block b
-                       JOIN message m ON m.id = b.message_id
-                       JOIN turn t ON t.id = m.turn_id
-                      WHERE t.instance_id = ?
+                    FROM block b
+                    JOIN message m ON m.id = b.message_id
+                    JOIN turn t ON t.id = m.turn_id
+                    WHERE t.instance_id = ?
                         AND b.kind = 'tool_call'
                         AND b.call_id IS NOT NULL
                         AND NOT EXISTS (
                             SELECT 1
-                              FROM block r
-                             WHERE r.kind = 'tool_result'
-                               AND r.call_id = b.call_id
+                            FROM block r
+                            WHERE r.kind = 'tool_result'
+                                AND r.call_id = b.call_id
                         )
-                      ORDER BY b.id",
+                    ORDER BY b.id",
                 )
                 .bind(instance_id),
             )
@@ -175,8 +176,8 @@ impl Storage {
             .execute(
                 sqlx::query(
                     "UPDATE message
-                        SET finish_reason = ?, input_tokens = ?, output_tokens = ?
-                      WHERE id = ?",
+                    SET finish_reason = ?, input_tokens = ?, output_tokens = ?
+                    WHERE id = ?",
                 )
                 .bind(finish_reason)
                 .bind(i64::from(input_tokens))
@@ -196,8 +197,8 @@ impl Storage {
         }
         let mut query = QueryBuilder::<DbDriver>::new(
             "SELECT id, instance_id, kind, payload_json, source_id, created_at
-               FROM agent_pending
-              WHERE id IN (",
+            FROM agent_pending
+            WHERE id IN (",
         );
         {
             let mut separated = query.separated(", ");
@@ -235,9 +236,9 @@ impl Storage {
             .fetch_optional(
                 sqlx::query_as::<_, Turn>(
                     "SELECT t.id, t.instance_id, t.topic_id, t.from_id, t.created_at
-                       FROM turn t
-                       JOIN message m ON m.turn_id = t.id
-                      WHERE m.id = ?",
+                    FROM turn t
+                    JOIN message m ON m.turn_id = t.id
+                    WHERE m.id = ?",
                 )
                 .bind(message_id),
             )

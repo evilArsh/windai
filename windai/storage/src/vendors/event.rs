@@ -31,8 +31,8 @@ impl Storage {
                     "INSERT INTO event_log
                         (create_time, name, shape, topic_id, instance_id, origin,
                          source_kind, source_name, source_version, payload)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                     RETURNING id",
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    RETURNING id",
                 )
                 .bind(envelope.time)
                 .bind(envelope.name.as_str())
@@ -85,8 +85,8 @@ impl Storage {
         let mut query = QueryBuilder::<DbDriver>::new(
             "SELECT id, create_time, name, shape, topic_id, instance_id, origin,
                     source_kind, source_name, source_version, payload
-               FROM event_log
-              WHERE 1 = 1",
+            FROM event_log
+            WHERE 1 = 1",
         );
         match topic_id {
             Some(topic_id) => {
