@@ -43,8 +43,27 @@ pub struct AgentSpawn {
     /// 派生源
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<i64>,
-    /// 运行模式
-    pub mode: String,
+    /// 不进入父节点的等待屏障
+    pub detached: bool,
+}
+
+/// 整棵树静止
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentSealed {
+    /// 话题主实例标识
+    pub instance_id: i64,
+}
+
+/// 相位未能写入数据库
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentPersistFailed {
+    pub topic_id: i64,
+    /// 实例标识
+    pub instance_id: i64,
+    /// 未能写入的相位
+    pub phase: String,
+    /// 写入失败的原因
+    pub error: String,
 }
 
 /// 实例的 Phase 变化，只带 Phase 判别式与载荷
@@ -57,18 +76,6 @@ pub struct AgentStatus {
     /// Phase 的载荷
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phase_payload: Option<serde_json::Value>,
-}
-
-/// 实例出错
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct AgentError {
-    /// 实例标识
-    pub instance_id: i64,
-    /// 出错时所在的消息
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message_id: Option<i64>,
-    /// 失败原因
-    pub error: String,
 }
 
 /// 树的结构快照
@@ -143,11 +150,18 @@ pub const CORE_AGENT_STATUS: EventDef<AgentStatus> = EventDef::new(
     schema::<AgentStatus>,
 );
 
-pub const CORE_AGENT_ERROR: EventDef<AgentError> = EventDef::new(
-    "core/agent.error",
+pub const CORE_AGENT_SEALED: EventDef<AgentSealed> = EventDef::new(
+    "core/agent.sealed",
     Shape::Observe,
     true,
-    schema::<AgentError>,
+    schema::<AgentSealed>,
+);
+
+pub const CORE_AGENT_PERSIST_FAILED: EventDef<AgentPersistFailed> = EventDef::new(
+    "core/agent.persist_failed",
+    Shape::Observe,
+    false,
+    schema::<AgentPersistFailed>,
 );
 
 pub const CORE_AGENT_TREE: EventDef<AgentTree> =
@@ -160,7 +174,8 @@ pub fn directory() -> Directory {
         CORE_AGENT_CANCEL.meta(),
         CORE_AGENT_SPAWN.meta(),
         CORE_AGENT_STATUS.meta(),
-        CORE_AGENT_ERROR.meta(),
+        CORE_AGENT_SEALED.meta(),
+        CORE_AGENT_PERSIST_FAILED.meta(),
         CORE_AGENT_TREE.meta(),
     ])
 }

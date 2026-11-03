@@ -1,9 +1,9 @@
+mod events;
 pub mod handler;
 mod jobs;
-mod events;
 pub(crate) mod tree;
 
-use self::tree::{Domain, JobId, NodeId, Terminal};
+use self::tree::{Domain, JobId, NodeId};
 use tokio_util::sync::CancellationToken;
 
 /// 系统 tool_call 预留关键字
@@ -13,17 +13,11 @@ use tokio_util::sync::CancellationToken;
 /// 系统拥有默认的实现以保证基础功能运转
 pub const SPAWN_AGENT_NAME: &str = "wind_spawn_agent";
 
-#[derive(Debug, Clone)]
-pub struct ChildResult<D: Domain> {
-    pub node: NodeId,
-    pub terminal: Terminal<D>,
-}
-
 /// 输入的任务
 #[derive(Debug)]
 pub enum Input<D: Domain> {
     Fresh(D::Spec),
-    Children(Vec<ChildResult<D>>),
+    Children,
     External(D::Resume),
     /// 节点空闲时一次取走的全部待消费输入
     Idle(Vec<D::Spec>),

@@ -499,7 +499,7 @@ impl LlmRunner {
     async fn run_inner(&self, instance_id: i64, input: Input<LlmDomain>) -> Outcome<LlmDomain> {
         let (message_id, turn_id, reentry, specs) = match input {
             Input::Fresh(spec) => (spec.message_id, spec.turn_id, false, vec![spec]),
-            Input::Children(_) => (
+            Input::Children => (
                 None,
                 None,
                 true,

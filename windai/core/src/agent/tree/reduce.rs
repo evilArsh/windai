@@ -1,5 +1,3 @@
-use crate::agent::{ChildResult, Input};
-
 use super::{
     JobId, NodeId, Tree,
     domain::Domain,
@@ -7,13 +5,17 @@ use super::{
     phase::Phase,
     view::TreeEvent,
 };
+use crate::agent::Input;
 
 impl<D: Domain> Tree<D> {
     pub fn reduce(&mut self, event: Event<D>) -> Vec<Effect<D>> {
         let before = self.is_quiescent();
         let mut effects = self.reduce_inner(event);
-        if !before && self.is_quiescent() {
-            effects.push(Effect::Publish(TreeEvent::Sealed));
+        if !before
+            && self.is_quiescent()
+            && let Some(root) = self.root()
+        {
+            effects.push(Effect::Publish(TreeEvent::Sealed { root }));
         }
         effects
     }
@@ -68,19 +70,19 @@ impl<D: Domain> Tree<D> {
                     effects.push(Effect::Persist { node });
                     effects.push(Effect::Publish(TreeEvent::PhaseChanged {
                         node,
-                        to: Box::new(Phase::Running),
+                        to: Phase::Running,
                     }));
                     effects.push(Effect::Launch {
                         node,
                         job,
-                        input: Input::Children(Vec::new()),
+                        input: Input::Children,
                     });
                 } else {
                     self.set_phase(node, Phase::WaitingChildren);
                     effects.push(Effect::Persist { node });
                     effects.push(Effect::Publish(TreeEvent::PhaseChanged {
                         node,
-                        to: Box::new(Phase::WaitingChildren),
+                        to: Phase::WaitingChildren,
                     }));
                 }
                 effects
@@ -95,7 +97,7 @@ impl<D: Domain> Tree<D> {
                     Effect::Persist { node },
                     Effect::Publish(TreeEvent::PhaseChanged {
                         node,
-                        to: Box::new(Phase::Suspended(payload)),
+                        to: Phase::Suspended(payload),
                     }),
                 ]
             }
@@ -115,7 +117,7 @@ impl<D: Domain> Tree<D> {
                     Effect::Persist { node },
                     Effect::Publish(TreeEvent::PhaseChanged {
                         node,
-                        to: Box::new(Phase::Running),
+                        to: Phase::Running,
                     }),
                     Effect::Launch {
                         node,
@@ -125,7 +127,6 @@ impl<D: Domain> Tree<D> {
                 ]
             }
             Event::CancelRequest { root, origin } => self.reduce_cancel_request(root, origin),
-            Event::Stopped { node, job } => self.reduce_stopped(node, job),
             Event::Aborted { node, job } => {
                 if self.job_of(node) != Some(job) {
                     return Vec::new();
@@ -164,10 +165,6 @@ impl<D: Domain> Tree<D> {
             log::warn!("[tree] enqueue for unknown node ignored: {node}");
             return Vec::new();
         };
-        if matches!(phase, Phase::Cancelling(_)) {
-            log::warn!("[tree] enqueue for a cancelling node ignored: {node}");
-            return Vec::new();
-        }
         let terminal = phase.is_terminal();
         self.push_pending(node, spec);
         if terminal {
@@ -188,7 +185,7 @@ impl<D: Domain> Tree<D> {
             Effect::Persist { node },
             Effect::Publish(TreeEvent::PhaseChanged {
                 node,
-                to: Box::new(Phase::Running),
+                to: Phase::Running,
             }),
             Effect::Launch {
                 node,
@@ -219,14 +216,11 @@ impl<D: Domain> Tree<D> {
 
     pub(super) fn finish_terminal(&mut self, node: NodeId, phase: Phase<D>) -> Vec<Effect<D>> {
         self.set_job(node, None);
-        self.set_phase(node, phase);
-        let Some(terminal) = self.phase(node).and_then(Phase::terminal) else {
-            return vec![Effect::Persist { node }];
-        };
+        self.set_phase(node, phase.clone());
         self.owe_delivery(node);
         let mut effects = vec![
             Effect::Persist { node },
-            Effect::Publish(TreeEvent::Terminated { node, terminal }),
+            Effect::Publish(TreeEvent::PhaseChanged { node, to: phase }),
         ];
         effects.extend(self.reenter_parent_if_ready(node));
         effects.extend(self.drain_pending(node));
@@ -235,7 +229,6 @@ impl<D: Domain> Tree<D> {
 
     fn reduce_recovered(&mut self, node: NodeId) -> Vec<Effect<D>> {
         let disposition = match self.phase(node) {
-            Some(Phase::Cancelling(origin)) => Some(Phase::Cancelled(*origin)),
             Some(Phase::Running) if self.job_of(node).is_none() => Some(Phase::Aborted),
             _ => None,
         };
@@ -265,15 +258,6 @@ impl<D: Domain> Tree<D> {
         if !self.all_children_terminal(parent) {
             return Vec::new();
         }
-        let results: Vec<ChildResult<D>> = self
-            .barrier_children(parent)
-            .into_iter()
-            .filter_map(|id| {
-                self.phase(id)
-                    .and_then(Phase::terminal)
-                    .map(|terminal| ChildResult { node: id, terminal })
-            })
-            .collect();
         let job = self.next_job_id();
         self.set_job(parent, Some(job));
         self.set_phase(parent, Phase::Running);
@@ -281,12 +265,12 @@ impl<D: Domain> Tree<D> {
             Effect::Persist { node: parent },
             Effect::Publish(TreeEvent::PhaseChanged {
                 node: parent,
-                to: Box::new(Phase::Running),
+                to: Phase::Running,
             }),
             Effect::Launch {
                 node: parent,
                 job,
-                input: Input::Children(results),
+                input: Input::Children,
             },
         ]
     }

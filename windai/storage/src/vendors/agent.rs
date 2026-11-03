@@ -1,8 +1,8 @@
 use crate::error::Result;
-use crate::utils::now_ts;
+use crate::utils::{ensure_affected, now_ts};
 use crate::{AgentInstance, ChildStateRow, Storage};
 use sqlx::{QueryBuilder, Sqlite};
-use wind_wire::{AgentMode, AgentPhase, AgentRole};
+use wind_wire::{AgentMode, AgentRole};
 
 impl Storage {
     pub async fn get_instance_by_id(&self, instance_id: i64) -> Result<Option<AgentInstance>> {
@@ -27,7 +27,7 @@ impl Storage {
         parent_id: Option<i64>,
         role: AgentRole,
         mode: Option<AgentMode>,
-        phase: AgentPhase,
+        phase: &str,
         phase_payload: Option<String>,
     ) -> Result<i64> {
         let id = self
@@ -43,12 +43,34 @@ impl Storage {
                 .bind(topic_id)
                 .bind(role.as_ref())
                 .bind(mode.map(|mode| mode.as_ref().to_string()))
-                .bind(phase.as_ref())
+                .bind(phase)
                 .bind(phase_payload)
                 .bind(now_ts()),
             )
             .await?;
         Ok(id)
+    }
+
+    pub async fn update_instance_phase(
+        &self,
+        instance_id: i64,
+        phase: &str,
+        phase_payload: Option<String>,
+    ) -> Result<()> {
+        let result = self
+            .executor
+            .execute(
+                sqlx::query(
+                    "UPDATE agent_instances
+                    SET phase = ?, phase_payload = ?
+                    WHERE id = ?",
+                )
+                .bind(phase)
+                .bind(phase_payload)
+                .bind(instance_id),
+            )
+            .await?;
+        ensure_affected(result)
     }
 
     /// 写一行派生调用的配对

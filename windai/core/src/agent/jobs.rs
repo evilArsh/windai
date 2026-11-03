@@ -19,11 +19,11 @@ impl<D: Domain> Jobs<D> {
         todo!()
     }
 
-    pub fn launch(&self, request: JobRequest<D>) {
+    pub fn launch(&self, _request: JobRequest<D>) {
         todo!()
     }
 
-    pub fn stop(&self, node: NodeId, job: JobId) {
+    pub fn stop(&self, _node: NodeId, _job: JobId) {
         todo!()
     }
 }

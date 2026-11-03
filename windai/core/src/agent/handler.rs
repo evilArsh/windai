@@ -1,16 +1,19 @@
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 
-use crate::agent::events::directory;
-
+use super::events::CORE_AGENT_CREATE;
 use super::jobs::{JobRequest, Jobs};
 use super::tree::event::{Effect, Event};
 use super::tree::view::TreeEvent;
 use super::tree::{Domain, NodeId, Phase, Tree};
-use serde_json::Value;
+use crate::agent::events::{
+    AgentPersistFailed, AgentSealed, AgentSpawn, AgentStatus, CORE_AGENT_PERSIST_FAILED,
+    CORE_AGENT_SEALED, CORE_AGENT_SPAWN, CORE_AGENT_STATUS,
+};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
-use wind_event::{Directory, DispatchCx, Dispatcher, EventDef, Origin, Scope, Source};
+use wind_event::{DispatchCx, Dispatcher, Origin, Scope, Source};
+use wind_storage::Storage;
 
 const OBSERVE_BUDGET: Duration = Duration::from_millis(50);
 
@@ -52,13 +55,38 @@ enum Wake<D: Domain> {
     Exit,
 }
 
+/// Agent 对外 hub 句柄
+#[derive(Clone)]
+pub struct AgentHandle<D: Domain> {
+    tx: mpsc::Sender<Command<D>>,
+    bus: broadcast::Sender<TreeEvent<D>>,
+    cancel: CancellationToken,
+    dispatcher: Arc<Dispatcher>,
+}
+impl<D: Domain> AgentHandle<D> {
+    // pub async fn submit(&self, node: NodeId, spec: AgentSpec) -> Result<SubmitOutcome> {}
+
+    // pub async fn terminate(
+    //     &self,
+    //     cx: &DispatchCx,
+    //     instance_id: NodeId,
+    //     reason: &str,
+    // ) -> Result<()> {}
+
+    // pub async fn cancel(
+    //     &self,
+    //     cx: &DispatchCx,
+    //     instance_id: NodeId,
+    //     origin: CancelOrigin,
+    // ) -> Result<()> {}
+}
+
 struct Agent<D: Domain> {
     topic_id: i64,
+    storage: Storage,
     dispatcher: Arc<Dispatcher>,
     tree: Tree<D>,
     jobs: Jobs<D>,
-    // persist: Arc<dyn Persist<D>>,
-    bus: broadcast::Sender<TreeEvent<D>>,
     inbox_rx: mpsc::Receiver<Command<D>>,
     reports_rx: mpsc::Receiver<Event<D>>,
     cancel: CancellationToken,
@@ -80,11 +108,15 @@ impl<D: Domain> Agent<D> {
                     },
                 }
             };
-            match wake {
-                Wake::Event(event) => todo!(),
-                Wake::Command(command) => todo!(),
-                Wake::Exit => todo!(),
-            }
+            // match wake {
+            //     Wake::Event(event) => {
+            //         self.apply(event).await;
+            //     }
+            //     Wake::Command(Command::Event(event)) => {
+            //         self.apply(event).await;
+            //     }
+            //     Wake::Exit => todo!(),
+            // }
         }
 
         self.jobs.shutdown();
@@ -104,16 +136,9 @@ impl<D: Domain> Agent<D> {
         match effect {
             Effect::Publish(event) => {
                 self.notify(&event);
-                let _ = self.bus.send(event);
+                // let _ = self.bus.send(event);
             }
-            Effect::Persist { node } => {
-                todo!()
-                // if let Some(phase) = self.tree.phase(node).cloned()
-                //     && let Err(err) = self.persist.save(node, &phase).await
-                // {
-                //     log::error!("[hub] persist failed for node {node}: {err}");
-                // }
-            }
+            Effect::Persist { node } => self.persist(node).await,
             Effect::Launch { node, job, input } => {
                 self.jobs.launch(JobRequest { node, job, input });
             }
@@ -123,19 +148,72 @@ impl<D: Domain> Agent<D> {
         }
     }
 
+    async fn persist(&self, node: NodeId) {
+        let Some(phase) = self.tree.phase(node).cloned() else {
+            log::warn!("[agent] persist for unknown node ignored: {node}");
+            return;
+        };
+        let (phase, phase_payload) = match phase.columns() {
+            Ok(columns) => columns,
+            Err(error) => {
+                log::error!("[agent] cannot encode the phase of {node}: {error}");
+                return;
+            }
+        };
+        if let Err(error) = self
+            .storage
+            .update_instance_phase(node, &phase, phase_payload)
+            .await
+        {
+            log::error!("[agent] persist failed for node {node}: {error}");
+            self.dispatcher.notify(
+                &CORE_AGENT_PERSIST_FAILED,
+                &observe_cx(self.topic_id, node),
+                AgentPersistFailed {
+                    topic_id: self.topic_id,
+                    instance_id: node,
+                    phase,
+                    error: error.to_string(),
+                },
+            );
+        }
+    }
+
     fn notify(&self, event: &TreeEvent<D>) {
-        todo!()
-        // for (name, payload) in transfer_event(event) {
-        //     let Some(def) = observe_def(item.name) else {
-        //         log::error!("Translated event {} has no definition", item.name);
-        //         continue;
-        //     };
-        //     self.dispatcher.notify(
-        //         &def,
-        //         &observe_cx(self.topic_id, event.node_id()),
-        //         item.payload,
-        //     )
-        // }
+        match event {
+            TreeEvent::NodeCreated { node, parent } => self.dispatcher.notify(
+                &CORE_AGENT_SPAWN,
+                &observe_cx(self.topic_id, *node),
+                AgentSpawn {
+                    instance_id: *node,
+                    parent_id: *parent,
+                    detached: self.tree.is_detached(*node),
+                },
+            ),
+            TreeEvent::PhaseChanged { node, to } => {
+                let (phase, phase_payload) = match to.parts() {
+                    Ok(parts) => parts,
+                    Err(error) => {
+                        log::error!("[agent] cannot encode the phase of {node}: {error}");
+                        return;
+                    }
+                };
+                self.dispatcher.notify(
+                    &CORE_AGENT_STATUS,
+                    &observe_cx(self.topic_id, *node),
+                    AgentStatus {
+                        instance_id: *node,
+                        phase,
+                        phase_payload,
+                    },
+                );
+            }
+            TreeEvent::Sealed { root } => self.dispatcher.notify(
+                &CORE_AGENT_SEALED,
+                &observe_cx(self.topic_id, *root),
+                AgentSealed { instance_id: *root },
+            ),
+        }
     }
 }
 
@@ -150,19 +228,4 @@ fn observe_cx(topic_id: i64, node_id: NodeId) -> DispatchCx {
         Source::core("agent"),
         OBSERVE_BUDGET,
     )
-}
-
-fn catalog() -> &'static Directory {
-    static CATALOG: OnceLock<Directory> = OnceLock::new();
-    CATALOG.get_or_init(directory)
-}
-
-fn observe_def(name: &str) -> Option<EventDef<Value>> {
-    let meta = catalog().get(name)?;
-    meta.is_observe()
-        .then(|| EventDef::new(meta.name, meta.shape, meta.log, meta.schema))
-}
-
-fn transfer_event<D: Domain>(event: &TreeEvent<D>) -> (&str, Value) {
-    todo!()
 }

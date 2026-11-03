@@ -5,7 +5,7 @@ pub mod phase;
 pub mod reduce;
 pub mod view;
 pub use domain::Domain;
-pub use phase::{Phase, Terminal};
+pub use phase::Phase;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::mem;
@@ -247,25 +247,5 @@ impl<D: Domain> Tree<D> {
         if let Some(node) = self.nodes.get_mut(&id) {
             node.delivered = delivered;
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_delivered_for_test(&mut self, id: NodeId, delivered: bool) {
-        self.set_delivered(id, delivered);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn insert_for_test(&mut self, id: NodeId, parent: Option<NodeId>) -> bool {
-        self.insert_node(id, parent, Phase::Running, false)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn insert_for_test_detached(&mut self, id: NodeId, parent: Option<NodeId>) -> bool {
-        self.insert_node(id, parent, Phase::Running, true)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_phase_for_test(&mut self, id: NodeId, phase: Phase<D>) {
-        self.set_phase(id, phase);
     }
 }

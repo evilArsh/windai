@@ -1,27 +1,29 @@
 use super::domain::Domain;
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::AsRefStr)]
+#[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum CancelOrigin {
     External,
     Ancestor(i64),
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Terminal<D: Domain> {
-    Done(D::Output),
-    Failed(D::Error),
-    Cancelled(CancelOrigin),
-    Aborted,
-}
-
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "phase",
+    content = "phase_payload",
+    rename_all = "snake_case",
+    bound(
+        serialize = "D::Suspend: Serialize, D::Output: Serialize, D::Error: Serialize",
+        deserialize = "D::Suspend: Deserialize<'de>, D::Output: Deserialize<'de>, D::Error: Deserialize<'de>"
+    )
+)]
 pub enum Phase<D: Domain> {
     Running,
     Suspended(D::Suspend),
     WaitingChildren,
-    Cancelling(CancelOrigin),
     Done(D::Output),
     Failed(D::Error),
     Cancelled(CancelOrigin),
@@ -36,34 +38,36 @@ impl<D: Domain> Phase<D> {
         )
     }
 
-    pub fn is_resting(&self) -> bool {
-        self.is_terminal() || matches!(self, Phase::Suspended(_) | Phase::WaitingChildren)
-    }
-
-    pub fn terminal(&self) -> Option<Terminal<D>> {
-        match self {
-            Phase::Done(output) => Some(Terminal::Done(output.clone())),
-            Phase::Failed(error) => Some(Terminal::Failed(error.clone())),
-            Phase::Cancelled(origin) => Some(Terminal::Cancelled(*origin)),
-            Phase::Aborted => Some(Terminal::Aborted),
-            _ => None,
-        }
-    }
-
     pub fn has_live_job(&self) -> bool {
-        matches!(self, Phase::Running | Phase::Cancelling(_))
+        matches!(self, Phase::Running)
     }
 
-    pub fn awaiting_external_input(&self) -> Option<&D::Suspend> {
-        match self {
-            Phase::Suspended(wait) => Some(wait),
-            Phase::Running
-            | Phase::WaitingChildren
-            | Phase::Cancelling(_)
-            | Phase::Done(_)
-            | Phase::Failed(_)
-            | Phase::Cancelled(_)
-            | Phase::Aborted => None,
-        }
+    pub fn parts(&self) -> Result<(String, Option<Value>), serde_json::Error> {
+        let value = serde_json::to_value(self)?;
+        let Parts {
+            phase,
+            phase_payload,
+        } = serde_json::from_value(value)?;
+        Ok((phase, phase_payload))
     }
+
+    pub fn columns(&self) -> Result<(String, Option<String>), serde_json::Error> {
+        let (phase, payload) = self.parts()?;
+        Ok((phase, payload.map(|payload| payload.to_string())))
+    }
+
+    pub fn from_columns(name: &str, payload: Option<&str>) -> Result<Self, serde_json::Error> {
+        let mut fields = Map::new();
+        fields.insert("phase".to_string(), Value::String(name.to_string()));
+        if let Some(payload) = payload {
+            fields.insert("phase_payload".to_string(), serde_json::from_str(payload)?);
+        }
+        serde_json::from_value(Value::Object(fields))
+    }
+}
+
+#[derive(Deserialize)]
+struct Parts {
+    phase: String,
+    phase_payload: Option<Value>,
 }

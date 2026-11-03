@@ -8,8 +8,7 @@ use sqlx::types::Json;
 use sqlx::{FromRow, Row};
 use wind_event::{Origin, Scope, Shape, Source};
 use wind_wire::{
-    AdapterType, AgentMode, AgentPhase, AgentRole, Block as WireBlock, Body, Content, PendingKind,
-    Role,
+    AdapterType, AgentMode, AgentRole, Block as WireBlock, Body, Content, PendingKind, Role,
 };
 
 /// 话题
@@ -460,7 +459,7 @@ pub struct AgentInstance {
     pub topic_id: i64,
     pub role: AgentRole,
     pub mode: Option<AgentMode>,
-    pub phase: AgentPhase,
+    pub phase: String,
     pub phase_payload: Option<String>,
     pub created_at: Option<i64>,
 }
@@ -479,7 +478,7 @@ impl<'r> FromRow<'r, DbRow> for AgentInstance {
                 .as_deref()
                 .map(|text| parse_enum("mode", text))
                 .transpose()?,
-            phase: parse_enum("phase", &phase)?,
+            phase,
             phase_payload: row.try_get("phase_payload")?,
             created_at: row.try_get("created_at")?,
         })

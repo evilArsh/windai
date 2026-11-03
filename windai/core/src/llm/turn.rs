@@ -1,4 +1,4 @@
-use super::domain::{LlmDomain, LlmFailure, LlmOutcome, LlmSpec, Suspended};
+use super::domain::{LlmDomain, LlmSpec};
 use super::events::{
     BlockCommitted, BlockDelta, CORE_BLOCK_COMMITTED, CORE_BLOCK_DELTA, CORE_MESSAGE_SEAL,
     CORE_PROMPT_COLLECT, MessageSeal, PromptCollect,
@@ -9,7 +9,6 @@ use super::{McpService, ModService};
 use crate::agent::SPAWN_AGENT_NAME;
 use crate::agent::SpawnRequest;
 use crate::agent::tree::Phase;
-use crate::agent::tree::phase::CancelOrigin;
 use crate::error::{CoreError, Result};
 use crate::llm::block::BlockAbsorb;
 use futures::StreamExt;
@@ -25,9 +24,7 @@ use wind_rule::RuleSet;
 use wind_storage::error::Result as StorageResult;
 use wind_storage::vendors::config::ModelConfig;
 use wind_storage::{ChildStateRow, Storage, Topic};
-use wind_wire::{
-    AgentMode, AgentPhase, AgentRole, Block, Content, FunctionCallOutput, Message, Role, Usage,
-};
+use wind_wire::{AgentMode, AgentRole, Block, Content, FunctionCallOutput, Message, Role, Usage};
 
 struct ChildState {
     child_id: i64,
@@ -377,14 +374,15 @@ pub async fn create_spawn_requests(
             for action in actions {
                 let mode = action.data.mode;
                 let task = action.data.task;
+                let (phase, phase_payload) = Phase::<LlmDomain>::Running.columns()?;
                 let child_instance_id = tx
                     .create_agent_instance(
                         topic.id,
                         Some(instance_id),
                         AgentRole::Child,
                         Some(mode),
-                        AgentPhase::Running,
-                        None,
+                        &phase,
+                        phase_payload,
                     )
                     .await?;
                 tx.create_spawn_call_map(instance_id, &action.call_id, child_instance_id)
@@ -451,7 +449,8 @@ async fn child_states(
         let state = states.entry(call_id).or_insert_with(|| ChildState {
             child_id,
             mode: mode.as_deref().and_then(|text| text.parse().ok()),
-            phase: decode_phase(&phase, phase_payload.as_deref()),
+            phase: Phase::<LlmDomain>::from_columns(&phase, phase_payload.as_deref())
+                .map_err(|error| error.to_string()),
             reply: String::new(),
         });
         if let Some(part) = reply_part {
@@ -493,49 +492,6 @@ pub(crate) async fn write_tool_results(
     Ok(written)
 }
 
-fn decode_phase(
-    name: &str,
-    payload: Option<&str>,
-) -> std::result::Result<Phase<LlmDomain>, String> {
-    let phase: AgentPhase = name
-        .parse()
-        .map_err(|_| format!("unknown phase name: {name}"))?;
-    let payload =
-        match payload {
-            Some(text) => Some(serde_json::from_str::<Value>(text).map_err(|error| {
-                format!("payload for phase {name} could not be decoded: {error}")
-            })?),
-            None => None,
-        };
-    if !phase.takes_payload() {
-        if payload.is_some() {
-            return Err(format!("phase {name} does not take a payload"));
-        }
-        return match phase {
-            AgentPhase::Running => Ok(Phase::Running),
-            AgentPhase::WaitingChildren => Ok(Phase::WaitingChildren),
-            AgentPhase::Aborted => Ok(Phase::Aborted),
-            _ => Err(format!("phase {name} does not take a payload")),
-        };
-    }
-    let payload = payload.ok_or_else(|| format!("phase {name} requires a payload"))?;
-    let decoded = match phase {
-        AgentPhase::Suspended => serde_json::from_value::<Suspended>(payload).map(Phase::Suspended),
-        AgentPhase::Cancelling => {
-            serde_json::from_value::<CancelOrigin>(payload).map(Phase::Cancelling)
-        }
-        AgentPhase::Done => serde_json::from_value::<LlmOutcome>(payload).map(Phase::Done),
-        AgentPhase::Failed => serde_json::from_value::<LlmFailure>(payload).map(Phase::Failed),
-        AgentPhase::Cancelled => {
-            serde_json::from_value::<CancelOrigin>(payload).map(Phase::Cancelled)
-        }
-        AgentPhase::Running | AgentPhase::WaitingChildren | AgentPhase::Aborted => {
-            return Err(format!("phase {name} does not take a payload"));
-        }
-    };
-    decoded.map_err(|error| format!("payload for phase {name} could not be decoded: {error}"))
-}
-
 fn spawn_output(call_id: String, state: Option<ChildState>) -> FunctionCallOutput {
     let content = match state {
         None => json!({ "error": format!("spawn call {call_id} has no child") }),
@@ -551,7 +507,7 @@ fn spawn_output(call_id: String, state: Option<ChildState>) -> FunctionCallOutpu
                 Phase::Failed(_) | Phase::Cancelled(_) | Phase::Aborted => {
                     json!({ "error": "child task did not complete" })
                 }
-                Phase::Running | Phase::WaitingChildren | Phase::Cancelling(_) => {
+                Phase::Running | Phase::WaitingChildren => {
                     json!({ "instance_id": state.child_id, "phase": "running" })
                 }
             },

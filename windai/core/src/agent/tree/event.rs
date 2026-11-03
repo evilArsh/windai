@@ -46,10 +46,6 @@ pub enum Event<D: Domain> {
         job: JobId,
         error: D::Error,
     },
-    Stopped {
-        node: NodeId,
-        job: JobId,
-    },
     Aborted {
         node: NodeId,
         job: JobId,
@@ -71,7 +67,6 @@ impl<D: Domain> Event<D> {
             | Event::Spawned { node, .. }
             | Event::Completed { node, .. }
             | Event::Failed { node, .. }
-            | Event::Stopped { node, .. }
             | Event::Aborted { node, .. }
             | Event::Recovered { node } => Some(*node),
         }
