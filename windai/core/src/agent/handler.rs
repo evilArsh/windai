@@ -1,19 +1,23 @@
-use std::sync::Arc;
-use std::time::Duration;
-
-use super::events::CORE_AGENT_CREATE;
-use super::jobs::{JobRequest, Jobs};
-use super::tree::event::{Effect, Event};
-use super::tree::view::TreeEvent;
-use super::tree::{Domain, NodeId, Phase, Tree};
-use crate::agent::events::{
+use super::events::{
     AgentPersistFailed, AgentSealed, AgentSpawn, AgentStatus, CORE_AGENT_PERSIST_FAILED,
     CORE_AGENT_SEALED, CORE_AGENT_SPAWN, CORE_AGENT_STATUS,
 };
-use tokio::sync::{broadcast, mpsc, oneshot};
+use super::jobs::{JobRequest, Jobs};
+use super::tree::event::{Effect, Event};
+use super::tree::phase::CancelOrigin;
+use super::tree::view::TreeEvent;
+use super::tree::{Domain, NodeId, Phase, Tree};
+use crate::agent::Runner;
+use crate::error::{CoreError, Result};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use wind_event::{DispatchCx, Dispatcher, Origin, Scope, Source};
 use wind_storage::Storage;
+
+/// 事件循环最多积压的事件数
+const EVENT_CAPACITY: usize = 1024;
 
 const OBSERVE_BUDGET: Duration = Duration::from_millis(50);
 
@@ -28,123 +32,156 @@ pub struct NodeSnapshot<D: Domain> {
     pub pending: Vec<D::Spec>,
 }
 
-enum Command<D: Domain> {
-    Event(Event<D>),
-    Spawn {
+/// Agent 对外 hub 句柄
+#[derive(Clone)]
+pub struct AgentHandle<D: Domain> {
+    tx: mpsc::Sender<Event<D>>,
+    cancel: CancellationToken,
+}
+
+impl<D: Domain> AgentHandle<D> {
+    pub async fn spawn(
+        &self,
         id: NodeId,
         parent: Option<NodeId>,
         spec: D::Spec,
         detached: bool,
-        // reply: oneshot::Sender<bool>,
-    },
-    Submit {
-        node: NodeId,
-        spec: D::Spec,
-        // reply: oneshot::Sender<SubmitOutcome>,
-    },
-    Recover(Vec<NodeSnapshot<D>>, oneshot::Sender<()>),
-    InFlight(oneshot::Sender<Vec<NodeId>>),
-    Undelivered(oneshot::Sender<Vec<NodeId>>),
-    Snapshot(oneshot::Sender<Vec<NodeSnapshot<D>>>),
-    Shutdown,
+    ) -> Result<()> {
+        self.send(Event::Spawn {
+            id,
+            parent,
+            spec,
+            detached,
+        })
+        .await
+    }
+
+    pub async fn enqueue(&self, node: NodeId, spec: D::Spec) -> Result<()> {
+        self.send(Event::Enqueue { node, spec }).await
+    }
+
+    pub async fn resume(&self, node: NodeId, expect: D::Suspend, input: D::Resume) -> Result<()> {
+        self.send(Event::Resume {
+            node,
+            expect,
+            input,
+        })
+        .await
+    }
+
+    pub async fn cancel(&self, root: NodeId, origin: CancelOrigin) -> Result<()> {
+        self.send(Event::CancelRequest { root, origin }).await
+    }
+
+    pub async fn deliver(&self, node: NodeId) -> Result<()> {
+        self.send(Event::Deliver { node }).await
+    }
+
+    pub fn shutdown(&self) {
+        self.cancel.cancel();
+    }
+
+    pub fn is_stopped(&self) -> bool {
+        self.cancel.is_cancelled()
+    }
+
+    pub async fn wait_stopped(&self) {
+        self.cancel.cancelled().await;
+    }
+
+    async fn send(&self, event: Event<D>) -> Result<()> {
+        self.tx.send(event).await.map_err(|_| CoreError::Closed)
+    }
 }
 
-enum Wake<D: Domain> {
-    Event(Event<D>),
-    Command(Command<D>),
-    Exit,
+pub struct AgentOptions<D: Domain> {
+    pub topic_id: i64,
+    pub storage: Storage,
+    pub dispatcher: Arc<Dispatcher>,
+    pub runner: Arc<dyn Runner<D>>,
+    pub restored: Vec<NodeSnapshot<D>>,
+    pub cancel: CancellationToken,
 }
 
-/// Agent 对外 hub 句柄
-#[derive(Clone)]
-pub struct AgentHandle<D: Domain> {
-    tx: mpsc::Sender<Command<D>>,
-    bus: broadcast::Sender<TreeEvent<D>>,
-    cancel: CancellationToken,
-    dispatcher: Arc<Dispatcher>,
-}
-impl<D: Domain> AgentHandle<D> {
-    // pub async fn submit(&self, node: NodeId, spec: AgentSpec) -> Result<SubmitOutcome> {}
-
-    // pub async fn terminate(
-    //     &self,
-    //     cx: &DispatchCx,
-    //     instance_id: NodeId,
-    //     reason: &str,
-    // ) -> Result<()> {}
-
-    // pub async fn cancel(
-    //     &self,
-    //     cx: &DispatchCx,
-    //     instance_id: NodeId,
-    //     origin: CancelOrigin,
-    // ) -> Result<()> {}
-}
-
-struct Agent<D: Domain> {
+pub struct Agent<D: Domain> {
     topic_id: i64,
     storage: Storage,
     dispatcher: Arc<Dispatcher>,
     tree: Tree<D>,
     jobs: Jobs<D>,
-    inbox_rx: mpsc::Receiver<Command<D>>,
-    reports_rx: mpsc::Receiver<Event<D>>,
+    event_rx: mpsc::Receiver<Event<D>>,
     cancel: CancellationToken,
 }
-impl<D: Domain> Agent<D> {
-    async fn run(mut self) {
-        loop {
-            let wake = {
-                tokio::select! {
-                    biased;
-                    _ = self.cancel.cancelled() => Wake::Exit,
-                    report = self.reports_rx.recv() => match report {
-                        Some(event) => Wake::Event(event),
-                        None => Wake::Exit,
-                    },
-                    command = self.inbox_rx.recv() => match command {
-                        Some(command) => Wake::Command(command),
-                        None => Wake::Exit,
-                    },
-                }
-            };
-            // match wake {
-            //     Wake::Event(event) => {
-            //         self.apply(event).await;
-            //     }
-            //     Wake::Command(Command::Event(event)) => {
-            //         self.apply(event).await;
-            //     }
-            //     Wake::Exit => todo!(),
-            // }
-        }
 
+impl<D: Domain> Agent<D> {
+    pub fn new(options: AgentOptions<D>) -> (Self, AgentHandle<D>) {
+        let (tx, event_rx) = mpsc::channel(EVENT_CAPACITY);
+        let handle = AgentHandle {
+            tx: tx.clone(),
+            cancel: options.cancel.clone(),
+        };
+        let jobs = Jobs::new(options.runner, tx);
+        let mut tree = Tree::new();
+        for node in options.restored {
+            tree.restore_node(
+                node.id,
+                node.parent,
+                node.children,
+                node.phase,
+                node.detached,
+                node.pending,
+            );
+        }
+        let agent = Self {
+            topic_id: options.topic_id,
+            storage: options.storage,
+            dispatcher: options.dispatcher,
+            tree,
+            jobs,
+            event_rx,
+            cancel: options.cancel,
+        };
+        (agent, handle)
+    }
+
+    pub fn start(options: AgentOptions<D>) -> AgentHandle<D> {
+        let (agent, handle) = Self::new(options);
+        tokio::spawn(agent.run());
+        handle
+    }
+
+    pub async fn run(mut self) {
+        let restored = self.tree.all_node_ids();
+        for node in restored {
+            self.apply(Event::Recovered { node }).await;
+        }
+        loop {
+            tokio::select! {
+                biased;
+                () = self.cancel.cancelled() => break,
+                event = self.event_rx.recv() => match event {
+                    Some(event) => self.apply(event).await,
+                    None => break,
+                },
+            }
+        }
         self.jobs.shutdown();
     }
 
-    async fn apply(&mut self, event: Event<D>) -> bool {
-        let mut created = false;
+    async fn apply(&mut self, event: Event<D>) {
         for effect in self.tree.reduce(event) {
-            if matches!(effect, Effect::Publish(TreeEvent::NodeCreated { .. })) {
-                created = true;
-            }
             self.execute(effect).await;
         }
-        created
     }
+
     async fn execute(&mut self, effect: Effect<D>) {
         match effect {
-            Effect::Publish(event) => {
-                self.notify(&event);
-                // let _ = self.bus.send(event);
-            }
+            Effect::Publish(event) => self.notify(&event),
             Effect::Persist { node } => self.persist(node).await,
             Effect::Launch { node, job, input } => {
                 self.jobs.launch(JobRequest { node, job, input });
             }
-            Effect::Stop { node, job } => {
-                self.jobs.stop(node, job);
-            }
+            Effect::Stop { node, job } => self.jobs.stop(node, job),
         }
     }
 

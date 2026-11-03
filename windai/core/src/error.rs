@@ -28,6 +28,8 @@ pub enum CoreError {
     Bus(String),
     #[error("denied: {0}")]
     Denied(String),
+    #[error("agent is not running")]
+    Closed,
 }
 
 impl From<sqlx::Error> for CoreError {
