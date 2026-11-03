@@ -14,5 +14,17 @@ pub enum TreeEvent<D: Domain> {
         node: NodeId,
         terminal: Terminal<D>,
     },
-    Sealed,
+    Sealed {
+        node: NodeId,
+    },
+}
+impl<D: Domain> TreeEvent<D> {
+    pub fn node_id(&self) -> NodeId {
+        match self {
+            TreeEvent::NodeCreated { node, .. } => *node,
+            TreeEvent::PhaseChanged { node, .. } => *node,
+            TreeEvent::Terminated { node, .. } => *node,
+            TreeEvent::Sealed { node } => *node,
+        }
+    }
 }
