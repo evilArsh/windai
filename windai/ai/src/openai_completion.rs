@@ -21,14 +21,32 @@ impl OpenAICompletion {
         msg: ChatCompletionMessage,
         created_at: i64,
     ) -> Result<Message, AdapterError> {
-        let content = msg.content.unwrap_or_default();
-        let content = match msg.audio {
-            Some(audio) => WireContent::new_audio(audio.data, String::new()),
-            None => WireContent::new_text(content),
+        let text = msg.content.unwrap_or_default();
+        let (transcript, audio) = match msg.audio {
+            Some(audio) => {
+                let transcript = audio.transcript;
+                let data = audio.data.unwrap_or_default();
+                let part = (!data.is_empty())
+                    .then(|| WireContent::new_audio(data, String::new(), audio.id));
+                (transcript, part)
+            }
+            None => (None, None),
         };
+        let text = if text.is_empty() {
+            transcript.unwrap_or_default()
+        } else {
+            text
+        };
+        let mut content = Vec::with_capacity(2);
+        if !text.is_empty() {
+            content.push(WireContent::new_text(text));
+        }
+        if let Some(audio) = audio {
+            content.push(audio);
+        }
         Ok(Message {
             role: msg.role.unwrap_or(Role::Assistant),
-            content: vec![content],
+            content,
             reasoning_content: msg.reasoning_content,
             created_at,
             input_tokens: 0,
@@ -40,13 +58,15 @@ impl OpenAICompletion {
                         ChatCompletionMessageToolCall::Function(tool) => {
                             let func = tool.function.unwrap_or_default();
                             FunctionCall {
-                                id: tool.id.unwrap_or_default(),
+                                item_id: tool.index.map(|index| index.to_string()),
+                                call_id: tool.id.unwrap_or_default(),
                                 name: func.name.unwrap_or_default(),
                                 arguments: func.arguments.unwrap_or_default(),
                             }
                         }
                         ChatCompletionMessageToolCall::Custom(tool) => FunctionCall {
-                            id: tool.id,
+                            item_id: tool.index.map(|index| index.to_string()),
+                            call_id: tool.id,
                             name: tool.custom.name,
                             arguments: tool.custom.input,
                         },
@@ -88,7 +108,8 @@ impl ChatAdapter for OpenAICompletion {
                                 .map(|tool| {
                                     ChatCompletionMessageToolCall::Function(
                                         ChatCompletionMessageFunctionToolCall {
-                                            id: Some(tool.id.clone()),
+                                            id: Some(tool.call_id.clone()),
+                                            index: None,
                                             function: Some(
                                                 ChatCompletionMessageFunctionToolCallFunction {
                                                     name: Some(tool.name.clone()),

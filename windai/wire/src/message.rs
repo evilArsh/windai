@@ -33,6 +33,8 @@ pub enum Role {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, schemars::JsonSchema)]
 pub struct AudioContent {
+    /// 用于流式消息中的 delta 配对
+    pub item_id: Option<String>,
     /// mp3、wav
     pub format: String,
     pub content: String,
@@ -65,9 +67,13 @@ impl Content {
     }
 
     #[inline]
-    pub fn new_audio(content: String, format: String) -> Self {
+    pub fn new_audio(content: String, format: String, item_id: Option<String>) -> Self {
         Self::Audio {
-            data: AudioContent { content, format },
+            data: AudioContent {
+                item_id,
+                format,
+                content,
+            },
         }
     }
 
@@ -104,6 +110,7 @@ impl Message {
                 }
             }
             Body::ToolCall {
+                item_id,
                 call_id,
                 call_name,
                 call_arguments,
@@ -111,7 +118,8 @@ impl Message {
                 self.tool_calls
                     .get_or_insert_with(Vec::new)
                     .push(FunctionCall {
-                        id: call_id.clone(),
+                        item_id: item_id.clone(),
+                        call_id: call_id.clone(),
                         name: call_name.clone(),
                         arguments: call_arguments.clone(),
                     });
@@ -125,8 +133,13 @@ impl Message {
             Body::File { content } => self.content.push(Content::File {
                 data: content.clone(),
             }),
-            Body::Audio { format, content } => self.content.push(Content::Audio {
+            Body::Audio {
+                item_id,
+                format,
+                content,
+            } => self.content.push(Content::Audio {
                 data: AudioContent {
+                    item_id: item_id.clone(),
                     format: format.clone(),
                     content: content.clone(),
                 },

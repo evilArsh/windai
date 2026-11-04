@@ -139,7 +139,7 @@ pub async fn execute_plan(
     let mut agent_calls = Vec::new();
     for call in calls {
         let Some(origin) = catalog.lookup(&call.name) else {
-            results.push(unknown_result(&call.id, &call.name));
+            results.push(unknown_result(&call.call_id, &call.name));
             continue;
         };
         match origin {
@@ -162,7 +162,7 @@ pub fn parse_spawn_agents(calls: &[FunctionCall]) -> Result<Vec<SpawnAgentAction
     for call in calls {
         match call.name.as_str() {
             SPAWN_AGENT_NAME => spawn_agents.push(SpawnAgentAction {
-                call_id: call.id.clone(),
+                call_id: call.call_id.clone(),
                 data: parse_args::<SpawnAgentRequest>(&call.arguments)?,
             }),
             name => log::warn!("unsupported agent tool name: {name}, ignored"),
@@ -234,11 +234,11 @@ async fn call_mcp(
 ) -> FunctionCallOutput {
     let arguments = parse_arguments(&call.arguments);
     match mcp_service
-        .call(cx, &call.id, server, tool, arguments)
+        .call(cx, &call.call_id, server, tool, arguments)
         .await
     {
-        Ok(value) => done_result(&call.id, value),
-        Err(error) => unknown_result(&call.id, &error.to_string()),
+        Ok(value) => done_result(&call.call_id, value),
+        Err(error) => unknown_result(&call.call_id, &error.to_string()),
     }
 }
 
@@ -255,7 +255,7 @@ async fn call_mod_request(
         .call(&cx.scope, mod_name, version, request, input)
         .await
     {
-        Ok(value) => Ok(done_result(&call.id, value)),
-        Err(error) => Ok(denied_result(&call.id, &error.to_string())),
+        Ok(value) => Ok(done_result(&call.call_id, value)),
+        Err(error) => Ok(denied_result(&call.call_id, &error.to_string())),
     }
 }

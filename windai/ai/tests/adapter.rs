@@ -108,7 +108,8 @@ fn a_tool_call_becomes_a_tool_calls_array() {
             &[Message {
                 role: Role::Assistant,
                 tool_calls: Some(vec![FunctionCall {
-                    id: "call_1".into(),
+                    item_id: None,
+                    call_id: "call_1".into(),
                     name: "get_weather".into(),
                     arguments: "{\"city\":\"SF\"}".into(),
                 }]),
@@ -424,7 +425,7 @@ fn a_responses_output_item_added_chunk_carries_a_tool_call() {
         .expect("unwrap the chunk");
     let calls = chunk.tool_calls.expect("carry the tool call");
     assert_eq!(calls[0].name, "get_weather");
-    assert_eq!(calls[0].id, "call_1");
+    assert_eq!(calls[0].call_id, "call_1");
 }
 
 #[test]
@@ -447,7 +448,7 @@ fn a_responses_argument_delta_chunk_carries_the_fragment() {
 }
 
 #[test]
-fn a_responses_argument_delta_keeps_the_call_identity_opened_before_it() {
+fn a_responses_argument_delta_keeps_the_item_id_opened_before_it() {
     let adapter = adapter_of(AdapterType::OpenAIResponse);
     let added = wind_ai::eventsource::Event {
         event: "response.output_item.added".to_string(),
@@ -457,9 +458,16 @@ fn a_responses_argument_delta_keeps_the_call_identity_opened_before_it() {
             .to_string(),
         ..Default::default()
     };
-    adapter
+    let opened = adapter
         .parse_stream_chunk(&added)
-        .expect("parse the added item");
+        .expect("parse the added item")
+        .expect("carry the opened call");
+    let opened = opened.tool_calls.expect("carry the opened call");
+    assert_eq!(
+        opened[0].item_id.as_deref(),
+        Some("fc_1"),
+        "the added item must hand over the item id the deltas refer to"
+    );
 
     let delta = wind_ai::eventsource::Event {
         event: "response.function_call_arguments.delta".to_string(),
@@ -474,14 +482,97 @@ fn a_responses_argument_delta_keeps_the_call_identity_opened_before_it() {
         .expect("carry the fragment");
     let calls = chunk.tool_calls.expect("attach the fragment to the call");
     assert_eq!(
-        calls[0].id, "call_1",
-        "the delta must keep the provider call_id"
+        calls[0].item_id.as_deref(),
+        Some("fc_1"),
+        "the delta must keep the item id that identifies the call"
     );
     assert_eq!(
-        calls[0].name, "get_weather",
-        "the delta must keep the function name"
+        calls[0].call_id, "",
+        "the delta carries no call_id; the block layer pairs by item id"
     );
     assert_eq!(calls[0].arguments, "{\"area\":\"Shanghai\"}");
+}
+
+#[test]
+fn a_completion_audio_delta_keeps_the_audio_item_id() {
+    let adapter = adapter_of(AdapterType::OpenAICompletion);
+    let event = wind_ai::eventsource::Event {
+        event: "chat.completion.chunk".to_string(),
+        data: r#"{"id":"c","object":"chat.completion.chunk","created":1,"model":"m",
+                  "choices":[{"index":0,"delta":{"audio":{
+                      "id":"audio_1","data":"QUJD","expires_at":99}}}]}"#
+            .to_string(),
+        ..Default::default()
+    };
+    let chunk = adapter
+        .parse_stream_chunk(&event)
+        .expect("parse the audio chunk")
+        .expect("carry the audio chunk");
+    let audio = chunk
+        .content
+        .iter()
+        .find_map(|content| match content {
+            Content::Audio { data } => Some(data),
+            _ => None,
+        })
+        .expect("carry the audio");
+    assert_eq!(
+        audio.item_id.as_deref(),
+        Some("audio_1"),
+        "the audio id is the identity the block layer pairs by"
+    );
+    assert_eq!(audio.content, "QUJD");
+}
+
+#[test]
+fn a_completion_audio_transcript_becomes_text_when_nothing_else_does() {
+    let adapter = adapter_of(AdapterType::OpenAICompletion);
+    let event = wind_ai::eventsource::Event {
+        event: "chat.completion.chunk".to_string(),
+        data: r#"{"id":"c","object":"chat.completion.chunk","created":1,"model":"m",
+                  "choices":[{"index":0,"delta":{"audio":{"transcript":"hello"}}}]}"#
+            .to_string(),
+        ..Default::default()
+    };
+    let chunk = adapter
+        .parse_stream_chunk(&event)
+        .expect("parse the transcript chunk")
+        .expect("carry the transcript chunk");
+    assert!(
+        !chunk
+            .content
+            .iter()
+            .any(|content| matches!(content, Content::Audio { .. })),
+        "a chunk without audio bytes must not open an audio block"
+    );
+    assert_eq!(
+        chunk.content,
+        vec![Content::new_text("hello".to_string())],
+        "the transcript is the only text the chunk carries"
+    );
+}
+
+#[test]
+fn a_completion_argument_delta_maps_the_index_to_the_item_id() {
+    let adapter = adapter_of(AdapterType::OpenAICompletion);
+    let event = wind_ai::eventsource::Event {
+        event: "chat.completion.chunk".to_string(),
+        data: r#"{"id":"c","object":"chat.completion.chunk","created":1,"model":"m",
+                  "choices":[{"index":0,"delta":{"tool_calls":[
+                      {"index":0,"function":{"arguments":"{\"city\""}}]}}]}"#
+            .to_string(),
+        ..Default::default()
+    };
+    let chunk = adapter
+        .parse_stream_chunk(&event)
+        .expect("parse the delta")
+        .expect("carry the fragment");
+    let calls = chunk.tool_calls.expect("attach the fragment to the call");
+    assert_eq!(
+        calls[0].item_id.as_deref(),
+        Some("0"),
+        "the completion index is the identity the block layer pairs by"
+    );
 }
 
 #[test]

@@ -480,11 +480,11 @@ impl Default for ChatCompletionMessageFunctionToolCallFunction {
 #[derive(Debug, Deserialize, Clone)]
 pub struct ChatCompletionMessageAudio {
     /// 唯一标识符
-    pub id: String,
+    pub id: Option<String>,
     /// 由模型生成的 Base64 编码音频字节，格式遵循请求中的规定
-    pub data: String,
+    pub data: Option<String>,
     /// 此音频响应在服务器上不再可用于多轮对话的 Unix 时间戳（以秒为单位）
-    pub expires_at: i32,
+    pub expires_at: Option<i32>,
     /// 模型生成的音频转录文本
     pub transcript: Option<String>,
 }
@@ -494,6 +494,9 @@ pub struct ChatCompletionMessageAudio {
 pub struct ChatCompletionMessageFunctionToolCall {
     /// 工具调用的唯一标识符
     pub id: Option<String>,
+    /// 该调用在 tool_calls 数组中的下标，流式片段用它辨识调用
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index: Option<i32>,
     /// 模型调用的函数信息
     pub function: Option<ChatCompletionMessageFunctionToolCallFunction>,
     /// 工具调用类型，固定值为 "function"
@@ -519,6 +522,9 @@ pub struct ChatCompletionMessageCustomToolCallFunction {
 pub struct ChatCompletionMessageCustomToolCall {
     /// 工具调用的唯一标识符
     pub id: String,
+    /// 该调用在 tool_calls 数组中的下标，流式片段用它辨识调用
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index: Option<i32>,
     /// 模型调用的函数信息
     pub custom: ChatCompletionMessageCustomToolCallFunction,
     /// 工具调用类型，固定值为 "custom"

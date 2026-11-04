@@ -278,6 +278,7 @@ CREATE TABLE IF NOT EXISTS block (
     revision        BIGINT  NOT NULL DEFAULT 0,
     content         TEXT,
     format          TEXT,
+    item_id         TEXT,
     call_id         TEXT,
     call_name       TEXT,
     call_arguments  TEXT,

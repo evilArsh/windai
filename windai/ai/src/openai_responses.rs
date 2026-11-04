@@ -55,7 +55,7 @@ impl ChatAdapter for OpenAIResponse {
                         .map(|tool| {
                             InputItem::FunctionCall(FunctionCall {
                                 arguments: tool.arguments.clone(),
-                                call_id: tool.id.clone(),
+                                call_id: tool.call_id.clone(),
                                 name: tool.name.clone(),
                                 r#type: String::from("function_call"),
                                 id: None,
@@ -244,7 +244,8 @@ impl ChatAdapter for OpenAIResponse {
                 }
                 OutputItem::FunctionCall(c) => {
                     let new_call = tool::FunctionCall {
-                        id: c.call_id,
+                        item_id: c.id,
+                        call_id: c.call_id,
                         name: c.name,
                         arguments: c.arguments,
                     };
@@ -271,11 +272,22 @@ impl ChatAdapter for OpenAIResponse {
                         .usage
                         .map(|i| (i.input_tokens, i.output_tokens))
                         .unwrap_or((0, 0));
+                    let content = resp
+                        .output
+                        .into_iter()
+                        .filter_map(|item| match item {
+                            OutputItem::ImageGenerationCall(call) if !call.result.is_empty() => {
+                                Some(Content::new_image(call.result))
+                            }
+                            _ => None,
+                        })
+                        .collect();
 
                     Ok(Some(Message {
                         created_at: resp.created_at,
                         input_tokens,
                         output_tokens,
+                        content,
                         ..Default::default()
                     }))
                 } else {
@@ -286,7 +298,8 @@ impl ChatAdapter for OpenAIResponse {
             "response.output_item.added" => match response.item {
                 Some(OutputItem::FunctionCall(call)) => Ok(Some(Message {
                     tool_calls: Some(vec![tool::FunctionCall {
-                        id: call.call_id,
+                        item_id: call.id,
+                        call_id: call.call_id,
                         name: call.name,
                         arguments: String::new(),
                     }]),
@@ -298,7 +311,8 @@ impl ChatAdapter for OpenAIResponse {
 
             "response.function_call_arguments.delta" => Ok(Some(Message {
                 tool_calls: Some(vec![tool::FunctionCall {
-                    id: String::new(),
+                    item_id: response.item_id,
+                    call_id: String::new(),
                     name: String::new(),
                     arguments: response.delta.unwrap_or_default(),
                 }]),
@@ -319,6 +333,7 @@ impl ChatAdapter for OpenAIResponse {
                 content: vec![Content::new_audio(
                     response.delta.unwrap_or_default(),
                     String::new(),
+                    response.item_id,
                 )],
                 ..Default::default()
             })),

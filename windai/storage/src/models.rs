@@ -227,11 +227,11 @@ pub struct Block {
     pub body: Body,
 }
 
-/// 块载荷在 block 表的六列
 #[derive(Debug, Default)]
 pub(crate) struct BlockColumns {
     pub content: Option<String>,
     pub format: Option<String>,
+    pub item_id: Option<String>,
     pub call_id: Option<String>,
     pub call_name: Option<String>,
     pub call_arguments: Option<String>,
@@ -248,16 +248,23 @@ impl BlockColumns {
                 content: present(content),
                 ..Self::default()
             },
-            Body::Audio { format, content } => Self {
+            Body::Audio {
+                item_id,
+                format,
+                content,
+            } => Self {
+                item_id: item_id.clone(),
                 content: present(content),
                 format: present(format),
                 ..Self::default()
             },
             Body::ToolCall {
+                item_id,
                 call_id,
                 call_name,
                 call_arguments,
             } => Self {
+                item_id: item_id.clone(),
                 call_id: present(call_id),
                 call_name: present(call_name),
                 call_arguments: present(call_arguments),
@@ -286,10 +293,12 @@ impl BlockColumns {
                 content: self.content.unwrap_or_default(),
             },
             "audio" => Body::Audio {
+                item_id: self.item_id,
                 format: self.format.unwrap_or_default(),
                 content: self.content.unwrap_or_default(),
             },
             "tool_call" => Body::ToolCall {
+                item_id: self.item_id,
                 call_id: self.call_id.unwrap_or_default(),
                 call_name: self.call_name.unwrap_or_default(),
                 call_arguments: self.call_arguments.unwrap_or_default(),
@@ -325,6 +334,7 @@ impl<'r> FromRow<'r, DbRow> for Block {
         let columns = BlockColumns {
             content: row.try_get("content")?,
             format: row.try_get("format")?,
+            item_id: row.try_get("item_id")?,
             call_id: row.try_get("call_id")?,
             call_name: row.try_get("call_name")?,
             call_arguments: row.try_get("call_arguments")?,

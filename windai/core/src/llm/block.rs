@@ -59,15 +59,28 @@ impl BlockAbsorb {
                     );
                 }
                 Content::Image { data } => {
+                    if data.is_empty() {
+                        continue;
+                    }
                     self.open(&mut changed, |seq| Block::new_image(role, seq, data));
                 }
                 Content::File { data } => {
+                    if data.is_empty() {
+                        continue;
+                    }
                     self.open(&mut changed, |seq| Block::new_file(role, seq, data));
                 }
                 Content::Audio { data } => {
-                    self.open(&mut changed, |seq| {
-                        Block::new_audio(role, seq, data.format, data.content)
-                    });
+                    if data.content.is_empty() {
+                        continue;
+                    }
+                    self.extend_audio(
+                        &mut changed,
+                        role,
+                        &data.item_id,
+                        &data.format,
+                        &data.content,
+                    );
                 }
                 Content::FunctionCall { data } => {
                     self.result(&mut changed, role, data.id, data.content);
@@ -163,9 +176,9 @@ impl BlockAbsorb {
         if fragment.is_empty() {
             return;
         }
-        let index = match self.blocks.iter().position(|block| same(&block.body)) {
-            Some(index) => index,
-            None => {
+        let index = match self.blocks.last() {
+            Some(block) if same(&block.body) => self.blocks.len() - 1,
+            _ => {
                 let seq = self.seq;
                 self.seq += 1;
                 self.blocks.push(open(seq));
@@ -176,15 +189,63 @@ impl BlockAbsorb {
         changed.push(index);
     }
 
+    fn extend_audio(
+        &mut self,
+        changed: &mut Vec<usize>,
+        role: Role,
+        item_id: &Option<String>,
+        format: &str,
+        fragment: &str,
+    ) {
+        let found = match item_id {
+            Some(item_id) => self.blocks.iter().position(|block| {
+                matches!(&block.body, Body::Audio { item_id: current, .. }
+                    if current.as_deref() == Some(item_id.as_str()))
+            }),
+            None => None,
+        };
+        let tail = self.blocks.len().checked_sub(1).filter(|&index| {
+            let Body::Audio {
+                item_id: current, ..
+            } = &self.blocks[index].body
+            else {
+                return false;
+            };
+            current.is_none() || item_id.is_none() || current == item_id
+        });
+        let index = match found.or(tail) {
+            Some(index) => index,
+            None => {
+                let seq = self.seq;
+                self.seq += 1;
+                self.blocks.push(Block::new_audio(
+                    role,
+                    seq,
+                    item_id.clone(),
+                    format.to_owned(),
+                    String::new(),
+                ));
+                self.blocks.len() - 1
+            }
+        };
+        self.blocks[index].append_audio(item_id, fragment);
+        changed.push(index);
+    }
+
     fn call(&mut self, changed: &mut Vec<usize>, role: Role, call: FunctionCall) {
-        let found = if call.id.is_empty() {
+        let found = if let Some(item_id) = &call.item_id {
+            self.blocks.iter().position(|block| {
+                matches!(&block.body, Body::ToolCall { item_id: current, .. }
+                    if current.as_deref() == Some(item_id.as_str()))
+            })
+        } else if !call.call_id.is_empty() {
+            self.blocks.iter().position(|block| {
+                matches!(&block.body, Body::ToolCall { call_id, .. } if call_id == &call.call_id)
+            })
+        } else {
             self.blocks
                 .iter()
-                .rposition(|block| matches!(block.body, Body::ToolCall { .. }))
-        } else {
-            self.blocks.iter().position(|block| {
-                matches!(&block.body, Body::ToolCall { call_id, .. } if call_id == &call.id)
-            })
+                .rposition(|block| matches!(&block.body, Body::ToolCall { .. }))
         };
         let index = match found {
             Some(index) => index,
@@ -194,14 +255,15 @@ impl BlockAbsorb {
                 self.blocks.push(Block::new_tool_call(
                     role,
                     seq,
-                    call.id.clone(),
+                    call.item_id.clone(),
+                    call.call_id.clone(),
                     call.name.clone(),
                 ));
                 self.blocks.len() - 1
             }
         };
         let block = &mut self.blocks[index];
-        block.fill_call(&call.id, &call.name);
+        block.fill_call(&call.item_id, &call.call_id, &call.name);
         block.append_arguments(&call.arguments);
         changed.push(index);
     }

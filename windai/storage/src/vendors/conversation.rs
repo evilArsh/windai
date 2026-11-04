@@ -85,6 +85,7 @@ impl Storage {
                             b.revision,
                             b.content,
                             b.format,
+                            b.item_id,
                             b.call_id,
                             b.call_name,
                             b.call_arguments,
@@ -254,7 +255,7 @@ impl Storage {
         let mut query = QueryBuilder::<DbDriver>::new(
             "INSERT INTO block
                 (message_id, finished, seq, kind, role, revision, content, format,
-                 call_id, call_name, call_arguments, call_res)",
+                 item_id, call_id, call_name, call_arguments, call_res)",
         );
         query.push_values(blocks, |mut separated, block| {
             let columns = BlockColumns::of(&block.body);
@@ -267,6 +268,7 @@ impl Storage {
                 .push_bind(block.revision)
                 .push_bind(columns.content)
                 .push_bind(columns.format)
+                .push_bind(columns.item_id)
                 .push_bind(columns.call_id)
                 .push_bind(columns.call_name)
                 .push_bind(columns.call_arguments)

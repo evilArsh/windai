@@ -110,7 +110,7 @@ fn repair_tools(messages: Vec<Message>) -> Vec<Message> {
             message
                 .tool_calls
                 .as_ref()
-                .map(|calls| calls.iter().map(|call| call.id.clone()).collect())
+                .map(|calls| calls.iter().map(|call| call.call_id.clone()).collect())
                 .unwrap_or_default()
         } else {
             Vec::new()

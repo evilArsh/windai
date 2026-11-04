@@ -6,7 +6,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-# wind-stream = { path = "../stream" }
 wind-ai = { path = "../ai" }
 wind-event = { path = "../event" }
 wind-wire = { path = "../wire" }

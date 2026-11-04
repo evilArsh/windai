@@ -23,10 +23,14 @@ pub enum Body {
         content: String,
     },
     Audio {
+        #[serde(default)]
+        item_id: Option<String>,
         format: String,
         content: String,
     },
     ToolCall {
+        #[serde(default)]
+        item_id: Option<String>,
         call_id: String,
         call_name: String,
         call_arguments: String,
@@ -93,16 +97,38 @@ impl Block {
         Self::new(role, seq, 1, Body::File { content: data })
     }
 
-    pub fn new_audio(role: Role, seq: i64, format: String, content: String) -> Self {
-        Self::new(role, seq, 1, Body::Audio { format, content })
+    pub fn new_audio(
+        role: Role,
+        seq: i64,
+        item_id: Option<String>,
+        format: String,
+        content: String,
+    ) -> Self {
+        Self::new(
+            role,
+            seq,
+            1,
+            Body::Audio {
+                item_id,
+                format,
+                content,
+            },
+        )
     }
 
-    pub fn new_tool_call(role: Role, seq: i64, call_id: String, call_name: String) -> Self {
+    pub fn new_tool_call(
+        role: Role,
+        seq: i64,
+        item_id: Option<String>,
+        call_id: String,
+        call_name: String,
+    ) -> Self {
         Self::new(
             role,
             seq,
             0,
             Body::ToolCall {
+                item_id,
                 call_id,
                 call_name,
                 call_arguments: String::new(),
@@ -129,11 +155,13 @@ impl Block {
     pub fn tool_call(&self) -> Option<FunctionCall> {
         match &self.body {
             Body::ToolCall {
+                item_id,
                 call_id,
                 call_name,
                 call_arguments,
             } => Some(FunctionCall {
-                id: call_id.clone(),
+                item_id: item_id.clone(),
+                call_id: call_id.clone(),
                 name: call_name.clone(),
                 arguments: call_arguments.clone(),
             }),
@@ -162,8 +190,28 @@ impl Block {
         }
     }
 
-    pub fn fill_call(&mut self, call_id: &str, call_name: &str) {
+    pub fn append_audio(&mut self, item_id: &Option<String>, fragment: &str) {
+        if fragment.is_empty() {
+            return;
+        }
+        let Body::Audio {
+            item_id: current,
+            content,
+            ..
+        } = &mut self.body
+        else {
+            return;
+        };
+        if current.is_none() && item_id.is_some() {
+            *current = item_id.clone();
+        }
+        content.push_str(fragment);
+        self.revision += 1;
+    }
+
+    pub fn fill_call(&mut self, item_id: &Option<String>, call_id: &str, call_name: &str) {
         let Body::ToolCall {
+            item_id: current_item,
             call_id: current_id,
             call_name: current_name,
             ..
@@ -171,6 +219,9 @@ impl Block {
         else {
             return;
         };
+        if current_item.is_none() && item_id.is_some() {
+            *current_item = item_id.clone();
+        }
         if current_id.is_empty() && !call_id.is_empty() {
             *current_id = call_id.to_owned();
         }

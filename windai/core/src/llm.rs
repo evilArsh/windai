@@ -447,7 +447,7 @@ impl LlmRunner {
         // 未表态的默认允许
         let allowed: Vec<FunctionCall> = calls
             .iter()
-            .filter(|call| decisions.get(&call.id).copied().unwrap_or(true))
+            .filter(|call| decisions.get(&call.call_id).copied().unwrap_or(true))
             .cloned()
             .collect();
         let executed = tools::execute_plan(
@@ -559,7 +559,7 @@ fn filter_calls(original: &[FunctionCall], decided: &[FunctionCall]) -> Vec<Func
         .iter()
         .enumerate()
         .map(|(index, call)| match decided.get(index) {
-            Some(decided) if decided.id == call.id && decided.name == call.name => decided.clone(),
+            Some(decided) if decided.call_id == call.call_id && decided.name == call.name => decided.clone(),
             _ => call.clone(),
         })
         .collect()
@@ -575,20 +575,20 @@ fn merge_resume_results(
     let spawn_ids: HashSet<&str> = spawns.iter().map(|spawn| spawn.call_id.as_str()).collect();
     let mut ordered = Vec::with_capacity(calls.len());
     for call in calls {
-        match decisions.remove(&call.id) {
+        match decisions.remove(&call.call_id) {
             Some(false) => {
-                ordered.push(denied_result(call.id, "the user did not allow this call"));
+                ordered.push(denied_result(call.call_id, "the user did not allow this call"));
             }
             Some(true) | None => {
                 let result = results
                     .iter()
-                    .position(|result| result.id == call.id)
+                    .position(|result| result.id == call.call_id)
                     .map(|index| results.swap_remove(index));
                 if let Some(result) = result {
                     ordered.push(result);
-                } else if !spawn_ids.contains(call.id.as_str()) {
+                } else if !spawn_ids.contains(call.call_id.as_str()) {
                     ordered.push(FunctionCallOutput {
-                        id: call.id,
+                        id: call.call_id,
                         content: json!({ "error": "the call produced no result" }),
                     });
                 }
