@@ -1,7 +1,8 @@
 use self::domain::{LlmDomain, LlmFailure, LlmOutcome, LlmSpec, Suspended, WaitAnswer};
 use self::events::{
-    BlockDelta, CORE_BLOCK_DELTA, CORE_LLM_REQUEST, CORE_LLM_TOOLCALL, CORE_RULE_APPLY, LlmRequest,
-    RuleApply, ToolCalls,
+    BlockCommitted, BlockDelta, CORE_BLOCK_COMMITTED, CORE_BLOCK_DELTA, CORE_LLM_REQUEST,
+    CORE_LLM_TOOLCALL, CORE_MESSAGE_SEAL, CORE_RULE_APPLY, LlmRequest, MessageSeal, RuleApply,
+    ToolCalls,
 };
 use self::rule::{apply_rules, context_of};
 use self::tools::{DeclaredTool, ExecutedPlan, SpawnAgentAction, denied_result};
@@ -13,7 +14,7 @@ use std::sync::Arc;
 use wind_event::{DispatchCx, Dispatcher, Scope};
 use wind_storage::error::StorageError;
 use wind_storage::{Storage, Topic};
-use wind_wire::{Content, FunctionCall, FunctionCallOutput, Message, Role};
+use wind_wire::{Block, Content, FunctionCall, FunctionCallOutput, Message, Role, Usage};
 
 pub mod block;
 pub mod domain;
@@ -99,14 +100,47 @@ impl LlmRunner {
             .map_err(|error| failure(error, message_id))?;
 
         let cx = turn::round_cx(topic.id, instance_id);
-        let composed =
-            turn::compose_pending(&self.storage, &self.bus, &cx, topic.id, instance_id, &specs)
+        let (written, composed) =
+            turn::compose_pending(&self.storage, topic.id, instance_id, &specs)
                 .await
                 .map_err(|error| failure(error, message_id))?;
 
-        let spawn_turn = turn::report_spawns(&self.storage, &self.bus, topic.id, instance_id)
+        if let Some(written) = written {
+            // TODO: 提出公共处理函数
+            for (block, block_id) in written
+                .blocks
+                .into_iter()
+                .zip(written.block_ids.into_iter())
+            {
+                self.emit_block_committed(
+                    &cx,
+                    written.message_id,
+                    block_id,
+                    block.seq,
+                    Some(block),
+                );
+            }
+        }
+
+        let (writtens, spawn_turn) = turn::report_spawns(&self.storage, instance_id)
             .await
             .map_err(|error| failure(error, message_id))?;
+        for written in writtens {
+            // TODO: 提出公共处理函数
+            for (block, block_id) in written
+                .blocks
+                .into_iter()
+                .zip(written.block_ids.into_iter())
+            {
+                self.emit_block_committed(
+                    &cx,
+                    written.message_id,
+                    block_id,
+                    block.seq,
+                    Some(block),
+                );
+            }
+        }
 
         let contexts = contexts::assemble(&self.storage, instance_id)
             .await
@@ -227,14 +261,7 @@ impl LlmRunner {
                 .body;
 
             let mut absorber = turn::exchange(&prepared, body, |block| {
-                self.bus.notify(
-                    &CORE_BLOCK_DELTA,
-                    &cx,
-                    BlockDelta {
-                        message_id,
-                        delta: block.clone(),
-                    },
-                );
+                self.emit_block_delta(&cx, message_id, block);
             })
             .await
             .map_err(|error| failure(error, None))?;
@@ -246,9 +273,9 @@ impl LlmRunner {
                 blocks.iter().flat_map(|block| block.tool_call()).collect();
 
             let event_cx = cx.clone();
-            let committed = self
+            let block_ids = self
                 .storage
-                .with_tx(async move |tx| {
+                .with_tx(async |tx| {
                     let block_ids = tx.create_blocks(message_id, &blocks).await?;
                     tx.seal_message(
                         message_id,
@@ -257,19 +284,15 @@ impl LlmRunner {
                         usage.output_tokens,
                     )
                     .await?;
-                    let mut events =
-                        turn::log_blocks(&tx, &event_cx, message_id, &blocks, &block_ids).await?;
-                    events.push(
-                        turn::log_message_seal(&tx, &event_cx, message_id, &finish_reason, usage)
-                            .await?,
-                    );
-                    Ok(events)
+                    Ok(block_ids)
                 })
                 .await
                 .map_err(|error| failure(error.into(), Some(message_id)))?;
-            for event in committed {
-                self.bus.notify_committed(event);
+
+            for (block, block_id) in blocks.iter().zip(block_ids.iter()) {
+                self.emit_block_committed(&event_cx, message_id, *block_id, block.seq, None);
             }
+            self.emit_block_seal(&event_cx, message_id, finish_reason, usage);
             if calls.is_empty() {
                 return Ok(Outcome::Completed(LlmOutcome { message_id }));
             }
@@ -318,36 +341,53 @@ impl LlmRunner {
                 };
                 let mut batches = BTreeMap::new();
                 batches.insert((turn_id, message_id), results);
-                let event_cx = cx.clone();
-                let written = self
+                let writtens = self
                     .storage
-                    .with_tx(async move |tx| {
-                        turn::write_tool_results(&tx, &event_cx, &batches).await
-                    })
+                    .with_tx(async |tx| turn::write_tool_results(&tx, &batches).await)
                     .await
                     .map_err(|error| failure(error.into(), Some(message_id)))?;
-                for written in written {
-                    turn::emit_block_deltas(&self.bus, &cx, written.message_id, &written.blocks);
-                    for event in written.committed {
-                        self.bus.notify_committed(event);
+                for written in writtens {
+                    // TODO: 提出公共处理函数
+                    for (block, block_id) in written
+                        .blocks
+                        .into_iter()
+                        .zip(written.block_ids.into_iter())
+                    {
+                        self.emit_block_committed(
+                            &cx,
+                            written.message_id,
+                            block_id,
+                            block.seq,
+                            Some(block),
+                        );
                     }
                 }
                 contexts.push(tool_message);
             }
 
             if !spawns.is_empty() {
-                spawn = Some(
-                    turn::create_spawn_requests(
-                        &self.storage,
-                        &self.bus,
-                        &cx,
-                        &topic,
-                        instance_id,
-                        spawns,
-                    )
-                    .await
-                    .map_err(|error| failure(error, Some(message_id)))?,
-                );
+                let requests =
+                    turn::create_spawn_requests(&self.storage, &topic, instance_id, spawns)
+                        .await
+                        .map_err(|error| failure(error, Some(message_id)))?;
+                let (spawns, writtens): (Vec<_>, Vec<_>) = requests.into_iter().unzip();
+                spawn = Some(spawns);
+                for written in writtens {
+                    // TODO: 提出公共处理函数
+                    for (block, block_id) in written
+                        .blocks
+                        .into_iter()
+                        .zip(written.block_ids.into_iter())
+                    {
+                        self.emit_block_committed(
+                            &cx,
+                            written.message_id,
+                            block_id,
+                            block.seq,
+                            Some(block),
+                        );
+                    }
+                }
             }
 
             if let Some(spawn) = spawn {
@@ -367,7 +407,7 @@ impl LlmRunner {
     ) -> Result<Outcome<LlmDomain>, LlmFailure> {
         let (turn, wait, answer) = self
             .storage
-            .with_tx(async move |tx| {
+            .with_tx(async |tx| {
                 let wait_id = answer.external_wait_id;
                 let wait = tx.get_external_wait(wait_id).await?.ok_or_else(|| {
                     StorageError::Internal(format!("external wait {} is unknown", wait_id))
@@ -463,30 +503,51 @@ impl LlmRunner {
         if !ordered.is_empty() {
             let mut batches = BTreeMap::new();
             batches.insert((turn.id, wait.message_id), ordered);
-            let event_cx = cx.clone();
-            let written = self
+            // FIXME: 优化：下面代码重复
+            let writtens = self
                 .storage
-                .with_tx(async move |tx| turn::write_tool_results(&tx, &event_cx, &batches).await)
+                .with_tx(async |tx| turn::write_tool_results(&tx, &batches).await)
                 .await
                 .map_err(|error| failure(error.into(), Some(wait.message_id)))?;
-            for written in written {
-                turn::emit_block_deltas(&self.bus, &cx, written.message_id, &written.blocks);
-                for event in written.committed {
-                    self.bus.notify_committed(event);
+            for written in writtens {
+                // TODO: 提出公共处理函数
+                for (block, block_id) in written
+                    .blocks
+                    .into_iter()
+                    .zip(written.block_ids.into_iter())
+                {
+                    self.emit_block_committed(
+                        &cx,
+                        written.message_id,
+                        block_id,
+                        block.seq,
+                        Some(block),
+                    );
                 }
             }
         }
         if !spawns.is_empty() {
-            let spawn = turn::create_spawn_requests(
-                &self.storage,
-                &self.bus,
-                &cx,
-                &topic,
-                instance_id,
-                spawns,
-            )
-            .await
-            .map_err(|error| failure(error, Some(wait.message_id)))?;
+            let requests = turn::create_spawn_requests(&self.storage, &topic, instance_id, spawns)
+                .await
+                .map_err(|error| failure(error, Some(wait.message_id)))?;
+
+            let (spawn, writtens): (Vec<_>, Vec<_>) = requests.into_iter().unzip();
+            for written in writtens {
+                // TODO: 提出公共处理函数
+                for (block, block_id) in written
+                    .blocks
+                    .into_iter()
+                    .zip(written.block_ids.into_iter())
+                {
+                    self.emit_block_committed(
+                        &cx,
+                        written.message_id,
+                        block_id,
+                        block.seq,
+                        Some(block),
+                    );
+                }
+            }
             return Ok(Outcome::Spawn { spawn });
         }
         let contexts = contexts::assemble(&self.storage, instance_id)
@@ -526,6 +587,56 @@ impl LlmRunner {
             Err(failure) => Outcome::Failed(failure),
         }
     }
+
+    /// 把完整块作为实时增量发给订阅者
+    fn emit_block_delta(&self, cx: &DispatchCx, message_id: i64, block: &Block) {
+        self.bus.notify(
+            &CORE_BLOCK_DELTA,
+            cx,
+            BlockDelta {
+                message_id,
+                delta: block.clone(),
+            },
+        );
+    }
+
+    fn emit_block_committed(
+        &self,
+        cx: &DispatchCx,
+        message_id: i64,
+        block_id: i64,
+        block_seq: i64,
+        block: Option<Block>,
+    ) {
+        self.bus.notify(
+            &CORE_BLOCK_COMMITTED,
+            &cx,
+            BlockCommitted {
+                message_id,
+                seq: block_seq,
+                block_id,
+                block,
+            },
+        );
+    }
+
+    fn emit_block_seal(
+        &self,
+        cx: &DispatchCx,
+        message_id: i64,
+        finish_reason: String,
+        usage: Usage,
+    ) {
+        self.bus.notify(
+            &CORE_MESSAGE_SEAL,
+            &cx,
+            MessageSeal {
+                message_id,
+                finish_reason,
+                usage,
+            },
+        );
+    }
 }
 
 /// agent运行时 llm 侧的实现
@@ -559,7 +670,9 @@ fn filter_calls(original: &[FunctionCall], decided: &[FunctionCall]) -> Vec<Func
         .iter()
         .enumerate()
         .map(|(index, call)| match decided.get(index) {
-            Some(decided) if decided.call_id == call.call_id && decided.name == call.name => decided.clone(),
+            Some(decided) if decided.call_id == call.call_id && decided.name == call.name => {
+                decided.clone()
+            }
             _ => call.clone(),
         })
         .collect()
@@ -577,7 +690,10 @@ fn merge_resume_results(
     for call in calls {
         match decisions.remove(&call.call_id) {
             Some(false) => {
-                ordered.push(denied_result(call.call_id, "the user did not allow this call"));
+                ordered.push(denied_result(
+                    call.call_id,
+                    "the user did not allow this call",
+                ));
             }
             Some(true) | None => {
                 let result = results

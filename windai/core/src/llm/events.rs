@@ -58,6 +58,11 @@ pub struct BlockCommitted {
     /// block 序列
     pub seq: i64,
     pub block_id: i64,
+    /// 非实时消息提交时，系统不推送 partial 数据，该字段存放完整的 Block 值。
+    ///
+    /// 系统推送实时 partial 消息时，消费者自行拼装成完整数据，
+    /// block 推送完毕后，该字段不设置值
+    pub block: Option<Block>,
 }
 
 /// 一次模型 API 往返的结束标记

@@ -1,8 +1,5 @@
 use super::domain::{LlmDomain, LlmSpec};
-use super::events::{
-    BlockCommitted, BlockDelta, CORE_BLOCK_COMMITTED, CORE_BLOCK_DELTA, CORE_MESSAGE_SEAL,
-    CORE_PROMPT_COLLECT, MessageSeal, PromptCollect,
-};
+use super::events::{CORE_PROMPT_COLLECT, PromptCollect};
 use super::rule::compile_rules;
 use super::tools::{SpawnAgentAction, ToolCatalog};
 use super::{McpService, ModService};
@@ -19,12 +16,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use wind_ai::chat::{Chunk, stream_body};
 use wind_ai::{ChatAdapter, ChatModel, Target, adapter_of};
-use wind_event::{Committed, DispatchCx, Dispatcher, Envelope, Origin, Scope, Source};
+use wind_event::{DispatchCx, Dispatcher, Origin, Scope, Source};
 use wind_rule::RuleSet;
 use wind_storage::error::Result as StorageResult;
 use wind_storage::vendors::config::ModelConfig;
 use wind_storage::{ChildStateRow, Storage, Topic};
-use wind_wire::{AgentMode, AgentRole, Block, Content, FunctionCallOutput, Message, Role, Usage};
+use wind_wire::{AgentMode, AgentRole, Block, Content, FunctionCallOutput, Message, Role};
 
 struct ChildState {
     child_id: i64,
@@ -44,11 +41,10 @@ pub struct Prepared {
     pub(crate) catalog: Arc<ToolCatalog>,
 }
 
-pub struct WrittenToolResults {
+pub struct WrittenBlocks {
     pub message_id: i64,
     pub blocks: Vec<Block>,
-    /// 已提交的块事件
-    pub committed: Vec<Committed>,
+    pub block_ids: Vec<i64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -72,71 +68,6 @@ pub fn round_cx(topic_id: i64, instance_id: i64) -> DispatchCx {
     )
 }
 
-/// 为已落库的块写提交日志
-pub(crate) async fn log_blocks(
-    tx: &Storage,
-    cx: &DispatchCx,
-    message_id: i64,
-    blocks: &[Block],
-    block_ids: &[i64],
-) -> StorageResult<Vec<Committed>> {
-    let mut events = Vec::with_capacity(blocks.len());
-    for (block, block_id) in blocks.iter().zip(block_ids.iter().copied()) {
-        let envelope = Envelope::of(
-            &CORE_BLOCK_COMMITTED,
-            cx,
-            json!(BlockCommitted {
-                message_id,
-                seq: block.seq,
-                block_id,
-            }),
-        );
-        let log_id = tx.create_event_log(&envelope).await?;
-        events.push(Committed { log_id, envelope });
-    }
-    Ok(events)
-}
-
-/// 为一次模型往返写结束标记
-pub(crate) async fn log_message_seal(
-    tx: &Storage,
-    cx: &DispatchCx,
-    message_id: i64,
-    finish_reason: &str,
-    usage: Usage,
-) -> StorageResult<Committed> {
-    let envelope = Envelope::of(
-        &CORE_MESSAGE_SEAL,
-        cx,
-        json!(MessageSeal {
-            message_id,
-            finish_reason: finish_reason.to_string(),
-            usage,
-        }),
-    );
-    let log_id = tx.create_event_log(&envelope).await?;
-    Ok(Committed { log_id, envelope })
-}
-
-/// 把完整块作为实时增量发给订阅者
-pub(crate) fn emit_block_deltas(
-    bus: &Dispatcher,
-    cx: &DispatchCx,
-    message_id: i64,
-    blocks: &[Block],
-) {
-    for block in blocks {
-        bus.notify(
-            &CORE_BLOCK_DELTA,
-            cx,
-            BlockDelta {
-                message_id,
-                delta: block.clone(),
-            },
-        );
-    }
-}
-
 /// 查询 instance_id 所在的 topic
 pub async fn topic_of(storage: &Storage, instance_id: i64) -> Result<Topic> {
     storage
@@ -148,15 +79,13 @@ pub async fn topic_of(storage: &Storage, instance_id: i64) -> Result<Topic> {
 /// 将 pending 数据合并成一条 user 消息
 pub async fn compose_pending(
     storage: &Storage,
-    bus: &Dispatcher,
-    cx: &DispatchCx,
     topic_id: i64,
     instance_id: i64,
     specs: &[LlmSpec],
-) -> Result<Option<ComposedInput>> {
+) -> Result<(Option<WrittenBlocks>, Option<ComposedInput>)> {
     let pids: Vec<i64> = specs.iter().filter_map(|spec| spec.pending_id).collect();
     if pids.is_empty() {
-        return Ok(None);
+        return Ok((None, None));
     }
 
     let mut absorber = BlockAbsorb::new();
@@ -169,7 +98,7 @@ pub async fn compose_pending(
         .filter(|row| row.instance_id == instance_id)
         .collect();
     if rows.is_empty() {
-        return Ok(None);
+        return Ok((None, None));
     }
     let ids: Vec<i64> = rows.iter().map(|row| row.id).collect();
     let partial = Message {
@@ -182,19 +111,20 @@ pub async fn compose_pending(
     let turn_id = tx.create_turn(topic_id, instance_id, None).await?;
     let message_id = tx.create_message(turn_id, Role::User, None).await?;
     let block_ids = tx.create_blocks(message_id, &blocks).await?;
-    let committed = log_blocks(&tx, cx, message_id, &blocks, &block_ids).await?;
     tx.delete_pending_by_ids(&ids).await?;
     storage_tx.commit().await?;
 
-    emit_block_deltas(bus, cx, message_id, &blocks);
-    for event in committed {
-        bus.notify_committed(event);
-    }
-
-    Ok(Some(ComposedInput {
-        turn_id,
-        message_id,
-    }))
+    Ok((
+        Some(WrittenBlocks {
+            message_id,
+            block_ids,
+            blocks,
+        }),
+        Some(ComposedInput {
+            turn_id,
+            message_id,
+        }),
+    ))
 }
 
 /// agent 被唤醒时，将 agent tool_call 的执行结果回补。
@@ -202,12 +132,8 @@ pub async fn compose_pending(
 /// 子 agent 实例的结果属于父 agent tool_call 结果
 pub async fn report_spawns(
     storage: &Storage,
-    bus: &Dispatcher,
-    topic_id: i64,
     instance_id: i64,
-) -> Result<Option<i64>> {
-    let cx = round_cx(topic_id, instance_id);
-    let log_cx = cx.clone();
+) -> Result<(Vec<WrittenBlocks>, Option<i64>)> {
     let (written, spawn_turn) = storage
         .with_tx(async move |tx| {
             let unpaired: Vec<_> = tx
@@ -239,18 +165,11 @@ pub async fn report_spawns(
                     .push(output);
             }
             let spawn_turn = batches.keys().map(|(turn_id, _)| *turn_id).max();
-            let written = write_tool_results(&tx, &log_cx, &batches).await?;
+            let written = write_tool_results(&tx, &batches).await?;
             Ok((written, spawn_turn))
         })
         .await?;
-
-    for written in written {
-        emit_block_deltas(bus, &cx, written.message_id, &written.blocks);
-        for event in written.committed {
-            bus.notify_committed(event);
-        }
-    }
-    Ok(spawn_turn)
+    Ok((written, spawn_turn))
 }
 
 pub async fn prepare(
@@ -361,15 +280,13 @@ pub async fn exchange(
 /// 创建 spawn 子 agent 请求
 pub async fn create_spawn_requests(
     storage: &Storage,
-    bus: &Dispatcher,
-    _cx: &DispatchCx,
     topic: &Topic,
     instance_id: i64,
     actions: Vec<SpawnAgentAction>,
-) -> Result<Vec<SpawnRequest<LlmDomain>>> {
-    let written = storage
+) -> Result<Vec<(SpawnRequest<LlmDomain>, WrittenBlocks)>> {
+    let writtens = storage
         .with_tx(move |tx| async move {
-            let mut built: Vec<(SpawnRequest<LlmDomain>, i64, Vec<Block>, Vec<Committed>)> =
+            let mut built: Vec<(SpawnRequest<LlmDomain>, WrittenBlocks)> =
                 Vec::with_capacity(actions.len());
             for action in actions {
                 let mode = action.data.mode;
@@ -400,8 +317,6 @@ pub async fn create_spawn_requests(
                     .create_message(turn_id, Role::User, topic.model_id)
                     .await?;
                 let block_ids = tx.create_blocks(message_id, &blocks).await?;
-                let child_cx = round_cx(topic.id, child_instance_id);
-                let committed = log_blocks(&tx, &child_cx, message_id, &blocks, &block_ids).await?;
                 let request = SpawnRequest {
                     id: child_instance_id,
                     spec: LlmSpec {
@@ -412,22 +327,19 @@ pub async fn create_spawn_requests(
                     },
                     detached: mode == AgentMode::Background,
                 };
-                built.push((request, message_id, blocks, committed));
+                built.push((
+                    request,
+                    WrittenBlocks {
+                        message_id,
+                        block_ids,
+                        blocks,
+                    },
+                ));
             }
             Ok(built)
         })
         .await?;
-
-    let mut spawn = Vec::with_capacity(written.len());
-    for (request, message_id, blocks, committed) in written {
-        let child_cx = round_cx(topic.id, request.id);
-        emit_block_deltas(bus, &child_cx, message_id, &blocks);
-        for event in committed {
-            bus.notify_committed(event);
-        }
-        spawn.push(request);
-    }
-    Ok(spawn)
+    Ok(writtens)
 }
 
 async fn child_states(
@@ -462,11 +374,10 @@ async fn child_states(
 
 pub(crate) async fn write_tool_results(
     tx: &Storage,
-    cx: &DispatchCx,
     batches: &BTreeMap<(i64, i64), Vec<FunctionCallOutput>>,
-) -> StorageResult<Vec<WrittenToolResults>> {
-    let mut written = Vec::with_capacity(batches.len());
-    for ((turn_id, _message_id), results) in batches {
+) -> StorageResult<Vec<WrittenBlocks>> {
+    let mut written: Vec<WrittenBlocks> = Vec::with_capacity(batches.len());
+    for ((turn_id, _), results) in batches {
         if results.is_empty() {
             continue;
         }
@@ -482,11 +393,10 @@ pub(crate) async fn write_tool_results(
         });
         let blocks = absorber.settle();
         let block_ids = tx.create_blocks(message_id, &blocks).await?;
-        let committed = log_blocks(tx, cx, message_id, &blocks, &block_ids).await?;
-        written.push(WrittenToolResults {
+        written.push(WrittenBlocks {
             message_id,
+            block_ids,
             blocks,
-            committed,
         });
     }
     Ok(written)
