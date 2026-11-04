@@ -218,8 +218,6 @@ pub struct Turn {
 pub struct Block {
     pub id: i64,
     pub message_id: i64,
-    /// 不完整的块不进入上下文
-    pub finished: bool,
     pub role: Role,
     /// 块在消息内的位置
     pub seq: i64,
@@ -343,7 +341,6 @@ impl<'r> FromRow<'r, DbRow> for Block {
         Ok(Self {
             id: row.try_get("id")?,
             message_id: row.try_get("message_id")?,
-            finished: row.try_get("finished")?,
             role: parse_enum("role", &role)?,
             seq: row.try_get("seq")?,
             revision: row.try_get("revision")?,

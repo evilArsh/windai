@@ -78,7 +78,6 @@ impl Storage {
                             m.created_at,
                             b.id,
                             b.message_id,
-                            b.finished,
                             b.seq,
                             b.kind,
                             b.role,
@@ -94,7 +93,6 @@ impl Storage {
                     JOIN message m ON m.turn_id = t.id
                     JOIN block b ON b.message_id = m.id
                     WHERE t.instance_id = ?
-                        AND b.finished = TRUE
                     ORDER BY m.id, b.seq",
                 )
                 .bind(instance_id),
@@ -254,14 +252,13 @@ impl Storage {
         }
         let mut query = QueryBuilder::<DbDriver>::new(
             "INSERT INTO block
-                (message_id, finished, seq, kind, role, revision, content, format,
+                (message_id, seq, kind, role, revision, content, format,
                  item_id, call_id, call_name, call_arguments, call_res)",
         );
         query.push_values(blocks, |mut separated, block| {
             let columns = BlockColumns::of(&block.body);
             separated
                 .push_bind(message_id)
-                .push_bind(true)
                 .push_bind(block.seq)
                 .push_bind(block.tag())
                 .push_bind(block.role.as_ref())

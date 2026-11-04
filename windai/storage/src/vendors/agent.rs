@@ -129,7 +129,6 @@ impl Storage {
                     ELSE NULL
                 END
                 AND b.kind = 'text'
-                AND b.finished = TRUE
             WHERE s.parent_id = ",
         );
         query.push_bind(parent_id);

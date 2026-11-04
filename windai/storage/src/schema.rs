@@ -271,7 +271,6 @@ CREATE TABLE IF NOT EXISTS message (
 CREATE TABLE IF NOT EXISTS block (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     message_id      BIGINT  NOT NULL,
-    finished        BOOLEAN NOT NULL DEFAULT TRUE,
     seq             BIGINT  NOT NULL,
     kind            TEXT    NOT NULL,
     role            TEXT    NOT NULL,
