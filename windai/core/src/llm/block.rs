@@ -1,5 +1,4 @@
-use std::vec::IntoIter;
-use wind_wire::{Block, Body, Content, FunctionCall, Message, Role, Usage};
+use wind_wire::{Block, Body, Content, Message, Role, Usage};
 
 #[derive(Debug, Default)]
 pub struct BlockAbsorb {
@@ -12,15 +11,16 @@ pub struct BlockAbsorb {
     finish_reason: String,
 }
 
-pub struct Changed<'a> {
-    blocks: &'a [Block],
-    indices: IntoIter<usize>,
+pub struct Changed {
+    blocks: Vec<Block>,
 }
 
-impl<'a> Iterator for Changed<'a> {
-    type Item = &'a Block;
-    fn next(&mut self) -> Option<Self::Item> {
-        self.indices.next().map(|index| &self.blocks[index])
+impl IntoIterator for Changed {
+    type Item = Block;
+    type IntoIter = std::vec::IntoIter<Block>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.blocks.into_iter()
     }
 }
 
@@ -29,70 +29,19 @@ impl BlockAbsorb {
         Self::default()
     }
 
-    /// 把一条消息的片段并入它分解出的块，返回本次变更的块
-    pub fn absorb(&mut self, partial: Message) -> Changed<'_> {
+    /// 拆解一条消息的片段并入累加块，返回本次的增量块
+    pub fn absorb(&mut self, partial: Message) -> Changed {
         let role = partial.role;
         self.input_tokens = self.input_tokens.max(partial.input_tokens);
         self.output_tokens = self.output_tokens.max(partial.output_tokens);
         if self.created_at == 0 {
             self.created_at = partial.created_at;
         }
-        let mut changed: Vec<usize> = Vec::new();
-        if let Some(reasoning) = partial.reasoning_content
-            && !reasoning.is_empty()
-        {
-            self.extend(
-                &mut changed,
-                |body| matches!(body, Body::Reasoning { .. }),
-                |seq| Block::new_reasoning(role, seq),
-                &reasoning,
-            );
-        }
-        for item in partial.content {
-            match item {
-                Content::Text { data } => {
-                    self.extend(
-                        &mut changed,
-                        |body| matches!(body, Body::Text { .. }),
-                        |seq| Block::new_text(role, seq),
-                        &data,
-                    );
-                }
-                Content::Image { data } => {
-                    if data.is_empty() {
-                        continue;
-                    }
-                    self.open(&mut changed, |seq| Block::new_image(role, seq, data));
-                }
-                Content::File { data } => {
-                    if data.is_empty() {
-                        continue;
-                    }
-                    self.open(&mut changed, |seq| Block::new_file(role, seq, data));
-                }
-                Content::Audio { data } => {
-                    if data.content.is_empty() {
-                        continue;
-                    }
-                    self.extend_audio(
-                        &mut changed,
-                        role,
-                        &data.item_id,
-                        &data.format,
-                        &data.content,
-                    );
-                }
-                Content::FunctionCall { data } => {
-                    self.result(&mut changed, role, data.id, data.content);
-                }
-            }
-        }
-        for call in partial.tool_calls.into_iter().flatten() {
-            self.call(&mut changed, role, call);
-        }
         Changed {
-            blocks: &self.blocks,
-            indices: changed.into_iter(),
+            blocks: split(partial)
+                .into_iter()
+                .map(|body| self.merge(role, body))
+                .collect(),
         }
     }
 
@@ -158,128 +107,223 @@ impl BlockAbsorb {
         self.finish_reason.clear();
     }
 
-    fn open(&mut self, changed: &mut Vec<usize>, open: impl FnOnce(i64) -> Block) {
+    fn merge(&mut self, role: Role, body: Body) -> Block {
+        let index = self.place(role, &body);
+        self.blocks[index].absorb_body(&body);
+        let target = &self.blocks[index];
+        Block {
+            role: target.role,
+            seq: target.seq,
+            revision: target.revision,
+            body,
+        }
+    }
+
+    fn place(&mut self, role: Role, body: &Body) -> usize {
+        let found = match body {
+            Body::Reasoning { .. } => self.tail(|body| matches!(body, Body::Reasoning { .. })),
+            Body::Text { .. } => self.tail(|body| matches!(body, Body::Text { .. })),
+            Body::Audio { item_id, .. } => self.audio_block(item_id),
+            Body::ToolCall {
+                item_id, call_id, ..
+            } => self.call_block(item_id, call_id),
+            Body::Image { .. } | Body::File { .. } | Body::ToolResult { .. } => None,
+        };
+        match found {
+            Some(index) => index,
+            None => self.open(role, body),
+        }
+    }
+
+    fn open(&mut self, role: Role, body: &Body) -> usize {
         let seq = self.seq;
         self.seq += 1;
-        let index = self.blocks.len();
-        self.blocks.push(open(seq));
-        changed.push(index);
-    }
-
-    fn extend(
-        &mut self,
-        changed: &mut Vec<usize>,
-        same: impl Fn(&Body) -> bool,
-        open: impl FnOnce(i64) -> Block,
-        fragment: &str,
-    ) {
-        if fragment.is_empty() {
-            return;
-        }
-        let index = match self.blocks.last() {
-            Some(block) if same(&block.body) => self.blocks.len() - 1,
-            _ => {
-                let seq = self.seq;
-                self.seq += 1;
-                self.blocks.push(open(seq));
-                self.blocks.len() - 1
+        let block = match body {
+            Body::Reasoning { .. } => Block::new_reasoning(role, seq),
+            Body::Text { .. } => Block::new_text(role, seq),
+            Body::Audio {
+                item_id, format, ..
+            } => Block::new_audio(role, seq, item_id.clone(), format.clone(), String::new()),
+            Body::ToolCall {
+                item_id,
+                call_id,
+                call_name,
+                ..
+            } => Block::new_tool_call(
+                role,
+                seq,
+                item_id.clone(),
+                call_id.clone(),
+                call_name.clone(),
+            ),
+            Body::Image { content } => Block::new_image(role, seq, content.clone()),
+            Body::File { content } => Block::new_file(role, seq, content.clone()),
+            Body::ToolResult { call_id, call_res } => {
+                Block::new_tool_result(role, seq, call_id.clone(), call_res.clone())
             }
         };
-        self.blocks[index].append_text(fragment);
-        changed.push(index);
+        let index = self.blocks.len();
+        self.blocks.push(block);
+        index
     }
 
-    fn extend_audio(
-        &mut self,
-        changed: &mut Vec<usize>,
-        role: Role,
-        item_id: &Option<String>,
-        format: &str,
-        fragment: &str,
-    ) {
-        let found = match item_id {
-            Some(item_id) => self.blocks.iter().position(|block| {
+    fn tail(&self, same: impl Fn(&Body) -> bool) -> Option<usize> {
+        let index = self.blocks.len().checked_sub(1)?;
+        same(&self.blocks[index].body).then_some(index)
+    }
+
+    fn audio_block(&self, item_id: &Option<String>) -> Option<usize> {
+        let found = item_id.as_ref().and_then(|item_id| {
+            self.blocks.iter().position(|block| {
                 matches!(&block.body, Body::Audio { item_id: current, .. }
                     if current.as_deref() == Some(item_id.as_str()))
-            }),
-            None => None,
-        };
-        let tail = self.blocks.len().checked_sub(1).filter(|&index| {
-            let Body::Audio {
-                item_id: current, ..
-            } = &self.blocks[index].body
-            else {
-                return false;
-            };
-            current.is_none() || item_id.is_none() || current == item_id
+            })
         });
-        let index = match found.or(tail) {
-            Some(index) => index,
-            None => {
-                let seq = self.seq;
-                self.seq += 1;
-                self.blocks.push(Block::new_audio(
-                    role,
-                    seq,
-                    item_id.clone(),
-                    format.to_owned(),
-                    String::new(),
-                ));
-                self.blocks.len() - 1
-            }
-        };
-        self.blocks[index].append_audio(item_id, fragment);
-        changed.push(index);
+        found.or_else(|| {
+            self.tail(|body| match body {
+                Body::Audio {
+                    item_id: current, ..
+                } => current.is_none() || item_id.is_none() || current == item_id,
+                _ => false,
+            })
+        })
     }
 
-    fn call(&mut self, changed: &mut Vec<usize>, role: Role, call: FunctionCall) {
-        let found = if let Some(item_id) = &call.item_id {
+    fn call_block(&self, item_id: &Option<String>, call_id: &str) -> Option<usize> {
+        if let Some(item_id) = item_id {
             self.blocks.iter().position(|block| {
                 matches!(&block.body, Body::ToolCall { item_id: current, .. }
                     if current.as_deref() == Some(item_id.as_str()))
             })
-        } else if !call.call_id.is_empty() {
+        } else if !call_id.is_empty() {
             self.blocks.iter().position(|block| {
-                matches!(&block.body, Body::ToolCall { call_id, .. } if call_id == &call.call_id)
+                matches!(&block.body, Body::ToolCall { call_id: current, .. } if current == call_id)
             })
         } else {
             self.blocks
                 .iter()
                 .rposition(|block| matches!(&block.body, Body::ToolCall { .. }))
-        };
-        let index = match found {
-            Some(index) => index,
-            None => {
-                let seq = self.seq;
-                self.seq += 1;
-                self.blocks.push(Block::new_tool_call(
-                    role,
-                    seq,
-                    call.item_id.clone(),
-                    call.call_id.clone(),
-                    call.name.clone(),
-                ));
-                self.blocks.len() - 1
+        }
+    }
+}
+
+fn split(partial: Message) -> Vec<Body> {
+    let mut bodies = Vec::new();
+    if let Some(reasoning) = partial.reasoning_content
+        && !reasoning.is_empty()
+    {
+        bodies.push(Body::Reasoning { content: reasoning });
+    }
+    for item in partial.content {
+        match item {
+            Content::Text { data } => {
+                if !data.is_empty() {
+                    bodies.push(Body::Text { content: data });
+                }
             }
-        };
-        let block = &mut self.blocks[index];
-        block.fill_call(&call.item_id, &call.call_id, &call.name);
-        block.append_arguments(&call.arguments);
-        changed.push(index);
+            Content::Image { data } => {
+                if !data.is_empty() {
+                    bodies.push(Body::Image { content: data });
+                }
+            }
+            Content::File { data } => {
+                if !data.is_empty() {
+                    bodies.push(Body::File { content: data });
+                }
+            }
+            Content::Audio { data } => {
+                if !data.content.is_empty() {
+                    bodies.push(Body::Audio {
+                        item_id: data.item_id,
+                        format: data.format,
+                        content: data.content,
+                    });
+                }
+            }
+            Content::FunctionCall { data } => bodies.push(Body::ToolResult {
+                call_id: data.id,
+                call_res: data.content,
+            }),
+        }
+    }
+    for call in partial.tool_calls.into_iter().flatten() {
+        bodies.push(Body::ToolCall {
+            item_id: call.item_id,
+            call_id: call.call_id,
+            call_name: call.name,
+            call_arguments: call.arguments,
+        });
+    }
+    bodies
+}
+
+#[cfg(test)]
+mod absorb_order {
+    use super::*;
+    use wind_wire::FunctionCall;
+
+    fn text(fragment: &str) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: vec![Content::new_text(fragment.to_string())],
+            ..Message::default()
+        }
     }
 
-    fn result(
-        &mut self,
-        changed: &mut Vec<usize>,
-        role: Role,
-        call_id: String,
-        content: serde_json::Value,
-    ) {
-        let seq = self.seq;
-        self.seq += 1;
-        let index = self.blocks.len();
-        self.blocks
-            .push(Block::new_tool_result(role, seq, call_id, content));
-        changed.push(index);
+    fn reasoning(fragment: &str) -> Message {
+        Message {
+            role: Role::Assistant,
+            reasoning_content: Some(fragment.to_string()),
+            ..Message::default()
+        }
+    }
+
+    fn call(item_id: &str, call_id: &str, name: &str, args: &str) -> Message {
+        Message {
+            role: Role::Assistant,
+            tool_calls: Some(vec![FunctionCall {
+                item_id: Some(item_id.to_string()),
+                call_id: call_id.to_string(),
+                name: name.to_string(),
+                arguments: args.to_string(),
+            }]),
+            ..Message::default()
+        }
+    }
+
+    #[test]
+    fn deltas_carry_the_seq_and_revision_of_the_block_they_land_in() {
+        let mut absorber = BlockAbsorb::new();
+        let mut stamps = Vec::new();
+        for partial in [
+            text("a"),
+            reasoning("r1"),
+            text("b"),
+            call("i1", "c1", "f", ""),
+            call("i1", "", "", "{\"x\""),
+            call("i1", "", "", ":1}"),
+        ] {
+            for delta in absorber.absorb(partial) {
+                stamps.push((delta.seq, delta.revision));
+            }
+        }
+        let blocks = absorber.settle();
+
+        assert_eq!(
+            stamps,
+            vec![(0, 1), (1, 1), (2, 1), (3, 0), (3, 1), (3, 2)],
+            "a delta must carry the position of the block it lands in and the revision after the append"
+        );
+        assert_eq!(blocks.len(), 4);
+        assert_eq!(
+            blocks.iter().map(|block| block.seq).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3],
+            "a new block takes the next seq; appending does not"
+        );
+        assert_eq!(blocks[3].revision, 2);
+        assert_eq!(
+            blocks[3].tool_call().expect("a tool call").arguments,
+            "{\"x\":1}"
+        );
     }
 }

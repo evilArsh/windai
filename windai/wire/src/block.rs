@@ -209,6 +209,25 @@ impl Block {
         self.revision += 1;
     }
 
+    pub fn absorb_body(&mut self, body: &Body) {
+        match body {
+            Body::Reasoning { content } | Body::Text { content } => self.append_text(content),
+            Body::Audio {
+                item_id, content, ..
+            } => self.append_audio(item_id, content),
+            Body::ToolCall {
+                item_id,
+                call_id,
+                call_name,
+                call_arguments,
+            } => {
+                self.fill_call(item_id, call_id, call_name);
+                self.append_arguments(call_arguments);
+            }
+            _ => {}
+        }
+    }
+
     pub fn fill_call(&mut self, item_id: &Option<String>, call_id: &str, call_name: &str) {
         let Body::ToolCall {
             item_id: current_item,

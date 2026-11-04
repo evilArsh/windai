@@ -338,7 +338,7 @@ pub async fn exchange(
             }
             Ok(Chunk::Delta(delta)) => {
                 for block in absorber.absorb(delta) {
-                    emit_delta(block);
+                    emit_delta(&block);
                 }
             }
             Err(error) => {
