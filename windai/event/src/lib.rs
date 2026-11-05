@@ -1,18 +1,20 @@
 pub use context::DispatchCx;
 pub use def::{Directory, EventDef, EventMeta, Shape, schema};
-pub use dispatch::Dispatcher;
-pub use envelope::{Envelope, Origin, Scope, Source};
+pub use dispatch::{BusError, Dispatcher};
+pub use envelope::{Envelope, Origin, Scope, Source, envelope_of};
 pub use events::{
     CORE_DISPATCH_FAILED, CORE_DISPATCH_TIMEOUT, DeliveryTarget, DispatchFailed, DispatchFailure,
     DispatchTimeout, directory,
 };
 pub use guard::{Guards, Limits, OverLimit};
 pub use mod_call::{CallCx, CallError, CallMode};
-pub use outlet::{Committed, EventOutlet, Pending};
+pub use mod_emit::{EmitChannel, EmitError, ModEmitter, ModIdentity};
+pub use outlet::{EventOutlet, GroupKey, Pending, Retention, SubmitError};
 pub use pool::{Job, ObservePool};
 pub use subscription::{EnabledSet, Subscription, SubscriptionIndex};
 
 use std::sync::Arc;
+use wind_wire::event::FeedEvent;
 
 pub mod context;
 pub mod def;
@@ -21,13 +23,14 @@ pub mod envelope;
 pub mod events;
 pub mod guard;
 pub mod mod_call;
+pub mod mod_emit;
 pub mod outlet;
 pub mod pool;
 pub mod subscription;
 
-/// 已提交事件的接收者；写入者按 log_id 顺序调用，实现方不得阻塞
+/// 已提交事件的接收者；写入者按 key 顺序调用，实现方不得阻塞
 pub trait Observer: Send + Sync {
-    fn on_committed(&self, committed: &Committed);
+    fn on_event(&self, event: &FeedEvent);
 }
 
 /// 调用 mod 处理函数的入口

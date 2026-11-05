@@ -1,34 +1,11 @@
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, to_value};
 use std::collections::HashMap;
 use std::marker::PhantomData;
 
+pub use wind_wire::event::Shape;
+
 pub fn schema<T: schemars::JsonSchema>() -> Value {
     to_value(schemars::schema_for!(T)).expect("the generated schema is valid JSON")
-}
-
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    strum::AsRefStr,
-    strum::EnumString,
-    Serialize,
-    Deserialize,
-)]
-#[strum(serialize_all = "snake_case")]
-pub enum Shape {
-    Intercept,
-    Observe,
-}
-
-impl Shape {
-    pub const fn visible_to_frontend(self) -> bool {
-        matches!(self, Self::Observe)
-    }
 }
 
 pub struct EventDef<P> {

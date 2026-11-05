@@ -96,6 +96,17 @@ impl Guards {
         Ok(())
     }
 
+    /// 宿主通知不占用 mod 派生事件的额度
+    pub fn admit_host(&self, cx: &DispatchCx) -> Result<(), OverLimit> {
+        if cx.depth > self.limits.max_depth {
+            return Err(OverLimit::TooDeep {
+                max: self.limits.max_depth,
+                depth: cx.depth,
+            });
+        }
+        Ok(())
+    }
+
     pub fn admit_mod_emit(&self, mod_name: &str) -> Result<(), OverLimit> {
         let now = Instant::now();
         let window = self.limits.window;

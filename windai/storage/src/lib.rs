@@ -103,3 +103,8 @@ impl StorageTx {
         self.storage.executor.rollback().await
     }
 }
+
+#[test]
+fn storage_handle_stays_pointer_sized() {
+    assert_eq!(std::mem::size_of::<Storage>(), 16);
+}

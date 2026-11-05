@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+wind-wire = { path = "../wire" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
@@ -15,7 +16,3 @@ strum = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
 schemars = { workspace = true }
-
-
-[dev-dependencies]
-tokio = { workspace = true, features = ["test-util"] }

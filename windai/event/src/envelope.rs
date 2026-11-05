@@ -1,121 +1,17 @@
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use std::time::{SystemTime, UNIX_EPOCH};
+pub use wind_wire::event::{Envelope, Origin, Scope, Source};
 
-use crate::Shape;
 use crate::context::DispatchCx;
 use crate::def::EventDef;
+use serde_json::Value;
 
-/// 触发操作的作用域
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Scope {
-    Global,
-    Topic { topic_id: i64, instance_id: i64 },
-}
-
-impl Scope {
-    pub fn topic_id(&self) -> Option<i64> {
-        match self {
-            Scope::Global => None,
-            Scope::Topic { topic_id, .. } => Some(*topic_id),
-        }
-    }
-
-    pub fn instance_id(&self) -> Option<i64> {
-        match self {
-            Scope::Global => None,
-            Scope::Topic { instance_id, .. } => Some(*instance_id),
-        }
-    }
-}
-
-/// 操作从哪条路径来
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::AsRefStr, strum::EnumString,
-)]
-#[serde(rename_all = "snake_case")]
-#[strum(serialize_all = "snake_case")]
-pub enum Origin {
-    Agent,
-    Ui,
-    Internal,
-}
-
-/// 事件由谁发出
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, strum::AsRefStr)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-#[strum(serialize_all = "snake_case")]
-pub enum Source {
-    Core { subsystem: String },
-    Mod { name: String, version: u32 },
-}
-
-impl Source {
-    pub fn core(subsystem: impl Into<String>) -> Self {
-        Source::Core {
-            subsystem: subsystem.into(),
-        }
-    }
-
-    pub fn module(name: impl Into<String>, version: u32) -> Self {
-        Source::Mod {
-            name: name.into(),
-            version,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Envelope<P> {
-    /// 产生时刻，epoch 毫秒
-    pub time: i64,
-    pub name: String,
-    pub scope: Scope,
-    pub origin: Origin,
-    pub source: Source,
-    pub payload: Option<P>,
-    pub shape: Shape,
-}
-
-impl Envelope<serde_json::Value> {
-    pub fn new(
-        name: &'static str,
-        scope: Scope,
-        origin: Origin,
-        source: Source,
-        payload: Option<Value>,
-        shape: Shape,
-    ) -> Self {
-        Self {
-            time: Self::now_ms(),
-            name: name.to_string(),
-            scope,
-            origin,
-            source,
-            payload,
-            shape,
-        }
-    }
-
-    /// 沿调用方的上下文组信封
-    pub fn of(def: &EventDef<impl Sized>, cx: &DispatchCx, payload: Value) -> Self {
-        Self::new(
-            def.name,
-            cx.scope.clone(),
-            cx.origin,
-            cx.source.clone(),
-            Some(payload),
-            def.shape,
-        )
-    }
-}
-
-impl<P> Envelope<P> {
-    pub fn now_ms() -> i64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0)
-    }
+/// 沿调用方的上下文组信封
+pub fn envelope_of<P>(def: &EventDef<P>, cx: &DispatchCx, payload: Value) -> Envelope<Value> {
+    Envelope::new(
+        def.name,
+        cx.scope.clone(),
+        cx.origin,
+        cx.source.clone(),
+        Some(payload),
+        def.shape,
+    )
 }

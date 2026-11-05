@@ -11,10 +11,6 @@ sqlite = ["sqlx/sqlite"]
 # postgres = ["sqlx/postgres"]
 
 [dependencies]
-# wind-ai = { path = "../ai" }
-# wind-block = { path = "../block" }
-# wind-rule = { path = "../rule" }
-wind-event = { path = "../event" }
 wind-wire = { path = "../wire" }
 async-trait = { workspace = true }
 chrono = { workspace = true }
@@ -29,7 +25,3 @@ thiserror = { workspace = true }
 strum = { workspace = true }
 log = { workspace = true }
 nanoid = { workspace = true }
-
-[dev-dependencies]
-tempfile = { version = "*" }
-tokio = { workspace = true, features = ["test-util", "macros"] }

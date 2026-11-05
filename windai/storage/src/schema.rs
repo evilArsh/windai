@@ -321,18 +321,30 @@ CREATE TABLE IF NOT EXISTS external_waits (
 );
 CREATE TABLE IF NOT EXISTS event_log (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    epoch           BIGINT  NOT NULL,
+    seq             BIGINT  NOT NULL,
     create_time     BIGINT  NOT NULL,
     name            TEXT    NOT NULL,
     shape           TEXT    NOT NULL,
+    route_kind      TEXT    NOT NULL,
+    route_name      TEXT,
+    route_channel   TEXT,
     topic_id        BIGINT,
     instance_id     BIGINT,
     origin          TEXT    NOT NULL,
     source_kind     TEXT    NOT NULL,
     source_name     TEXT    NOT NULL,
     source_version  BIGINT  NOT NULL DEFAULT 0,
-    payload         TEXT    NOT NULL,
+    payload         TEXT,
     CHECK ((topic_id IS NULL AND instance_id IS NULL)
-        OR (topic_id IS NOT NULL AND instance_id IS NOT NULL))
+        OR (topic_id IS NOT NULL AND instance_id IS NOT NULL)),
+    CHECK ((route_kind = 'core' AND route_name IS NULL AND route_channel IS NULL)
+        OR (route_kind = 'mod' AND route_name IS NOT NULL AND route_channel IS NOT NULL)),
+    UNIQUE (epoch, seq)
+);
+CREATE TABLE IF NOT EXISTS feed_meta (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    epoch     BIGINT  NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_turn_instance ON turn(instance_id, id);
 CREATE INDEX IF NOT EXISTS idx_turn_topic ON turn(topic_id, id);
@@ -354,8 +366,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_pending_source
 CREATE INDEX IF NOT EXISTS idx_external_waits_instance ON external_waits(instance_id);
 CREATE INDEX IF NOT EXISTS idx_external_waits_open
     ON external_waits(instance_id) WHERE answered_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_event_log_topic ON event_log(topic_id, id);
-CREATE INDEX IF NOT EXISTS idx_event_log_global ON event_log(id) WHERE topic_id IS NULL;
+CREATE INDEX IF NOT EXISTS idx_event_log_topic_key
+    ON event_log(topic_id, instance_id, epoch, seq);
+CREATE INDEX IF NOT EXISTS idx_event_log_route_key
+    ON event_log(route_name, route_channel, epoch, seq);
+CREATE INDEX IF NOT EXISTS idx_event_log_global_key
+    ON event_log(epoch, seq) WHERE topic_id IS NULL;
+
+INSERT INTO feed_meta (singleton, epoch) VALUES (1, 0)
+    ON CONFLICT (singleton) DO NOTHING;
 "#;
 
 pub async fn create_if_missing(pool: &DbPool) -> Result<()> {

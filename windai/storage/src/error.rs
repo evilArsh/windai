@@ -2,7 +2,7 @@
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
     #[error("database error: {0}")]
-    Database(String),
+    Database(#[from] sqlx::Error),
     #[error("internal error: {0}")]
     Internal(String),
     #[error("expected to affect rows, but none were affected")]
@@ -17,18 +17,10 @@ pub enum StorageError {
     Bus(String),
     #[error("denied: {0}")]
     Denied(String),
-}
-
-impl From<sqlx::Error> for StorageError {
-    fn from(error: sqlx::Error) -> Self {
-        Self::Database(error.to_string())
-    }
-}
-
-impl From<serde_json::Error> for StorageError {
-    fn from(error: serde_json::Error) -> Self {
-        Self::Database(error.to_string())
-    }
+    #[error("event {epoch}:{seq} already exists with different content")]
+    IdentityConflict { epoch: i64, seq: i64 },
+    #[error("json error: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
 pub type Result<T> = std::result::Result<T, StorageError>;

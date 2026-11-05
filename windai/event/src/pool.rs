@@ -40,7 +40,7 @@ use crate::events::{
     DispatchTimeout,
 };
 use crate::mod_call::{CallCx, CallError, CallMode};
-use crate::outlet::{EventOutlet, Pending};
+use crate::outlet::{EventOutlet, Pending, Retention};
 use crate::subscription::Subscription;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -50,6 +50,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
+use wind_wire::event::Target;
 
 /// 一次 observe 投递
 pub struct Job {
@@ -185,8 +186,9 @@ async fn call_one(
             })
             .ok();
             if let Some(value) = value {
-                outlet.submit(Pending {
-                    log: true,
+                let submitted = outlet.submit(Pending {
+                    retention: Retention::Journal,
+                    target: Target::Core,
                     envelope: Envelope::new(
                         CORE_DISPATCH_TIMEOUT.name,
                         scope,
@@ -196,6 +198,9 @@ async fn call_one(
                         Shape::Observe,
                     ),
                 });
+                if let Err(error) = submitted {
+                    log::error!("[event] cannot submit dispatch timeout: {error}");
+                }
             }
         }
     }
@@ -218,8 +223,9 @@ fn failed(
     })
     .ok();
     if let Some(value) = value {
-        outlet.submit(Pending {
-            log: true,
+        let submitted = outlet.submit(Pending {
+            retention: Retention::Journal,
+            target: Target::Core,
             envelope: Envelope::new(
                 CORE_DISPATCH_FAILED.name,
                 scope.clone(),
@@ -229,5 +235,8 @@ fn failed(
                 Shape::Observe,
             ),
         });
+        if let Err(error) = submitted {
+            log::error!("[event] cannot submit dispatch failure: {error}");
+        }
     }
 }

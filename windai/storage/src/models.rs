@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 use sqlx::types::Json;
 use sqlx::{FromRow, Row};
-use wind_event::{Origin, Scope, Shape, Source};
+use wind_wire::event::{Origin, Scope, Shape, Source};
 use wind_wire::{
     AdapterType, AgentMode, AgentRole, Block as WireBlock, Body, Content, PendingKind, Role,
 };
@@ -530,7 +530,7 @@ pub struct LogRecord {
     pub scope: Scope,
     pub origin: Origin,
     pub source: Source,
-    pub payload: Value,
+    pub payload: Option<Value>,
 }
 
 impl<'r> FromRow<'r, DbRow> for LogRecord {
@@ -584,7 +584,7 @@ impl<'r> FromRow<'r, DbRow> for LogRecord {
             }
         };
 
-        let payload: String = row.try_get("payload")?;
+        let payload: Option<String> = row.try_get("payload")?;
         Ok(Self {
             id: row.try_get("id")?,
             create_time: row.try_get("create_time")?,
@@ -593,7 +593,7 @@ impl<'r> FromRow<'r, DbRow> for LogRecord {
             scope,
             origin: parse_enum("origin", &origin)?,
             source,
-            payload: parse_json("payload", &payload)?,
+            payload: parse_optional_json("payload", payload)?,
         })
     }
 }

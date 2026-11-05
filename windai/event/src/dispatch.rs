@@ -7,15 +7,16 @@ use crate::events::{
 };
 use crate::guard::{Guards, Limits, OverLimit};
 use crate::mod_call::{CallCx, CallError, CallMode};
-use crate::outlet::{Committed, EventOutlet, Pending};
+use crate::outlet::{EventOutlet, Pending, Retention, SubmitError};
 use crate::pool::{Job, ObservePool};
 use crate::subscription::{Subscription, SubscriptionIndex};
-use crate::{ModCaller, ModRoster, Observer};
+use crate::{ModCaller, ModRoster, Observer, envelope_of};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::sync::{Arc, RwLock};
 use tokio::time::Instant;
+use wind_wire::event::{FeedEvent, Target};
 
 fn to_json<P: Serialize>(event: &'static str, payload: &P) -> Result<Value, BusError> {
     serde_json::to_value(payload).map_err(|e| BusError::BadPayload {
@@ -33,6 +34,10 @@ pub enum BusError {
     BadPayload { event: &'static str, detail: String },
     #[error("event {name} is not in the directory")]
     NotInDirectory { name: &'static str },
+    #[error("the feed outlet is closed")]
+    Closed,
+    #[error("event {name} exceeded a dispatch limit: {detail}")]
+    OverLimit { name: &'static str, detail: String },
 }
 
 /// 事件派发总线
@@ -91,7 +96,7 @@ impl Dispatcher {
         index.rebuild(subs);
     }
 
-    /// 发送一条未落库的日志
+    /// 发送一条普通事件
     pub fn notify<P>(&self, def: &EventDef<P>, cx: &DispatchCx, payload: P)
     where
         P: Serialize + Send + Sync,
@@ -104,12 +109,32 @@ impl Dispatcher {
             self.over_limit(def.name, cx, over);
             return;
         }
-        self.emit(def, cx, Some(&payload));
+        if let Err(error) = self.emit(def, cx, Some(&payload)) {
+            log::error!("[event] {} was not submitted: {error}", def.name);
+        }
     }
 
-    /// 发送一条已落库的日志
-    pub fn notify_committed(&self, committed: Committed) {
-        self.ev_out.submit_committed(committed);
+    /// 宿主路径：保留策略由调用方按事件用途指定
+    pub fn notify_host<P>(
+        &self,
+        def: &EventDef<P>,
+        cx: &DispatchCx,
+        payload: P,
+        retention: Retention,
+    ) -> Result<(), BusError>
+    where
+        P: Serialize + Send + Sync,
+    {
+        self.require_shape(def, Shape::Observe)?;
+        self.guards
+            .admit_host(cx)
+            .map_err(|over| BusError::OverLimit {
+                name: def.name,
+                detail: over.to_string(),
+            })?;
+        let value = to_json(def.name, &payload)?;
+        let envelope = envelope_of(def, cx, value);
+        self.submit(envelope, retention, Target::Core)
     }
 
     /// 允许 mod 改写载荷的事件；返回改写后的值
@@ -224,10 +249,10 @@ impl Dispatcher {
                     },
                 }
             }
-            self.emit(def, cx, keep_payload.then_some(&accumulated));
+            self.emit_logged(def, cx, keep_payload.then_some(&accumulated));
             accumulated
         } else {
-            self.emit(def, cx, keep_payload.then_some(&payload));
+            self.emit_logged(def, cx, keep_payload.then_some(&payload));
             payload
         }
     }
@@ -255,26 +280,29 @@ impl Dispatcher {
         )
     }
 
-    fn emit<P: Serialize>(&self, def: &EventDef<P>, cx: &DispatchCx, payload: Option<&P>) {
+    fn emit_logged<P: Serialize>(&self, def: &EventDef<P>, cx: &DispatchCx, payload: Option<&P>) {
+        if let Err(error) = self.emit(def, cx, payload) {
+            log::error!("[event] {} was not submitted: {error}", def.name);
+        }
+    }
+
+    fn emit<P: Serialize>(
+        &self,
+        def: &EventDef<P>,
+        cx: &DispatchCx,
+        payload: Option<&P>,
+    ) -> Result<(), BusError> {
         let value = match payload {
-            Some(payload) => match to_json(def.name, payload) {
-                Ok(value) => Some(value),
-                Err(error) => {
-                    self.failed(
-                        def.name,
-                        cx,
-                        DispatchFailure::BadPayload,
-                        None,
-                        error.to_string(),
-                    );
-                    return;
-                }
-            },
+            Some(payload) => Some(to_json(def.name, payload)?),
             None => None,
         };
-        self.ev_out.submit(Pending {
-            log: def.log,
-            envelope: Envelope::new(
+        let retention = if def.log {
+            Retention::Journal
+        } else {
+            Retention::Live
+        };
+        self.submit(
+            Envelope::new(
                 def.name,
                 cx.scope.clone(),
                 cx.origin,
@@ -282,7 +310,24 @@ impl Dispatcher {
                 value,
                 def.shape,
             ),
-        });
+            retention,
+            Target::Core,
+        )
+    }
+
+    fn submit(
+        &self,
+        envelope: Envelope<Value>,
+        retention: Retention,
+        route: Target,
+    ) -> Result<(), BusError> {
+        self.ev_out
+            .submit(Pending {
+                envelope,
+                retention,
+                target: route,
+            })
+            .map_err(|SubmitError::Closed| BusError::Closed)
     }
 
     fn require_shape(&self, def: &EventDef<impl Sized>, want: Shape) -> Result<(), BusError> {
@@ -345,37 +390,36 @@ impl Dispatcher {
             log::error!("[event] cannot encode {name}");
             return;
         };
-        self.ev_out.submit(Pending {
-            log: true,
-            envelope: Envelope::new(
-                name,
-                scope.clone(),
-                Origin::Internal,
-                Source::core("event"),
-                Some(value),
-                Shape::Observe,
-            ),
-        });
+        let envelope = Envelope::new(
+            name,
+            scope.clone(),
+            Origin::Internal,
+            Source::core("event"),
+            Some(value),
+            Shape::Observe,
+        );
+        if let Err(error) = self.submit(envelope, Retention::Journal, Target::Core) {
+            log::error!("[event] {name} was not submitted: {error}");
+        }
     }
 }
 
-// TODO: 考虑放到 feed 层，事件层只负责派发？
 impl Observer for Dispatcher {
-    fn on_committed(&self, committed: &Committed) {
-        let Some(meta) = self.directory.get(&committed.envelope.name) else {
+    fn on_event(&self, event: &FeedEvent) {
+        let Some(meta) = self.directory.get(&event.envelope.name) else {
             return;
         };
         if !meta.is_observe() {
             return;
         }
-        let Some(chain) = self.chain_for(meta.name, &committed.envelope.scope) else {
+        let Some(chain) = self.chain_for(meta.name, &event.envelope.scope) else {
             return;
         };
         for sub in chain {
             self.mod_ob.enqueue(Job {
                 event: meta.name,
-                scope: committed.envelope.scope.clone(),
-                payload: committed.envelope.payload.clone(),
+                scope: event.envelope.scope.clone(),
+                payload: event.envelope.payload.clone(),
                 sub,
             });
         }
@@ -387,5 +431,6 @@ fn failure_of(error: &BusError) -> DispatchFailure {
         BusError::WrongShape { .. } => DispatchFailure::WrongShape,
         BusError::BadPayload { .. } => DispatchFailure::BadPayload,
         BusError::NotInDirectory { .. } => DispatchFailure::NotInDirectory,
+        BusError::Closed | BusError::OverLimit { .. } => DispatchFailure::CallError,
     }
 }

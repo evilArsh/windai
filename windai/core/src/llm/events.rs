@@ -75,6 +75,21 @@ pub struct MessageSeal {
     pub usage: Usage,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InterruptedReason {
+    Failed,
+    Cancelled,
+    Aborted,
+}
+
+/// 一条未正常完成的消息
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct MessageInterrupted {
+    pub message_id: i64,
+    pub reason: InterruptedReason,
+}
+
 /// 一条用户输入已被受理并进入待消费队列
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct InputAccepted {
@@ -124,8 +139,15 @@ pub const CORE_LLM_TOOLCALL: EventDef<ToolCalls> = EventDef::new(
 pub const CORE_MESSAGE_SEAL: EventDef<MessageSeal> = EventDef::new(
     "core/message.seal",
     Shape::Observe,
-    true,
+    false,
     schema::<MessageSeal>,
+);
+
+pub const CORE_MESSAGE_INTERRUPTED: EventDef<MessageInterrupted> = EventDef::new(
+    "core/message.interrupted",
+    Shape::Observe,
+    false,
+    schema::<MessageInterrupted>,
 );
 
 pub const CORE_BLOCK_DELTA: EventDef<BlockDelta> = EventDef::new(
@@ -145,7 +167,7 @@ pub const CORE_BLOCK_DELTA: EventDef<BlockDelta> = EventDef::new(
 pub const CORE_BLOCK_COMMITTED: EventDef<BlockCommitted> = EventDef::new(
     "core/block.committed",
     Shape::Observe,
-    true,
+    false,
     schema::<BlockCommitted>,
 );
 
@@ -164,6 +186,7 @@ pub fn directory() -> Directory {
         // CORE_LLM_RESPONSE.meta(),
         CORE_LLM_TOOLCALL.meta(),
         CORE_MESSAGE_SEAL.meta(),
+        CORE_MESSAGE_INTERRUPTED.meta(),
         CORE_BLOCK_DELTA.meta(),
         CORE_BLOCK_COMMITTED.meta(),
         CORE_INPUT_ACCEPTED.meta(),
