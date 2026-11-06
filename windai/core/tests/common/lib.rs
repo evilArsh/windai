@@ -5,7 +5,7 @@
 
 use serde_json::Value;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
@@ -17,8 +17,8 @@ use wind_core::llm::events::CORE_LLM_REQUEST;
 use wind_core::llm::tools::{DeclaredTool, ToolOrigin};
 use wind_core::llm::{LlmRunner, McpService, ModService};
 use wind_event::{
-    CallCx, CallError, DispatchCx, Dispatcher, EnabledSet, Limits, ModCaller, ModRoster, Scope,
-    Subscription,
+    CallCx, CallError, DispatchCx, Dispatcher, EnabledSet, Limits, ModCaller, ModRoster, Observer,
+    Scope, Subscription,
 };
 use wind_storage::Storage;
 use wind_wire::event::FeedEvent;
@@ -160,8 +160,7 @@ impl Bus {
         let (outlet, runtime) = feed::open(storage.clone(), FeedOptions::default())
             .await
             .expect("打开 feed");
-        let runtime = tokio::spawn(runtime.run(Vec::new()));
-        let events = outlet.subscribe().await.expect("订阅 feed").subscription;
+
         let directory = wind_event::directory()
             .merge(wind_core::agent::events::directory())
             .merge(wind_core::llm::events::directory());
@@ -173,6 +172,11 @@ impl Bus {
             Limits::default(),
         ));
         dispatcher.rebuild_index(spy_subscriptions());
+
+        let observer_handle: Arc<dyn Observer> = dispatcher.clone();
+        let runtime = tokio::spawn(runtime.run(vec![Arc::downgrade(&observer_handle)]));
+        let events = outlet.subscribe().await.expect("订阅 feed").subscription;
+
         Self {
             dispatcher,
             events,
