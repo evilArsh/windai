@@ -103,17 +103,14 @@ pub struct FeedRuntime {
     command_rx: mpsc::UnboundedReceiver<Command>,
     hub: Hub,
     writer: Writer,
-    observers: Vec<Weak<dyn Observer>>,
 }
 
 impl FeedRuntime {
-    // TODO: 接入
-    pub fn set_observers(&mut self, observers: Vec<Weak<dyn Observer>>) {
-        self.observers = observers;
-    }
-
-    pub async fn run(mut self) -> Result<ShutdownReport, FeedError> {
-        self.hub.observers = std::mem::take(&mut self.observers);
+    pub async fn run(
+        mut self,
+        observers: Vec<Weak<dyn Observer>>,
+    ) -> Result<ShutdownReport, FeedError> {
+        self.hub.observers = observers;
         let writer_task = tokio::spawn(self.writer.run());
         let mut shutdown = None;
         let mut failure = None;
@@ -202,7 +199,6 @@ pub async fn open(
         command_rx,
         hub: Hub::new(epoch, options, writer_handle),
         writer,
-        observers: Vec::new(),
     };
 
     Ok((feed_handle, feed))

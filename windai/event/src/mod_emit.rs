@@ -1,3 +1,23 @@
+//! ```text
+//!   open()  ──────────────────────────────► Arc<FeedHandle>   (EventOutlet)
+//!   Dispatcher::new(..)  ── guards() ─────► Arc<Guards>
+//!                                             │
+//!   宿主装载清单（每个 mod）                   │
+//!     emit 段的 payload schema ──编译──► Validator
+//!     ModEmitter::new(ModIdentity{name, version},
+//!                     channels, ev_out, guards)
+//!                                             │
+//!   ObservePool ─► ModCaller::call(sub, payload, cx: CallCx)
+//!                                             │
+//!                           QuickJS 里执行 handler
+//!                                             │
+//!                           host.emit(channel, payload)
+//!                                             │
+//!                           ModEmitter::emit(cx, channel, payload)
+//!                                             │
+//!                           EventOutlet::submit(Pending)
+//! ```
+
 use crate::context::DispatchCx;
 use crate::def::Shape;
 use crate::envelope::Envelope;
