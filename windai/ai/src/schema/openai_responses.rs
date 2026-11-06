@@ -450,6 +450,8 @@ pub enum InputContent {
     ResponseInputText(ResponseInputText),
     ResponseInputImage(ResponseInputImage),
     ResponseInputFile(ResponseInputFile),
+    /// 回传 assistant 历史时使用的文本部分
+    ResponseOutputText(ResponseOutputText),
 }
 
 #[derive(Debug, Deserialize, Clone)]

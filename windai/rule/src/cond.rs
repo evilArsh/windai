@@ -196,6 +196,11 @@ fn resolve_arg(arg: &Arg, body: &Value, ctx: &EvalContext) -> Value {
             if name == "$value" {
                 return body.clone();
             }
+            if let Some(rest) = name.strip_prefix("$value.")
+                && let Ok(Some(value)) = path::get(body, &path::segments(rest))
+            {
+                return value.clone();
+            }
             if let Some(rest) = name.strip_prefix("$ctx.")
                 && let Some(v) = ctx.get(rest)
             {

@@ -170,6 +170,9 @@ fn merge_adjacent(messages: Vec<Message>) -> Vec<Message> {
                     .get_or_insert_with(String::new)
                     .push_str(&reasoning);
             }
+            if prev.reasoning_item_id.is_none() {
+                prev.reasoning_item_id = message.reasoning_item_id;
+            }
             prev.input_tokens = prev.input_tokens.max(message.input_tokens);
             prev.output_tokens = prev.output_tokens.max(message.output_tokens);
         } else {

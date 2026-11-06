@@ -4,8 +4,9 @@ use super::eventsource::Event;
 use super::model::ChatModel;
 use super::schema::openai_responses::{
     self, FunctionCall, FunctionCallOutput, FunctionTool, InputContent, InputItem, OutputItem,
-    Response, ResponseInputFile, ResponseInputImage, ResponseInputText, ResponseOutput,
-    ResponseReasoning, ResponseRequest, ResponseStream, Tools,
+    Reasoning, ReasoningContent, Response, ResponseInputFile, ResponseInputImage,
+    ResponseInputText, ResponseOutput, ResponseOutputText, ResponseReasoning, ResponseRequest,
+    ResponseStream, Tools,
 };
 use serde_json::Value;
 use wind_wire::message::{Content, Message, Role};
@@ -30,6 +31,124 @@ fn transfer_response_tools(tools: Option<&[tool::Tools]>) -> Option<Vec<Tools>> 
     })
 }
 
+/// assistant 的历史：推理项目、文本输出与工具调用
+fn assistant_items(ctx: &Message) -> Vec<InputItem> {
+    let mut items = Vec::new();
+    if let (Some(id), Some(reasoning)) = (&ctx.reasoning_item_id, &ctx.reasoning_content)
+        && !reasoning.is_empty()
+    {
+        items.push(InputItem::Reasoning(Reasoning {
+            id: id.clone(),
+            summary: Value::Array(Vec::new()),
+            r#type: String::from("reasoning"),
+            content: Some(vec![ReasoningContent {
+                text: reasoning.clone(),
+                r#type: String::from("reasoning_text"),
+            }]),
+            encrypted_content: None,
+            status: None,
+        }));
+    }
+    let texts: Vec<InputContent> = ctx
+        .content
+        .iter()
+        .filter_map(|content| match content {
+            Content::Text { data } => Some(InputContent::ResponseOutputText(ResponseOutputText {
+                annotations: Some(Vec::new()),
+                logprobs: None,
+                text: data.clone(),
+                r#type: Some(String::from("output_text")),
+                refusal: None,
+            })),
+            _ => None,
+        })
+        .collect();
+    if !texts.is_empty() {
+        items.push(InputItem::Message(openai_responses::Message {
+            content: texts,
+            role: Role::Assistant,
+            phase: None,
+            status: None,
+            r#type: None,
+        }));
+    }
+    for tool in ctx.tool_calls.iter().flatten() {
+        items.push(InputItem::FunctionCall(FunctionCall {
+            arguments: tool.arguments.clone(),
+            call_id: tool.call_id.clone(),
+            name: tool.name.clone(),
+            r#type: String::from("function_call"),
+            id: None,
+            namespace: None,
+            status: None,
+        }));
+    }
+    items
+}
+
+fn tool_items(ctx: &Message) -> Vec<InputItem> {
+    ctx.content
+        .iter()
+        .filter_map(|content| match content {
+            Content::FunctionCall { data } => {
+                Some(InputItem::FunctionCallOutput(FunctionCallOutput {
+                    call_id: data.id.clone(),
+                    output: Value::String(data.content.to_string()),
+                    r#type: String::from("function_call_output"),
+                    id: None,
+                    status: None,
+                }))
+            }
+            _ => {
+                log::warn!(
+                    "message filtered, only tool messages are allowed. role: {}",
+                    ctx.role
+                );
+                None
+            }
+        })
+        .collect()
+}
+
+fn input_content(ctx: &Message) -> Vec<InputContent> {
+    ctx.content
+        .iter()
+        .filter_map(|content| match content {
+            Content::Text { data } => Some(InputContent::ResponseInputText(ResponseInputText {
+                text: data.clone(),
+                r#type: String::from("input_text"),
+            })),
+            Content::Image { data } => Some(InputContent::ResponseInputImage(ResponseInputImage {
+                detail: None,
+                r#type: String::from("input_image"),
+                file_id: None,
+                image_url: Some(data.clone()),
+            })),
+            Content::File { data } => Some(InputContent::ResponseInputFile(ResponseInputFile {
+                r#type: String::from("input_file"),
+                file_data: Some(data.clone()),
+                file_id: None,
+                file_url: None,
+                filename: None,
+            })),
+            Content::Audio { data } => Some(InputContent::ResponseInputFile(ResponseInputFile {
+                r#type: String::from("input_file"),
+                file_data: Some(data.content.clone()),
+                file_id: None,
+                file_url: None,
+                filename: None,
+            })),
+            _ => {
+                log::warn!(
+                    "message filtered, only texts messages are allowed. role: {}",
+                    ctx.role
+                );
+                None
+            }
+        })
+        .collect()
+}
+
 pub struct OpenAIResponse;
 
 impl ChatAdapter for OpenAIResponse {
@@ -46,100 +165,16 @@ impl ChatAdapter for OpenAIResponse {
         let tools = transfer_response_tools(tools);
         let input_messages = contexts
             .iter()
-            .flat_map(|ctx| {
-                if let Some(tools) = &ctx.tool_calls
-                    && !tools.is_empty()
-                {
-                    tools
-                        .iter()
-                        .map(|tool| {
-                            InputItem::FunctionCall(FunctionCall {
-                                arguments: tool.arguments.clone(),
-                                call_id: tool.call_id.clone(),
-                                name: tool.name.clone(),
-                                r#type: String::from("function_call"),
-                                id: None,
-                                namespace: None,
-                                status: None,
-                            })
-                        })
-                        .collect::<Vec<InputItem>>()
-                } else if ctx.role == Role::Tool {
-                    ctx.content
-                        .iter()
-                        .filter_map(|content| match content {
-                            Content::FunctionCall { data } => {
-                                Some(InputItem::FunctionCallOutput(FunctionCallOutput {
-                                    call_id: data.id.clone(),
-                                    output: Value::String(data.content.to_string()),
-                                    r#type: String::from("function_call_output"),
-                                    id: None,
-                                    status: None,
-                                }))
-                            }
-                            _ => {
-                                log::warn!(
-                                    "message filtered, only tool messages are allowed. role: {}",
-                                    ctx.role
-                                );
-                                None
-                            }
-                        })
-                        .collect()
-                } else {
-                    let texts = ctx
-                        .content
-                        .iter()
-                        .filter_map(|content| match content {
-                            Content::Text { data } => {
-                                Some(InputContent::ResponseInputText(ResponseInputText {
-                                    text: data.clone(),
-                                    r#type: "input_text".to_string(),
-                                }))
-                            }
-                            Content::Image { data } => {
-                                Some(InputContent::ResponseInputImage(ResponseInputImage {
-                                    detail: None,
-                                    r#type: "input_image".to_string(),
-                                    file_id: None,
-                                    image_url: Some(data.clone()),
-                                }))
-                            }
-                            Content::File { data } => {
-                                Some(InputContent::ResponseInputFile(ResponseInputFile {
-                                    r#type: "input_file".to_string(),
-                                    file_data: Some(data.clone()),
-                                    file_id: None,
-                                    file_url: None,
-                                    filename: None,
-                                }))
-                            }
-                            Content::Audio { data } => {
-                                Some(InputContent::ResponseInputFile(ResponseInputFile {
-                                    r#type: "input_file".to_string(),
-                                    file_data: Some(data.content.clone()),
-                                    file_id: None,
-                                    file_url: None,
-                                    filename: None,
-                                }))
-                            }
-                            _ => {
-                                log::warn!(
-                                    "message filtered, only texts messages are allowed. role: {}",
-                                    ctx.role
-                                );
-                                None
-                            }
-                        })
-                        .collect();
-                    vec![InputItem::Message(openai_responses::Message {
-                        content: texts,
-                        role: ctx.role,
-                        phase: None,
-                        status: None,
-                        r#type: None,
-                    })]
-                }
+            .flat_map(|ctx| match ctx.role {
+                Role::Assistant => assistant_items(ctx),
+                Role::Tool => tool_items(ctx),
+                _ => vec![InputItem::Message(openai_responses::Message {
+                    content: input_content(ctx),
+                    role: ctx.role,
+                    phase: None,
+                    status: None,
+                    r#type: None,
+                })],
             })
             .collect::<Vec<InputItem>>();
 
@@ -238,9 +273,14 @@ impl ChatAdapter for OpenAIResponse {
                 OutputItem::Reasoning(reason) => {
                     res.reasoning_content = reason
                         .content
-                        .and_then(|content_vec| content_vec.into_iter().next())
-                        .map(|content| content.text)
-                        .or(Some(String::new()));
+                        .map(|content_vec| {
+                            content_vec
+                                .into_iter()
+                                .map(|content| content.text)
+                                .collect::<String>()
+                        })
+                        .filter(|text| !text.is_empty());
+                    res.reasoning_item_id = Some(reason.id);
                 }
                 OutputItem::FunctionCall(c) => {
                     let new_call = tool::FunctionCall {
@@ -305,6 +345,10 @@ impl ChatAdapter for OpenAIResponse {
                     }]),
                     ..Default::default()
                 })),
+                Some(OutputItem::Reasoning(item)) => Ok(Some(Message {
+                    reasoning_item_id: Some(item.id),
+                    ..Default::default()
+                })),
                 // TODO: 更多类型
                 _ => Ok(None),
             },
@@ -326,6 +370,7 @@ impl ChatAdapter for OpenAIResponse {
 
             "response.reasoning_text.delta" => Ok(Some(Message {
                 reasoning_content: Some(response.delta.unwrap_or_default()),
+                reasoning_item_id: response.item_id,
                 ..Default::default()
             })),
 

@@ -609,3 +609,125 @@ fn an_event_type_the_adapter_does_not_know_yields_nothing() {
             .is_none()
     );
 }
+
+#[test]
+fn an_assistant_turn_keeps_reasoning_text_and_tool_calls() {
+    let adapter = adapter_of(AdapterType::OpenAIResponse);
+    let body = adapter
+        .build_request(
+            &model(),
+            &[Message {
+                role: Role::Assistant,
+                content: vec![Content::new_text("先看目录".into())],
+                reasoning_content: Some("需要先拿到清单".into()),
+                reasoning_item_id: Some("rs_1".into()),
+                tool_calls: Some(vec![FunctionCall {
+                    item_id: None,
+                    call_id: "call_1".into(),
+                    name: "m_fs__list_home".into(),
+                    arguments: "{}".into(),
+                }]),
+                ..Message::default()
+            }],
+            None,
+        )
+        .expect("construct");
+    let input = body["input"].as_array().expect("input is an array");
+    assert_eq!(input[0]["type"], serde_json::json!("reasoning"));
+    assert_eq!(input[0]["id"], serde_json::json!("rs_1"));
+    assert_eq!(input[0]["summary"], serde_json::json!([]));
+    assert_eq!(
+        input[0]["content"][0]["type"],
+        serde_json::json!("reasoning_text")
+    );
+    assert_eq!(
+        input[0]["content"][0]["text"],
+        serde_json::json!("需要先拿到清单")
+    );
+    assert_eq!(input[1]["role"], serde_json::json!("assistant"));
+    assert_eq!(
+        input[1]["content"][0]["type"],
+        serde_json::json!("output_text")
+    );
+    assert_eq!(
+        input[1]["content"][0]["text"],
+        serde_json::json!("先看目录")
+    );
+    assert_eq!(input[2]["type"], serde_json::json!("function_call"));
+    assert_eq!(input[2]["call_id"], serde_json::json!("call_1"));
+}
+
+#[test]
+fn assistant_text_without_a_reasoning_id_reaches_the_input() {
+    let adapter = adapter_of(AdapterType::OpenAIResponse);
+    let body = adapter
+        .build_request(
+            &model(),
+            &[Message {
+                role: Role::Assistant,
+                content: vec![Content::new_text("回答".into())],
+                reasoning_content: Some("没有标识的推理".into()),
+                ..Message::default()
+            }],
+            None,
+        )
+        .expect("construct");
+    let input = body["input"].as_array().expect("input is an array");
+    assert_eq!(input.len(), 1, "没有标识的推理项目无法回传");
+    assert_eq!(
+        input[0]["content"][0]["type"],
+        serde_json::json!("output_text")
+    );
+}
+
+#[test]
+fn an_assistant_turn_keeps_its_text_beside_the_tool_calls() {
+    let adapter = adapter_of(AdapterType::OpenAICompletion);
+    let body = adapter
+        .build_request(
+            &model(),
+            &[Message {
+                role: Role::Assistant,
+                content: vec![Content::new_text("先看目录".into())],
+                tool_calls: Some(vec![FunctionCall {
+                    item_id: None,
+                    call_id: "call_1".into(),
+                    name: "m_fs__list_home".into(),
+                    arguments: "{}".into(),
+                }]),
+                ..Message::default()
+            }],
+            None,
+        )
+        .expect("construct");
+    assert_eq!(
+        body["messages"][0]["content"],
+        serde_json::json!("先看目录")
+    );
+    assert_eq!(
+        body["messages"][0]["tool_calls"][0]["id"],
+        serde_json::json!("call_1")
+    );
+}
+
+#[test]
+fn a_text_turn_keeps_its_reasoning_for_the_next_request() {
+    let adapter = adapter_of(AdapterType::OpenAICompletion);
+    let body = adapter
+        .build_request(
+            &model(),
+            &[Message {
+                role: Role::Assistant,
+                content: vec![Content::new_text("4".into())],
+                reasoning_content: Some("2+2".into()),
+                ..Message::default()
+            }],
+            None,
+        )
+        .expect("construct");
+    assert_eq!(body["messages"][0]["content"], serde_json::json!("4"));
+    assert_eq!(
+        body["messages"][0]["reasoning_content"],
+        serde_json::json!("2+2")
+    );
+}

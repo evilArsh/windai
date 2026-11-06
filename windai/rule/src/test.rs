@@ -918,3 +918,195 @@ fn a_context_path_that_does_not_resolve_is_not_an_error() {
         "then must not run when the condition does not hold"
     );
 }
+
+// ==================== for_each ====================
+
+/// 只删 assistant 元素的字段，其它元素与字段原样保留
+const STRIP_ASSISTANT_REASONING: &str = r#"{
+    "rules": [{
+        "type": "for_each",
+        "path": "messages",
+        "then": [{
+            "type": "when",
+            "cond": { "eq": ["$value.role", "assistant"] },
+            "then": [{ "type": "remove", "path": "reasoning_content" }]
+        }]
+    }]
+}"#;
+
+#[test]
+fn for_each_applies_to_every_element() {
+    let rules = RuleSet::from_json(
+        r#"{"rules":[{"type":"for_each","path":"messages",
+             "then":[{"type":"remove","path":"reasoning_content"}]}]}"#,
+    )
+    .expect("compile");
+    let mut body = json!({
+        "messages": [
+            { "role": "assistant", "content": "a", "reasoning_content": "r1" },
+            { "role": "assistant", "content": "b", "reasoning_content": "r2" },
+        ]
+    });
+    rules.apply(&mut body, &EvalContext::new()).expect("apply");
+    assert_eq!(body["messages"][0].get("reasoning_content"), None);
+    assert_eq!(body["messages"][1].get("reasoning_content"), None);
+    assert_eq!(body["messages"][0]["content"], json!("a"));
+    assert_eq!(body["messages"][1]["content"], json!("b"));
+}
+
+#[test]
+fn for_each_runs_each_element_as_its_root() {
+    // 子规则写入的是当前元素，不是整个请求体
+    let rules = RuleSet::from_json(
+        r#"{"rules":[{"type":"for_each","path":"messages",
+             "then":[{"type":"set","path":"meta.seen","value":true}]}]}"#,
+    )
+    .expect("compile");
+    let mut body = json!({ "messages": [{ "role": "user" }, { "role": "user" }] });
+    rules.apply(&mut body, &EvalContext::new()).expect("apply");
+    assert_eq!(body["messages"][0]["meta"]["seen"], json!(true));
+    assert_eq!(body["messages"][1]["meta"]["seen"], json!(true));
+    assert!(
+        body.get("meta").is_none(),
+        "写入必须落在元素里，不能逃到根上"
+    );
+}
+
+#[test]
+fn for_each_conditions_read_the_element() {
+    let rules = RuleSet::from_json(STRIP_ASSISTANT_REASONING).expect("compile");
+    let mut body = json!({
+        "messages": [
+            { "role": "assistant", "reasoning_content": "r1" },
+            { "role": "user", "reasoning_content": "keep" },
+            { "role": "tool", "reasoning_content": "keep" },
+        ]
+    });
+    rules.apply(&mut body, &EvalContext::new()).expect("apply");
+    assert_eq!(body["messages"][0].get("reasoning_content"), None);
+    assert_eq!(body["messages"][1]["reasoning_content"], json!("keep"));
+    assert_eq!(body["messages"][2]["reasoning_content"], json!("keep"));
+}
+
+#[test]
+fn for_each_skips_elements_that_are_not_objects() {
+    let rules = RuleSet::from_json(
+        r#"{"rules":[{"type":"for_each","path":"messages",
+             "then":[{"type":"remove","path":"reasoning_content"}]}]}"#,
+    )
+    .expect("compile");
+    let mut body = json!({
+        "messages": [
+            "naked",
+            null,
+            { "role": "assistant", "reasoning_content": "r" },
+            42
+        ]
+    });
+    rules.apply(&mut body, &EvalContext::new()).expect("apply");
+    assert_eq!(body["messages"][0], json!("naked"));
+    assert_eq!(body["messages"][1], json!(null));
+    assert_eq!(body["messages"][2].get("reasoning_content"), None);
+    assert_eq!(body["messages"][3], json!(42));
+}
+
+#[test]
+fn for_each_of_an_absent_path_is_a_no_op() {
+    let rules = RuleSet::from_json(
+        r#"{"rules":[{"type":"for_each","path":"messages",
+             "then":[{"type":"remove","path":"reasoning_content"}]}]}"#,
+    )
+    .expect("compile");
+    let mut body = json!({ "model": "m" });
+    rules.apply(&mut body, &EvalContext::new()).expect("apply");
+    assert_eq!(body, json!({ "model": "m" }));
+}
+
+#[test]
+fn for_each_refuses_a_value_that_is_not_an_array() {
+    let rules = RuleSet::from_json(
+        r#"{"rules":[{"type":"for_each","path":"messages",
+             "then":[{"type":"remove","path":"reasoning_content"}]}]}"#,
+    )
+    .expect("compile");
+    let mut body = json!({ "messages": { "role": "user" } });
+    let error = rules
+        .apply(&mut body, &EvalContext::new())
+        .expect_err("结构不符必须报错");
+    assert!(error.to_string().contains("messages"), "{error}");
+}
+
+#[test]
+fn for_each_propagates_a_failing_child_rule() {
+    let rules = RuleSet::from_json(
+        r#"{"rules":[{"type":"for_each","path":"messages",
+             "then":[{"type":"remove","path":"meta.flag"}]}]}"#,
+    )
+    .expect("compile");
+    let mut body = json!({ "messages": [{ "meta": "不是对象" }] });
+    assert!(
+        rules.apply(&mut body, &EvalContext::new()).is_err(),
+        "子规则失败不能被吞掉"
+    );
+}
+
+#[test]
+fn for_each_can_nest() {
+    let rules = RuleSet::from_json(
+        r#"{"rules":[{"type":"for_each","path":"groups",
+             "then":[{"type":"for_each","path":"items",
+                      "then":[{"type":"remove","path":"tmp"}]}]}]}"#,
+    )
+    .expect("compile");
+    let mut body = json!({
+        "groups": [
+            { "items": [{ "tmp": 1 }, { "keep": 2 }] },
+            { "items": [{ "tmp": 3 }] },
+        ]
+    });
+    rules.apply(&mut body, &EvalContext::new()).expect("apply");
+    assert_eq!(body["groups"][0]["items"][0].get("tmp"), None);
+    assert_eq!(body["groups"][0]["items"][1]["keep"], json!(2));
+    assert_eq!(body["groups"][1]["items"][0].get("tmp"), None);
+}
+
+// ==================== $value 路径 ====================
+
+#[test]
+fn a_value_path_reads_a_field_of_the_current_root() {
+    let rules = RuleSet::from_json(
+        r#"{"rules":[{"type":"when",
+             "cond":{"eq":["$value.role","assistant"]},
+             "then":[{"type":"set","path":"hit","value":true}]}]}"#,
+    )
+    .expect("compile");
+    let mut body = json!({ "role": "assistant" });
+    rules.apply(&mut body, &EvalContext::new()).expect("apply");
+    assert_eq!(body["hit"], json!(true));
+}
+
+#[test]
+fn a_value_path_reads_a_nested_field() {
+    let rules = RuleSet::from_json(
+        r#"{"rules":[{"type":"when",
+             "cond":{"eq":["$value.meta.role","assistant"]},
+             "then":[{"type":"set","path":"hit","value":true}]}]}"#,
+    )
+    .expect("compile");
+    let mut body = json!({ "meta": { "role": "assistant" } });
+    rules.apply(&mut body, &EvalContext::new()).expect("apply");
+    assert_eq!(body["hit"], json!(true));
+}
+
+#[test]
+fn a_value_path_that_does_not_resolve_is_not_an_error() {
+    let rules = RuleSet::from_json(
+        r#"{"rules":[{"type":"when",
+             "cond":{"eq":["$value.missing.deep","assistant"]},
+             "then":[{"type":"set","path":"hit","value":true}]}]}"#,
+    )
+    .expect("compile");
+    let mut body = json!({ "role": "assistant" });
+    rules.apply(&mut body, &EvalContext::new()).expect("apply");
+    assert!(body.get("hit").is_none(), "取不到值时条件不成立");
+}

@@ -48,6 +48,7 @@ impl OpenAICompletion {
             role: msg.role.unwrap_or(Role::Assistant),
             content,
             reasoning_content: msg.reasoning_content,
+            reasoning_item_id: None,
             created_at,
             input_tokens: 0,
             output_tokens: 0,
@@ -97,7 +98,7 @@ impl ChatAdapter for OpenAICompletion {
                     && !tools.is_empty()
                 {
                     vec![ChatCompletionMessageParam {
-                        content: None,
+                        content: content_of(ctx),
                         role: ctx.role,
                         name: None,
                         audio: None,
@@ -149,74 +150,10 @@ impl ChatAdapter for OpenAICompletion {
                         })
                         .collect()
                 } else {
-                    let texts = ctx
-                        .content
-                        .iter()
-                        .filter_map(|content| match content {
-                            WireContent::Text { data } => Some(ContentObject {
-                                r#type: String::from("text"),
-                                text: Some(data.clone()),
-                                image_url: None,
-                                input_audio: None,
-                                file: None,
-                                refusal: None,
-                            }),
-                            WireContent::Image { data } => Some(ContentObject {
-                                r#type: String::from("image_url"),
-                                text: None,
-                                image_url: Some(ChatCompletionContentPartImage {
-                                    url: data.clone(),
-                                    detail: Some("auto".to_string()),
-                                }),
-                                input_audio: None,
-                                file: None,
-                                refusal: None,
-                            }),
-                            WireContent::Audio { data } => Some(ContentObject {
-                                r#type: String::from("input_audio"),
-                                text: None,
-                                image_url: None,
-                                input_audio: Some(ChatCompletionContentPartInputAudio {
-                                    data: data.content.clone(),
-                                    format: data.format.clone(),
-                                }),
-                                file: None,
-                                refusal: None,
-                            }),
-                            WireContent::File { data } => Some(ContentObject {
-                                r#type: String::from("file"),
-                                text: None,
-                                file: Some(FileContentPart {
-                                    file_data: Some(data.clone()),
-                                    file_id: None,
-                                    filename: None,
-                                }),
-                                input_audio: None,
-                                image_url: None,
-                                refusal: None,
-                            }),
-                            _ => {
-                                log::warn!(
-                                    "message filtered, only texts messages are allowed. role: {}",
-                                    ctx.role
-                                );
-                                None
-                            }
-                        })
-                        .collect::<Vec<ContentObject>>();
-                    let contents = if let Some(content) = texts.first()
-                        && texts.len() == 1
-                        && content.r#type == "text"
-                    {
-                        Content::Text(content.text.as_ref().cloned().unwrap_or_default())
-                    } else {
-                        Content::Objects(texts)
-                    };
-
                     vec![ChatCompletionMessageParam {
-                        content: Some(contents),
+                        content: content_of(ctx),
                         role: ctx.role,
-                        reasoning_content: None,
+                        reasoning_content: ctx.reasoning_content.clone(),
                         name: None,
                         audio: None,
                         tool_calls: None,
@@ -332,6 +269,72 @@ impl ChatAdapter for OpenAICompletion {
             Ok(Some(msg))
         }
     }
+}
+
+/// assistant 文本与其它内容部分，空内容不产出字段
+fn content_of(ctx: &Message) -> Option<Content> {
+    let mut parts: Vec<ContentObject> = ctx
+        .content
+        .iter()
+        .filter_map(|content| match content {
+            WireContent::Text { data } => Some(ContentObject {
+                r#type: String::from("text"),
+                text: Some(data.clone()),
+                image_url: None,
+                input_audio: None,
+                file: None,
+                refusal: None,
+            }),
+            WireContent::Image { data } => Some(ContentObject {
+                r#type: String::from("image_url"),
+                text: None,
+                image_url: Some(ChatCompletionContentPartImage {
+                    url: data.clone(),
+                    detail: Some("auto".to_string()),
+                }),
+                input_audio: None,
+                file: None,
+                refusal: None,
+            }),
+            WireContent::Audio { data } => Some(ContentObject {
+                r#type: String::from("input_audio"),
+                text: None,
+                input_audio: Some(ChatCompletionContentPartInputAudio {
+                    data: data.content.clone(),
+                    format: data.format.clone(),
+                }),
+                image_url: None,
+                file: None,
+                refusal: None,
+            }),
+            WireContent::File { data } => Some(ContentObject {
+                r#type: String::from("file"),
+                text: None,
+                file: Some(FileContentPart {
+                    file_data: Some(data.clone()),
+                    file_id: None,
+                    filename: None,
+                }),
+                input_audio: None,
+                image_url: None,
+                refusal: None,
+            }),
+            _ => {
+                log::warn!(
+                    "message filtered, only texts messages are allowed. role: {}",
+                    ctx.role
+                );
+                None
+            }
+        })
+        .collect();
+    if parts.is_empty() {
+        return None;
+    }
+    if parts.len() == 1 && parts[0].r#type == "text" {
+        return Some(Content::Text(parts.remove(0).text.unwrap_or_default()));
+    }
+    Some(Content::Objects(parts))
 }
 
 fn transform_tools(tools: Option<&[Tools]>) -> Option<Vec<ToolCallRequest>> {

@@ -209,10 +209,14 @@ impl BlockAbsorb {
 
 fn split(partial: Message) -> Vec<Body> {
     let mut bodies = Vec::new();
+    let reasoning_item_id = partial.reasoning_item_id;
     if let Some(reasoning) = partial.reasoning_content
         && !reasoning.is_empty()
     {
-        bodies.push(Body::Reasoning { content: reasoning });
+        bodies.push(Body::Reasoning {
+            item_id: reasoning_item_id,
+            content: reasoning,
+        });
     }
     for item in partial.content {
         match item {

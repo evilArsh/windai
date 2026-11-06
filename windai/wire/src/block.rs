@@ -11,6 +11,9 @@ use serde_json::Value;
 #[strum(serialize_all = "snake_case")]
 pub enum Body {
     Reasoning {
+        /// 推理项目的标识
+        #[serde(default)]
+        item_id: Option<String>,
         content: String,
     },
     Text {
@@ -73,6 +76,7 @@ impl Block {
             seq,
             0,
             Body::Reasoning {
+                item_id: None,
                 content: String::new(),
             },
         )
@@ -174,7 +178,7 @@ impl Block {
             return;
         }
         match &mut self.body {
-            Body::Reasoning { content } | Body::Text { content } => content.push_str(fragment),
+            Body::Reasoning { content, .. } | Body::Text { content } => content.push_str(fragment),
             _ => return,
         }
         self.revision += 1;
@@ -211,7 +215,11 @@ impl Block {
 
     pub fn absorb_body(&mut self, body: &Body) {
         match body {
-            Body::Reasoning { content } | Body::Text { content } => self.append_text(content),
+            Body::Reasoning { item_id, content } => {
+                self.fill_item_id(item_id);
+                self.append_text(content);
+            }
+            Body::Text { content } => self.append_text(content),
             Body::Audio {
                 item_id, content, ..
             } => self.append_audio(item_id, content),
@@ -225,6 +233,17 @@ impl Block {
                 self.append_arguments(call_arguments);
             }
             _ => {}
+        }
+    }
+
+    pub fn fill_item_id(&mut self, item_id: &Option<String>) {
+        let current = match &mut self.body {
+            Body::Reasoning { item_id, .. } | Body::Audio { item_id, .. } => item_id,
+            Body::ToolCall { item_id, .. } => item_id,
+            _ => return,
+        };
+        if current.is_none() && item_id.is_some() {
+            *current = item_id.clone();
         }
     }
 

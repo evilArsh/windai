@@ -93,6 +93,8 @@ pub struct Message {
     pub role: Role,
     pub content: Vec<Content>,
     pub reasoning_content: Option<String>,
+    /// 推理项目的标识
+    pub reasoning_item_id: Option<String>,
     pub created_at: i64,
     pub input_tokens: i32,
     pub output_tokens: i32,
@@ -102,7 +104,11 @@ pub struct Message {
 impl Message {
     pub fn push_block(&mut self, block: &Block) {
         match &block.body {
-            Body::Reasoning { content } => {
+            Body::Reasoning { item_id, content } => {
+                if let Some(item_id) = item_id {
+                    self.reasoning_item_id
+                        .get_or_insert_with(|| item_id.clone());
+                }
                 if !content.is_empty() {
                     self.reasoning_content
                         .get_or_insert_with(String::new)
@@ -162,6 +168,7 @@ impl Default for Message {
             role: Role::Assistant,
             content: vec![],
             reasoning_content: None,
+            reasoning_item_id: None,
             created_at: 0,
             input_tokens: 0,
             output_tokens: 0,

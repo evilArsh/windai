@@ -342,16 +342,12 @@ impl LlmRunner {
                 let wait = tx.get_external_wait(wait_id).await?.ok_or_else(|| {
                     StorageError::Internal(format!("external wait {} is unknown", wait_id))
                 })?;
-                let turn = self
-                    .storage
-                    .get_turn_of(wait.message_id)
-                    .await?
-                    .ok_or_else(|| {
-                        StorageError::Internal(format!(
-                            "message {} belongs to no turn",
-                            wait.message_id
-                        ))
-                    })?;
+                let turn = tx.get_turn_of(wait.message_id).await?.ok_or_else(|| {
+                    StorageError::Internal(format!(
+                        "message {} belongs to no turn",
+                        wait.message_id
+                    ))
+                })?;
                 if turn.instance_id != instance_id {
                     return Err(StorageError::Internal(format!(
                         "turn {} does not belong to instance {instance_id}",

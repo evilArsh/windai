@@ -37,6 +37,33 @@ pub fn get<'a>(root: &'a Value, segs: &[String]) -> Result<Option<&'a Value>> {
     Ok(obj.get(&key[0]))
 }
 
+pub fn get_mut<'a>(root: &'a mut Value, segs: &[String]) -> Result<Option<&'a mut Value>> {
+    if segs.is_empty() {
+        return Err(Error::Path("empty path".into()));
+    }
+    let (parent_segs, key) = segs.split_at(segs.len() - 1);
+    let mut cur = root;
+    for seg in parent_segs {
+        cur = cur
+            .as_object_mut()
+            .ok_or_else(|| {
+                Error::Path(format!(
+                    "non-object value in the middle of path {}",
+                    segs.join(".")
+                ))
+            })?
+            .get_mut(seg)
+            .ok_or_else(|| Error::Path(format!("path {:?} not found", segs)))?;
+    }
+    let obj = cur.as_object_mut().ok_or_else(|| {
+        Error::Path(format!(
+            "non-object value at the end of path {}",
+            segs.join(".")
+        ))
+    })?;
+    Ok(obj.get_mut(&key[0]))
+}
+
 pub fn remove(root: &mut Value, segs: &[String]) -> Result<()> {
     if segs.is_empty() {
         return Err(Error::Path("empty path".into()));

@@ -1,6 +1,6 @@
 use self::db::{Db, DbPool};
 use self::error::Result;
-use self::executor::StorageExecutor;
+use self::executor::{StorageExecutor, TxMode};
 
 use std::future::Future;
 use std::path::Path;
@@ -60,22 +60,34 @@ impl Storage {
         Self { executor }
     }
 
-    /// 在单个事务中执行闭包，闭包收到事务内的存储
+    /// 写事务，BEGIN IMMEDIATE
     pub async fn with_tx<F, Fut, T>(&self, f: F) -> Result<T>
     where
         F: FnOnce(Storage) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
         self.executor
-            .with_tx(|executor| f(Self::from_executor(executor)))
+            .with_tx(TxMode::Write, |executor| f(Self::from_executor(executor)))
             .await
     }
 
-    /// 开启事务并返回事务句柄
+    /// 只读事务，BEGIN
+    pub async fn with_read_tx<F, Fut, T>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(Storage) -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
+        self.executor
+            .with_tx(TxMode::Read, |executor| f(Self::from_executor(executor)))
+            .await
+    }
+
+    /// 开启写事务并返回事务句柄
     pub async fn begin(&self) -> Result<StorageTx> {
         Ok(StorageTx {
             storage: Self::from_executor(
-                StorageExecutor::new_transaction(self.executor.pool().clone()).await?,
+                StorageExecutor::new_transaction(self.executor.pool().clone(), TxMode::Write)
+                    .await?,
             ),
         })
     }

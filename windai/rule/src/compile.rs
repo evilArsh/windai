@@ -96,6 +96,14 @@ struct RawRuleSet {
 ///       }
 ///     ],
 ///     "else": [{ "type": "remove", "path": "reasoning_effort" }]
+///   },
+///   {
+///     "type": "for_each",
+///     "path": "messages",
+///     "then": [
+///       { "type": "when", "cond": { "eq": ["$value.role", "assistant"] },
+///         "then": [{ "type": "remove", "path": "reasoning_content" }] }
+///     ]
 ///   }
 /// ]
 ///  ```
@@ -120,6 +128,10 @@ enum RawOp {
     Compute {
         path: String,
         expr: String,
+    },
+    ForEach {
+        path: String,
+        then: Vec<RawOp>,
     },
     When {
         cond: Value,
@@ -147,6 +159,10 @@ enum CompiledOp {
     Compute {
         segs: Vec<String>,
         op_tree: evalexpr::Node,
+    },
+    ForEach {
+        segs: Vec<String>,
+        then: Vec<CompiledOp>,
     },
     When {
         cond: CompiledCond,
@@ -199,6 +215,21 @@ impl CompiledOp {
                 *dst = result;
                 Ok(())
             }
+            CompiledOp::ForEach { segs, then } => {
+                let items = match path::get_mut(body, segs)? {
+                    None => return Ok(()),
+                    Some(Value::Array(items)) => items,
+                    Some(_) => {
+                        return Err(Error::Path(format!("{} is not an array", segs.join("."))));
+                    }
+                };
+                for item in items.iter_mut().filter(|item| item.is_object()) {
+                    for op in then {
+                        op.exec(item, ctx)?;
+                    }
+                }
+                Ok(())
+            }
             CompiledOp::When { cond, then, else_ } => {
                 if cond.eval(body, ctx)? {
                     for op in then {
@@ -245,6 +276,17 @@ fn compile_op(raw: RawOp, out: &mut Vec<CompiledOp>) -> Result<()> {
             let segs = path::segments(&path);
             let op_tree = evalexpr::build_operator_tree(&expr)?;
             out.push(CompiledOp::Compute { segs, op_tree });
+        }
+        RawOp::ForEach {
+            path: raw_path,
+            then,
+        } => {
+            let segs = path::segments(&raw_path);
+            let mut ops = Vec::new();
+            for op in then {
+                compile_op(op, &mut ops)?;
+            }
+            out.push(CompiledOp::ForEach { segs, then: ops });
         }
         RawOp::When { cond, then, else_ } => {
             let cond = CompiledCond::compile(&cond)?;

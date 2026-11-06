@@ -239,10 +239,12 @@ pub(crate) struct BlockColumns {
 impl BlockColumns {
     pub(crate) fn of(body: &Body) -> Self {
         match body {
-            Body::Reasoning { content }
-            | Body::Text { content }
-            | Body::Image { content }
-            | Body::File { content } => Self {
+            Body::Reasoning { item_id, content } => Self {
+                item_id: item_id.clone(),
+                content: present(content),
+                ..Self::default()
+            },
+            Body::Text { content } | Body::Image { content } | Body::File { content } => Self {
                 content: present(content),
                 ..Self::default()
             },
@@ -279,6 +281,7 @@ impl BlockColumns {
     fn into_body(self, kind: &str) -> sqlx::Result<Body> {
         Ok(match kind {
             "reasoning" => Body::Reasoning {
+                item_id: self.item_id,
                 content: self.content.unwrap_or_default(),
             },
             "text" => Body::Text {

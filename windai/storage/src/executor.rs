@@ -1,4 +1,4 @@
-use crate::db::{DbDriver, DbPool, DbRow, DbTransaction};
+use crate::db::{BEGIN_WRITE, DbDriver, DbPool, DbRow, DbTransaction};
 use crate::error::Result;
 use sqlx::query::{Query, QueryAs, QueryScalar};
 use sqlx::{Database, Decode, FromRow, IntoArguments, Type};
@@ -47,6 +47,15 @@ macro_rules! with_connection {
     };
 }
 
+/// 事务起点
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TxMode {
+    /// 只读，BEGIN
+    Read,
+    /// 写，BEGIN IMMEDIATE
+    Write,
+}
+
 #[derive(Clone)]
 pub(crate) struct StorageExecutor {
     pool: DbPool,
@@ -58,9 +67,11 @@ impl StorageExecutor {
         Self { pool, tx: None }
     }
 
-    pub(crate) async fn new_transaction(pool: DbPool) -> Result<Self> {
-        // let tx = pool.begin_with(BEGIN_WRITE).await?;
-        let tx = pool.begin().await?;
+    pub(crate) async fn new_transaction(pool: DbPool, mode: TxMode) -> Result<Self> {
+        let tx = match mode {
+            TxMode::Read => pool.begin().await?,
+            TxMode::Write => pool.begin_with(BEGIN_WRITE).await?,
+        };
         Ok(Self {
             tx: Some(Arc::new(Mutex::new(Some(tx)))),
             pool,
@@ -75,7 +86,7 @@ impl StorageExecutor {
         self.tx.is_some()
     }
 
-    pub(crate) async fn with_tx<F, Fut, T>(&self, f: F) -> Result<T>
+    pub(crate) async fn with_tx<F, Fut, T>(&self, mode: TxMode, f: F) -> Result<T>
     where
         F: FnOnce(Self) -> Fut,
         Fut: Future<Output = Result<T>>,
@@ -84,7 +95,7 @@ impl StorageExecutor {
             return f(self.clone()).await;
         }
 
-        let tx_executor = Self::new_transaction(self.pool().clone()).await?;
+        let tx_executor = Self::new_transaction(self.pool().clone(), mode).await?;
         let result = f(tx_executor.clone()).await;
         match result {
             Ok(value) => {
