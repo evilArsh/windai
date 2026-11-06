@@ -24,9 +24,13 @@ async fn an_agent_turn_against_the_real_provider_prints_its_events() {
     let handle = common::start_agent(&storage, Arc::clone(&bus.dispatcher), seed).await;
 
     let mut phase = None;
-    while phase.is_none() {
+    let mut sealed = false;
+    while !sealed {
         let event = common::next_event(&mut bus.events).await;
-        phase = common::terminal_phase(&event, instance);
+        if let Some(current) = common::terminal_phase(&event, instance) {
+            phase = Some(current);
+        }
+        sealed = common::is_sealed(&event, instance);
     }
 
     handle.shutdown();

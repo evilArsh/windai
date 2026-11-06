@@ -213,6 +213,18 @@ fn pretty(value: &Value) -> String {
     serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
 }
 
+/// 整棵树已静止
+pub fn is_sealed(event: &FeedEvent, instance_id: i64) -> bool {
+    event.envelope.name == wind_core::agent::events::CORE_AGENT_SEALED.name
+        && event
+            .envelope
+            .payload
+            .as_ref()
+            .and_then(|payload| payload.get("instance_id"))
+            .and_then(Value::as_i64)
+            == Some(instance_id)
+}
+
 /// 指定实例的终态相位
 pub fn terminal_phase(event: &FeedEvent, instance_id: i64) -> Option<String> {
     if event.envelope.name != wind_core::agent::events::CORE_AGENT_STATUS.name {

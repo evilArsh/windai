@@ -32,9 +32,13 @@ async fn a_child_instance_lists_the_home_directory_for_its_parent() {
 
     let mut phase = None;
     let mut child = None;
-    while phase.is_none() {
+    let mut sealed = false;
+    while !sealed {
         let event = common::next_event(&mut bus.events).await;
-        phase = common::terminal_phase(&event, root);
+        if let Some(current) = common::terminal_phase(&event, root) {
+            phase = Some(current);
+        }
+        sealed = common::is_sealed(&event, root);
         if event.envelope.name == CORE_AGENT_SPAWN.name
             && let Some(payload) = event.envelope.payload.as_ref()
             && payload.get("parent_id").and_then(serde_json::Value::as_i64) == Some(root)

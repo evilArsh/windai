@@ -32,19 +32,6 @@ pub struct Suspended {
     pub external_wait_id: i64,
 }
 
-// pub fn pending_call_ids(payload: &serde_json::Value) -> Vec<String> {
-//     payload
-//         .get("pending_call_ids")
-//         .and_then(serde_json::Value::as_array)
-//         .map(|ids| {
-//             ids.iter()
-//                 .filter_map(serde_json::Value::as_str)
-//                 .map(str::to_string)
-//                 .collect()
-//         })
-//         .unwrap_or_default()
-// }
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WaitAnswer {
     /// 外部等待标识
