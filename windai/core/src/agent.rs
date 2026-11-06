@@ -1,4 +1,4 @@
-mod events;
+pub mod events;
 pub mod handler;
 mod jobs;
 pub(crate) mod tree;

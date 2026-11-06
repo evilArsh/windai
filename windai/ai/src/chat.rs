@@ -58,10 +58,20 @@ fn url_of(
 }
 
 pub async fn once(adapter: &dyn ChatAdapter, request: &Request) -> Result<Message, ProviderError> {
-    let url = url_of(adapter, &request.model, &request.target)?;
     let body =
         adapter.build_request(&request.model, &request.contexts, request.tools.as_deref())?;
-    let response = send(&url, &request.target, body).await?;
+    once_body(adapter, &request.model, &request.target, body).await
+}
+
+/// 请求体已给定的一次性请求
+pub async fn once_body(
+    adapter: &dyn ChatAdapter,
+    model: &ChatModel,
+    target: &Target,
+    body: Value,
+) -> Result<Message, ProviderError> {
+    let url = url_of(adapter, model, target)?;
+    let response = send(&url, target, body).await?;
     let bytes = response
         .bytes()
         .await

@@ -8,13 +8,13 @@ use crate::agent::SpawnRequest;
 use crate::agent::tree::Phase;
 use crate::error::{CoreError, Result};
 use crate::llm::block::BlockAbsorb;
-use futures::StreamExt;
+use futures::{Stream, StreamExt, stream};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
-use std::pin::pin;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
-use wind_ai::chat::{Chunk, stream_body};
+use wind_ai::chat::{Chunk, ProviderError, once_body, stream_body};
 use wind_ai::{ChatAdapter, ChatModel, Target, adapter_of};
 use wind_event::{DispatchCx, Dispatcher, Origin, Scope, Source};
 use wind_rule::RuleSet;
@@ -240,15 +240,36 @@ pub async fn exchange(
     mut emit_delta: impl FnMut(&Block),
 ) -> Result<BlockAbsorb> {
     let mut absorber = BlockAbsorb::new();
-    let chunks = stream_body(
-        prepared.adapter.as_ref(),
-        &prepared.model,
-        &prepared.target,
-        body,
-    )
-    .await?;
+    let streaming = prepared
+        .model
+        .config
+        .as_ref()
+        .and_then(|config| config.get("stream"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let mut chunks: Pin<
+        Box<dyn Stream<Item = std::result::Result<Chunk, ProviderError>> + Send + '_>,
+    > = if streaming {
+        Box::pin(
+            stream_body(
+                prepared.adapter.as_ref(),
+                &prepared.model,
+                &prepared.target,
+                body,
+            )
+            .await?,
+        )
+    } else {
+        let message = once_body(
+            prepared.adapter.as_ref(),
+            &prepared.model,
+            &prepared.target,
+            body,
+        )
+        .await?;
+        Box::pin(stream::iter([Ok(Chunk::Delta(message)), Ok(Chunk::Done)]))
+    };
 
-    let mut chunks = pin!(chunks);
     while let Some(chunk) = chunks.next().await {
         match chunk {
             Ok(Chunk::Done) => {

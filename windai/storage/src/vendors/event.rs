@@ -84,9 +84,9 @@ impl Storage {
         if inserted.is_some() {
             return Ok(());
         }
-        return Err(StorageError::IdentityConflict {
+        Err(StorageError::IdentityConflict {
             epoch: event.key.epoch,
             seq: event.key.seq,
-        });
+        })
     }
 }

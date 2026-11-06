@@ -1,4 +1,4 @@
-use crate::db::{BEGIN_WRITE, DbDriver, DbPool, DbRow, DbTransaction};
+use crate::db::{DbDriver, DbPool, DbRow, DbTransaction};
 use crate::error::Result;
 use sqlx::query::{Query, QueryAs, QueryScalar};
 use sqlx::{Database, Decode, FromRow, IntoArguments, Type};
@@ -59,7 +59,8 @@ impl StorageExecutor {
     }
 
     pub(crate) async fn new_transaction(pool: DbPool) -> Result<Self> {
-        let tx = pool.begin_with(BEGIN_WRITE).await?;
+        // let tx = pool.begin_with(BEGIN_WRITE).await?;
+        let tx = pool.begin().await?;
         Ok(Self {
             tx: Some(Arc::new(Mutex::new(Some(tx)))),
             pool,
