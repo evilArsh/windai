@@ -11,6 +11,7 @@ wind-event = { path = "../event" }
 wind-wire = { path = "../wire" }
 wind-rule = { path = "../rule" }
 wind-storage = { path = "../storage" }
+wind-mod = { path = "../mod" }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }

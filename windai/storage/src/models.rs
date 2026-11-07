@@ -130,7 +130,7 @@ pub struct Model {
     /// 适配器，决定请求与响应的处理方式
     pub adapter: AdapterType,
     /// 模态，存为 JSON 数组
-    pub modalities: Option<serde_json::Value>,
+    pub modalities: Option<Value>,
     /// 是否启用
     pub active: bool,
     /// 图标
@@ -138,7 +138,7 @@ pub struct Model {
     /// 专属端点，缺省时用默认端点
     pub endpoint: Option<String>,
     /// 请求配置，存为 JSON 对象
-    pub config: Option<serde_json::Value>,
+    pub config: Option<Value>,
     /// 使用计数
     pub frequency: Option<i64>,
     /// 创建时刻
@@ -435,7 +435,7 @@ impl<'r> FromRow<'r, DbRow> for ExternalWait {
 pub struct Mod {
     pub id: i64,
     pub name: String,
-    pub current_version: i64,
+    pub current_version: u32,
     pub created_at: i64,
 }
 
@@ -444,23 +444,23 @@ pub struct ModVersion {
     pub mod_id: i64,
     pub version: i64,
     pub manifest: String,
-    pub compiled: Option<serde_json::Value>,
+    pub compiled: Option<Value>,
     pub engine_fingerprint: Option<String>,
     pub created_at: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ModStateEntry {
-    pub mod_id: i64,
-    pub scope_kind: String,
-    /// 全局作用域为 0
-    pub scope_id: i64,
-    /// 区分对外状态与私有存储
-    pub kind: String,
-    pub key: String,
-    pub value: serde_json::Value,
-    pub updated_at: i64,
-}
+// #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+// pub struct ModStateEntry {
+//     pub mod_id: i64,
+//     pub scope_kind: String,
+//     /// 全局作用域为 0
+//     pub scope_id: i64,
+//     /// 区分对外状态与私有存储
+//     pub kind: String,
+//     pub key: String,
+//     pub value: Value,
+//     pub updated_at: i64,
+// }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentInstance {

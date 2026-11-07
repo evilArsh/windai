@@ -4,10 +4,7 @@
   "title": "windai Mod 清单",
   "description": "Mod 包根目录下的 mod.json。\n\n本文件是纯数据声明，不含可执行内容。宿主在加载任何 Mod 代码之前即可依据本文件完成结构校验与能力授权。\n\n事件名、事件形态与派发语义见 docs/events.md。Mod 可用的宿主能力见 docs/facade.d.ts。\n\n有关包内其余文件的路径约定：\n  scripts/index.js    宿主侧代码入口\n  ui/index.js         前端组件入口\n  skills/<name>/      技能目录，目录名即技能名\n  mcp/<name>/         随包分发的可执行资产\n以上路径为固定约定，不在本清单中声明；相应目录均为可选。",
   "type": "object",
-  "required": [
-    "name",
-    "version"
-  ],
+  "required": ["name", "version"],
   "additionalProperties": false,
   "properties": {
     "name": {
@@ -42,9 +39,7 @@
       },
       "additionalProperties": {
         "type": "object",
-        "required": [
-          "content"
-        ],
+        "required": ["content"],
         "additionalProperties": false,
         "properties": {
           "content": {
@@ -103,36 +98,24 @@
         },
         "oneOf": [
           {
-            "required": [
-              "command"
-            ],
+            "required": ["command"],
             "not": {
-              "required": [
-                "url"
-              ]
+              "required": ["url"]
             },
             "description": "stdio 形式：有 command、无 url。"
           },
           {
-            "required": [
-              "url"
-            ],
+            "required": ["url"],
             "not": {
               "anyOf": [
                 {
-                  "required": [
-                    "command"
-                  ]
+                  "required": ["command"]
                 },
                 {
-                  "required": [
-                    "args"
-                  ]
+                  "required": ["args"]
                 },
                 {
-                  "required": [
-                    "env"
-                  ]
+                  "required": ["env"]
                 }
               ]
             },
@@ -150,23 +133,21 @@
       },
       "additionalProperties": {
         "type": "object",
-        "required": [
-          "handler"
-        ],
+        "required": ["handler"],
         "additionalProperties": false,
         "properties": {
           "handler": {
             "$ref": "#/$defs/handlerName"
           },
-          "summary": {
+          "description": {
             "type": "string",
             "description": "面向模型的一句话说明。\n\ncallableBy 含 \"agent\" 时，本字段进入工具描述。"
           },
-          "input": {
+          "input_schema": {
             "$ref": "#/$defs/jsonSchema",
             "description": "输入结构。宿主在调用边界校验。"
           },
-          "output": {
+          "output_schema": {
             "$ref": "#/$defs/jsonSchema",
             "description": "输出结构。宿主在调用边界校验。"
           },
@@ -175,10 +156,7 @@
             "uniqueItems": true,
             "default": [],
             "items": {
-              "enum": [
-                "agent",
-                "ui"
-              ]
+              "enum": ["agent", "ui"]
             },
             "description": "允许的调用方。\n\n  \"agent\"  宿主将其注册为工具，工具名为 m_<mod>__<request>，进入模型的工具列表\n  \"ui\"     UI 组件可经 host 上被暴露的对应接口调用\n\n空数组表示仅宿主内部可见，任何外部调用方均不可调用。\n\n**不存在 \"mod\" 取值。** Mod 之间互相独立，不构成彼此的调用方。跨 Mod 的协作由用户或 agent 编排。"
           },
@@ -208,19 +186,14 @@
           },
           "additionalProperties": {
             "type": "object",
-            "required": [
-              "handler"
-            ],
+            "required": ["handler"],
             "additionalProperties": false,
             "properties": {
               "handler": {
                 "$ref": "#/$defs/handlerName"
               },
               "phase": {
-                "enum": [
-                  "guard",
-                  "policy"
-                ],
+                "enum": ["guard", "policy"],
                 "description": "执行相位。仅 intercept 形态的订阅具有本字段。\n\n  guard   安全与权限，最先执行\n  policy  业务策略，在 guard 之后执行\n\n同一相位内按注册顺序执行。\n\n本字段的取值由订阅方声明，而事件的形态由事件目录声明。二者不一致时（对 observe 事件声明本字段，或对 intercept 事件省略本字段），宿主在加载期拒绝该订阅。"
               },
               "timeoutMs": {
@@ -241,20 +214,14 @@
           },
           "additionalProperties": {
             "type": "object",
-            "required": [
-              "delivery",
-              "payload"
-            ],
+            "required": ["delivery", "payload"],
             "additionalProperties": false,
             "properties": {
               "delivery": {
-                "enum": [
-                  "notice",
-                  "stateful"
-                ],
+                "enum": ["notice", "stateful"],
                 "description": "投递方式。\n\n  notice    仅投递给当前在线的订阅方。允许丢失。\n  stateful  先写入状态存储，再投递。新订阅方建立连接时先接收基线值，再接收增量。\n\n面向前端的投递必须使用 stateful。前端建立连接的时机不确定，仅投递增量将导致新建立的界面上该数据为空，直至下一次投递发生。"
               },
-              "stateKey": {
+              "eventKey": {
                 "type": "string",
                 "description": "delivery 为 stateful 时必填。清单里用来标识这条状态通道的键。\n\n状态在状态存储中的键是事件的完整名字（m_<mod>/<name>），订阅方按同一个名字取当前值；本字段不参与状态键的构成。"
               },
@@ -275,16 +242,12 @@
                       "const": "stateful"
                     }
                   },
-                  "required": [
-                    "delivery"
-                  ]
+                  "required": ["delivery"]
                 },
                 "then": {
-                  "required": [
-                    "stateKey"
-                  ]
+                  "required": ["eventKey"]
                 },
-                "description": "delivery 为 stateful 时必须提供 stateKey。"
+                "description": "delivery 为 stateful 时必须提供 eventKey。"
               }
             ]
           },
@@ -306,13 +269,7 @@
   },
   "$defs": {
     "capability": {
-      "enum": [
-        "state",
-        "storage",
-        "http",
-        "agent",
-        "fs"
-      ],
+      "enum": ["state", "storage", "http", "agent", "fs"],
       "description": "可声明的宿主能力。\n\n  state    对外状态：写入广播给订阅方，agent 可读\n  storage  私有键值存储：不广播，agent 不可读\n  http     出网\n  agent    与 agent 系统交互\n  fs       Mod 私有目录内的文件读写\n\n全部能力声明即生效。\n\nlog 与 notify 不在本枚举内，因为二者无需声明：它们不产生 I/O 等待。\n\nfs 需要一个路径边界才能收口：私有目录是该能力的边界本身。"
     },
     "symbolName": {

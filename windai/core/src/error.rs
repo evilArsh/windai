@@ -1,6 +1,7 @@
 use wind_ai::AdapterError;
 use wind_ai::chat::ProviderError;
 use wind_event::dispatch::BusError;
+use wind_mod::error::ModError;
 use wind_storage::error::StorageError;
 
 // TODO: 定稿后删除未使用的
@@ -8,26 +9,40 @@ use wind_storage::error::StorageError;
 pub enum CoreError {
     #[error("database error: {0}")]
     Database(String),
+
     #[error(transparent)]
     Storage(#[from] StorageError),
+
     #[error(transparent)]
     Adapter(#[from] AdapterError),
+
     #[error(transparent)]
     Provider(#[from] ProviderError),
+
+    #[error(transparent)]
+    Mod(#[from] ModError),
+
     #[error("internal error: {0}")]
     Internal(String),
+
     #[error("expected to affect rows, but none were affected")]
     NoRowsAffected,
+
     #[error("expected at most one row, but found {found}")]
     TooManyRows { found: usize },
+
     #[error("column {column} does not hold the shape it declares: {detail}")]
     MalformedColumn { column: String, detail: String },
+
     #[error(transparent)]
     Parse(#[from] strum::ParseError),
+
     #[error("event bus error: {0}")]
     Bus(String),
+
     #[error("denied: {0}")]
     Denied(String),
+
     #[error("agent is not running")]
     Closed,
 }

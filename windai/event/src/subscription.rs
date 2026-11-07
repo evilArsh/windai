@@ -11,8 +11,6 @@ pub struct Subscription {
     pub handler: String,
     /// 单次调用的时间预算，与剩余总预算冲突时总预算优先
     pub timeout_ms: u64,
-    /// 同阶段内按此值排序
-    pub rank: u64,
 }
 
 impl Subscription {
@@ -76,10 +74,6 @@ impl SubscriptionIndex {
         self.by_event.clear();
         for sub in subs {
             self.by_event.entry(sub.event).or_default().push(sub);
-        }
-        for list in self.by_event.values_mut() {
-            // 从小到大排序
-            list.sort_by_key(|s| s.rank);
         }
     }
 

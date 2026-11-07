@@ -5,7 +5,7 @@
 
 use serde_json::Value;
 use std::path::PathBuf;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
@@ -268,7 +268,6 @@ fn spy_subscriptions() -> Vec<Subscription> {
             event: CORE_LLM_REQUEST.name,
             handler: "log".to_string(),
             timeout_ms: 5_000,
-            rank: 0,
         },
         Subscription {
             mod_name: SPY_MOD.to_string(),
@@ -276,7 +275,6 @@ fn spy_subscriptions() -> Vec<Subscription> {
             event: wind_core::llm::events::CORE_RULE_APPLY.name,
             handler: "log".to_string(),
             timeout_ms: 5_000,
-            rank: 0,
         },
     ]
 }
