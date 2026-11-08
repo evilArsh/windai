@@ -9,6 +9,10 @@
  * | **宿主侧** | `scripts/` | 宿主内嵌解释器 | `Ctx` | 「Ctx」与「子能力」|
  * | **UI 侧** | `ui/` | 浏览器 | `UiCtx` | 「前端门面」|
  *
+ * **实现状态：** 本轮只实现资源型 Mod 与 MCP 配置、连接和工具调用。`scripts/` 脚本
+ * 运行时尚未实现：在没有编译器时，声明 `requests` 或 `events.on` 的 Mod 会被拒绝安装
+ * 或启用。下文的请求处理函数、事件处理函数、`Ctx` 与 UI 门面均为后续实现。
+ *
  * 两侧的差异是运行环境的差异，不是风格差异。**宿主侧全同步，UI 侧全异步。**
  *
  * 事件名、事件载荷、形态与派发语义见 `docs/events.md`。
@@ -71,18 +75,18 @@
  * // mod.json
  * {
  *   "requests": {
- *     "fetch": { "handler": "fetchTop", "input": {...}, "output": {...} }
+ *     "fetch": { "handler": "fetchTop", "inputSchema": {...}, "outputSchema": {...} }
  *   },
  *   "events": {
  *     "on": {
- *       "core/mcp.tool.call": { "handler": "onMcpToolCall", "phase": "guard" },
- *       "core/mcp.crash":     { "handler": "onCrash" }
+ *       "core/mcp.started": { "handler": "onMcpStarted" },
+ *       "core/mcp.failed":  { "handler": "onMcpFailed" }
  *     }
  *   }
  * }
  * ```
  *
- * **宿主在加载期校验每个 `handler` 在模块导出中存在。** 缺失任一项即拒绝加载。
+ * **脚本运行时实现后，宿主将在加载期校验每个 `handler` 在模块导出中存在。** 缺失任一项即拒绝加载。
  *
  * 若不在加载期校验，缺失的处理函数将延迟到某次调用时才表现为 `undefined`，
  * 该失败形态难以定位。
@@ -94,8 +98,8 @@
  * 宿主只有两条调用路径，不存在第三条，也不存在名为 `hook` 的动词：
  *
  * ```rust
- * rt.call_request(mod, "fetch",              input)     // 调用方请求 Mod 提供的能力
- * rt.call_event  (mod, "core/mcp.tool.call", payload)   // 宿主向 Mod 派发事件
+ * rt.call_request(mod, "fetch",           input)     // 调用方请求 Mod 提供的能力
+ * rt.call_event  (mod, "core/mcp.failed", payload)   // 宿主向 Mod 派发事件
  * ```
  *
  * 两条路径均先读取 manifest 的 `handler` 得到函数名，再取模块导出。
@@ -824,7 +828,15 @@ export declare class HttpError extends FacadeError {
  * 使该能力不存在优于使其超时。
  *
  * **全部能力声明即生效，本契约不设需要用户批准的档位。** 命令执行不作为一种能力存在：
- * 它由宿主自带的 MCP 服务以工具形式提供。
+ * 它由宿主自带的 MCP 服务以工具形式提供。内建 `fs` 服务提供 `list_dir`、`read_file`、
+ * `write_file` 与 `exec`，内建 `skills` 服务提供 `skills_list`。
+ *
+ * Mod 的 `mcpServers` 与独立 MCP 配置都转换为模型工具。工具展示名由来源、绑定键和
+ * 原始工具名生成 `mcp_<48 位十六进制>`，同一目录内重名会被拒绝。绑定被禁用或配置版本
+ * 更新后，旧目录中的目标拒绝新调用，调用方需要重新获取工具清单。
+ *
+ * MCP 绑定状态通过观察事件 `core/mcp.started`、`core/mcp.stopped` 与 `core/mcp.failed`
+ * 表示；这些事件只描述绑定，不改变 Mod 的安装或启用状态。
  *
  * **`notify`、`emit` 与 `log` 无需声明**：三者均不产生 I/O 等待。`notify` 与 `emit`
  * 受每 Mod 速率上限约束。

@@ -20,9 +20,6 @@ pub enum ModError {
     #[error("event {name} is not in the directory")]
     ManifestUnknownEvent { name: String },
 
-    #[error("the manifest at {path} does not declare a usable identity: {reason}")]
-    Identity { path: PathBuf, reason: String },
-
     #[error("the package at {path} cannot be accepted: {reason}")]
     Mismatch { path: String, reason: String },
 
@@ -31,6 +28,29 @@ pub enum ModError {
 
     #[error("{name} is not installed")]
     NotInstalled { name: String },
+
+    #[error("mod {name} version {version} is not published")]
+    VersionNotPublished { name: String, version: u32 },
+
+    #[error("mod {name} version {version} needs a script engine")]
+    ScriptsUnavailable { name: String, version: u32 },
+
+    #[error("the operation on {name} conflicts with the current state: {reason}")]
+    Conflict { name: String, reason: String },
+
+    #[error("the publish task ended unexpectedly: {0}")]
+    Background(String),
+
+    #[error("the event payload cannot be encoded: {0}")]
+    Encode(String),
+
+    #[error("mod {name} version {version} cannot provide resources at {path}: {reason}")]
+    Resource {
+        name: String,
+        version: u32,
+        path: PathBuf,
+        reason: String,
+    },
 
     #[error("the package at {path} was refused: {reason}")]
     Rejected { path: String, reason: String },

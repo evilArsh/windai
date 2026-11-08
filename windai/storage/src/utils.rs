@@ -8,11 +8,16 @@ use std::str::FromStr;
 use wind_wire::AdapterType;
 
 /// 当前时刻的秒级时间戳
-pub fn now_ts() -> i64 {
+pub(crate) fn now_ts() -> i64 {
     Utc::now().timestamp()
 }
 
-pub fn vec_to_str_default<T>(vec: Option<&[T]>) -> Result<String>
+/// 当前时刻的毫秒时间戳
+pub(crate) fn now_ms() -> i64 {
+    Utc::now().timestamp_millis()
+}
+
+pub(crate) fn vec_to_str_default<T>(vec: Option<&[T]>) -> Result<String>
 where
     T: Serialize,
 {
@@ -22,7 +27,7 @@ where
     }
 }
 
-pub fn vec_to_str_optional<T>(vec: Option<&[T]>) -> Result<Option<String>>
+pub(crate) fn vec_to_str_optional<T>(vec: Option<&[T]>) -> Result<Option<String>>
 where
     T: Serialize,
 {
@@ -30,7 +35,7 @@ where
         .transpose()
 }
 
-pub fn map_to_str_default<T>(map: Option<&T>) -> Result<String>
+pub(crate) fn map_to_str_default<T>(map: Option<&T>) -> Result<String>
 where
     T: Serialize,
 {
@@ -40,7 +45,7 @@ where
     }
 }
 
-pub fn map_to_str_optional<T>(map: Option<&T>) -> Result<Option<String>>
+pub(crate) fn map_to_str_optional<T>(map: Option<&T>) -> Result<Option<String>>
 where
     T: Serialize,
 {
@@ -48,14 +53,14 @@ where
         .transpose()
 }
 
-pub fn de_str_to<T>(text: &str) -> Result<T>
+pub(crate) fn de_str_to<T>(text: &str) -> Result<T>
 where
     T: DeserializeOwned,
 {
     serde_json::from_str(text).map_err(Into::into)
 }
 
-pub fn parse_str_to<T>(text: &str) -> Result<T>
+pub(crate) fn parse_str_to<T>(text: &str) -> Result<T>
 where
     T: std::str::FromStr,
     T::Err: Into<StorageError>,
@@ -63,14 +68,40 @@ where
     text.parse::<T>().map_err(Into::into)
 }
 
-pub fn ensure_affected(result: DbQueryResult) -> Result<()> {
+pub(crate) fn ensure_affected(result: DbQueryResult) -> Result<()> {
     if result.rows_affected() == 0 {
         return Err(StorageError::NoRowsAffected);
     }
     Ok(())
 }
 
-pub fn ensure_lte_one<T>(rows: Vec<T>) -> Result<Option<T>> {
+pub(crate) fn not_found(entity: &str, key: i64) -> StorageError {
+    StorageError::NotFound {
+        entity: entity.into(),
+        key: key.to_string(),
+    }
+}
+
+pub(crate) fn conflict(
+    entity: &str,
+    key: impl ToString,
+    detail: impl Into<String>,
+) -> StorageError {
+    StorageError::Conflict {
+        entity: entity.into(),
+        key: key.to_string(),
+        detail: detail.into(),
+    }
+}
+
+pub(crate) fn is_unique_violation(error: &StorageError) -> bool {
+    matches!(
+        error,
+        StorageError::Database(sqlx::Error::Database(source)) if source.is_unique_violation()
+    )
+}
+
+pub(crate) fn ensure_lte_one<T>(rows: Vec<T>) -> Result<Option<T>> {
     let found = rows.len();
     match found {
         0 | 1 => Ok(rows.into_iter().next()),

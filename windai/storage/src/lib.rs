@@ -32,7 +32,6 @@ pub use models::*;
 //     #[allow(dead_code)]
 //     pub const MCP_SERVERS: &'static str = "mcp_servers";
 //     pub const MODS: &'static str = "mods";
-//     pub const MOD_VERSIONS: &'static str = "mod_versions";
 //     pub const TOPIC_MODS: &'static str = "topic_mods";
 //     pub const MOD_STATE: &'static str = "mod_state";
 //     pub const EVENT_LOG: &'static str = "event_log";

@@ -1,7 +1,12 @@
 use super::{McpService, ModService};
-use crate::{agent::SPAWN_AGENT_NAME, error::Result};
+use crate::{
+    agent::SPAWN_AGENT_NAME,
+    error::{CoreError, Result},
+};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use wind_event::{DispatchCx, schema};
+use wind_mcp::ToolTarget;
 use wind_wire::{
     AgentMode, FunctionCallOutput,
     tool::{FunctionCall, FunctionTool, Tools},
@@ -56,36 +61,28 @@ pub struct SpawnAgentAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolOrigin {
     Agent { name: String },
-    Mcp { server: String, tool: String },
+    Mcp { target: ToolTarget },
     ModRequest { mod_name: String, request: String },
 }
 impl ToolOrigin {
     pub fn exposed(&self) -> String {
         match self {
             ToolOrigin::Agent { name } => name.clone(),
-            ToolOrigin::Mcp { server, tool } => format!("{server}__{tool}"),
+            ToolOrigin::Mcp { target } => mcp_tool_name(target),
             ToolOrigin::ModRequest { mod_name, request } => format!("m_{mod_name}__{request}"),
         }
     }
+}
 
-    pub fn parse(name: &str) -> Option<Self> {
-        if let Some(rest) = name.strip_prefix("m_") {
-            let (mod_name, request) = rest.split_once("__")?;
-            return Some(ToolOrigin::ModRequest {
-                mod_name: mod_name.to_string(),
-                request: request.to_string(),
-            });
-        }
-        match name.split_once("__") {
-            Some((server, tool)) => Some(ToolOrigin::Mcp {
-                server: server.to_string(),
-                tool: tool.to_string(),
-            }),
-            None => Some(ToolOrigin::Agent {
-                name: name.to_string(),
-            }),
-        }
+/// 由来源、绑定键和原始工具名生成展示名
+pub(crate) fn mcp_tool_name(target: &ToolTarget) -> String {
+    let mut hasher = Sha256::new();
+    for field in [&target.source, &target.key, &target.tool] {
+        hasher.update(field.as_bytes());
+        hasher.update([0]);
     }
+    let digest = format!("{:x}", hasher.finalize());
+    format!("mcp_{}", &digest[..48])
 }
 
 pub struct ToolCatalog {
@@ -93,9 +90,13 @@ pub struct ToolCatalog {
 }
 
 impl ToolCatalog {
-    pub fn assemble(from_mods: Vec<DeclaredTool>, from_mcp: Vec<DeclaredTool>) -> Self {
+    pub fn assemble(from_mods: Vec<DeclaredTool>, from_mcp: Vec<DeclaredTool>) -> Result<Self> {
         let mut entries: Vec<(ToolOrigin, Tools)> = Vec::new();
         for declared in from_mods.into_iter().chain(from_mcp) {
+            let name = declared.origin.exposed();
+            if entries.iter().any(|(origin, _)| origin.exposed() == name) {
+                return Err(CoreError::ToolNameConflict { name });
+            }
             entries.push((declared.origin, declared.declaration));
         }
         for tool in tool_declarations() {
@@ -105,7 +106,7 @@ impl ToolCatalog {
             }
             entries.push((ToolOrigin::Agent { name }, tool));
         }
-        Self { entries }
+        Ok(Self { entries })
     }
 
     pub fn declarations(&self) -> Vec<Tools> {
@@ -144,8 +145,8 @@ pub async fn execute_plan(
         };
         match origin {
             ToolOrigin::Agent { .. } => agent_calls.push(call),
-            ToolOrigin::Mcp { server, tool } => {
-                results.push(call_mcp(cx, mcp_service, &call, server, tool).await);
+            ToolOrigin::Mcp { target } => {
+                results.push(call_mcp(cx, mcp_service, &call, target).await);
             }
             ToolOrigin::ModRequest { mod_name, request } => {
                 results.push(call_mod_request(cx, mod_service, &call, mod_name, request).await?);
@@ -187,14 +188,8 @@ fn tool_name(tool: &Tools) -> String {
     }
 }
 
-fn parse_arguments(arguments: &str) -> serde_json::Value {
-    match serde_json::from_str(arguments) {
-        Ok(value) => value,
-        Err(error) => {
-            log::warn!("cannot parse tool arguments: {error}");
-            serde_json::json!({})
-        }
-    }
+fn parse_arguments(arguments: &str) -> Result<serde_json::Value> {
+    Ok(serde_json::from_str(arguments)?)
 }
 
 fn parse_args<T>(arguments: &str) -> Result<T>
@@ -208,6 +203,13 @@ fn unknown_result(call_id: &str, name: &str) -> FunctionCallOutput {
     FunctionCallOutput {
         id: call_id.to_string(),
         content: serde_json::json!({ "error": format!("unknown tool {name}") }),
+    }
+}
+
+fn error_result(call_id: &str, message: impl Into<String>) -> FunctionCallOutput {
+    FunctionCallOutput {
+        id: call_id.to_string(),
+        content: serde_json::json!({ "error": message.into() }),
     }
 }
 
@@ -229,16 +231,23 @@ async fn call_mcp(
     cx: &DispatchCx,
     mcp_service: &dyn McpService,
     call: &FunctionCall,
-    server: &str,
-    tool: &str,
+    target: &ToolTarget,
 ) -> FunctionCallOutput {
-    let arguments = parse_arguments(&call.arguments);
-    match mcp_service
-        .call(cx, &call.call_id, server, tool, arguments)
-        .await
-    {
+    let arguments = match parse_arguments(&call.arguments) {
+        Ok(arguments) if arguments.is_object() => arguments,
+        Ok(_) => {
+            return error_result(&call.call_id, "the tool arguments must be a json object");
+        }
+        Err(error) => {
+            return error_result(
+                &call.call_id,
+                format!("cannot parse tool arguments: {error}"),
+            );
+        }
+    };
+    match mcp_service.call(cx, &call.call_id, target, arguments).await {
         Ok(value) => done_result(&call.call_id, value),
-        Err(error) => unknown_result(&call.call_id, &error.to_string()),
+        Err(error) => error_result(&call.call_id, error.to_string()),
     }
 }
 
@@ -250,7 +259,7 @@ async fn call_mod_request(
     request: &str,
 ) -> Result<FunctionCallOutput> {
     let version = mod_service.version_of(mod_name).await?;
-    let input = parse_arguments(&call.arguments);
+    let input = parse_arguments(&call.arguments)?;
     match mod_service
         .call(&cx.scope, mod_name, version, request, input)
         .await

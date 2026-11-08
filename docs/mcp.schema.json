@@ -1,0 +1,665 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "windai MCP 配置",
+  "description": "一个具名的 MCP 服务声明",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 63,
+      "pattern": "^[a-zA-Z_][a-zA-Z0-9_-]{0,62}$"
+    },
+    "description": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "config": {
+      "$ref": "#/$defs/McpConfig"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "config"
+  ],
+  "$defs": {
+    "McpConfig": {
+      "description": "一个 MCP 服务的连接参数",
+      "oneOf": [
+        {
+          "description": "子进程通过标准输入输出通信",
+          "type": "object",
+          "properties": {
+            "command": {
+              "description": "可执行程序，以 `./` 开头时相对版本目录解析",
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(?=.*\\S)[^\\x00]*$"
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[^\\x00]*$"
+              },
+              "default": []
+            },
+            "env": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "default": {},
+              "propertyNames": {
+                "pattern": "^[^=\\x00]+$"
+              }
+            },
+            "cwd": {
+              "description": "子进程的工作目录，必须为绝对路径",
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "stdio"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "command",
+            "cwd"
+          ]
+        },
+        {
+          "description": "通过 Streamable HTTP 连接远端服务",
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string",
+              "minLength": 8,
+              "pattern": "^[hH][tT][tT][pP][sS]?://[^/\\s?#]+",
+              "description": "HTTP 或 HTTPS 地址，连接前由配置校验完成完整解析"
+            },
+            "type": {
+              "type": "string",
+              "const": "streamable_http"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "url"
+          ]
+        }
+      ]
+    },
+    "ListDirRequest": {
+      "required": [
+        "path"
+      ],
+      "title": "ListDirRequest",
+      "description": "扫描目录的请求",
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "要扫描的目录绝对路径",
+          "type": "string"
+        },
+        "recursive": {
+          "description": "是否递归子目录，默认为 true",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "max_depth": {
+          "description": "允许递归的子目录层数，默认不限",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        }
+      }
+    },
+    "DirEntry": {
+      "description": "目录条目",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "相对扫描根目录的路径",
+          "type": "string"
+        },
+        "kind": {
+          "description": "条目类型",
+          "$ref": "#/$defs/EntryKind"
+        },
+        "size": {
+          "description": "文件字节数，目录与软链接没有",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "mtime": {
+          "description": "最后修改时刻，epoch 秒",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "name",
+        "kind"
+      ]
+    },
+    "EntryKind": {
+      "description": "目录条目的类型",
+      "oneOf": [
+        {
+          "description": "普通文件",
+          "type": "string",
+          "const": "file"
+        },
+        {
+          "description": "目录",
+          "type": "string",
+          "const": "dir"
+        },
+        {
+          "description": "软链接",
+          "type": "string",
+          "const": "symlink"
+        }
+      ]
+    },
+    "ListDirResult": {
+      "required": [
+        "path",
+        "entries",
+        "recursive",
+        "truncated",
+        "total"
+      ],
+      "title": "ListDirResult",
+      "description": "目录扫描的结果",
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "扫描根的绝对路径",
+          "type": "string"
+        },
+        "entries": {
+          "description": "相对根目录的条目",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DirEntry"
+          }
+        },
+        "recursive": {
+          "description": "是否递归子目录",
+          "type": "boolean"
+        },
+        "truncated": {
+          "description": "条目是否被截断",
+          "type": "boolean"
+        },
+        "total": {
+          "description": "条目总数",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "error": {
+          "description": "扫描失败时的原因",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "ReadFileRequest": {
+      "required": [
+        "path"
+      ],
+      "title": "ReadFileRequest",
+      "description": "读文件的请求",
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "文件绝对路径",
+          "type": "string"
+        },
+        "offset": {
+          "description": "起始字节偏移，默认 0",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "limit": {
+          "description": "读取字节上限，默认 1MB",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      }
+    },
+    "ReadFileResult": {
+      "required": [
+        "path",
+        "content",
+        "offset",
+        "limit",
+        "truncated",
+        "bytes"
+      ],
+      "title": "ReadFileResult",
+      "description": "读文件的结果",
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "读取到的文件绝对路径",
+          "type": "string"
+        },
+        "content": {
+          "description": "读到的文本，失败时是失败原因",
+          "type": "string"
+        },
+        "offset": {
+          "description": "起点在文件中的字节偏移",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "limit": {
+          "description": "实际读取的字节数",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "truncated": {
+          "description": "文件是否还有未读取的部分",
+          "type": "boolean"
+        },
+        "bytes": {
+          "description": "文件总字节数",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      }
+    },
+    "WriteFileRequest": {
+      "required": [
+        "path",
+        "data"
+      ],
+      "title": "WriteFileRequest",
+      "description": "写文件的请求",
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "文件绝对路径",
+          "type": "string"
+        },
+        "data": {
+          "description": "要写入的文本",
+          "type": "string"
+        }
+      }
+    },
+    "WriteFileResult": {
+      "required": [
+        "path",
+        "bytes"
+      ],
+      "title": "WriteFileResult",
+      "description": "写文件的结果",
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "写入的文件绝对路径",
+          "type": "string"
+        },
+        "bytes": {
+          "description": "写入的字节数",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "error": {
+          "description": "写入失败时的原因",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "ExecRequest": {
+      "required": [
+        "command",
+        "cwd",
+        "timeout"
+      ],
+      "title": "ExecRequest",
+      "description": "执行子进程的请求",
+      "type": "object",
+      "properties": {
+        "command": {
+          "description": "可执行程序",
+          "type": "string"
+        },
+        "cwd": {
+          "description": "工作目录绝对路径，必须在允许的根目录内",
+          "type": "string"
+        },
+        "args": {
+          "description": "命令行参数，直接传递而不拼接 shell 字符串",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "env": {
+          "description": "环境变量，形如 KEY=value",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "timeout": {
+          "description": "超时时间，单位为毫秒",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      }
+    },
+    "ExecResult": {
+      "required": [
+        "stdout",
+        "stderr",
+        "timed_out",
+        "cmd",
+        "cwd",
+        "truncated_out",
+        "truncated_err"
+      ],
+      "title": "ExecResult",
+      "description": "子进程执行的结果",
+      "type": "object",
+      "properties": {
+        "stdout": {
+          "description": "标准输出",
+          "type": "string"
+        },
+        "stderr": {
+          "description": "标准错误",
+          "type": "string"
+        },
+        "exit_code": {
+          "description": "退出码，被信号终止或未能启动时为空",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        },
+        "timed_out": {
+          "description": "是否因为超时被放弃",
+          "type": "boolean"
+        },
+        "cmd": {
+          "description": "执行的程序名",
+          "type": "string"
+        },
+        "cwd": {
+          "description": "执行时的工作目录",
+          "type": "string"
+        },
+        "truncated_out": {
+          "description": "标准输出是否被截断",
+          "type": "boolean"
+        },
+        "truncated_err": {
+          "description": "标准错误是否被截断",
+          "type": "boolean"
+        },
+        "error": {
+          "description": "未能启动时的原因",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "SkillsListRequest": {
+      "required": [
+        "dir"
+      ],
+      "title": "SkillsListRequest",
+      "description": "列举技能的请求",
+      "type": "object",
+      "properties": {
+        "dir": {
+          "description": "要扫描的目录绝对路径，必须在某个技能根之内",
+          "type": "string"
+        },
+        "recursive": {
+          "description": "是否递归子目录，默认为 true",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "max_depth": {
+          "description": "允许递归的子目录层数，默认不限",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        }
+      }
+    },
+    "SkillsMeta": {
+      "description": "一个技能的元数据",
+      "type": "object",
+      "properties": {
+        "source": {
+          "description": "技能来源",
+          "type": "string"
+        },
+        "skill_dir": {
+          "description": "技能所在目录的绝对路径",
+          "type": "string"
+        },
+        "name": {
+          "description": "技能名称，最多 64 字符",
+          "type": "string"
+        },
+        "description": {
+          "description": "技能描述，最多 1024 字符",
+          "type": "string"
+        },
+        "license": {
+          "description": "许可证的名称或对随附许可证文件的引用",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "compatibility": {
+          "description": "兼容性说明，最多 500 字符",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "metadata": {
+          "description": "附加的任意键值对",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "allowed-tools": {
+          "description": "预先批准的工具，空格分隔",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "source",
+        "skill_dir",
+        "name",
+        "description"
+      ]
+    },
+    "SkillError": {
+      "description": "一个无法解析的技能",
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "技能目录",
+          "type": "string"
+        },
+        "error": {
+          "description": "失败原因",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "error"
+      ]
+    },
+    "SkillsListResult": {
+      "required": [
+        "skills",
+        "errors"
+      ],
+      "title": "SkillsListResult",
+      "description": "技能扫描的结果",
+      "type": "object",
+      "properties": {
+        "skills": {
+          "description": "解析成功的技能",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SkillsMeta"
+          }
+        },
+        "errors": {
+          "description": "解析失败的技能",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SkillError"
+          }
+        }
+      }
+    },
+    "McpStarted": {
+      "required": [
+        "topic_id",
+        "source",
+        "key"
+      ],
+      "title": "McpStarted",
+      "description": "一个 MCP 绑定已连接",
+      "type": "object",
+      "properties": {
+        "topic_id": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "source": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        }
+      }
+    },
+    "McpStopped": {
+      "required": [
+        "topic_id",
+        "source",
+        "key"
+      ],
+      "title": "McpStopped",
+      "description": "一个 MCP 绑定已停止",
+      "type": "object",
+      "properties": {
+        "topic_id": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "source": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        }
+      }
+    },
+    "McpFailed": {
+      "required": [
+        "topic_id",
+        "source",
+        "key",
+        "error"
+      ],
+      "title": "McpFailed",
+      "description": "一个 MCP 绑定连接或清单查询失败",
+      "type": "object",
+      "properties": {
+        "topic_id": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "source": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

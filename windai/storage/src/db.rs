@@ -16,7 +16,8 @@ pub async fn open_pool(path: &Path) -> Result<DbPool> {
         .filename(path)
         .create_if_missing(true)
         .journal_mode(SqliteJournalMode::Wal)
-        .busy_timeout(Duration::from_secs(8));
+        .busy_timeout(Duration::from_secs(8))
+        .foreign_keys(true);
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
         .connect_with(options)

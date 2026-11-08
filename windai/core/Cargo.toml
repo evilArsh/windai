@@ -12,6 +12,7 @@ wind-wire = { path = "../wire" }
 wind-rule = { path = "../rule" }
 wind-storage = { path = "../storage" }
 wind-mod = { path = "../mod" }
+wind-mcp = { path = "../mcp" }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
@@ -25,8 +26,14 @@ thiserror = { workspace = true }
 strum = { workspace = true }
 log = { workspace = true }
 nanoid = { workspace = true }
+sha2 = { workspace = true }
 
 [dev-dependencies]
 dirs = { workspace = true }
 dotenvy = { workspace = true }
 env_logger = { workspace = true }
+tempfile = { workspace = true }
+
+[[bin]]
+name = "core_test_mcp"
+path = "tests/support/mcp_server.rs"

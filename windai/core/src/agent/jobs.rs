@@ -1,8 +1,8 @@
 use super::tree::event::Event;
 use super::tree::{Domain, JobId, NodeId};
 use super::{Ctx, Input, Outcome, Runner};
+use crate::error::panic_text;
 use futures::FutureExt;
-use std::any::Any;
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex};
@@ -104,12 +104,4 @@ fn report<D: Domain>(node: NodeId, job: JobId, outcome: Outcome<D>) -> Event<D> 
         Outcome::Suspend(payload) => Event::Suspended { node, job, payload },
         Outcome::Spawn { spawn } => Event::Spawned { node, job, spawn },
     }
-}
-
-fn panic_text(payload: &(dyn Any + Send)) -> &str {
-    payload
-        .downcast_ref::<&'static str>()
-        .copied()
-        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
-        .unwrap_or("non-string panic payload")
 }

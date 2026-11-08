@@ -212,7 +212,7 @@ pub async fn prepare(
         .join("\n\n");
     let from_mods = mod_service.agent_tools(topic.id).await?;
     let from_mcp = mcp_service.declarations(cx, topic.id).await?;
-    let catalog = Arc::new(ToolCatalog::assemble(from_mods, from_mcp));
+    let catalog = Arc::new(ToolCatalog::assemble(from_mods, from_mcp)?);
     Ok(Prepared {
         adapter: adapter_of(model.adapter),
         model: ChatModel {

@@ -20,13 +20,19 @@ impl Roster {
             by_topic: RwLock::new(HashMap::new()),
             lock: Mutex::new(()),
         };
-        view.refresh(&storage).await?;
+        view.refresh(storage).await?;
         Ok(view)
     }
 
     pub async fn refresh(&self, storage: &Storage) -> Result<()> {
         let _gate = self.lock.lock().await;
         let rows = storage.all_enabled_mods().await?;
+        self.publish(rows);
+        Ok(())
+    }
+
+    /// 用已读出的启用关系替换内存状态
+    pub fn publish(&self, rows: Vec<(i64, String)>) {
         let mut grouped: HashMap<i64, HashSet<String>> = HashMap::new();
         for (topic_id, name) in rows {
             grouped.entry(topic_id).or_default().insert(name);
@@ -36,7 +42,6 @@ impl Roster {
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         *guard = grouped;
-        Ok(())
     }
 }
 

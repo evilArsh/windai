@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use wind_event::{DispatchCx, Dispatcher, Scope};
+use wind_mcp::ToolTarget;
 use wind_storage::error::StorageError;
 use wind_storage::{Storage, Topic};
 use wind_wire::{Content, FunctionCall, FunctionCallOutput, Message, Role};
@@ -58,8 +59,7 @@ pub trait McpService: Send + Sync {
         &self,
         cx: &DispatchCx,
         call_id: &str,
-        server: &str,
-        tool: &str,
+        target: &ToolTarget,
         arguments: serde_json::Value,
     ) -> Result<serde_json::Value, CoreError>;
 }

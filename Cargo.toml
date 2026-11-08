@@ -58,3 +58,6 @@ nom = { version = "8" }
 
 test-case = "*"
 serial_test = "*"
+tempfile = { version = "3" }
+jsonschema = { version = "0.60", default-features = false }
+sha2 = { version = "0.10" }

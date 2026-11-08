@@ -1,6 +1,7 @@
 use crate::error::{ModError, Result};
+use crate::schema::validate_fragment;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use url::Url;
 use wind_event::{Directory, Subscription};
@@ -33,6 +34,7 @@ const MAX_DESCRIPTION_LEN: usize = 500;
     Serialize,
     Deserialize,
     strum::AsRefStr,
+    schemars::JsonSchema,
     Hash,
 )]
 #[serde(rename_all = "snake_case")]
@@ -110,13 +112,15 @@ impl Prop {
 // }
 
 /// mod 能力清单
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Manifest {
     /// mod 名，系统唯一
+    #[schemars(regex(pattern = "^[a-z][a-z0-9_-]{1,62}$"), length(min = 2, max = 63))]
     pub name: String,
 
     /// 版本号，单调递增
+    #[schemars(range(min = 1))]
     pub version: u32,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -128,16 +132,13 @@ pub struct Manifest {
     /// - intercept 形态的处理函数不注入任何 I/O 能力，
     /// 比如：声明了 "http" 的 Mod，其 intercept 处理函数中依然没有 ctx.http
     #[serde(default)]
+    #[schemars(extend("uniqueItems" = true))]
     pub capabilities: Vec<Capability>,
-
-    /// TODO: 提示词直接移入 prompts/
-    /// mod 提供的可注入提示词
-    // pub prompts: BTreeMap<String, Prompt>,
 
     /// mcp 服务声明
     /// - Stdio 服务
     /// - Streamable 服务
-    /// - `mcp/<name>` 中的服务。TODO: 目前只支持可执行文件形式的服务
+    /// - `mcp/<name>` 中的服务
     #[serde(default)]
     pub mcp_servers: HashMap<String, McpServer>,
 
@@ -148,7 +149,7 @@ pub struct Manifest {
     /// 事件处理
     ///
     /// # on
-    /// 订阅宿主的事件，订阅后宿主会唤醒 mod 并且执行 `handler` 中声明的 js 函数
+    /// 订阅宿主的事件，订阅后宿主会调用 mod 的 `handler` 中声明的 js 函数
     /// # emit
     /// js 向宿主发送事件的通道
     #[serde(default)]
@@ -222,13 +223,13 @@ impl Manifest {
             check(symbol_ok(key), &field, SYMBOL_HINT)?;
             check(
                 handler_ok(&request.handler),
-                &format!("{field}.handler"),
+                format!("{field}.handler"),
                 HANDLER_HINT,
             )?;
             if let Some(timeout) = request.timeout_ms {
                 check(
                     (1..=MAX_REQUEST_TIMEOUT_MS).contains(&timeout),
-                    &format!("{field}.timeoutMs"),
+                    format!("{field}.timeoutMs"),
                     format!("must be between 1 and {MAX_REQUEST_TIMEOUT_MS}"),
                 )?;
             }
@@ -239,21 +240,26 @@ impl Manifest {
             check(symbol_ok(key), &field, SYMBOL_HINT)?;
             check(
                 decl.payload.is_some(),
-                &format!("{field}.payload"),
+                format!("{field}.payload"),
                 "a payload schema is required",
             )?;
             match decl.retention {
                 Retention::Journal => {
-                    let state_key = decl.event_key.as_deref().unwrap_or_default();
+                    let event_key = decl.event_key.as_deref().unwrap_or_default();
                     check(
                         decl.event_key.is_some(),
-                        &format!("{field}.stateKey"),
-                        "a stateful delivery requires a key",
+                        format!("{field}.eventKey"),
+                        "a journaled delivery requires an event key",
                     )?;
                     check(
-                        state_keys.insert(state_key.to_string()),
-                        &format!("{field}.stateKey"),
-                        "two stateful channels must not declare the same state key",
+                        symbol_ok(event_key),
+                        format!("{field}.eventKey"),
+                        SYMBOL_HINT,
+                    )?;
+                    check(
+                        state_keys.insert(event_key.to_string()),
+                        format!("{field}.eventKey"),
+                        "two journaled channels must not declare the same event key",
                     )?;
                 }
                 Retention::Live => {}
@@ -269,19 +275,41 @@ impl Manifest {
 
             check(
                 handler_ok(&sub.handler),
-                &format!("{field}.handler"),
+                format!("{field}.handler"),
                 HANDLER_HINT,
             )?;
             if let Some(timeout) = sub.timeout_ms {
                 check(
                     (1..=MAX_SUB_TIMEOUT_MS).contains(&timeout),
-                    &format!("{field}.timeoutMs"),
+                    format!("{field}.timeoutMs"),
                     format!("must be between 1 and {MAX_SUB_TIMEOUT_MS}"),
                 )?;
             }
         }
         for key in self.defs.keys() {
-            check(symbol_ok(key), &format!("defs.{key}"), SYMBOL_HINT)?;
+            check(symbol_ok(key), format!("defs.{key}"), SYMBOL_HINT)?;
+        }
+        let defs: Map<String, Value> = self
+            .defs
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        for (key, request) in &self.requests {
+            let field = format!("requests.{key}");
+            if let Some(schema) = &request.input_schema {
+                validate_fragment(&format!("{field}.inputSchema"), schema, &defs)?;
+            }
+            if let Some(schema) = &request.output_schema {
+                validate_fragment(&format!("{field}.outputSchema"), schema, &defs)?;
+            }
+        }
+        for (key, decl) in &self.events.emit {
+            if let Some(schema) = &decl.payload {
+                validate_fragment(&format!("events.emit.{key}.payload"), schema, &defs)?;
+            }
+        }
+        for (key, schema) in &self.defs {
+            validate_fragment(&format!("defs.{key}"), schema, &defs)?;
         }
         Ok(())
     }
@@ -290,17 +318,25 @@ impl Manifest {
         format!("m_{}/{}", self.name, local)
     }
 
+    pub fn requires_scripts(&self) -> bool {
+        !self.requests.is_empty() || !self.events.on.is_empty()
+    }
+
     pub fn subscriptions(
         &self,
         directory: &Directory,
         default_timeout_ms: u64,
-    ) -> Vec<Subscription> {
+    ) -> Result<Vec<Subscription>> {
         self.events
             .on
             .iter()
-            .filter_map(|(event, sub)| {
-                let meta = directory.get(event)?;
-                Some(Subscription {
+            .map(|(event, sub)| {
+                let meta = directory
+                    .get(event)
+                    .ok_or_else(|| ModError::ManifestUnknownEvent {
+                        name: event.clone(),
+                    })?;
+                Ok(Subscription {
                     mod_name: self.name.clone(),
                     mod_version: self.version,
                     event: meta.name,
@@ -312,7 +348,7 @@ impl Manifest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct McpServer {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -331,7 +367,9 @@ pub struct McpServer {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::AsRefStr)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::AsRefStr, schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "snake_case")]
 pub enum CallableBy {
@@ -339,7 +377,7 @@ pub enum CallableBy {
     Ui,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Request {
     /// js 导出的函数名
@@ -364,7 +402,7 @@ pub struct Request {
     pub timeout_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Events {
     #[serde(default)]
@@ -373,7 +411,7 @@ pub struct Events {
     pub emit: BTreeMap<String, EmitDecl>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EventSub {
     /// 宿主调用的 js 函数名
@@ -384,7 +422,7 @@ pub struct EventSub {
     pub timeout_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EmitDecl {
     pub retention: Retention,
@@ -400,7 +438,9 @@ pub struct EmitDecl {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::AsRefStr)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::AsRefStr, schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "snake_case")]
 pub enum Retention {

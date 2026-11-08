@@ -325,8 +325,7 @@ impl McpService for Services {
         &self,
         _cx: &DispatchCx,
         _call_id: &str,
-        _server: &str,
-        _tool: &str,
+        _target: &wind_mcp::ToolTarget,
         _arguments: Value,
     ) -> Result<Value, CoreError> {
         Ok(Value::Null)

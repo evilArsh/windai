@@ -1,0 +1,35 @@
+[package]
+name = "wind-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+wind-wire = { path = "../wire" }
+wind-event = { path = "../event" }
+wind-storage = { path = "../storage" }
+rmcp = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+url = { workspace = true }
+yaml-rust2 = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+async-trait = { workspace = true }
+jsonschema = { workspace = true }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+
+[[bin]]
+name = "mcp_test_server"
+path = "tests/support/server.rs"
+
+[[bin]]
+name = "mcp_exec_helper"
+path = "tests/support/exec_helper.rs"

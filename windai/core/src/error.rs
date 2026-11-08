@@ -1,10 +1,11 @@
+use std::any::Any;
 use wind_ai::AdapterError;
 use wind_ai::chat::ProviderError;
 use wind_event::dispatch::BusError;
+use wind_mcp::McpError;
 use wind_mod::error::ModError;
 use wind_storage::error::StorageError;
 
-// TODO: 定稿后删除未使用的
 #[derive(Debug, thiserror::Error)]
 pub enum CoreError {
     #[error("database error: {0}")]
@@ -21,6 +22,18 @@ pub enum CoreError {
 
     #[error(transparent)]
     Mod(#[from] ModError),
+
+    #[error(transparent)]
+    Mcp(#[from] McpError),
+
+    #[error("resources changed during sync")]
+    ResourcesChanged,
+
+    #[error("the resource services are closed")]
+    ResourcesClosed,
+
+    #[error("tool name conflict: {name}")]
+    ToolNameConflict { name: String },
 
     #[error("internal error: {0}")]
     Internal(String),
@@ -66,3 +79,11 @@ impl From<BusError> for CoreError {
 }
 
 pub type Result<T> = std::result::Result<T, CoreError>;
+
+pub(crate) fn panic_text(payload: &(dyn Any + Send)) -> &str {
+    payload
+        .downcast_ref::<&'static str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("non-string panic payload")
+}

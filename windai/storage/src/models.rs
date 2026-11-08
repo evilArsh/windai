@@ -6,9 +6,11 @@ use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 use sqlx::types::Json;
 use sqlx::{FromRow, Row};
+use std::collections::HashMap;
 use wind_wire::event::{Origin, Scope, Shape, Source};
 use wind_wire::{
-    AdapterType, AgentMode, AgentRole, Block as WireBlock, Body, Content, PendingKind, Role,
+    AdapterType, AgentMode, AgentRole, Block as WireBlock, Body, CompiledScripts, Content,
+    McpDefinition, PendingKind, Role,
 };
 
 /// 话题
@@ -430,23 +432,95 @@ impl<'r> FromRow<'r, DbRow> for ExternalWait {
     }
 }
 
-/// mod 基础信息
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// 一个已安装的 mod
+#[derive(Debug, Clone, PartialEq)]
 pub struct Mod {
     pub id: i64,
     pub name: String,
-    pub current_version: u32,
+    pub version: u32,
+    pub manifest: String,
+    pub compiled: Option<CompiledScripts>,
     pub created_at: i64,
+    pub updated_at: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ModVersion {
-    pub mod_id: i64,
-    pub version: i64,
-    pub manifest: String,
-    pub compiled: Option<Value>,
-    pub engine_fingerprint: Option<String>,
+impl<'r> FromRow<'r, DbRow> for Mod {
+    fn from_row(row: &'r DbRow) -> sqlx::Result<Self> {
+        let compiled: Option<String> = row.try_get("compiled")?;
+        let fingerprint: Option<String> = row.try_get("engine_fingerprint")?;
+        let compiled = match (compiled, fingerprint) {
+            (None, None) => None,
+            (Some(text), Some(fingerprint)) => {
+                let modules: HashMap<String, Vec<u8>> =
+                    serde_json::from_str(&text).map_err(|error| column_error("compiled", error))?;
+                Some(CompiledScripts {
+                    modules,
+                    fingerprint,
+                })
+            }
+            _ => {
+                return Err(column_error(
+                    "compiled",
+                    StorageError::MalformedColumn {
+                        column: "compiled".into(),
+                        detail: "compiled and engine_fingerprint must both be set or both be empty"
+                            .into(),
+                    },
+                ));
+            }
+        };
+        Ok(Self {
+            id: row.try_get("id")?,
+            name: row.try_get("name")?,
+            version: version_of(row, "version")?,
+            manifest: row.try_get("manifest")?,
+            compiled,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    }
+}
+
+/// 独立配置的 MCP 服务
+#[derive(Debug, Clone, PartialEq)]
+pub struct McpServerRecord {
+    pub id: i64,
+    pub definition: McpDefinition,
+    pub revision: u32,
     pub created_at: i64,
+    pub updated_at: i64,
+}
+
+impl<'r> FromRow<'r, DbRow> for McpServerRecord {
+    fn from_row(row: &'r DbRow) -> sqlx::Result<Self> {
+        let config: String = row.try_get("config")?;
+        let config =
+            serde_json::from_str(&config).map_err(|error| column_error("config", error))?;
+        Ok(Self {
+            id: row.try_get("id")?,
+            definition: McpDefinition {
+                name: row.try_get("name")?,
+                description: row.try_get("description")?,
+                config,
+            },
+            revision: version_of(row, "revision")?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    }
+}
+
+fn version_of(row: &DbRow, column: &str) -> sqlx::Result<u32> {
+    let value: i64 = row.try_get(column)?;
+    u32::try_from(value).map_err(|_| {
+        column_error(
+            column,
+            StorageError::MalformedColumn {
+                column: column.to_string(),
+                detail: format!("{value} is outside the u32 range"),
+            },
+        )
+    })
 }
 
 // #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

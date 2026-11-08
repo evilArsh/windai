@@ -13,6 +13,14 @@ pub enum StorageError {
     MalformedColumn { column: String, detail: String },
     #[error("text does not parse as the expected type: {0}")]
     Parse(#[from] strum::ParseError),
+    #[error("{entity} {key} does not exist")]
+    NotFound { entity: String, key: String },
+    #[error("{entity} {key} conflicts: {detail}")]
+    Conflict {
+        entity: String,
+        key: String,
+        detail: String,
+    },
     #[error("event bus error: {0}")]
     Bus(String),
     #[error("denied: {0}")]
