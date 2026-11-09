@@ -103,3 +103,71 @@ impl SkillsServer {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for SkillsServer {}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use tempfile::TempDir;
+
+    use super::SkillsServer;
+    use crate::roots::{Roots, ScopeId, ScopeRoots, SkillRoot};
+
+    #[test]
+    fn empty_skill_roots_are_filtered_from_the_snapshot() {
+        let tmp = TempDir::new().expect("create a temp dir");
+        let roots = Roots::new(tmp.path().join("mods"));
+        let scope = ScopeId::new("topic:1");
+        roots.set_scope(
+            &scope,
+            ScopeRoots {
+                workspace: Vec::new(),
+                skills: vec![
+                    SkillRoot {
+                        source: "empty".to_owned(),
+                        path: PathBuf::new(),
+                    },
+                    SkillRoot {
+                        source: "valid".to_owned(),
+                        path: tmp.path().to_path_buf(),
+                    },
+                ],
+            },
+        );
+
+        let snapshot = SkillsServer::new(roots, scope)
+            .skill_roots()
+            .expect("the valid skill root must survive");
+        assert_eq!(
+            snapshot.len(),
+            1,
+            "only the valid root may remain: {snapshot:?}"
+        );
+        assert_eq!(snapshot[0].source, "valid");
+    }
+
+    #[test]
+    fn an_all_empty_skill_scope_fails_the_snapshot() {
+        let tmp = TempDir::new().expect("create a temp dir");
+        let roots = Roots::new(tmp.path().join("mods"));
+        let scope = ScopeId::new("topic:1");
+        roots.set_scope(
+            &scope,
+            ScopeRoots {
+                workspace: Vec::new(),
+                skills: vec![SkillRoot {
+                    source: "empty".to_owned(),
+                    path: PathBuf::new(),
+                }],
+            },
+        );
+
+        let error = SkillsServer::new(roots, scope)
+            .skill_roots()
+            .expect_err("an empty skill root must be rejected");
+        assert!(
+            error.to_string().contains("no skill roots"),
+            "the rejection must name the missing roots: {error:?}"
+        );
+    }
+}

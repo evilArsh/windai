@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use tokio::sync::mpsc::{self, WeakUnboundedSender};
 use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use wind_event::Dispatcher;
 
@@ -12,6 +13,7 @@ use super::command::{Command, Effect, Event, ReportPhase};
 use super::{
     BoxFuture, Catalog, LaunchRequest, Launcher, Registry, RegistryHandle, Started, ToolCall,
 };
+use crate::builtin::connect_builtin;
 use crate::connector::{CallOutcome, Connection, ToolDescriptor};
 use crate::error::{McpError, Result};
 use crate::events::{
@@ -207,6 +209,19 @@ fn dispatch(
                     ))),
                     Err(_) => {
                         task.abort();
+                        // abort 与完成竞态时 JoinHandle 仍可能持有 Started
+                        if let Ok(Ok(started)) = task.await {
+                            let closed =
+                                tokio::time::timeout(stop_budget, started.connection.close()).await;
+                            if closed.is_err() {
+                                log::warn!(
+                                    "an obsolete mcp connection did not close within the timeout"
+                                );
+                            }
+                            if let Some(server_task) = started.server_task {
+                                server_task.abort();
+                            }
+                        }
                         Err(McpError::Timeout)
                     }
                 };
@@ -344,10 +359,13 @@ impl Launcher for ProductionLauncher {
         _generation: u64,
     ) -> BoxFuture<'a, Result<Started>> {
         Box::pin(async move {
-            let LaunchRequest::External(spec) = request else {
-                return Err(McpError::InvalidSpec(
-                    "builtin services are not connected yet".to_owned(),
-                ));
+            let spec = match request {
+                LaunchRequest::Builtin { scope, kind } => {
+                    let (connection, server_task) =
+                        connect_builtin(*kind, scope.clone(), roots.clone(), &self.options).await?;
+                    return finish_start(connection, Some(server_task)).await;
+                }
+                LaunchRequest::External(spec) => spec,
             };
             match &spec.transport {
                 Transport::Stdio(stdio) => {
@@ -399,19 +417,32 @@ impl ProductionLauncher {
             bus.notify(&CORE_MCP_LOG, &events::cx(), payload);
         }));
         let connection = Connection::open(spec, plan, &options).await?;
-        let tools = match connection.list_tools().await {
-            Ok(tools) => tools,
-            Err(error) => {
-                connection.close().await;
-                return Err(error);
-            }
-        };
-        Ok(Started {
-            connection,
-            tools,
-            server_task: None,
-        })
+        finish_start(connection, None).await
     }
+}
+
+async fn finish_start(
+    connection: Arc<Connection>,
+    server_task: Option<JoinHandle<()>>,
+) -> Result<Started> {
+    let tools = match connection.list_tools().await {
+        Ok(tools) => tools,
+        Err(error) => {
+            // 清理独立成 task，启动 task 被 abort 时不影响回收
+            tokio::spawn(async move {
+                connection.close().await;
+                if let Some(task) = server_task {
+                    task.abort();
+                }
+            });
+            return Err(error);
+        }
+    };
+    Ok(Started {
+        connection,
+        tools,
+        server_task,
+    })
 }
 
 fn truncate_log_line(line: &str) -> String {

@@ -1,17 +1,21 @@
 #[path = "support/mod.rs"]
 mod support;
 
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde_json::json;
+use serde_json::{Value, json};
 use support::{
-    RecordingBus, ScriptedLauncher, bus, entry_generation, first_tool, options, roots, spec,
-    spec_with_env, stderr_spec, tool_names, wait_generation, wait_gone, wait_started,
+    RecordingBus, ScriptedLauncher, bus, call_tool, entry_generation, find_tool, first_tool,
+    options, roots, scope_roots, spec, spec_with_env, stderr_spec, tool_names, wait_generation,
+    wait_gone, wait_started,
 };
+use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 use wind_mcp::connector::CallOutcome;
-use wind_mcp::registry::{spawn, spawn_with};
+use wind_mcp::registry::{BoundTool, BuiltinKind, spawn, spawn_with};
+use wind_mcp::roots::ScopeId;
 
 #[tokio::test]
 async fn stale_report_does_not_revive_a_stopped_entry() {
@@ -433,6 +437,138 @@ async fn a_tool_call_succeeds_through_the_public_handle() {
         value.to_string().contains("hi"),
         "the echo tool must return its argument: {value}"
     );
+    tokio::time::timeout(Duration::from_secs(10), handle.shutdown())
+        .await
+        .expect("shutdown must return");
+}
+
+fn structured(outcome: CallOutcome) -> Value {
+    match outcome {
+        CallOutcome::Ok(value) => value["structuredContent"].clone(),
+        CallOutcome::Failed(error) => panic!("the fs tool call must return a result: {error}"),
+    }
+}
+
+async fn read_file(tool: &BoundTool, path: &Path) -> Value {
+    structured(call_tool(tool, json!({"path": path.to_string_lossy()})).await)
+}
+
+#[tokio::test]
+async fn two_scopes_are_two_isolated_instances() {
+    let tmp = TempDir::new().expect("a temporary directory is required");
+    let ws_a = tmp.path().join("ws-a");
+    let ws_b = tmp.path().join("ws-b");
+    std::fs::create_dir_all(&ws_a).expect("workspace a must be created");
+    std::fs::create_dir_all(&ws_b).expect("workspace b must be created");
+    let notes_a = ws_a.join("notes.md");
+    let notes_b = ws_b.join("notes.md");
+    std::fs::write(&notes_a, "notes from a").expect("the notes file of a must be written");
+    std::fs::write(&notes_b, "notes from b").expect("the notes file of b must be written");
+
+    let handle = spawn(options(), roots(), bus());
+    let topic_1 = ScopeId::new("topic:1");
+    let topic_2 = ScopeId::new("topic:2");
+    handle.set_scope_roots(topic_1.clone(), scope_roots(&[ws_a]));
+    handle.set_scope_roots(topic_2.clone(), scope_roots(&[ws_b]));
+    handle.acquire_builtin("t1".to_owned(), topic_1, BuiltinKind::Fs);
+    handle.acquire_builtin("t2".to_owned(), topic_2, BuiltinKind::Fs);
+    wait_started(&handle, "fs:topic:1").await;
+    wait_started(&handle, "fs:topic:2").await;
+
+    let tool_a = find_tool(&handle, "fs:topic:1", "read_file").await;
+    let read_a = read_file(&tool_a, &notes_a).await;
+    assert!(
+        read_a["bytes"].as_u64().is_some_and(|bytes| bytes > 0),
+        "the first scope must read its own workspace: {read_a}"
+    );
+    assert!(
+        read_a["content"]
+            .as_str()
+            .is_some_and(|content| content.contains("notes from a")),
+        "the first scope must read its own content: {read_a}"
+    );
+    let denied_b = read_file(&tool_a, &notes_b).await;
+    assert_eq!(
+        denied_b["bytes"],
+        json!(0),
+        "the first scope must not see the workspace of the second: {denied_b}"
+    );
+
+    let tool_b = find_tool(&handle, "fs:topic:2", "read_file").await;
+    let read_b = read_file(&tool_b, &notes_b).await;
+    assert!(
+        read_b["bytes"].as_u64().is_some_and(|bytes| bytes > 0),
+        "the second scope must read its own workspace: {read_b}"
+    );
+    assert!(
+        read_b["content"]
+            .as_str()
+            .is_some_and(|content| content.contains("notes from b")),
+        "the second scope must read its own content: {read_b}"
+    );
+    let denied_a = read_file(&tool_b, &notes_a).await;
+    assert_eq!(
+        denied_a["bytes"],
+        json!(0),
+        "the second scope must not see the workspace of the first: {denied_a}"
+    );
+
+    tokio::time::timeout(Duration::from_secs(10), handle.shutdown())
+        .await
+        .expect("shutdown must return");
+}
+
+#[tokio::test]
+async fn root_changes_do_not_restart_the_builtin() {
+    let tmp = TempDir::new().expect("a temporary directory is required");
+    let ws_a = tmp.path().join("ws-a");
+    let ws_b = tmp.path().join("ws-b");
+    std::fs::create_dir_all(&ws_a).expect("workspace a must be created");
+    std::fs::create_dir_all(&ws_b).expect("workspace b must be created");
+    let notes_a = ws_a.join("notes.md");
+    let notes_b = ws_b.join("notes.md");
+    std::fs::write(&notes_a, "notes from a").expect("the notes file of a must be written");
+    std::fs::write(&notes_b, "notes from b").expect("the notes file of b must be written");
+
+    let handle = spawn(options(), roots(), bus());
+    let scope = ScopeId::new("topic:1");
+    handle.set_scope_roots(scope.clone(), scope_roots(std::slice::from_ref(&ws_a)));
+    handle.acquire_builtin("t1".to_owned(), scope.clone(), BuiltinKind::Fs);
+    wait_started(&handle, "fs:topic:1").await;
+    let before = entry_generation(&handle, "fs:topic:1").await;
+    let tool = find_tool(&handle, "fs:topic:1", "read_file").await;
+    let read_a = read_file(&tool, &notes_a).await;
+    assert!(
+        read_a["bytes"].as_u64().is_some_and(|bytes| bytes > 0),
+        "the instance must start with the first root: {read_a}"
+    );
+
+    handle.set_scope_roots(scope, scope_roots(&[ws_a, ws_b]));
+    assert_eq!(
+        entry_generation(&handle, "fs:topic:1").await,
+        before,
+        "a root change must not restart the builtin instance"
+    );
+
+    let started = Instant::now();
+    loop {
+        let read = read_file(&tool, &notes_b).await;
+        if read["bytes"].as_u64().is_some_and(|bytes| bytes > 0) {
+            assert!(
+                read["content"]
+                    .as_str()
+                    .is_some_and(|content| content.contains("notes from b")),
+                "the added root must serve its content: {read}"
+            );
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the added root must take effect without a restart: {read}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
     tokio::time::timeout(Duration::from_secs(10), handle.shutdown())
         .await
         .expect("shutdown must return");

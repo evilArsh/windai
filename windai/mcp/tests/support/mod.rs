@@ -10,16 +10,17 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 use wind_event::{
     CallCx, CallError, Dispatcher, EnabledSet, EventOutlet, Limits, ModCaller, ModRoster, Pending,
     Scope, SubmitError, Subscription,
 };
-use wind_mcp::connector::{Connection, ToolDescriptor};
+use wind_mcp::connector::{CallOutcome, Connection, ToolDescriptor};
 use wind_mcp::error::{McpError, Result as McpResult};
 use wind_mcp::events::{CORE_MCP_LAUNCH, CORE_MCP_REPLACED};
 use wind_mcp::options::McpOptions;
 use wind_mcp::registry::{BoundTool, BoxFuture, LaunchRequest, Launcher, RegistryHandle, Started};
-use wind_mcp::roots::Roots;
+use wind_mcp::roots::{Roots, ScopeRoots};
 use wind_mcp::runner::plan;
 use wind_mcp::spec::{ServiceSpec, StdioSpec, Transport};
 
@@ -68,6 +69,13 @@ pub fn options() -> McpOptions {
 
 pub fn roots() -> Roots {
     Roots::new(test_server_directory())
+}
+
+pub fn scope_roots(workspace: &[PathBuf]) -> ScopeRoots {
+    ScopeRoots {
+        workspace: workspace.to_vec(),
+        skills: Vec::new(),
+    }
 }
 
 pub fn spec(name: &str) -> ServiceSpec {
@@ -156,6 +164,35 @@ pub async fn first_tool(handle: &RegistryHandle, server: &str) -> BoundTool {
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+}
+
+pub async fn find_tool(handle: &RegistryHandle, server: &str, tool: &str) -> BoundTool {
+    let started = Instant::now();
+    loop {
+        let catalog = handle.list_tools().await;
+        if let Some(bound) = catalog
+            .iter()
+            .find(|bound| bound.server == server && bound.tool.name == tool)
+        {
+            return bound.clone();
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the service {server} must expose the tool {tool}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+pub async fn call_tool(tool: &BoundTool, args: Value) -> CallOutcome {
+    tool.call
+        .clone()
+        .execute(
+            args,
+            CancellationToken::new(),
+            Instant::now() + Duration::from_secs(5),
+        )
+        .await
 }
 
 pub async fn tool_names(handle: &RegistryHandle) -> Vec<String> {
