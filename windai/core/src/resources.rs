@@ -253,7 +253,7 @@ impl ResourceServices {
 
         let (new_main, old_main) = {
             let mut topics = self.lock_topics();
-            let refs = topics.entry(topic_id).or_insert_with(TopicRefs::default);
+            let refs = topics.entry(topic_id).or_default();
             refs.generation += 1;
             let new_main = format!("topic_{topic_id}@{}", refs.generation);
             let old_main = std::mem::replace(&mut refs.main, new_main.clone());
@@ -426,20 +426,11 @@ impl LlmMcpService for ResourceServices {
 }
 
 /// 一个话题当前的引用名
+#[derive(Default)]
 struct TopicRefs {
     main: String,
     generation: u64,
     builtins: BTreeMap<BuiltinKind, BuiltinSnapshot>,
-}
-
-impl Default for TopicRefs {
-    fn default() -> Self {
-        Self {
-            main: String::new(),
-            generation: 0,
-            builtins: BTreeMap::new(),
-        }
-    }
 }
 
 impl TopicRefs {

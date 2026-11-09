@@ -85,7 +85,7 @@ impl Fixture {
                 .merge(wind_mcp::events::directory()),
             Arc::clone(&roster) as Arc<dyn ModRoster>,
             Arc::new(NoCaller),
-            Arc::new(RecordingOutlet::default()),
+            Arc::new(RecordingOutlet),
             Limits::default(),
         ));
         let registry = wind_mcp::init(McpOptions::new(dirs.mods_root()), Arc::clone(&bus));
@@ -115,7 +115,6 @@ impl Fixture {
     }
 }
 
-#[derive(Default)]
 struct RecordingOutlet;
 
 impl EventOutlet for RecordingOutlet {

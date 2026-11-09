@@ -16,7 +16,7 @@ pub fn manifest_schema() -> Value {
 fn constraints() -> Value {
     json!({
         "properties": {
-            "version": { "maximum": 30000 },
+            "version": { "maximum": u32::MAX },
             "description": { "maxLength": 500 },
             "mcpServers": { "propertyNames": { "pattern": SYMBOL_PATTERN } },
             "requests": { "propertyNames": { "pattern": SYMBOL_PATTERN } },
