@@ -1,19 +1,16 @@
-mod scan;
-
-pub use scan::{SkillError, SkillsListResult, SkillsMeta};
-
 use std::fs;
-use std::path::Path;
+use std::path::PathBuf;
 
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
-use rmcp::model::ErrorData;
-use rmcp::{ServerHandler, tool, tool_handler, tool_router};
+use rmcp::{ErrorData, ServerHandler, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use super::paths::Paths;
-use crate::registry::SkillRoot;
+use super::skills_scan;
+use crate::roots::{Roots, ScopeId, SkillRoot};
+
+pub use super::skills_scan::{SkillError, SkillsListResult, SkillsMeta};
 
 /// 列举技能的请求
 #[derive(Deserialize, JsonSchema)]
@@ -28,28 +25,58 @@ pub struct SkillsListRequest {
 
 /// 技能目录工具
 pub struct SkillsServer {
-    roots: Vec<SkillRoot>,
-    paths: Paths,
+    roots: Roots,
+    scope: ScopeId,
     tool_router: ToolRouter<Self>,
 }
 
-
-/// TODO: mod系统会动态载入和删除skills目录,待重构
 impl SkillsServer {
-    pub fn new(roots: Vec<SkillRoot>) -> Self {
-        let roots: Vec<SkillRoot> = roots
+    pub fn new(roots: Roots, scope: ScopeId) -> Self {
+        Self {
+            roots,
+            scope,
+            tool_router: Self::tool_router(),
+        }
+    }
+
+    fn skill_roots(&self) -> Result<Vec<SkillRoot>, ErrorData> {
+        let Some(scope) = self.roots.scope(&self.scope) else {
+            return Err(self.not_configured());
+        };
+        let roots: Vec<SkillRoot> = scope
+            .skills
             .into_iter()
+            .filter(|root| !root.path.as_os_str().is_empty())
             .map(|root| SkillRoot {
                 source: root.source,
                 path: fs::canonicalize(&root.path).unwrap_or(root.path),
             })
             .collect();
-        let paths = Paths::new(roots.iter().map(|root| root.path.clone()).collect());
-        Self {
-            roots,
-            paths,
-            tool_router: Self::tool_router(),
+        if roots.is_empty() {
+            return Err(self.not_configured());
         }
+        Ok(roots)
+    }
+
+    fn not_configured(&self) -> ErrorData {
+        ErrorData::internal_error(
+            format!("no skill roots are configured for the scope {}", self.scope),
+            None,
+        )
+    }
+}
+
+fn resolve_dir(roots: &[SkillRoot], dir: &str) -> Result<PathBuf, ErrorData> {
+    let path = fs::canonicalize(dir).map_err(|error| {
+        ErrorData::internal_error(format!("cannot resolve the directory {dir}: {error}"), None)
+    })?;
+    if roots.iter().any(|root| path.starts_with(&root.path)) {
+        Ok(path)
+    } else {
+        Err(ErrorData::internal_error(
+            format!("the directory {dir} is not inside any skill root"),
+            None,
+        ))
     }
 }
 
@@ -63,14 +90,14 @@ impl SkillsServer {
         &self,
         Parameters(request): Parameters<SkillsListRequest>,
     ) -> Result<Json<SkillsListResult>, ErrorData> {
-        let dir = self.paths.resolve(Path::new(&request.dir))?;
-        let roots = self.roots.clone();
-        tokio::task::spawn_blocking(move || {
-            scan::scan(&roots, &dir, request.recursive, request.max_depth)
+        let roots = self.skill_roots()?;
+        let dir = resolve_dir(&roots, &request.dir)?;
+        let result = tokio::task::spawn_blocking(move || {
+            skills_scan::scan(&roots, &dir, request.recursive, request.max_depth)
         })
         .await
-        .map(Json)
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        Ok(Json(result))
     }
 }
 

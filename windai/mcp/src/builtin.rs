@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use rmcp::ServiceExt;
+use rmcp::{ServerHandler, ServiceExt};
 use tokio::task::JoinHandle;
 
 use crate::connector::Connection;
-use crate::error::{McpError, Result};
+use crate::error::Result;
 use crate::options::McpOptions;
 use crate::registry::BuiltinKind;
 use crate::roots::{Roots, ScopeId};
@@ -12,6 +12,8 @@ use crate::roots::{Roots, ScopeId};
 pub mod fs;
 mod fs_ops;
 mod sandbox;
+pub mod skills;
+mod skills_scan;
 
 /// duplex 通道的缓冲字节数
 const DUPLEX_BYTES: usize = 64 * 1024;
@@ -22,14 +24,21 @@ pub async fn connect_builtin(
     roots: Roots,
     options: &McpOptions,
 ) -> Result<(Arc<Connection>, JoinHandle<()>)> {
-    let server = match kind {
-        BuiltinKind::Fs => fs::FsServer::new(roots, scope),
+    match kind {
+        BuiltinKind::Fs => serve_builtin(fs::FsServer::new(roots, scope), options).await,
         BuiltinKind::Skills => {
-            return Err(McpError::InvalidSpec(
-                "skills builtin is not connected yet".to_owned(),
-            ));
+            serve_builtin(skills::SkillsServer::new(roots, scope), options).await
         }
-    };
+    }
+}
+
+async fn serve_builtin<S>(
+    server: S,
+    options: &McpOptions,
+) -> Result<(Arc<Connection>, JoinHandle<()>)>
+where
+    S: ServerHandler,
+{
     let (client, server_io) = tokio::io::duplex(DUPLEX_BYTES);
     let (client_read, client_write) = tokio::io::split(client);
     let task = tokio::spawn(async move {

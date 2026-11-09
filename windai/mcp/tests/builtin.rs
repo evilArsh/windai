@@ -10,7 +10,7 @@ use wind_mcp::builtin::connect_builtin;
 use wind_mcp::connector::{CallOutcome, Connection};
 use wind_mcp::options::McpOptions;
 use wind_mcp::registry::BuiltinKind;
-use wind_mcp::roots::{Roots, ScopeId, ScopeRoots};
+use wind_mcp::roots::{Roots, ScopeId, ScopeRoots, SkillRoot};
 
 const SCOPE: &str = "topic:1";
 
@@ -23,6 +23,33 @@ async fn builtin_fs(roots: &Roots, scope: &ScopeId) -> (Arc<Connection>, JoinHan
     )
     .await
     .expect("the builtin fs server must connect")
+}
+
+async fn builtin_skills(roots: &Roots, scope: &ScopeId) -> (Arc<Connection>, JoinHandle<()>) {
+    connect_builtin(
+        BuiltinKind::Skills,
+        scope.clone(),
+        roots.clone(),
+        &McpOptions::default(),
+    )
+    .await
+    .expect("the builtin skills server must connect")
+}
+
+fn skill_scope(source: &str, path: &Path) -> ScopeRoots {
+    ScopeRoots {
+        workspace: Vec::new(),
+        skills: vec![SkillRoot {
+            source: source.to_owned(),
+            path: path.to_path_buf(),
+        }],
+    }
+}
+
+fn write_skill(dir: &Path, name: &str, description: &str) {
+    std::fs::create_dir_all(dir).expect("the skill directory must be created");
+    let content = format!("---\nname: {name}\ndescription: {description}\n---\n");
+    std::fs::write(dir.join("SKILL.md"), content).expect("SKILL.md must be written");
 }
 
 async fn call(conn: &Connection, tool: &str, args: Value) -> CallOutcome {
@@ -253,4 +280,64 @@ async fn builtin_exec_runs_argv_inside_the_scope_and_rejects_outside_cwd() {
         "a cwd outside the workspace must be rejected: {denied}"
     );
     assert_eq!(denied["timed_out"], json!(false));
+}
+
+#[tokio::test]
+async fn builtin_skills_lists_skills_within_the_scope() {
+    let tmp = TempDir::new().expect("a temporary directory is required");
+    let skills_a = tmp.path().join("skills-a");
+    let skills_b = tmp.path().join("skills-b");
+    write_skill(&skills_a.join("a"), "demo", "demo skill");
+    write_skill(&skills_b.join("b"), "other", "other skill");
+
+    let roots = Roots::new(tmp.path().join("mods"));
+    let scope = ScopeId::new(SCOPE);
+    roots.set_scope(&scope, skill_scope("s1", &skills_a));
+    let (conn, task) = builtin_skills(&roots, &scope).await;
+
+    let listed = call(
+        &conn,
+        "skills_list",
+        json!({"dir": skills_a.to_string_lossy()}),
+    )
+    .await;
+    let listed = structured(&listed);
+    assert_eq!(
+        listed["skills"].as_array().map(Vec::len),
+        Some(1),
+        "only the skill under skills-a must be listed: {listed}"
+    );
+    assert_eq!(listed["skills"][0]["name"], json!("demo"));
+    assert_eq!(listed["skills"][0]["source"], json!("s1"));
+
+    roots.set_scope(&scope, skill_scope("s2", &skills_b));
+    let listed = call(
+        &conn,
+        "skills_list",
+        json!({"dir": skills_b.to_string_lossy()}),
+    )
+    .await;
+    let listed = structured(&listed);
+    assert_eq!(
+        listed["skills"].as_array().map(Vec::len),
+        Some(1),
+        "the replaced scope must expose only skills-b: {listed}"
+    );
+    assert_eq!(listed["skills"][0]["name"], json!("other"));
+    assert_eq!(listed["skills"][0]["source"], json!("s2"));
+
+    let outside = tmp.path().join("outside");
+    std::fs::create_dir_all(&outside).expect("the outside directory must be created");
+    let denied = call(
+        &conn,
+        "skills_list",
+        json!({"dir": outside.to_string_lossy()}),
+    )
+    .await;
+    assert!(
+        matches!(denied, CallOutcome::Failed(_)),
+        "a directory outside the skill roots must be rejected: {denied:?}"
+    );
+
+    task.abort();
 }
