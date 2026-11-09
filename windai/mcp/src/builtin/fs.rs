@@ -6,14 +6,18 @@ use rmcp::{ErrorData, ServerHandler, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-pub use super::sandbox::FsError;
+use crate::roots::{Roots, ScopeId};
 
-use super::fs_ops::{
+mod ops;
+mod sandbox;
+
+pub use sandbox::FsError;
+
+use ops::{
     ExecResult, ListDirResult, ReadFileResult, WriteFileResult, exec, list_dir, read_file,
     write_file,
 };
-use super::sandbox::Sandbox;
-use crate::roots::{Roots, ScopeId};
+use sandbox::Sandbox;
 
 impl From<FsError> for ErrorData {
     fn from(e: FsError) -> Self {

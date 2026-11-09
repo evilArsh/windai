@@ -10,10 +10,7 @@ use crate::registry::BuiltinKind;
 use crate::roots::{Roots, ScopeId};
 
 pub mod fs;
-mod fs_ops;
-mod sandbox;
 pub mod skills;
-mod skills_scan;
 
 /// duplex 通道的缓冲字节数
 const DUPLEX_BYTES: usize = 64 * 1024;

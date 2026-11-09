@@ -7,10 +7,11 @@ use rmcp::{ErrorData, ServerHandler, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use super::skills_scan;
 use crate::roots::{Roots, ScopeId, SkillRoot};
 
-pub use super::skills_scan::{SkillError, SkillsListResult, SkillsMeta};
+mod scan;
+
+pub use scan::{SkillError, SkillsListResult, SkillsMeta};
 
 /// 列举技能的请求
 #[derive(Deserialize, JsonSchema)]
@@ -93,7 +94,7 @@ impl SkillsServer {
         let roots = self.skill_roots()?;
         let dir = resolve_dir(&roots, &request.dir)?;
         let result = tokio::task::spawn_blocking(move || {
-            skills_scan::scan(&roots, &dir, request.recursive, request.max_depth)
+            scan::scan(&roots, &dir, request.recursive, request.max_depth)
         })
         .await
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;

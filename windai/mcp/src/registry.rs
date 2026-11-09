@@ -159,7 +159,9 @@ impl RegistryHandle {
     }
 
     fn send(&self, command: Command) {
-        let _ = self.commands.send(command);
+        if let Err(err) = self.commands.send(command) {
+            log::error!("Registry send error: {}", err);
+        }
     }
 }
 
