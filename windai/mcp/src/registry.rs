@@ -10,6 +10,7 @@ use wind_event::Dispatcher;
 
 use crate::connector::{Connection, ToolDescriptor};
 use crate::error::{McpError, Result};
+use crate::events::StopReason;
 use crate::roots::{Roots, ScopeId, ScopeRoots};
 use crate::spec::{Fingerprint, ServiceSpec};
 
@@ -18,7 +19,7 @@ mod run;
 
 pub use run::{spawn, spawn_with};
 
-use command::{Command, Effect, ReportPhase};
+use command::{Command, Effect, Event, ReportPhase};
 
 pub type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
@@ -198,6 +199,11 @@ struct Entry {
     discard_start: bool,
 }
 
+struct StopRecord {
+    refs: Vec<String>,
+    reason: StopReason,
+}
+
 struct Registry {
     entries: BTreeMap<String, Entry>,
     roots: Roots,
@@ -206,6 +212,8 @@ struct Registry {
     generation: u64,
     outstanding: usize,
     pending_shutdowns: Vec<oneshot::Sender<()>>,
+    events: Vec<Event>,
+    stops: BTreeMap<(String, u64), StopRecord>,
 }
 
 impl Registry {
@@ -218,10 +226,12 @@ impl Registry {
             generation: 0,
             outstanding: 0,
             pending_shutdowns: Vec::new(),
+            events: Vec::new(),
+            stops: BTreeMap::new(),
         }
     }
 
-    fn handle(&mut self, command: Command) -> Vec<Effect> {
+    fn handle(&mut self, command: Command) -> (Vec<Effect>, Vec<Event>) {
         let effects = match command {
             Command::Acquire { ref_id, request } => {
                 if self.pending_shutdowns.is_empty() {
@@ -293,7 +303,7 @@ impl Registry {
             })
             .count();
         self.flush_catalog();
-        effects
+        (effects, std::mem::take(&mut self.events))
     }
 
     fn acquire(&mut self, ref_id: String, request: LaunchRequest) -> Vec<Effect> {
@@ -302,14 +312,15 @@ impl Registry {
         if !self.entries.contains_key(&name) {
             self.generation += 1;
             let generation = self.generation;
-            let mut refs = BTreeSet::new();
-            refs.insert(ref_id);
+            let mut entry_refs = BTreeSet::new();
+            entry_refs.insert(ref_id);
+            let refs = refs_snapshot(&entry_refs);
             self.entries.insert(
                 name.clone(),
                 Entry {
                     request: request.clone(),
                     fingerprint,
-                    refs,
+                    refs: entry_refs,
                     state: State::Starting(generation),
                     tools: Vec::new(),
                     connection: None,
@@ -318,10 +329,16 @@ impl Registry {
                     discard_start: false,
                 },
             );
+            self.events.push(Event::Starting {
+                name: name.clone(),
+                refs: refs.clone(),
+            });
             return vec![Effect::Start {
                 name,
                 generation,
                 request,
+                refs,
+                previous: None,
             }];
         }
 
@@ -333,15 +350,28 @@ impl Registry {
         if entry.fingerprint != fingerprint {
             self.generation += 1;
             let generation = self.generation;
+            let previous = match &entry.request {
+                LaunchRequest::External(spec) => Some(Box::new(spec.clone())),
+                LaunchRequest::Builtin { .. } => None,
+            };
             let mut effects = Vec::new();
             if matches!(&entry.state, State::Running(_)) {
                 match entry.connection.take() {
-                    Some(connection) => effects.push(Effect::Stop {
-                        name: name.clone(),
-                        generation,
-                        connection,
-                        server_task: entry.server_task.take(),
-                    }),
+                    Some(connection) => {
+                        self.stops.insert(
+                            (name.clone(), generation),
+                            StopRecord {
+                                refs: refs_snapshot(&entry.refs),
+                                reason: StopReason::Replaced,
+                            },
+                        );
+                        effects.push(Effect::Stop {
+                            name: name.clone(),
+                            generation,
+                            connection,
+                            server_task: entry.server_task.take(),
+                        });
+                    }
                     None => {
                         log::error!("the running mcp service {name} has no connection");
                         if let Some(task) = entry.server_task.take() {
@@ -359,10 +389,17 @@ impl Registry {
             entry.state = State::Starting(generation);
             entry.discard_start = false;
             self.dirty = true;
+            let refs = refs_snapshot(&entry.refs);
+            self.events.push(Event::Starting {
+                name: name.clone(),
+                refs: refs.clone(),
+            });
             effects.push(Effect::Start {
                 name,
                 generation,
                 request,
+                refs,
+                previous,
             });
             return effects;
         }
@@ -377,10 +414,17 @@ impl Registry {
             entry.state = State::Starting(generation);
             entry.discard_start = false;
             self.dirty = true;
+            let refs = refs_snapshot(&entry.refs);
+            self.events.push(Event::Starting {
+                name: name.clone(),
+                refs: refs.clone(),
+            });
             return vec![Effect::Start {
                 name,
                 generation,
                 request,
+                refs,
+                previous: None,
             }];
         }
         Vec::new()
@@ -395,6 +439,7 @@ impl Registry {
                     log::error!("the mcp service {name} disappeared during release");
                     continue;
                 };
+                let refs = refs_snapshot(&entry.refs);
                 entry.refs.remove(ref_id);
                 if !entry.refs.is_empty() {
                     continue;
@@ -408,6 +453,13 @@ impl Registry {
                             entry.tools.clear();
                             entry.state = State::Stopping(generation);
                             self.dirty = true;
+                            self.stops.insert(
+                                (name.clone(), generation),
+                                StopRecord {
+                                    refs,
+                                    reason: StopReason::Released,
+                                },
+                            );
                             effects.push(Effect::Stop {
                                 name: name.clone(),
                                 generation,
@@ -482,12 +534,19 @@ impl Registry {
         let stopping = matches!(&entry.state, State::Stopping(_));
         let mut remove = false;
         if starting && current == generation {
+            let refs = refs_snapshot(&entry.refs);
+            let tools: Vec<String> = started.tools.iter().map(|tool| tool.name.clone()).collect();
             entry.state = State::Running(generation);
             entry.tools = started.tools;
             entry.connection = Some(started.connection);
             entry.server_task = started.server_task;
             entry.discard_start = false;
             self.dirty = true;
+            self.events.push(Event::Started {
+                name: name.clone(),
+                refs,
+                tools,
+            });
         } else if stopping && generation < current {
             entry.discard_start = false;
             effects.push(Effect::Discard(started));
@@ -495,10 +554,17 @@ impl Registry {
                 self.generation += 1;
                 let next = self.generation;
                 entry.state = State::Starting(next);
+                let refs = refs_snapshot(&entry.refs);
+                self.events.push(Event::Starting {
+                    name: name.clone(),
+                    refs: refs.clone(),
+                });
                 effects.push(Effect::Start {
                     name: name.clone(),
                     generation: next,
                     request: want,
+                    refs,
+                    previous: None,
                 });
             } else if entry.refs.is_empty() || !self.pending_shutdowns.is_empty() {
                 remove = true;
@@ -523,11 +589,17 @@ impl Registry {
         let mut remove = false;
         let mut restart = None;
         if starting && current == generation {
+            let refs = refs_snapshot(&entry.refs);
             entry.state = State::Failed {
-                error: message,
+                error: message.clone(),
                 generation,
             };
             entry.tools.clear();
+            self.events.push(Event::Failed {
+                name: name.to_owned(),
+                refs,
+                error: message,
+            });
             if entry.refs.is_empty() {
                 remove = true;
             } else if let Some(want) = entry.want.take() {
@@ -548,15 +620,21 @@ impl Registry {
                 remove = true;
             }
         }
-        let effects = restart
-            .map(|(generation, request)| {
-                vec![Effect::Start {
-                    name: name.to_owned(),
-                    generation,
-                    request,
-                }]
-            })
-            .unwrap_or_default();
+        let mut effects = Vec::new();
+        if let Some((generation, request)) = restart {
+            let refs = refs_snapshot(&entry.refs);
+            self.events.push(Event::Starting {
+                name: name.to_owned(),
+                refs: refs.clone(),
+            });
+            effects.push(Effect::Start {
+                name: name.to_owned(),
+                generation,
+                request,
+                refs,
+                previous: None,
+            });
+        }
         if remove {
             self.drop_entry(name);
         }
@@ -567,6 +645,13 @@ impl Registry {
         if let Err(error) = &result {
             log::warn!("cannot stop the mcp service {name}: {error}");
         }
+        if let Some(record) = self.stops.remove(&(name.to_owned(), generation)) {
+            self.events.push(Event::Stopped {
+                name: name.to_owned(),
+                refs: record.refs,
+                reason: record.reason,
+            });
+        }
         let mut effects = Vec::new();
         let mut remove = false;
         if let Some(entry) = self.entries.get_mut(name)
@@ -576,10 +661,17 @@ impl Registry {
                 self.generation += 1;
                 let next = self.generation;
                 entry.state = State::Starting(next);
+                let refs = refs_snapshot(&entry.refs);
+                self.events.push(Event::Starting {
+                    name: name.to_owned(),
+                    refs: refs.clone(),
+                });
                 effects.push(Effect::Start {
                     name: name.to_owned(),
                     generation: next,
                     request: want,
+                    refs,
+                    previous: None,
                 });
             } else {
                 remove = true;
@@ -627,6 +719,13 @@ impl Registry {
                             entry.tools.clear();
                             entry.state = State::Stopping(generation);
                             self.dirty = true;
+                            self.stops.insert(
+                                (name.clone(), generation),
+                                StopRecord {
+                                    refs: refs_snapshot(&entry.refs),
+                                    reason: StopReason::Shutdown,
+                                },
+                            );
                             effects.push(Effect::Stop {
                                 name: name.clone(),
                                 generation,
@@ -673,6 +772,8 @@ impl Registry {
             }
         }
         self.entries.clear();
+        self.stops.clear();
+        self.events.clear();
     }
 
     fn drop_entry(&mut self, name: &str) {
@@ -720,4 +821,8 @@ impl Registry {
         self.catalog = Catalog(Arc::from(tools));
         self.dirty = false;
     }
+}
+
+fn refs_snapshot(refs: &BTreeSet<String>) -> Vec<String> {
+    refs.iter().cloned().collect()
 }

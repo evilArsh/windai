@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use serde_json::json;
+use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::sync::oneshot;
 use wind_event::{
@@ -16,13 +16,14 @@ use wind_event::{
 };
 use wind_mcp::connector::{Connection, ToolDescriptor};
 use wind_mcp::error::{McpError, Result as McpResult};
+use wind_mcp::events::{CORE_MCP_LAUNCH, CORE_MCP_REPLACED};
 use wind_mcp::options::McpOptions;
 use wind_mcp::registry::{BoxFuture, LaunchRequest, Launcher, RegistryHandle, Started};
 use wind_mcp::roots::Roots;
 use wind_mcp::runner::plan;
 use wind_mcp::spec::{ServiceSpec, StdioSpec, Transport};
 
-const REGISTRY_TEST_DIRECTORY: &str = "wind-mcp-registry-tests";
+const RECORDING_MOD: &str = "recording";
 
 pub async fn open_test_server() -> Arc<Connection> {
     open_test_server_with(McpOptions::default()).await
@@ -35,18 +36,13 @@ pub async fn open_test_server_with(options: McpOptions) -> Arc<Connection> {
         name: "test".to_owned(),
         description: None,
         transport: Transport::Stdio(StdioSpec {
-            command: command.clone(),
+            command,
             args: Vec::new(),
             env: BTreeMap::new(),
-            cwd: cwd.clone(),
+            cwd,
         }),
     };
-    let roots = Roots::new(
-        PathBuf::from(&command)
-            .parent()
-            .expect("the test server binary must have a parent")
-            .to_path_buf(),
-    );
+    let roots = Roots::new(test_server_directory());
     let Transport::Stdio(stdio) = &spec.transport else {
         panic!("the test server must use the stdio transport");
     };
@@ -66,12 +62,29 @@ pub fn bus() -> Arc<Dispatcher> {
     ))
 }
 
+pub fn options() -> McpOptions {
+    McpOptions::default()
+}
+
 pub fn roots() -> Roots {
-    Roots::new(std::env::temp_dir().join(REGISTRY_TEST_DIRECTORY))
+    Roots::new(test_server_directory())
 }
 
 pub fn spec(name: &str) -> ServiceSpec {
     service_spec(name, BTreeMap::new())
+}
+
+pub fn stderr_spec(name: &str, line: &str) -> ServiceSpec {
+    ServiceSpec {
+        name: name.to_owned(),
+        description: None,
+        transport: Transport::Stdio(StdioSpec {
+            command: env!("CARGO_BIN_EXE_mcp_exec_helper").to_owned(),
+            args: vec!["stderr".to_owned(), line.to_owned()],
+            env: BTreeMap::new(),
+            cwd: test_server_directory(),
+        }),
+    }
 }
 
 pub fn spec_with_env(name: &str, key: &str, value: &str) -> ServiceSpec {
@@ -361,15 +374,16 @@ fn service_spec(name: &str, env: BTreeMap<String, String>) -> ServiceSpec {
             command: env!("CARGO_BIN_EXE_mcp_test_server").to_owned(),
             args: Vec::new(),
             env,
-            cwd: registry_test_directory(),
+            cwd: test_server_directory(),
         }),
     }
 }
 
-fn registry_test_directory() -> PathBuf {
-    let directory = std::env::temp_dir().join(REGISTRY_TEST_DIRECTORY);
-    std::fs::create_dir_all(&directory).expect("create the registry test directory");
-    directory
+fn test_server_directory() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_mcp_test_server"))
+        .parent()
+        .expect("the test server binary must have a parent")
+        .to_path_buf()
 }
 
 fn temporary_directory() -> PathBuf {
@@ -382,6 +396,157 @@ fn temporary_directory() -> PathBuf {
         .expect("lock the temporary directories")
         .push(directory);
     path
+}
+
+/// 记录 notify 并允许改写 decide 载荷的事件总线
+#[derive(Clone)]
+pub struct RecordingBus {
+    inner: Arc<RecordingInner>,
+    dispatcher: Arc<Dispatcher>,
+}
+
+#[derive(Default)]
+struct RecordingInner {
+    rewrites: Mutex<HashMap<String, Box<dyn Fn(Value) -> Value + Send + Sync>>>,
+    events: Mutex<Vec<(String, Option<Value>)>>,
+}
+
+impl Default for RecordingBus {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RecordingBus {
+    pub fn new() -> Self {
+        let inner = Arc::new(RecordingInner::default());
+        let dispatcher = Dispatcher::new(
+            wind_mcp::events::directory(),
+            Arc::new(RecordingRoster),
+            Arc::new(RecordingCaller {
+                inner: Arc::clone(&inner),
+            }),
+            Arc::new(RecordingOutlet {
+                inner: Arc::clone(&inner),
+            }),
+            Limits::default(),
+        );
+        dispatcher.rebuild_index(vec![
+            recording_subscription(CORE_MCP_LAUNCH.name),
+            recording_subscription(CORE_MCP_REPLACED.name),
+        ]);
+        Self {
+            inner,
+            dispatcher: Arc::new(dispatcher),
+        }
+    }
+
+    pub fn dispatcher(&self) -> Arc<Dispatcher> {
+        Arc::clone(&self.dispatcher)
+    }
+
+    pub fn rewrite(&self, event: &str, rewrite: impl Fn(Value) -> Value + Send + Sync + 'static) {
+        self.inner
+            .rewrites
+            .lock()
+            .expect("lock the rewrites")
+            .insert(event.to_owned(), Box::new(rewrite));
+    }
+
+    pub fn seen(&self, event: &str) -> bool {
+        self.inner
+            .events
+            .lock()
+            .expect("lock the recorded events")
+            .iter()
+            .any(|(name, _)| name == event)
+    }
+
+    pub fn payloads(&self, event: &str) -> Vec<Value> {
+        self.inner
+            .events
+            .lock()
+            .expect("lock the recorded events")
+            .iter()
+            .filter(|(name, _)| name == event)
+            .filter_map(|(_, payload)| payload.clone())
+            .collect()
+    }
+
+    pub async fn poll_seen(&self, event: &str) {
+        self.poll_until_seen(event, |_| true).await;
+    }
+
+    pub async fn poll_until_seen(
+        &self,
+        event: &str,
+        accept: impl Fn(&Value) -> bool + Send + Sync,
+    ) {
+        let started = Instant::now();
+        loop {
+            if self.payloads(event).iter().any(&accept) {
+                return;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "the event {event} must be published"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+}
+
+fn recording_subscription(event: &'static str) -> Subscription {
+    Subscription {
+        mod_name: RECORDING_MOD.to_owned(),
+        mod_version: 1,
+        event,
+        handler: "rewrite".to_owned(),
+        timeout_ms: 1000,
+    }
+}
+
+struct RecordingRoster;
+
+impl ModRoster for RecordingRoster {
+    fn enabled(&self, _scope: &Scope) -> EnabledSet {
+        EnabledSet::from_names([RECORDING_MOD.to_owned()])
+    }
+}
+
+struct RecordingCaller {
+    inner: Arc<RecordingInner>,
+}
+
+#[async_trait::async_trait]
+impl ModCaller for RecordingCaller {
+    async fn call(
+        &self,
+        sub: &Subscription,
+        payload: Value,
+        _cx: CallCx,
+    ) -> std::result::Result<Option<Value>, CallError> {
+        let rewrites = self.inner.rewrites.lock().expect("lock the rewrites");
+        match rewrites.get(sub.event) {
+            Some(rewrite) => Ok(Some(rewrite(payload))),
+            None => Ok(None),
+        }
+    }
+}
+
+struct RecordingOutlet {
+    inner: Arc<RecordingInner>,
+}
+
+impl EventOutlet for RecordingOutlet {
+    fn submit(&self, pending: Pending) -> std::result::Result<(), SubmitError> {
+        self.inner
+            .events
+            .lock()
+            .expect("lock the recorded events")
+            .push((pending.envelope.name, pending.envelope.payload));
+        Ok(())
+    }
 }
 
 struct NoopOutlet;

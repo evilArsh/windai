@@ -6,7 +6,9 @@ use tokio::task::JoinHandle;
 use super::{Catalog, LaunchRequest, Started};
 use crate::connector::{Connection, ToolDescriptor};
 use crate::error::Result;
+use crate::events::StopReason;
 use crate::roots::{ScopeId, ScopeRoots};
+use crate::spec::ServiceSpec;
 
 pub(crate) enum Command {
     Acquire {
@@ -56,6 +58,8 @@ pub(crate) enum Effect {
         name: String,
         generation: u64,
         request: LaunchRequest,
+        refs: Vec<String>,
+        previous: Option<Box<ServiceSpec>>,
     },
     Stop {
         name: String,
@@ -69,5 +73,27 @@ pub(crate) enum Effect {
         name: String,
         generation: u64,
         connection: Arc<Connection>,
+    },
+}
+
+pub(crate) enum Event {
+    Starting {
+        name: String,
+        refs: Vec<String>,
+    },
+    Started {
+        name: String,
+        refs: Vec<String>,
+        tools: Vec<String>,
+    },
+    Failed {
+        name: String,
+        refs: Vec<String>,
+        error: String,
+    },
+    Stopped {
+        name: String,
+        refs: Vec<String>,
+        reason: StopReason,
     },
 }

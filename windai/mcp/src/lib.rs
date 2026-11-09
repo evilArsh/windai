@@ -1,5 +1,6 @@
 pub mod connector;
 pub mod error;
+pub mod events;
 pub mod options;
 pub mod registry;
 pub mod roots;

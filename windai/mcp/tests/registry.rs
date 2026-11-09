@@ -1,14 +1,15 @@
 #[path = "support/mod.rs"]
 mod support;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use serde_json::json;
 use support::{
-    ScriptedLauncher, bus, entry_generation, roots, spec, spec_with_env, tool_names,
-    wait_generation, wait_gone, wait_started,
+    RecordingBus, ScriptedLauncher, bus, entry_generation, options, roots, spec, spec_with_env,
+    stderr_spec, tool_names, wait_generation, wait_gone, wait_started,
 };
-use wind_mcp::registry::spawn_with;
+use wind_mcp::registry::{spawn, spawn_with};
 
 #[tokio::test]
 async fn stale_report_does_not_revive_a_stopped_entry() {
@@ -182,4 +183,167 @@ async fn shutdown_stops_services_and_returns() {
         .await
         .expect("shutdown must return");
     assert!(handle.list_tools().await.is_empty());
+}
+
+#[tokio::test]
+async fn launch_spec_can_be_rewritten_before_connecting() {
+    let bus = RecordingBus::new();
+    bus.rewrite("core/mcp.launch", |mut payload| {
+        payload["spec"]["transport"]["Stdio"]["env"]["TOKEN"] = json!("injected");
+        payload
+    });
+    let handle = spawn(options(), roots(), bus.dispatcher());
+    handle.acquire("r1".to_owned(), spec("demo"));
+    wait_started(&handle, "demo").await;
+    assert!(bus.seen("core/mcp.launch"));
+    let payloads = bus.payloads("core/mcp.launch");
+    assert_eq!(
+        payloads[0]["spec"]["transport"]["Stdio"]["env"]["TOKEN"],
+        json!("injected")
+    );
+    tokio::time::timeout(Duration::from_secs(10), handle.shutdown())
+        .await
+        .expect("shutdown must return");
+}
+
+#[tokio::test]
+async fn a_rewritten_command_reaches_the_launch() {
+    let bus = RecordingBus::new();
+    let missing = roots().mods.join("missing-mcp-server");
+    bus.rewrite("core/mcp.launch", move |mut payload| {
+        payload["spec"]["transport"]["Stdio"]["command"] = json!(missing.to_string_lossy());
+        payload
+    });
+    let handle = spawn(options(), roots(), bus.dispatcher());
+    handle.acquire("r1".to_owned(), spec("demo"));
+    bus.poll_seen("core/mcp.failed").await;
+    assert!(!bus.seen("core/mcp.started"));
+    tokio::time::timeout(Duration::from_secs(10), handle.shutdown())
+        .await
+        .expect("shutdown must return");
+}
+
+#[tokio::test]
+async fn lifecycle_events_follow_acquire_start_release() {
+    let launcher = ScriptedLauncher::default();
+    let bus = RecordingBus::new();
+    let handle = spawn_with(Arc::new(launcher.clone()), roots(), bus.dispatcher());
+    handle.acquire("r1".to_owned(), spec("demo"));
+    bus.poll_seen("core/mcp.starting").await;
+    assert_eq!(bus.payloads("core/mcp.starting")[0]["refs"], json!(["r1"]));
+    launcher.complete("demo", 1);
+    wait_started(&handle, "demo").await;
+    bus.poll_seen("core/mcp.started").await;
+    let started = bus.payloads("core/mcp.started");
+    assert_eq!(started[0]["tools"], json!(["echo"]));
+    handle.release("r1".to_owned());
+    wait_gone(&handle, "demo").await;
+    bus.poll_seen("core/mcp.stopped").await;
+    let stopped = bus.payloads("core/mcp.stopped");
+    assert_eq!(stopped[0]["reason"], json!("released"));
+    assert_eq!(stopped[0]["refs"], json!(["r1"]));
+}
+
+#[tokio::test]
+async fn definition_change_publishes_replaced() {
+    let launcher = ScriptedLauncher::default();
+    let bus = RecordingBus::new();
+    bus.rewrite("core/mcp.replaced", |mut payload| {
+        payload["new"]["name"] = json!("hijacked");
+        payload
+    });
+    let handle = spawn_with(Arc::new(launcher.clone()), roots(), bus.dispatcher());
+    handle.acquire("r1".to_owned(), spec_with_env("demo", "V", "1"));
+    launcher.complete("demo", 1);
+    wait_started(&handle, "demo").await;
+    handle.acquire("r2".to_owned(), spec_with_env("demo", "V", "2"));
+    bus.poll_seen("core/mcp.replaced").await;
+    let replaced = bus.payloads("core/mcp.replaced");
+    assert_eq!(
+        replaced[0]["old"]["transport"]["Stdio"]["env"]["V"],
+        json!("1")
+    );
+    assert_eq!(
+        replaced[0]["new"]["transport"]["Stdio"]["env"]["V"],
+        json!("2")
+    );
+    bus.poll_seen("core/mcp.stopped").await;
+    let stopped = bus.payloads("core/mcp.stopped");
+    assert_eq!(stopped[0]["reason"], json!("replaced"));
+    assert_eq!(stopped[0]["refs"], json!(["r1", "r2"]));
+    let launches = bus.payloads("core/mcp.launch");
+    assert_eq!(
+        launches.last().expect("a launch must follow")["spec"]["name"],
+        json!("demo")
+    );
+    launcher.complete("demo", 2);
+    wait_started(&handle, "demo").await;
+    tokio::time::timeout(Duration::from_secs(15), handle.shutdown())
+        .await
+        .expect("shutdown must return");
+}
+
+#[tokio::test]
+async fn shutdown_publishes_stopped_with_shutdown_reason() {
+    let launcher = ScriptedLauncher::default();
+    let bus = RecordingBus::new();
+    let handle = spawn_with(Arc::new(launcher.clone()), roots(), bus.dispatcher());
+    handle.acquire("r1".to_owned(), spec("demo"));
+    launcher.complete("demo", 1);
+    wait_started(&handle, "demo").await;
+    tokio::time::timeout(Duration::from_secs(15), handle.shutdown())
+        .await
+        .expect("shutdown must return");
+    bus.poll_seen("core/mcp.stopped").await;
+    let stopped = bus.payloads("core/mcp.stopped");
+    assert_eq!(stopped[0]["reason"], json!("shutdown"));
+    assert_eq!(stopped[0]["refs"], json!(["r1"]));
+}
+
+#[tokio::test]
+async fn a_slow_launch_rewrite_still_starts_the_service() {
+    let launcher = ScriptedLauncher::default();
+    let bus = RecordingBus::new();
+    bus.rewrite("core/mcp.launch", |payload| {
+        std::thread::sleep(Duration::from_millis(1500));
+        payload
+    });
+    let handle = spawn_with(Arc::new(launcher.clone()), roots(), bus.dispatcher());
+    handle.acquire("r1".to_owned(), spec("demo"));
+    launcher.complete("demo", 1);
+    wait_started(&handle, "demo").await;
+    bus.poll_seen("core/mcp.launch").await;
+    assert!(bus.seen("core/mcp.started"));
+    handle.release("r1".to_owned());
+    wait_gone(&handle, "demo").await;
+}
+
+#[tokio::test]
+async fn stderr_lines_are_published_and_forwarded() {
+    let bus = RecordingBus::new();
+    bus.rewrite("core/mcp.launch", |mut payload| {
+        payload["spec"]["name"] = json!("hijacked");
+        payload
+    });
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&captured);
+    let mut settings = options();
+    settings.log = Some(Arc::new(move |line| {
+        sink.lock()
+            .expect("lock the captured lines")
+            .push(line.to_owned());
+    }));
+    let handle = spawn(settings, roots(), bus.dispatcher());
+    handle.acquire("r1".to_owned(), stderr_spec("demo", "the log line"));
+    bus.poll_seen("core/mcp.log").await;
+    let logs = bus.payloads("core/mcp.log");
+    assert_eq!(logs[0]["stream"], json!("stderr"));
+    assert_eq!(logs[0]["line"], json!("the log line"));
+    assert_eq!(logs[0]["name"], json!("demo"));
+    let lines = captured.lock().expect("lock the captured lines");
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0], "the log line");
+    tokio::time::timeout(Duration::from_secs(10), handle.shutdown())
+        .await
+        .expect("shutdown must return");
 }
