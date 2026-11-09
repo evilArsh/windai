@@ -3487,7 +3487,9 @@ name = "wind-mcp"
 version = "0.2.0"
 dependencies = [
  "async-trait",
+ "libc",
  "log",
+ "process-wrap",
  "rmcp",
  "schemars",
  "serde",
@@ -3497,9 +3499,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
- "url",
  "wind-event",
- "wind-wire",
  "yaml-rust2",
 ]
 

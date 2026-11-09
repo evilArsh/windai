@@ -88,9 +88,23 @@ impl FsServer {
     )]
     async fn list_dir(&self, Parameters(req): Parameters<ListDirRequest>) -> Json<ListDirResult> {
         let path = PathBuf::from(req.path);
-        match self.sandbox.snapshot() {
-            Ok(snapshot) => Json(list_dir(&snapshot, path, req.recursive, req.max_depth)),
-            Err(error) => Json(ListDirResult::failure(&path, error.to_string())),
+        let snapshot = match self.sandbox.snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(error) => return Json(ListDirResult::failure(&path, error.to_string())),
+        };
+        let task_path = path.clone();
+        let recursive = req.recursive;
+        let max_depth = req.max_depth;
+        let result = tokio::task::spawn_blocking(move || {
+            list_dir(&snapshot, task_path, recursive, max_depth)
+        })
+        .await;
+        match result {
+            Ok(result) => Json(result),
+            Err(error) => Json(ListDirResult::failure(
+                &path,
+                format!("the blocking task failed: {error}"),
+            )),
         }
     }
 
@@ -104,9 +118,22 @@ impl FsServer {
         Parameters(req): Parameters<ReadFileRequest>,
     ) -> Json<ReadFileResult> {
         let path = PathBuf::from(req.path);
-        match self.sandbox.snapshot() {
-            Ok(snapshot) => Json(read_file(&snapshot, path, req.offset, req.limit)),
-            Err(error) => Json(ReadFileResult::failure(&path, error.to_string())),
+        let snapshot = match self.sandbox.snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(error) => return Json(ReadFileResult::failure(&path, error.to_string())),
+        };
+        let task_path = path.clone();
+        let offset = req.offset;
+        let limit = req.limit;
+        let result =
+            tokio::task::spawn_blocking(move || read_file(&snapshot, task_path, offset, limit))
+                .await;
+        match result {
+            Ok(result) => Json(result),
+            Err(error) => Json(ReadFileResult::failure(
+                &path,
+                format!("the blocking task failed: {error}"),
+            )),
         }
     }
 
@@ -120,9 +147,20 @@ impl FsServer {
         Parameters(req): Parameters<WriteFileRequest>,
     ) -> Json<WriteFileResult> {
         let path = PathBuf::from(req.path);
-        match self.sandbox.snapshot() {
-            Ok(snapshot) => Json(write_file(&snapshot, path, req.data)),
-            Err(error) => Json(WriteFileResult::failure(&path, error.to_string())),
+        let snapshot = match self.sandbox.snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(error) => return Json(WriteFileResult::failure(&path, error.to_string())),
+        };
+        let task_path = path.clone();
+        let data = req.data;
+        let result =
+            tokio::task::spawn_blocking(move || write_file(&snapshot, task_path, data)).await;
+        match result {
+            Ok(result) => Json(result),
+            Err(error) => Json(WriteFileResult::failure(
+                &path,
+                format!("the blocking task failed: {error}"),
+            )),
         }
     }
 

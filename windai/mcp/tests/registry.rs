@@ -1,15 +1,15 @@
 #[path = "support/mod.rs"]
 mod support;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use support::{
     RecordingBus, ScriptedLauncher, bus, call_tool, entry_generation, find_tool, first_tool,
-    options, roots, scope_roots, spec, spec_with_env, stderr_spec, tool_names, wait_generation,
-    wait_gone, wait_started,
+    options, roots, scope_roots, spec, spec_with_env, spec_with_envs, stderr_spec, tool_names,
+    wait_generation, wait_gone, wait_started,
 };
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
@@ -325,6 +325,63 @@ async fn a_slow_launch_rewrite_still_starts_the_service() {
 }
 
 #[tokio::test]
+async fn same_startup_key_serializes_external_launches() {
+    let tmp = TempDir::new().expect("a temporary directory is required");
+    let gate = tmp.path().join("handshake.gate");
+    let log = tmp.path().join("start.log");
+    let gate = gate.to_string_lossy().into_owned();
+    let log = log.to_string_lossy().into_owned();
+    let envs = [
+        ("WIND_TEST_HANDSHAKE_GATE", gate.as_str()),
+        ("WIND_TEST_START_LOG", log.as_str()),
+    ];
+
+    let handle = spawn(options(), roots(), bus());
+    handle.acquire("r1".to_owned(), spec_with_envs("a", &envs));
+    handle.acquire("r2".to_owned(), spec_with_envs("b", &envs));
+    wait_for_start_lines(&log, 1).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        start_log_lines(&log),
+        1,
+        "the second launch must wait for the startup lock"
+    );
+    assert!(
+        handle.list_tools().await.is_empty(),
+        "no catalog is published before the handshake completes"
+    );
+
+    std::fs::write(&gate, "go").expect("the handshake gate must be written");
+    wait_started(&handle, "a").await;
+    wait_started(&handle, "b").await;
+    tokio::time::timeout(Duration::from_secs(10), handle.shutdown())
+        .await
+        .expect("shutdown must return");
+    assert_eq!(
+        start_log_lines(&log),
+        2,
+        "both launches must eventually start"
+    );
+}
+
+fn start_log_lines(path: &str) -> usize {
+    std::fs::read_to_string(path)
+        .map(|text| text.lines().count())
+        .unwrap_or(0)
+}
+
+async fn wait_for_start_lines(path: &str, expected: usize) {
+    let started = Instant::now();
+    while start_log_lines(path) < expected {
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the start log must reach {expected} lines"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test]
 async fn stderr_lines_are_published_and_forwarded() {
     let bus = RecordingBus::new();
     bus.rewrite("core/mcp.launch", |mut payload| {
@@ -571,6 +628,48 @@ async fn root_changes_do_not_restart_the_builtin() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
+    tokio::time::timeout(Duration::from_secs(10), handle.shutdown())
+        .await
+        .expect("shutdown must return");
+}
+
+#[tokio::test]
+async fn builtin_fs_without_scope_roots_is_rejected() {
+    let bus = RecordingBus::new();
+    let handle = spawn(options(), roots(), bus.dispatcher());
+    handle.acquire_builtin("r1".to_owned(), ScopeId::new("topic:1"), BuiltinKind::Fs);
+    bus.poll_seen("core/mcp.failed").await;
+    let failed = bus.payloads("core/mcp.failed");
+    assert_eq!(failed[0]["name"], json!("fs:topic:1"));
+    assert_eq!(failed[0]["refs"], json!(["r1"]));
+    assert!(
+        !bus.seen("core/mcp.started"),
+        "a builtin fs without scope roots must not start"
+    );
+    assert!(handle.list_tools().await.is_empty());
+    handle.release("r1".to_owned());
+    tokio::time::timeout(Duration::from_secs(10), handle.shutdown())
+        .await
+        .expect("shutdown must return");
+}
+
+#[tokio::test]
+async fn builtin_fs_with_an_empty_workspace_is_rejected() {
+    let bus = RecordingBus::new();
+    let handle = spawn(options(), roots(), bus.dispatcher());
+    let scope = ScopeId::new("topic:1");
+    handle.set_scope_roots(scope.clone(), scope_roots(&[PathBuf::new()]));
+    handle.acquire_builtin("r1".to_owned(), scope, BuiltinKind::Fs);
+    bus.poll_seen("core/mcp.failed").await;
+    let failed = bus.payloads("core/mcp.failed");
+    assert_eq!(failed[0]["name"], json!("fs:topic:1"));
+    assert_eq!(failed[0]["refs"], json!(["r1"]));
+    assert!(
+        !bus.seen("core/mcp.started"),
+        "a builtin fs with an empty workspace must not start"
+    );
+    assert!(handle.list_tools().await.is_empty());
+    handle.release("r1".to_owned());
     tokio::time::timeout(Duration::from_secs(10), handle.shutdown())
         .await
         .expect("shutdown must return");

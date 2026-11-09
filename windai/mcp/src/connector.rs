@@ -1,8 +1,13 @@
 use std::process::Stdio;
 use std::sync::Arc;
+#[cfg(unix)]
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 
+use process_wrap::tokio::CommandWrap;
+#[cfg(unix)]
+use process_wrap::tokio::ProcessGroup;
 use rmcp::model::{CallToolRequestParams, CallToolResponse, ProtocolVersion, Tool};
 use rmcp::service::{ClientLifecycleMode, ClientServiceExt, DynService, Peer, RunningService};
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransport;
@@ -20,6 +25,9 @@ use crate::runner::LaunchPlan;
 use crate::spec::{ServiceSpec, StdioSpec, Transport};
 
 type Client = RunningService<RoleClient, Box<dyn DynService<RoleClient>>>;
+
+/// stderr 单行保留的字节数
+const STDERR_LINE_LIMIT: usize = 64 * 1024;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolDescriptor {
@@ -51,6 +59,11 @@ pub struct Connection {
     closed: AtomicBool,
     inflight: AtomicUsize,
     idle: Notify,
+    /// 进程组 id，0 表示没有子进程
+    #[cfg(unix)]
+    pgid: AtomicU32,
+    #[cfg(unix)]
+    group_killed: AtomicBool,
 }
 
 struct Inflight<'a>(&'a Connection);
@@ -76,10 +89,17 @@ impl Connection {
                     .stderr(Stdio::piped())
                     .spawn()
                     .map_err(|error| McpError::Connect(error.to_string()))?;
+                #[cfg(unix)]
+                let pgid = transport.id();
                 if let Some(stderr) = stderr {
                     drain_stderr(stderr, options.log.clone());
                 }
-                handshake(transport, options).await
+                let connection = handshake(transport, options).await?;
+                #[cfg(unix)]
+                if let Some(pgid) = pgid {
+                    connection.pgid.store(pgid, Ordering::SeqCst);
+                }
+                Ok(connection)
             }
             Transport::Streamable { url } => {
                 let transport = StreamableHttpClientTransport::from_uri(url.as_str());
@@ -124,12 +144,28 @@ impl Connection {
         let _ = tokio::time::timeout(self.options.shutdown_grace, self.wait_idle()).await;
         let mut service = self.service.lock().await;
         let Some(mut client) = service.take() else {
+            #[cfg(unix)]
+            self.kill_group();
             return;
         };
         match client.close_with_timeout(self.options.shutdown_grace).await {
             Ok(Some(_)) => {}
             Ok(None) => log::warn!("the mcp connection did not close within the grace period"),
             Err(error) => log::warn!("cannot close the mcp connection: {error}"),
+        }
+        #[cfg(unix)]
+        self.kill_group();
+    }
+
+    #[cfg(unix)]
+    fn kill_group(&self) {
+        let pgid = self.pgid.load(Ordering::SeqCst);
+        if pgid == 0 || self.group_killed.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        // SAFETY: kill 只接收整数进程组 id，不涉及指针
+        unsafe {
+            libc::kill(-(pgid as i32), libc::SIGKILL);
         }
     }
 
@@ -192,7 +228,18 @@ impl Connection {
             closed: AtomicBool::new(false),
             inflight: AtomicUsize::new(0),
             idle: Notify::new(),
+            #[cfg(unix)]
+            pgid: AtomicU32::new(0),
+            #[cfg(unix)]
+            group_killed: AtomicBool::new(false),
         }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Connection {
+    fn drop(&mut self) {
+        self.kill_group();
     }
 }
 
@@ -220,7 +267,7 @@ fn lifecycle() -> ClientLifecycleMode {
     }
 }
 
-fn command(plan: &LaunchPlan, stdio: &StdioSpec) -> Command {
+fn command(plan: &LaunchPlan, stdio: &StdioSpec) -> CommandWrap {
     let mut command = Command::new(&plan.program);
     command
         .args(&plan.args)
@@ -231,8 +278,15 @@ fn command(plan: &LaunchPlan, stdio: &StdioSpec) -> Command {
         command.env(key, value);
     }
     #[cfg(unix)]
-    command.process_group(0);
-    command
+    {
+        let mut wrapped = CommandWrap::from(command);
+        wrapped.wrap(ProcessGroup::leader());
+        wrapped
+    }
+    #[cfg(not(unix))]
+    {
+        CommandWrap::from(command)
+    }
 }
 
 fn drain_stderr(stderr: ChildStderr, log: Option<LogSink>) {
@@ -244,32 +298,49 @@ where
     R: AsyncRead + Unpin,
 {
     let mut reader = BufReader::new(reader);
-    let mut buffer = Vec::new();
-    let mut warned = false;
+    let mut line = Vec::new();
+    let mut truncated = false;
     loop {
-        buffer.clear();
-        match reader.read_until(b'\n', &mut buffer).await {
-            Ok(0) => break,
-            Ok(_) => {
-                if buffer.ends_with(b"\n") {
-                    buffer.pop();
-                    if buffer.ends_with(b"\r") {
-                        buffer.pop();
-                    }
-                }
-                let line = String::from_utf8_lossy(&buffer);
-                if let Some(log) = &log {
-                    log(&line);
-                }
-            }
+        let available = match reader.fill_buf().await {
+            Ok(available) => available,
             Err(error) => {
-                if !warned {
-                    log::warn!("cannot read the server stderr: {error}");
-                    warned = true;
-                }
+                log::warn!("cannot read the server stderr: {error}");
+                break;
             }
+        };
+        if available.is_empty() {
+            break;
+        }
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let (chunk, consumed) = match newline {
+            Some(index) => (&available[..index], index + 1),
+            None => (available, available.len()),
+        };
+        if !truncated {
+            let room = STDERR_LINE_LIMIT - line.len();
+            let take = chunk.len().min(room);
+            line.extend_from_slice(&chunk[..take]);
+            truncated = take < chunk.len();
+        }
+        reader.consume(consumed);
+        if newline.is_some() {
+            emit_line(&mut line, true, &log);
+            truncated = false;
         }
     }
+    if !line.is_empty() || truncated {
+        emit_line(&mut line, false, &log);
+    }
+}
+
+fn emit_line(line: &mut Vec<u8>, terminated: bool, log: &Option<LogSink>) {
+    if terminated && line.ends_with(b"\r") {
+        line.pop();
+    }
+    if let Some(log) = log {
+        log(&String::from_utf8_lossy(line));
+    }
+    line.clear();
 }
 
 #[cfg(test)]
@@ -280,7 +351,7 @@ mod tests {
     use serde_json::json;
     use tokio::io::AsyncWriteExt;
 
-    use super::{ToolDescriptor, drain_reader};
+    use super::{STDERR_LINE_LIMIT, ToolDescriptor, drain_reader};
     use crate::options::LogSink;
 
     #[test]
@@ -320,5 +391,30 @@ mod tests {
         assert_eq!(captured.len(), 2);
         assert_eq!(captured[0], "ok");
         assert_eq!(captured[1], "\u{FFFD}bad");
+    }
+
+    #[tokio::test]
+    async fn stderr_reader_caps_a_long_line() {
+        let (mut writer, reader) = tokio::io::duplex(64);
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&captured);
+        let log: LogSink = Arc::new(move |line| {
+            sink.lock()
+                .expect("lock the captured lines")
+                .push(line.to_owned());
+        });
+        let task = tokio::spawn(drain_reader(reader, Some(log)));
+        let mut payload = vec![b'x'; 100 * 1024];
+        payload.extend_from_slice(b"\nok\n");
+        writer
+            .write_all(&payload)
+            .await
+            .expect("write the stderr bytes");
+        drop(writer);
+        task.await.expect("the stderr reader must finish");
+        let captured = captured.lock().expect("lock the captured lines");
+        assert_eq!(captured.len(), 2);
+        assert_eq!(captured[0].len(), STDERR_LINE_LIMIT);
+        assert_eq!(captured[1], "ok");
     }
 }

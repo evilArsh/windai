@@ -202,6 +202,7 @@ async fn wait_for_gate() {
 /// 以标准输入输出运行测试服务，供辅助 binary 调用
 pub async fn run_stdio() {
     record_start();
+    spawn_grandchild();
     if std::env::var_os("WIND_TEST_SILENT").is_some() {
         tokio::time::sleep(Duration::from_secs(3600)).await;
         return;
@@ -223,3 +224,20 @@ pub async fn run_stdio() {
         let _ = std::fs::write(path, "exited");
     }
 }
+
+/// 孙进程留在测试服务的进程组里，等外部回收
+#[cfg(unix)]
+fn spawn_grandchild() {
+    let Some(path) = std::env::var_os("WIND_TEST_GRANDCHILD_FILE") else {
+        return;
+    };
+    let child = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .expect("the grandchild process must spawn");
+    std::fs::write(&path, child.id().to_string()).expect("the grandchild pid must be written");
+    std::mem::forget(child);
+}
+
+#[cfg(not(unix))]
+fn spawn_grandchild() {}

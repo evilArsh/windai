@@ -167,11 +167,7 @@ enum State {
     Starting(u64),
     Running(u64),
     Stopping(u64),
-    Failed {
-        #[allow(dead_code)]
-        error: String,
-        generation: u64,
-    },
+    Failed { generation: u64 },
 }
 
 impl State {
@@ -590,10 +586,7 @@ impl Registry {
         let mut restart = None;
         if starting && current == generation {
             let refs = refs_snapshot(&entry.refs);
-            entry.state = State::Failed {
-                error: message.clone(),
-                generation,
-            };
+            entry.state = State::Failed { generation };
             entry.tools.clear();
             self.events.push(Event::Failed {
                 name: name.to_owned(),

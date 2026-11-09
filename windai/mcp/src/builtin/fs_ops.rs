@@ -514,11 +514,6 @@ fn file_output(path: &Path, extra_args: &[&str]) -> String {
         .unwrap_or_default()
 }
 
-// #[cfg(unix)]
-// fn file_mime(path: &Path) -> String {
-//     file_output(path, &["--mime-type"])
-// }
-
 #[cfg(unix)]
 fn file_description(path: &Path) -> String {
     file_output(path, &[])

@@ -6,7 +6,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-wind-wire = { path = "../wire" }
 wind-event = { path = "../event" }
 rmcp = { workspace = true }
 tokio = { workspace = true }
@@ -17,7 +16,8 @@ schemars = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
-url = { workspace = true }
+libc = { workspace = true }
+process-wrap = { workspace = true }
 yaml-rust2 = { workspace = true }
 
 [dev-dependencies]

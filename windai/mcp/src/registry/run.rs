@@ -11,7 +11,8 @@ use wind_event::Dispatcher;
 
 use super::command::{Command, Effect, Event, ReportPhase};
 use super::{
-    BoxFuture, Catalog, LaunchRequest, Launcher, Registry, RegistryHandle, Started, ToolCall,
+    BoxFuture, BuiltinKind, Catalog, LaunchRequest, Launcher, Registry, RegistryHandle, Started,
+    ToolCall,
 };
 use crate::builtin::connect_builtin;
 use crate::connector::{CallOutcome, Connection, ToolDescriptor};
@@ -71,8 +72,6 @@ async fn run(
     weak: WeakUnboundedSender<Command>,
     timers: McpOptions,
 ) {
-    let start_budget =
-        timers.connect_timeout + timers.shutdown_grace + 2 * events::INTERCEPT_BUDGET;
     let stop_budget = timers.shutdown_grace + timers.connect_timeout;
     let mut registry = Registry::new(roots.clone());
     while let Some(command) = receiver.recv().await {
@@ -84,15 +83,7 @@ async fn run(
             notify(event, &bus);
         }
         for effect in effects {
-            dispatch(
-                effect,
-                &launcher,
-                &roots,
-                &bus,
-                &sender,
-                start_budget,
-                stop_budget,
-            );
+            dispatch(effect, &launcher, &roots, &bus, &sender, stop_budget);
         }
         let finished = registry.take_finished_shutdown();
         if !finished.is_empty() {
@@ -181,7 +172,6 @@ fn dispatch(
     roots: &Roots,
     bus: &Arc<Dispatcher>,
     sender: &mpsc::UnboundedSender<Command>,
-    start_budget: Duration,
     stop_budget: Duration,
 ) {
     match effect {
@@ -198,32 +188,16 @@ fn dispatch(
             let sender = sender.clone();
             let task_name = name.clone();
             tokio::spawn(async move {
-                let mut task = tokio::spawn(async move {
+                // 启动各阶段各自有界，此处不做总体超时；内层 spawn 只用于承接 panic
+                let task = tokio::spawn(async move {
                     let request = rewrite_request(task_name, request, previous, refs, &bus).await;
                     launcher.start(&request, &roots, &bus, generation).await
                 });
-                let result = match tokio::time::timeout(start_budget, &mut task).await {
-                    Ok(Ok(result)) => result,
-                    Ok(Err(error)) => Err(McpError::Service(format!(
+                let result = match task.await {
+                    Ok(result) => result,
+                    Err(error) => Err(McpError::Service(format!(
                         "the launcher task failed: {error}"
                     ))),
-                    Err(_) => {
-                        task.abort();
-                        // abort 与完成竞态时 JoinHandle 仍可能持有 Started
-                        if let Ok(Ok(started)) = task.await {
-                            let closed =
-                                tokio::time::timeout(stop_budget, started.connection.close()).await;
-                            if closed.is_err() {
-                                log::warn!(
-                                    "an obsolete mcp connection did not close within the timeout"
-                                );
-                            }
-                            if let Some(server_task) = started.server_task {
-                                server_task.abort();
-                            }
-                        }
-                        Err(McpError::Timeout)
-                    }
                 };
                 if let Err(error) = &result {
                     log::warn!("cannot start the mcp service {name}: {error}");
@@ -361,6 +335,19 @@ impl Launcher for ProductionLauncher {
         Box::pin(async move {
             let spec = match request {
                 LaunchRequest::Builtin { scope, kind } => {
+                    if matches!(kind, BuiltinKind::Fs) {
+                        let usable = roots.scope(scope).is_some_and(|scope_roots| {
+                            scope_roots
+                                .workspace
+                                .iter()
+                                .any(|path| !path.as_os_str().is_empty())
+                        });
+                        if !usable {
+                            return Err(McpError::InvalidSpec(format!(
+                                "the scope {scope} has no usable workspace roots"
+                            )));
+                        }
+                    }
                     let (connection, server_task) =
                         connect_builtin(*kind, scope.clone(), roots.clone(), &self.options).await?;
                     return finish_start(connection, Some(server_task)).await;

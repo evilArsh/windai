@@ -27,10 +27,18 @@ use wind_mcp::spec::{ServiceSpec, StdioSpec, Transport};
 const RECORDING_MOD: &str = "recording";
 
 pub async fn open_test_server() -> Arc<Connection> {
-    open_test_server_with(McpOptions::default()).await
+    open_test_server_inner(McpOptions::default(), &[]).await
 }
 
 pub async fn open_test_server_with(options: McpOptions) -> Arc<Connection> {
+    open_test_server_inner(options, &[]).await
+}
+
+pub async fn open_test_server_with_envs(envs: &[(&str, &str)]) -> Arc<Connection> {
+    open_test_server_inner(McpOptions::default(), envs).await
+}
+
+async fn open_test_server_inner(options: McpOptions, envs: &[(&str, &str)]) -> Arc<Connection> {
     let command = env!("CARGO_BIN_EXE_mcp_test_server").to_owned();
     let cwd = temporary_directory();
     let spec = ServiceSpec {
@@ -39,7 +47,7 @@ pub async fn open_test_server_with(options: McpOptions) -> Arc<Connection> {
         transport: Transport::Stdio(StdioSpec {
             command,
             args: Vec::new(),
-            env: BTreeMap::new(),
+            env: env_pairs(envs),
             cwd,
         }),
     };
@@ -99,6 +107,16 @@ pub fn spec_with_env(name: &str, key: &str, value: &str) -> ServiceSpec {
     let mut env = BTreeMap::new();
     env.insert(key.to_owned(), value.to_owned());
     service_spec(name, env)
+}
+
+pub fn spec_with_envs(name: &str, envs: &[(&str, &str)]) -> ServiceSpec {
+    service_spec(name, env_pairs(envs))
+}
+
+fn env_pairs(envs: &[(&str, &str)]) -> BTreeMap<String, String> {
+    envs.iter()
+        .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+        .collect()
 }
 
 pub async fn wait_started(handle: &RegistryHandle, name: &str) {
