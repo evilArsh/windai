@@ -346,9 +346,11 @@ async fn stderr_lines_are_published_and_forwarded() {
     assert_eq!(logs[0]["stream"], json!("stderr"));
     assert_eq!(logs[0]["line"], json!("the log line"));
     assert_eq!(logs[0]["name"], json!("demo"));
-    let lines = captured.lock().expect("lock the captured lines");
-    assert_eq!(lines.len(), 1);
-    assert_eq!(lines[0], "the log line");
+    {
+        let lines = captured.lock().expect("lock the captured lines");
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0], "the log line");
+    }
     tokio::time::timeout(Duration::from_secs(10), handle.shutdown())
         .await
         .expect("shutdown must return");

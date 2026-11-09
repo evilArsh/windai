@@ -23,8 +23,6 @@ yaml-rust2 = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 async-trait = { workspace = true }
-jsonschema = { workspace = true }
-axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 
 [[bin]]
 name = "mcp_test_server"

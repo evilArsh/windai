@@ -457,9 +457,11 @@ pub struct RecordingBus {
     dispatcher: Arc<Dispatcher>,
 }
 
+type Rewrite = Box<dyn Fn(Value) -> Value + Send + Sync>;
+
 #[derive(Default)]
 struct RecordingInner {
-    rewrites: Mutex<HashMap<String, Box<dyn Fn(Value) -> Value + Send + Sync>>>,
+    rewrites: Mutex<HashMap<String, Rewrite>>,
     events: Mutex<Vec<(String, Option<Value>)>>,
 }
 
