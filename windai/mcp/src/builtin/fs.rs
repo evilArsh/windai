@@ -1,74 +1,79 @@
-mod error;
-mod ops;
-
-pub use ops::{DirEntry, EntryKind, ExecResult, ListDirResult, ReadFileResult, WriteFileResult};
-
 use std::path::PathBuf;
 
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
-use rmcp::{ServerHandler, tool, tool_handler, tool_router};
+use rmcp::{ErrorData, ServerHandler, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use super::paths::Paths;
+pub use super::sandbox::FsError;
 
-/// 扫描目录的请求
+use super::fs_ops::{
+    ExecResult, ListDirResult, ReadFileResult, WriteFileResult, exec, list_dir, read_file,
+    write_file,
+};
+use super::sandbox::Sandbox;
+use crate::roots::{Roots, ScopeId};
+
+impl From<FsError> for ErrorData {
+    fn from(e: FsError) -> Self {
+        let code = e.as_ref().to_string();
+        ErrorData::internal_error(e.to_string(), Some(serde_json::json!({ "code": code })))
+    }
+}
+
 #[derive(Deserialize, JsonSchema)]
 pub struct ListDirRequest {
     /// 要扫描的目录绝对路径
     pub path: String,
-    /// 是否递归子目录，默认为 true
+    /// 是否递归子目录，默认 true
     pub recursive: Option<bool>,
     /// 允许递归的子目录层数，默认不限
     pub max_depth: Option<u16>,
 }
 
-/// 读文件的请求
 #[derive(Deserialize, JsonSchema)]
 pub struct ReadFileRequest {
     /// 文件绝对路径
     pub path: String,
-    /// 起始字节偏移，默认 0
+    /// 字节偏移,默认 0.
     pub offset: Option<u64>,
-    /// 读取字节上限，默认 1MB
+    /// 读取字节上限,默认 1MB.
     pub limit: Option<u64>,
 }
 
-/// 写文件的请求
 #[derive(Deserialize, JsonSchema)]
 pub struct WriteFileRequest {
     /// 文件绝对路径
     pub path: String,
-    /// 要写入的文本
+    /// 要写入的文本内容
     pub data: String,
 }
 
-/// 执行子进程的请求
 #[derive(Deserialize, JsonSchema)]
 pub struct ExecRequest {
-    /// 可执行程序
+    /// 可执行程序名（argv[0]）
     pub command: String,
-    /// 工作目录绝对路径，必须在允许的根目录内
+    /// 工作目录绝对路径，必须在沙箱内
     pub cwd: String,
-    /// 命令行参数，直接传递而不拼接 shell 字符串
+    /// 命令行参数（argv[1..]），优先于 shell 字符串以防注入
     pub args: Option<Vec<String>>,
     /// 环境变量，形如 KEY=value
     pub env: Option<Vec<String>>,
-    /// 超时时间，单位为毫秒
+    /// 超时时间（毫秒）
     pub timeout: u64,
 }
 
-/// 文件操作工具
+/// wind-fs MCP 服务：文件/进程能力
 pub struct FsServer {
-    paths: Paths,
+    sandbox: Sandbox,
     tool_router: ToolRouter<Self>,
 }
 
 impl FsServer {
-    pub fn new(roots: Vec<PathBuf>) -> Self {
+    pub fn new(roots: Roots, scope: ScopeId) -> Self {
         Self {
-            paths: Paths::new(roots),
+            sandbox: Sandbox::new(roots, scope),
             tool_router: Self::tool_router(),
         }
     }
@@ -76,83 +81,72 @@ impl FsServer {
 
 #[tool_router(router = tool_router)]
 impl FsServer {
+    /// 扫描目录，返回根目录路径与文件/目录相对路径清单。忽略隐藏目录（白名单除外）与 node_modules 等大目录
     #[tool(
         name = "list_dir",
-        description = "Scan a directory and return its entries relative to the root. Hidden and dependency directories are skipped."
+        description = "Scan a directory, returning the root path and a relative-path listing of files/dirs. Hidden dirs (except whitelisted) and large dependency dirs are skipped."
     )]
-    async fn list_dir(
-        &self,
-        Parameters(request): Parameters<ListDirRequest>,
-    ) -> Json<ListDirResult> {
-        let paths = self.paths.clone();
-        let ListDirRequest {
-            path,
-            recursive,
-            max_depth,
-        } = request;
-        let path = PathBuf::from(path);
-        let failed = path.clone();
-        let result =
-            tokio::task::spawn_blocking(move || ops::list_dir(&paths, path, recursive, max_depth))
-                .await
-                .unwrap_or_else(|error| ListDirResult::failure(&failed, error.to_string()));
-        Json(result)
+    async fn list_dir(&self, Parameters(req): Parameters<ListDirRequest>) -> Json<ListDirResult> {
+        let path = PathBuf::from(req.path);
+        match self.sandbox.snapshot() {
+            Ok(snapshot) => Json(list_dir(&snapshot, path, req.recursive, req.max_depth)),
+            Err(error) => Json(ListDirResult::failure(&path, error.to_string())),
+        }
     }
 
+    /// 读文本文件；二进制文件仅返回元信息
     #[tool(
         name = "read_file",
-        description = "Read a UTF-8 text file with a byte offset and a byte limit."
+        description = "Read a text file (UTF-8). Binary files return only metadata."
     )]
     async fn read_file(
         &self,
-        Parameters(request): Parameters<ReadFileRequest>,
+        Parameters(req): Parameters<ReadFileRequest>,
     ) -> Json<ReadFileResult> {
-        let paths = self.paths.clone();
-        let ReadFileRequest {
-            path,
-            offset,
-            limit,
-        } = request;
-        let path = PathBuf::from(path);
-        let failed = path.clone();
-        let result =
-            tokio::task::spawn_blocking(move || ops::read_file(&paths, path, offset, limit))
-                .await
-                .unwrap_or_else(|error| ReadFileResult::failure(&failed, error.to_string()));
-        Json(result)
+        let path = PathBuf::from(req.path);
+        match self.sandbox.snapshot() {
+            Ok(snapshot) => Json(read_file(&snapshot, path, req.offset, req.limit)),
+            Err(error) => Json(ReadFileResult::failure(&path, error.to_string())),
+        }
     }
 
+    /// 写文本文件，自动创建父目录
     #[tool(
         name = "write_file",
-        description = "Write a text file, creating missing parent directories."
+        description = "Write a text file, creating parent directories as needed."
     )]
     async fn write_file(
         &self,
-        Parameters(request): Parameters<WriteFileRequest>,
+        Parameters(req): Parameters<WriteFileRequest>,
     ) -> Json<WriteFileResult> {
-        let paths = self.paths.clone();
-        let WriteFileRequest { path, data } = request;
-        let path = PathBuf::from(path);
-        let failed = path.clone();
-        let result = tokio::task::spawn_blocking(move || ops::write_file(&paths, path, data))
-            .await
-            .unwrap_or_else(|error| WriteFileResult::failure(&failed, error.to_string()));
-        Json(result)
+        let path = PathBuf::from(req.path);
+        match self.sandbox.snapshot() {
+            Ok(snapshot) => Json(write_file(&snapshot, path, req.data)),
+            Err(error) => Json(WriteFileResult::failure(&path, error.to_string())),
+        }
     }
 
+    /// 执行子进程；cwd 必须在沙箱内，timeout 单位毫秒
     #[tool(
         name = "exec",
-        description = "Run a subprocess with explicit arguments. The cwd must be inside the allowed roots; timeout is in milliseconds."
+        description = "Execute a subprocess. cwd must be inside the sandbox; timeout is in milliseconds."
     )]
-    async fn exec(&self, Parameters(request): Parameters<ExecRequest>) -> Json<ExecResult> {
+    async fn exec(&self, Parameters(req): Parameters<ExecRequest>) -> Json<ExecResult> {
         let ExecRequest {
             command,
             cwd,
             args,
             env,
             timeout,
-        } = request;
-        Json(ops::exec(&self.paths, command, cwd, args, env, timeout).await)
+        } = req;
+        match self.sandbox.snapshot() {
+            Ok(snapshot) => Json(exec(&snapshot, command, cwd, args, env, timeout).await),
+            Err(error) => {
+                let mut result = ExecResult::empty(command, cwd);
+                result.error = Some(error.to_string());
+                Json(result)
+            }
+        }
     }
 }
 

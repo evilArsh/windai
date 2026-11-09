@@ -1,70 +1,50 @@
-//! 内建 MCP 服务
+use std::sync::Arc;
 
-use rmcp::ServerHandler;
 use rmcp::ServiceExt;
-use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::task::JoinHandle;
 
-use crate::connector::{Connection, Connector};
+use crate::connector::Connection;
 use crate::error::{McpError, Result};
-use crate::registry::{BuiltinKind, BuiltinRoots};
+use crate::options::McpOptions;
+use crate::registry::BuiltinKind;
+use crate::roots::{Roots, ScopeId};
 
-mod fs;
-mod paths;
-mod skills;
+pub mod fs;
+mod fs_ops;
+mod sandbox;
 
-pub use fs::{
-    DirEntry, EntryKind, ExecRequest, ExecResult, FsServer, ListDirRequest, ListDirResult,
-    ReadFileRequest, ReadFileResult, WriteFileRequest, WriteFileResult,
-};
-pub use skills::{SkillError, SkillsListRequest, SkillsListResult, SkillsMeta, SkillsServer};
+/// duplex 通道的缓冲字节数
+const DUPLEX_BYTES: usize = 64 * 1024;
 
-const DUPLEX_BYTES: usize = 128 * 1024;
-
-/// 建立一个内建服务的连接
-pub(crate) async fn connect(
+pub async fn connect_builtin(
     kind: BuiltinKind,
-    roots: &BuiltinRoots,
-    connector: &Connector,
-) -> Result<(Connection, Option<JoinHandle<()>>)> {
-    let (client, server) = tokio::io::duplex(DUPLEX_BYTES);
-    let (client_read, client_write) = tokio::io::split(client);
-    let (server_read, server_write) = tokio::io::split(server);
-    let task = match kind {
-        BuiltinKind::Fs => {
-            let workspace = roots
-                .workspace
-                .clone()
-                .ok_or_else(|| McpError::Builtin("the workspace root is missing".to_string()))?;
-            spawn_server(FsServer::new(vec![workspace]), server_read, server_write)
+    scope: ScopeId,
+    roots: Roots,
+    options: &McpOptions,
+) -> Result<(Arc<Connection>, JoinHandle<()>)> {
+    let server = match kind {
+        BuiltinKind::Fs => fs::FsServer::new(roots, scope),
+        BuiltinKind::Skills => {
+            return Err(McpError::InvalidSpec(
+                "skills builtin is not connected yet".to_owned(),
+            ));
         }
-        BuiltinKind::Skills => spawn_server(
-            SkillsServer::new(roots.skills.clone()),
-            server_read,
-            server_write,
-        ),
     };
-    match connector.connect_duplex(client_read, client_write).await {
-        Ok(connection) => Ok((connection, Some(task))),
+    let (client, server_io) = tokio::io::duplex(DUPLEX_BYTES);
+    let (client_read, client_write) = tokio::io::split(client);
+    let task = tokio::spawn(async move {
+        match server.serve(server_io).await {
+            Ok(service) => {
+                let _ = service.waiting().await;
+            }
+            Err(error) => log::warn!("[mcp] the builtin server failed: {error}"),
+        }
+    });
+    match Connection::attach(client_read, client_write, options).await {
+        Ok(connection) => Ok((connection, task)),
         Err(error) => {
             task.abort();
             Err(error)
         }
     }
-}
-
-fn spawn_server<S, R, W>(handler: S, reader: R, writer: W) -> JoinHandle<()>
-where
-    S: ServerHandler,
-    R: AsyncRead + Send + Unpin + 'static,
-    W: AsyncWrite + Send + Unpin + 'static,
-{
-    tokio::spawn(async move {
-        match handler.serve((reader, writer)).await {
-            Ok(service) => {
-                let _ = service.waiting().await;
-            }
-            Err(error) => log::warn!("[mcp] builtin server failed: {error}"),
-        }
-    })
 }
