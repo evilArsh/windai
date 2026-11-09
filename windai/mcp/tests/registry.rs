@@ -50,7 +50,10 @@ async fn list_tools_by_ref_filters_by_reference() {
     wait_started(&handle, "beta").await;
 
     let first = handle.list_tools_by_ref("r1").await;
-    assert!(!first.is_empty(), "the first reference must expose its tools");
+    assert!(
+        !first.is_empty(),
+        "the first reference must expose its tools"
+    );
     assert!(
         first.iter().all(|bound| bound.server == "alpha"),
         "only the first reference's tools may be listed"
@@ -424,7 +427,8 @@ async fn builtin_skills_lists_skills_within_its_roots() {
         .await
         .expect("the builtin skills server must connect");
     let tool = find_tool(&handle, "skills:topic:1", "skills_list").await;
-    let listed = structured(call_tool(&handle, &tool, json!({"dir": root.to_string_lossy()})).await);
+    let listed =
+        structured(call_tool(&handle, &tool, json!({"dir": root.to_string_lossy()})).await);
     assert_eq!(listed["skills"].as_array().map(Vec::len), Some(1));
     assert_eq!(listed["skills"][0]["name"], json!("demo"));
     assert_eq!(listed["skills"][0]["source"], json!("s1"));

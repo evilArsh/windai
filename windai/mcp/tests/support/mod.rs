@@ -130,11 +130,7 @@ pub async fn find_tool(handle: &RegistryHandle, server: &str, tool: &str) -> Bou
     }
 }
 
-pub async fn call_tool(
-    handle: &RegistryHandle,
-    tool: &BoundTool,
-    args: Value,
-) -> CallOutcome {
+pub async fn call_tool(handle: &RegistryHandle, tool: &BoundTool, args: Value) -> CallOutcome {
     handle
         .call(
             &tool.server,
