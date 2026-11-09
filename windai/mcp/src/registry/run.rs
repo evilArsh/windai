@@ -1,14 +1,18 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use serde_json::Value;
 use tokio::sync::mpsc::{self, WeakUnboundedSender};
 use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 use wind_event::Dispatcher;
 
 use super::command::{Command, Effect, Event, ReportPhase};
-use super::{BoxFuture, Catalog, LaunchRequest, Launcher, Registry, RegistryHandle, Started};
-use crate::connector::{Connection, ToolDescriptor};
+use super::{
+    BoxFuture, Catalog, LaunchRequest, Launcher, Registry, RegistryHandle, Started, ToolCall,
+};
+use crate::connector::{CallOutcome, Connection, ToolDescriptor};
 use crate::error::{McpError, Result};
 use crate::events::{
     self, CORE_MCP_FAILED, CORE_MCP_LAUNCH, CORE_MCP_LOG, CORE_MCP_REPLACED, CORE_MCP_STARTED,
@@ -280,6 +284,19 @@ fn dispatch(
                 });
             });
         }
+    }
+}
+
+impl ToolCall {
+    pub async fn execute(
+        self,
+        arguments: Value,
+        cancel: CancellationToken,
+        deadline: Instant,
+    ) -> CallOutcome {
+        self.connection
+            .call(&self.tool, arguments, cancel, deadline)
+            .await
     }
 }
 

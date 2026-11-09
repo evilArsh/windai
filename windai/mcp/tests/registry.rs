@@ -6,9 +6,11 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 use support::{
-    RecordingBus, ScriptedLauncher, bus, entry_generation, options, roots, spec, spec_with_env,
-    stderr_spec, tool_names, wait_generation, wait_gone, wait_started,
+    RecordingBus, ScriptedLauncher, bus, entry_generation, first_tool, options, roots, spec,
+    spec_with_env, stderr_spec, tool_names, wait_generation, wait_gone, wait_started,
 };
+use tokio_util::sync::CancellationToken;
+use wind_mcp::connector::CallOutcome;
 use wind_mcp::registry::{spawn, spawn_with};
 
 #[tokio::test]
@@ -343,6 +345,94 @@ async fn stderr_lines_are_published_and_forwarded() {
     let lines = captured.lock().expect("lock the captured lines");
     assert_eq!(lines.len(), 1);
     assert_eq!(lines[0], "the log line");
+    tokio::time::timeout(Duration::from_secs(10), handle.shutdown())
+        .await
+        .expect("shutdown must return");
+}
+
+#[tokio::test]
+async fn call_after_stop_returns_failure_instead_of_hanging() {
+    let launcher = ScriptedLauncher::default();
+    let handle = spawn_with(Arc::new(launcher.clone()), roots(), bus());
+    handle.acquire("r1".to_owned(), spec("demo"));
+    launcher.complete("demo", 1);
+    wait_started(&handle, "demo").await;
+    let tool = first_tool(&handle, "demo").await;
+    handle.release("r1".to_owned());
+    wait_gone(&handle, "demo").await;
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(5),
+        tool.call.clone().execute(
+            json!({"text": "x"}),
+            CancellationToken::new(),
+            Instant::now() + Duration::from_secs(1),
+        ),
+    )
+    .await
+    .expect("a call after stop must not hang");
+    assert!(
+        matches!(outcome, CallOutcome::Failed(_)),
+        "a stopped service must reject calls: {outcome:?}"
+    );
+    tokio::time::timeout(Duration::from_secs(10), handle.shutdown())
+        .await
+        .expect("shutdown must return");
+}
+
+#[tokio::test]
+async fn refresh_replaces_the_cached_catalog() {
+    let launcher = ScriptedLauncher::default();
+    launcher.serve_tools("demo", &["echo"]);
+    let handle = spawn_with(Arc::new(launcher.clone()), roots(), bus());
+    handle.acquire("r1".to_owned(), spec("demo"));
+    launcher.complete("demo", 1);
+    wait_started(&handle, "demo").await;
+    assert_eq!(tool_names(&handle).await, vec!["echo".to_owned()]);
+    launcher.serve_tools("demo", &["echo", "wait"]);
+    handle.refresh("demo");
+    let started = Instant::now();
+    loop {
+        if tool_names(&handle).await == vec!["echo".to_owned(), "wait".to_owned()] {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the refreshed catalog must replace the cached one"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        tool_names(&handle).await,
+        vec!["echo".to_owned(), "wait".to_owned()]
+    );
+    tokio::time::timeout(Duration::from_secs(10), handle.shutdown())
+        .await
+        .expect("shutdown must return");
+}
+
+#[tokio::test]
+async fn a_tool_call_succeeds_through_the_public_handle() {
+    let handle = spawn(options(), roots(), bus());
+    handle.acquire("r1".to_owned(), spec("demo"));
+    wait_started(&handle, "demo").await;
+    let tool = first_tool(&handle, "demo").await;
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(5),
+        tool.call.execute(
+            json!({"text": "hi"}),
+            CancellationToken::new(),
+            Instant::now() + Duration::from_secs(5),
+        ),
+    )
+    .await
+    .expect("the tool call must not hang");
+    let CallOutcome::Ok(value) = outcome else {
+        panic!("the echo tool must succeed: {outcome:?}");
+    };
+    assert!(
+        value.to_string().contains("hi"),
+        "the echo tool must return its argument: {value}"
+    );
     tokio::time::timeout(Duration::from_secs(10), handle.shutdown())
         .await
         .expect("shutdown must return");

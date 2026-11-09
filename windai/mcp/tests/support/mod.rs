@@ -18,7 +18,7 @@ use wind_mcp::connector::{Connection, ToolDescriptor};
 use wind_mcp::error::{McpError, Result as McpResult};
 use wind_mcp::events::{CORE_MCP_LAUNCH, CORE_MCP_REPLACED};
 use wind_mcp::options::McpOptions;
-use wind_mcp::registry::{BoxFuture, LaunchRequest, Launcher, RegistryHandle, Started};
+use wind_mcp::registry::{BoundTool, BoxFuture, LaunchRequest, Launcher, RegistryHandle, Started};
 use wind_mcp::roots::Roots;
 use wind_mcp::runner::plan;
 use wind_mcp::spec::{ServiceSpec, StdioSpec, Transport};
@@ -141,6 +141,21 @@ pub async fn entry_generation(handle: &RegistryHandle, name: &str) -> u64 {
         .entry_generation(name)
         .await
         .expect("the entry must exist")
+}
+
+pub async fn first_tool(handle: &RegistryHandle, server: &str) -> BoundTool {
+    let started = Instant::now();
+    loop {
+        let catalog = handle.list_tools().await;
+        if let Some(bound) = catalog.iter().find(|bound| bound.server == server) {
+            return bound.clone();
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the service {server} must expose a tool"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 pub async fn tool_names(handle: &RegistryHandle) -> Vec<String> {
