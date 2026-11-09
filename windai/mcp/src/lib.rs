@@ -4,3 +4,4 @@ pub mod options;
 pub mod roots;
 pub mod runner;
 pub mod spec;
+pub mod startup;
