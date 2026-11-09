@@ -12,7 +12,7 @@ mod scan;
 pub use scan::{SkillError, SkillsListResult, SkillsMeta};
 
 /// 一个技能根及其来源名
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SkillRoot {
     pub source: String,
     pub path: PathBuf,

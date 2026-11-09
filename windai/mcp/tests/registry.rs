@@ -3,6 +3,7 @@ use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
+use tokio_util::sync::CancellationToken;
 use wind_mcp::builtin::fs::FsServer;
 use wind_mcp::builtin::skills::{SkillRoot, SkillsServer};
 use wind_mcp::{BoundTool, CallOutcome, RegistryHandle, init};
@@ -37,6 +38,58 @@ async fn acquire_returns_before_the_service_is_ready() {
         tool_names(&handle).await,
         vec!["echo", "context", "wait", "unsupported", "failing"]
     );
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn list_tools_by_ref_filters_by_reference() {
+    let handle = init(options(), bus());
+    handle.acquire("r1".to_owned(), server_definition("alpha"));
+    handle.acquire("r2".to_owned(), server_definition("beta"));
+    wait_started(&handle, "alpha").await;
+    wait_started(&handle, "beta").await;
+
+    let first = handle.list_tools_by_ref("r1").await;
+    assert!(!first.is_empty(), "the first reference must expose its tools");
+    assert!(
+        first.iter().all(|bound| bound.server == "alpha"),
+        "only the first reference's tools may be listed"
+    );
+    assert!(handle.list_tools_by_ref("missing").await.is_empty());
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn call_by_name_executes_a_running_tool() {
+    let handle = init(options(), bus());
+    handle.acquire("r1".to_owned(), server_definition("demo"));
+    wait_started(&handle, "demo").await;
+    let outcome = handle
+        .call(
+            "demo",
+            "echo",
+            json!({ "value": 7 }),
+            CancellationToken::new(),
+            tokio::time::Instant::now() + Duration::from_secs(5),
+        )
+        .await;
+    assert!(matches!(outcome, CallOutcome::Ok(_)));
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn call_to_an_unknown_server_returns_failure() {
+    let handle = init(options(), bus());
+    let outcome = handle
+        .call(
+            "missing",
+            "echo",
+            json!({}),
+            CancellationToken::new(),
+            tokio::time::Instant::now() + Duration::from_secs(5),
+        )
+        .await;
+    assert!(matches!(outcome, CallOutcome::Failed(_)));
     handle.shutdown().await;
 }
 
@@ -229,7 +282,7 @@ async fn call_after_stop_returns_failure_instead_of_hanging() {
 
     let started = Instant::now();
     loop {
-        let outcome = call_tool(&tool, json!({"text": "x"})).await;
+        let outcome = call_tool(&handle, &tool, json!({"text": "x"})).await;
         if matches!(outcome, CallOutcome::Failed(_)) {
             break;
         }
@@ -286,14 +339,14 @@ async fn builtin_fs_instances_are_isolated_by_workspace() {
     wait_started(&handle, "fs:topic:2").await;
 
     let tool_a = find_tool(&handle, "fs:topic:1", "read_file").await;
-    let read_a = read_file(&tool_a, &notes_a).await;
+    let read_a = read_file(&handle, &tool_a, &notes_a).await;
     assert!(
         read_a["content"]
             .as_str()
             .is_some_and(|content| content.contains("notes from a")),
         "the first instance must read its own workspace: {read_a}"
     );
-    let denied_b = read_file(&tool_a, &notes_b).await;
+    let denied_b = read_file(&handle, &tool_a, &notes_b).await;
     assert_eq!(
         denied_b["bytes"],
         json!(0),
@@ -301,7 +354,7 @@ async fn builtin_fs_instances_are_isolated_by_workspace() {
     );
 
     let tool_b = find_tool(&handle, "fs:topic:2", "read_file").await;
-    let read_b = read_file(&tool_b, &notes_b).await;
+    let read_b = read_file(&handle, &tool_b, &notes_b).await;
     assert!(
         read_b["content"]
             .as_str()
@@ -371,12 +424,12 @@ async fn builtin_skills_lists_skills_within_its_roots() {
         .await
         .expect("the builtin skills server must connect");
     let tool = find_tool(&handle, "skills:topic:1", "skills_list").await;
-    let listed = structured(call_tool(&tool, json!({"dir": root.to_string_lossy()})).await);
+    let listed = structured(call_tool(&handle, &tool, json!({"dir": root.to_string_lossy()})).await);
     assert_eq!(listed["skills"].as_array().map(Vec::len), Some(1));
     assert_eq!(listed["skills"][0]["name"], json!("demo"));
     assert_eq!(listed["skills"][0]["source"], json!("s1"));
 
-    let denied = call_tool(&tool, json!({"dir": outside.to_string_lossy()})).await;
+    let denied = call_tool(&handle, &tool, json!({"dir": outside.to_string_lossy()})).await;
     assert!(
         matches!(denied, CallOutcome::Failed(_)),
         "a directory outside the skill roots must be rejected: {denied:?}"
@@ -417,7 +470,7 @@ async fn wait_mark(handle: &RegistryHandle, server: &str, expected: &str) {
     let started = Instant::now();
     loop {
         let tool = find_tool(handle, server, "context").await;
-        if let CallOutcome::Ok(value) = call_tool(&tool, json!({})).await
+        if let CallOutcome::Ok(value) = call_tool(handle, &tool, json!({})).await
             && value["structuredContent"]["mark"] == json!(expected)
         {
             return;
@@ -437,8 +490,8 @@ fn structured(outcome: CallOutcome) -> Value {
     }
 }
 
-async fn read_file(tool: &BoundTool, path: &Path) -> Value {
-    structured(call_tool(tool, json!({"path": path.to_string_lossy()})).await)
+async fn read_file(handle: &RegistryHandle, tool: &BoundTool, path: &Path) -> Value {
+    structured(call_tool(handle, tool, json!({"path": path.to_string_lossy()})).await)
 }
 
 fn start_log_lines(path: &str) -> usize {

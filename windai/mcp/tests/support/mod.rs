@@ -130,10 +130,15 @@ pub async fn find_tool(handle: &RegistryHandle, server: &str, tool: &str) -> Bou
     }
 }
 
-pub async fn call_tool(tool: &BoundTool, args: Value) -> CallOutcome {
-    tool.call
-        .clone()
-        .execute(
+pub async fn call_tool(
+    handle: &RegistryHandle,
+    tool: &BoundTool,
+    args: Value,
+) -> CallOutcome {
+    handle
+        .call(
+            &tool.server,
+            &tool.tool.name,
             args,
             CancellationToken::new(),
             tokio::time::Instant::now() + Duration::from_secs(5),

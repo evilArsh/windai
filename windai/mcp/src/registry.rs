@@ -11,7 +11,6 @@ use super::runner::{self, LaunchPlan};
 use rmcp::ServerHandler;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::fmt;
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -26,49 +25,10 @@ use wind_wire::mcp::{McpConfig, McpDefinition};
 /// stderr 日志事件单行保留的字节数
 const LOG_LINE_LIMIT: usize = 4096;
 
-#[derive(Clone)]
-pub struct ToolCall {
-    pub server: String,
-    pub tool: String,
-    connection: Arc<Connection>,
-}
-
-impl ToolCall {
-    pub async fn execute(
-        self,
-        arguments: Value,
-        cancel: CancellationToken,
-        deadline: Instant,
-    ) -> CallOutcome {
-        self.connection
-            .call(&self.tool, arguments, cancel, deadline)
-            .await
-    }
-}
-
-impl fmt::Debug for ToolCall {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("ToolCall")
-            .field("server", &self.server)
-            .field("tool", &self.tool)
-            .finish_non_exhaustive()
-    }
-}
-
-impl PartialEq for ToolCall {
-    fn eq(&self, other: &Self) -> bool {
-        self.server == other.server
-            && self.tool == other.tool
-            && Arc::ptr_eq(&self.connection, &other.connection)
-    }
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct BoundTool {
     pub server: String,
     pub tool: ToolDescriptor,
-    pub call: ToolCall,
 }
 
 /// 只含 Running 条目的工具缓存
@@ -149,6 +109,42 @@ impl RegistryHandle {
         response.await.unwrap_or_default()
     }
 
+    /// 某个引用可见的工具
+    pub async fn list_tools_by_ref(&self, ref_id: &str) -> Catalog {
+        let (reply, response) = oneshot::channel();
+        let command = Command::ListToolsByRef {
+            ref_id: ref_id.to_string(),
+            reply,
+        };
+        if self.commands.send(command).is_err() {
+            return Catalog::default();
+        }
+        response.await.unwrap_or_default()
+    }
+
+    /// 通过服务名调用工具；只有当前 Running 的连接会被使用
+    pub async fn call(
+        &self,
+        server: &str,
+        tool: &str,
+        arguments: Value,
+        cancel: CancellationToken,
+        deadline: Instant,
+    ) -> CallOutcome {
+        let (reply, response) = oneshot::channel();
+        let command = Command::Lookup {
+            server: server.to_string(),
+            reply,
+        };
+        if self.commands.send(command).is_err() {
+            return CallOutcome::Failed("the mcp registry is shutting down".to_string());
+        }
+        match response.await {
+            Ok(Some(connection)) => connection.call(tool, arguments, cancel, deadline).await,
+            _ => CallOutcome::Failed(format!("the mcp server {server} is not running")),
+        }
+    }
+
     pub async fn shutdown(&self) {
         let (reply, response) = oneshot::channel();
         if self.commands.send(Command::Shutdown { reply }).is_err() {
@@ -225,6 +221,14 @@ enum Command {
     ListTools {
         reply: oneshot::Sender<Catalog>,
     },
+    ListToolsByRef {
+        ref_id: String,
+        reply: oneshot::Sender<Catalog>,
+    },
+    Lookup {
+        server: String,
+        reply: oneshot::Sender<Option<Arc<Connection>>>,
+    },
     Report {
         name: String,
         generation: u64,
@@ -297,6 +301,19 @@ impl Registry {
                 let _ = reply.send(self.catalog.clone());
                 Vec::new()
             }
+            Command::ListToolsByRef { ref_id, reply } => {
+                let _ = reply.send(self.running_tools(Some(&ref_id)));
+                Vec::new()
+            }
+            Command::Lookup { server, reply } => {
+                let connection = self
+                    .entries
+                    .get(&server)
+                    .filter(|entry| matches!(entry.state, State::Running))
+                    .and_then(|entry| entry.connection.as_ref().map(Arc::clone));
+                let _ = reply.send(connection);
+                Vec::new()
+            }
             Command::EffectDone => {
                 self.outstanding = self.outstanding.saturating_sub(1);
                 Vec::new()
@@ -334,7 +351,10 @@ impl Registry {
                     Command::Shutdown { reply } => {
                         self.begin_shutdown(reply, &mut effects);
                     }
-                    Command::ListTools { .. } | Command::EffectDone => {}
+                    Command::ListTools { .. }
+                    | Command::ListToolsByRef { .. }
+                    | Command::Lookup { .. }
+                    | Command::EffectDone => {}
                 }
                 effects
             }
@@ -692,25 +712,29 @@ impl Registry {
         if !self.dirty {
             return;
         }
+        self.catalog = self.running_tools(None);
+        self.dirty = false;
+    }
+
+    fn running_tools(&self, filter: Option<&str>) -> Catalog {
         let mut tools = Vec::new();
         for (name, entry) in &self.entries {
-            let (State::Running, Some(connection)) = (&entry.state, &entry.connection) else {
+            if !matches!(entry.state, State::Running) || entry.connection.is_none() {
                 continue;
-            };
+            }
+            if let Some(ref_id) = filter
+                && !entry.refs.contains(ref_id)
+            {
+                continue;
+            }
             for tool in &entry.tools {
                 tools.push(BoundTool {
                     server: name.clone(),
                     tool: tool.clone(),
-                    call: ToolCall {
-                        server: name.clone(),
-                        tool: tool.name.clone(),
-                        connection: Arc::clone(connection),
-                    },
                 });
             }
         }
-        self.catalog = Catalog(Arc::from(tools));
-        self.dirty = false;
+        Catalog(Arc::from(tools))
     }
 
     fn next_generation(&mut self) -> u64 {

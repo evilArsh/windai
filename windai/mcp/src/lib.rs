@@ -13,7 +13,7 @@ use std::sync::Arc;
 pub use connector::{CallOutcome, ToolDescriptor};
 pub use error::{McpError, Result};
 pub use options::McpOptions;
-pub use registry::{BoundTool, Catalog, RegistryHandle, ToolCall};
+pub use registry::{BoundTool, Catalog, RegistryHandle};
 use wind_event::Dispatcher;
 
 /// 创建注册表；全局内建 MCP 在此启动
