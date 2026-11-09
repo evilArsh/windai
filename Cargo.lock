@@ -3559,7 +3559,6 @@ dependencies = [
  "tokio-util",
  "url",
  "wind-event",
- "wind-storage",
  "wind-wire",
  "yaml-rust2",
 ]

@@ -8,7 +8,6 @@ repository.workspace = true
 [dependencies]
 wind-wire = { path = "../wire" }
 wind-event = { path = "../event" }
-wind-storage = { path = "../storage" }
 rmcp = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
