@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use wind_wire::event::{Origin, Scope, Shape, Source};
 use wind_wire::{
     AdapterType, AgentMode, AgentRole, Block as WireBlock, Body, CompiledScripts, Content,
-    McpDefinition, PendingKind, Role,
+    PendingKind, Role,
 };
 
 /// 话题
@@ -26,6 +26,8 @@ pub struct Topic {
     pub model_id: Option<i64>,
     /// 图标
     pub icon: Option<String>,
+    /// 话题工作目录，创建后不可改
+    pub workspace: Option<String>,
 }
 
 /// 提供商
@@ -475,35 +477,6 @@ impl<'r> FromRow<'r, DbRow> for Mod {
             version: version_of(row, "version")?,
             manifest: row.try_get("manifest")?,
             compiled,
-            created_at: row.try_get("created_at")?,
-            updated_at: row.try_get("updated_at")?,
-        })
-    }
-}
-
-/// 独立配置的 MCP 服务
-#[derive(Debug, Clone, PartialEq)]
-pub struct McpServerRecord {
-    pub id: i64,
-    pub definition: McpDefinition,
-    pub revision: u32,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
-
-impl<'r> FromRow<'r, DbRow> for McpServerRecord {
-    fn from_row(row: &'r DbRow) -> sqlx::Result<Self> {
-        let config: String = row.try_get("config")?;
-        let config =
-            serde_json::from_str(&config).map_err(|error| column_error("config", error))?;
-        Ok(Self {
-            id: row.try_get("id")?,
-            definition: McpDefinition {
-                name: row.try_get("name")?,
-                description: row.try_get("description")?,
-                config,
-            },
-            revision: version_of(row, "revision")?,
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,
         })

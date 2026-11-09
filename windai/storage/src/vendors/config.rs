@@ -48,24 +48,42 @@ impl Storage {
         label: &str,
         model_id: Option<i64>,
         icon: Option<&str>,
+        workspace: Option<&str>,
     ) -> Result<i64> {
-        let id = self
-            .executor
-            .fetch_one_scalar(
-                sqlx::query_scalar::<_, i64>(
-                    "INSERT INTO topics
-                        (parent_id, label, model_id, icon, created_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    RETURNING id",
+        self.with_tx(async move |storage| {
+            let id = storage
+                .executor
+                .fetch_one_scalar(
+                    sqlx::query_scalar::<_, i64>(
+                        "INSERT INTO topics
+                            (parent_id, label, model_id, icon, created_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        RETURNING id",
+                    )
+                    .bind(parent_id)
+                    .bind(label)
+                    .bind(model_id)
+                    .bind(icon)
+                    .bind(now_ts()),
                 )
-                .bind(parent_id)
-                .bind(label)
-                .bind(model_id)
-                .bind(icon)
-                .bind(now_ts()),
-            )
-            .await?;
-        Ok(id)
+                .await?;
+            let workspace = workspace.map(str::to_owned).unwrap_or_else(|| {
+                default_topics_root()
+                    .join(id.to_string())
+                    .to_string_lossy()
+                    .into_owned()
+            });
+            storage
+                .executor
+                .execute(
+                    sqlx::query("UPDATE topics SET workspace = ? WHERE id = ?")
+                        .bind(&workspace)
+                        .bind(id),
+                )
+                .await?;
+            Ok(id)
+        })
+        .await
     }
 
     pub async fn get_topic_by_id(&self, topic_id: i64) -> Result<Option<Topic>> {
@@ -73,7 +91,7 @@ impl Storage {
             .executor
             .fetch_optional(
                 sqlx::query_as::<_, Topic>(
-                    "SELECT id, parent_id, label, model_id, icon
+                    "SELECT id, parent_id, label, model_id, icon, workspace
                     FROM topics
                     WHERE id = ?",
                 )
@@ -88,7 +106,7 @@ impl Storage {
             .executor
             .fetch_optional(
                 sqlx::query_as::<_, Topic>(
-                    "SELECT t.id, t.parent_id, t.label, t.model_id, t.icon
+                    "SELECT t.id, t.parent_id, t.label, t.model_id, t.icon, t.workspace
                     FROM topics t
                     JOIN agent_instances i ON i.topic_id = t.id
                     WHERE i.id = ?",
@@ -249,4 +267,15 @@ impl Storage {
             .await?;
         Ok(id)
     }
+}
+
+/// 话题工作目录的默认根
+fn default_topics_root() -> std::path::PathBuf {
+    let root = match std::env::var("WIND_ROOT_DIR") {
+        Ok(value) => std::path::PathBuf::from(value),
+        Err(_) => dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(".windai"),
+    };
+    root.join("topics")
 }

@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS topics (
     label       TEXT    NOT NULL,
     model_id    BIGINT,
     icon        TEXT,
+    workspace   TEXT,
     created_at  BIGINT,
     updated_at  BIGINT
 );
@@ -161,22 +162,6 @@ CREATE TABLE IF NOT EXISTS topic_mods (
     FOREIGN KEY (topic_id) REFERENCES topics (id) ON DELETE CASCADE,
     FOREIGN KEY (mod_id) REFERENCES mods (id) ON DELETE CASCADE
 );
-CREATE TABLE IF NOT EXISTS mcp_servers (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    name        TEXT    NOT NULL UNIQUE,
-    description TEXT,
-    config      TEXT    NOT NULL,
-    revision    INTEGER NOT NULL,
-    created_at  INTEGER NOT NULL,
-    updated_at  INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS topic_mcp_servers (
-    topic_id  INTEGER NOT NULL,
-    server_id INTEGER NOT NULL,
-    PRIMARY KEY (topic_id, server_id),
-    FOREIGN KEY (topic_id) REFERENCES topics (id) ON DELETE CASCADE,
-    FOREIGN KEY (server_id) REFERENCES mcp_servers (id) ON DELETE CASCADE
-);
 
 CREATE INDEX IF NOT EXISTS idx_turn_instance ON turn(instance_id, id);
 CREATE INDEX IF NOT EXISTS idx_turn_topic ON turn(topic_id, id);
@@ -215,9 +200,6 @@ CREATE INDEX IF NOT EXISTS idx_event_log_global_key
 
 CREATE INDEX IF NOT EXISTS idx_topic_mods_mod ON topic_mods(mod_id, topic_id);
 
-CREATE INDEX IF NOT EXISTS idx_topic_mcp_servers_server
-    ON topic_mcp_servers(server_id, topic_id);
-
 INSERT INTO feed_meta (singleton, epoch) VALUES (1, 0)
     ON CONFLICT (singleton) DO NOTHING;
 "#;
@@ -227,4 +209,16 @@ pub async fn create_if_missing(pool: &DbPool) -> Result<()> {
     sqlx::raw_sql(SCHEMA).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(())
+}
+
+/// 给已有数据库补充后加的列
+pub async fn ensure_columns(pool: &DbPool) -> Result<()> {
+    match sqlx::query("ALTER TABLE topics ADD COLUMN workspace TEXT")
+        .execute(pool)
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(sqlx::Error::Database(error)) if error.message().contains("duplicate column") => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }

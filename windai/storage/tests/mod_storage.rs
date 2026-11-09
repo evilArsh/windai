@@ -38,7 +38,7 @@ async fn install(storage: &Storage, name: &str, scripts: Option<&CompiledScripts
 
 async fn topic(storage: &Storage, label: &str) -> i64 {
     storage
-        .create_topic(None, label, None, None)
+        .create_topic(None, label, None, None, None)
         .await
         .expect("create topic")
 }
@@ -468,4 +468,40 @@ async fn update_requires_an_installed_mod() {
         .await
         .expect_err("unknown mod");
     assert!(matches!(error, StorageError::NotFound { .. }));
+}
+
+#[tokio::test]
+async fn create_topic_writes_the_default_workspace() {
+    let (_dir, storage) = database().await;
+    let id = storage
+        .create_topic(None, "topic", None, None, None)
+        .await
+        .expect("topic");
+    let topic = storage
+        .get_topic_by_id(id)
+        .await
+        .expect("read")
+        .expect("exists");
+    let workspace = topic
+        .workspace
+        .expect("the default workspace must be written");
+    assert!(
+        workspace.ends_with(&format!("topics/{id}")),
+        "unexpected workspace: {workspace}"
+    );
+}
+
+#[tokio::test]
+async fn create_topic_keeps_an_explicit_workspace() {
+    let (_dir, storage) = database().await;
+    let id = storage
+        .create_topic(None, "topic", None, None, Some("/tmp/ws"))
+        .await
+        .expect("topic");
+    let topic = storage
+        .get_topic_by_id(id)
+        .await
+        .expect("read")
+        .expect("exists");
+    assert_eq!(topic.workspace.as_deref(), Some("/tmp/ws"));
 }
