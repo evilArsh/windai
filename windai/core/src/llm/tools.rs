@@ -4,13 +4,14 @@ use crate::{
     error::{CoreError, Result},
 };
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use wind_event::{DispatchCx, schema};
-use wind_mcp::ToolTarget;
 use wind_wire::{
     AgentMode, FunctionCallOutput,
     tool::{FunctionCall, FunctionTool, Tools},
 };
+
+/// 服务名与工具名拼成模型可见名字时使用的分隔串
+const MCP_TOOL_IDENTIFIER: &str = "0m0";
 
 /// Create an agent by spawning a child instance to complete a specified task.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -58,10 +59,17 @@ pub struct SpawnAgentAction {
     pub data: SpawnAgentRequest,
 }
 
+/// 定位一个 MCP 工具：服务名加原始工具名
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpTarget {
+    pub server: String,
+    pub tool: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolOrigin {
     Agent { name: String },
-    Mcp { target: ToolTarget },
+    Mcp { target: McpTarget },
     ModRequest { mod_name: String, request: String },
 }
 impl ToolOrigin {
@@ -74,15 +82,9 @@ impl ToolOrigin {
     }
 }
 
-/// 由来源、绑定键和原始工具名生成展示名
-pub(crate) fn mcp_tool_name(target: &ToolTarget) -> String {
-    let mut hasher = Sha256::new();
-    for field in [&target.source, &target.key, &target.tool] {
-        hasher.update(field.as_bytes());
-        hasher.update([0]);
-    }
-    let digest = format!("{:x}", hasher.finalize());
-    format!("mcp_{}", &digest[..48])
+/// 由服务名与工具名生成模型可见的工具名
+pub(crate) fn mcp_tool_name(target: &McpTarget) -> String {
+    format!("{}{MCP_TOOL_IDENTIFIER}{}", target.server, target.tool)
 }
 
 pub struct ToolCatalog {
@@ -231,7 +233,7 @@ async fn call_mcp(
     cx: &DispatchCx,
     mcp_service: &dyn McpService,
     call: &FunctionCall,
-    target: &ToolTarget,
+    target: &McpTarget,
 ) -> FunctionCallOutput {
     let arguments = match parse_arguments(&call.arguments) {
         Ok(arguments) if arguments.is_object() => arguments,

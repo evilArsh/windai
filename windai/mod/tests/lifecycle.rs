@@ -202,7 +202,7 @@ impl Harness {
 
     async fn topic(&self, label: &str) -> i64 {
         self.storage
-            .create_topic(None, label, None, None)
+            .create_topic(None, label, None, None, None)
             .await
             .expect("create topic")
     }

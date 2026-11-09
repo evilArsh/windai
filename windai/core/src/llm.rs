@@ -5,7 +5,7 @@ use self::events::{
 };
 use self::rule::{apply_rules, context_of};
 use self::stream::{MessageStream, notify_persisted_block};
-use self::tools::{DeclaredTool, ExecutedPlan, SpawnAgentAction, denied_result};
+use self::tools::{DeclaredTool, ExecutedPlan, McpTarget, SpawnAgentAction, denied_result};
 use crate::agent::{Ctx, Input, Outcome, Runner, SpawnRequest};
 use crate::error::CoreError;
 use serde_json::json;
@@ -13,7 +13,6 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use wind_event::{DispatchCx, Dispatcher, Scope};
-use wind_mcp::ToolTarget;
 use wind_storage::error::StorageError;
 use wind_storage::{Storage, Topic};
 use wind_wire::{Content, FunctionCall, FunctionCallOutput, Message, Role};
@@ -59,7 +58,7 @@ pub trait McpService: Send + Sync {
         &self,
         cx: &DispatchCx,
         call_id: &str,
-        target: &ToolTarget,
+        target: &McpTarget,
         arguments: serde_json::Value,
     ) -> Result<serde_json::Value, CoreError>;
 }

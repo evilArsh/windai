@@ -525,7 +525,7 @@ async fn install(storage: &Storage, manifest: &Value) -> i64 {
 
 async fn enable_topic(storage: &Storage, label: &str, mod_id: i64) -> i64 {
     let topic_id = storage
-        .create_topic(None, label, None, None)
+        .create_topic(None, label, None, None, None)
         .await
         .expect("create topic");
     storage

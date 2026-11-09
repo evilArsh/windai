@@ -91,7 +91,7 @@ pub async fn seed_root(
     prompt: &str,
 ) -> (i64, i64, i64) {
     let topic = storage
-        .create_topic(None, label, Some(model), None)
+        .create_topic(None, label, Some(model), None, None)
         .await
         .expect("建话题");
     let instance = storage
@@ -325,7 +325,7 @@ impl McpService for Services {
         &self,
         _cx: &DispatchCx,
         _call_id: &str,
-        _target: &wind_mcp::ToolTarget,
+        _target: &wind_core::llm::tools::McpTarget,
         _arguments: Value,
     ) -> Result<Value, CoreError> {
         Ok(Value::Null)

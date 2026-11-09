@@ -1,46 +1,33 @@
-//! mod 与独立 MCP 配置的资源适配
+//! mod 与内建 MCP 的资源适配
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::panic::AssertUnwindSafe;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures::FutureExt;
 use serde_json::Value;
-use tokio::sync::{Mutex as AsyncMutex, RwLock, oneshot};
+use tokio::sync::{Mutex as AsyncMutex, oneshot};
 use wind_event::{DispatchCx, Scope};
-use wind_mcp::registry::{SOURCE_BUILTIN, SOURCE_CONFIGURED, SOURCE_MODS};
-use wind_mcp::{
-    BindingSpec, BindingStatus, BoundTool, BuiltinRoots, McpService as McpManager, Registry,
-    ToolTarget,
-};
+use wind_mcp::builtin::fs::FsServer;
+use wind_mcp::builtin::skills::{SkillRoot, SkillsServer};
+use wind_mcp::{BoundTool, CallOutcome, RegistryHandle};
 use wind_mod::installer::{Installer, UnavailableMod};
-use wind_mod::resources::Resources;
-use wind_storage::McpServerRecord;
+use wind_mod::resources::{ModResources, Resources};
+use wind_storage::Storage;
 use wind_wire::McpDefinition;
 use wind_wire::tool::{FunctionTool, Tools};
 
 use crate::error::{CoreError, Result, panic_text};
-use crate::llm::tools::{DeclaredTool, ToolOrigin};
+use crate::llm::tools::{DeclaredTool, McpTarget, ToolOrigin};
 use crate::llm::{McpService as LlmMcpService, ModService};
-
-/// 一次同步失败的话题
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SyncFailure {
-    /// 失败的话题
-    pub topic_id: i64,
-    /// 失败原因
-    pub error: String,
-}
 
 /// 一次资源修改的结果
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplyReport {
     /// 持久化变更影响的话题
     pub affected_topics: Vec<i64>,
-    /// 已提交但运行状态同步失败的话题
-    pub sync_errors: Vec<SyncFailure>,
 }
 
 /// 资源发布、工具目录与调用的适配点
@@ -48,11 +35,12 @@ pub struct ApplyReport {
 pub struct ResourceServices {
     installer: Installer,
     resources: Resources,
-    mcp: Arc<McpManager>,
-    registry: Arc<Registry>,
-    builtin: BuiltinRoots,
-    config: Arc<RwLock<()>>,
-    topics: Arc<Mutex<HashMap<i64, Arc<AsyncMutex<()>>>>>,
+    storage: Storage,
+    registry: RegistryHandle,
+    /// 历史 NULL workspace 的兜底根
+    topics_root: PathBuf,
+    gate: Arc<AsyncMutex<()>>,
+    topics: Arc<Mutex<HashMap<i64, TopicRefs>>>,
     closed: Arc<AtomicBool>,
 }
 
@@ -60,35 +48,26 @@ impl ResourceServices {
     pub fn new(
         installer: Installer,
         resources: Resources,
-        mcp: McpManager,
-        registry: Arc<Registry>,
-        builtin: BuiltinRoots,
+        storage: Storage,
+        registry: RegistryHandle,
+        topics_root: PathBuf,
     ) -> Self {
         Self {
             installer,
             resources,
-            mcp: Arc::new(mcp),
+            storage,
             registry,
-            builtin,
-            config: Arc::new(RwLock::new(())),
+            topics_root,
+            gate: Arc::new(AsyncMutex::new(())),
             topics: Arc::new(Mutex::new(HashMap::new())),
             closed: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    pub fn registry(&self) -> &Registry {
-        &self.registry
-    }
-
-    /// 一个话题的运行绑定状态
-    pub fn status(&self, topic_id: i64) -> Vec<BindingStatus> {
-        self.registry.status(topic_id)
-    }
-
     /// 从数据库恢复启用集合与订阅
     pub async fn restore(&self) -> Result<Vec<UnavailableMod>> {
         self.mutate(move |this| async move {
-            let _write = this.config.write().await;
+            let _gate = this.gate.lock().await;
             this.ensure_open()?;
             Ok(this.installer.restore().await?)
         })
@@ -100,13 +79,12 @@ impl ResourceServices {
         let package = package.to_path_buf();
         self.mutate(move |this| async move {
             {
-                let _write = this.config.write().await;
+                let _gate = this.gate.lock().await;
                 this.ensure_open()?;
                 this.installer.install(&cx, &package).await?;
             }
             Ok(ApplyReport {
                 affected_topics: Vec::new(),
-                sync_errors: Vec::new(),
             })
         })
         .await
@@ -117,7 +95,7 @@ impl ResourceServices {
         let package = package.to_path_buf();
         self.mutate(move |this| async move {
             let change = {
-                let _write = this.config.write().await;
+                let _gate = this.gate.lock().await;
                 this.ensure_open()?;
                 this.installer.update(&cx, &package).await?
             };
@@ -131,7 +109,7 @@ impl ResourceServices {
         let name = name.to_string();
         self.mutate(move |this| async move {
             let change = {
-                let _write = this.config.write().await;
+                let _gate = this.gate.lock().await;
                 this.ensure_open()?;
                 this.installer.delete(&cx, &name).await?
             };
@@ -145,7 +123,7 @@ impl ResourceServices {
         let name = name.to_string();
         self.mutate(move |this| async move {
             let change = {
-                let _write = this.config.write().await;
+                let _gate = this.gate.lock().await;
                 this.ensure_open()?;
                 this.installer.enable(&cx, topic_id, &name).await?
             };
@@ -159,7 +137,7 @@ impl ResourceServices {
         let name = name.to_string();
         self.mutate(move |this| async move {
             let change = {
-                let _write = this.config.write().await;
+                let _gate = this.gate.lock().await;
                 this.ensure_open()?;
                 this.installer.disable(&cx, topic_id, &name).await?
             };
@@ -168,100 +146,31 @@ impl ResourceServices {
         .await
     }
 
-    pub async fn create_mcp(&self, definition: &McpDefinition) -> Result<ApplyReport> {
-        let definition = definition.clone();
-        self.mutate(move |this| async move {
-            let change = {
-                let _write = this.config.write().await;
-                this.ensure_open()?;
-                this.mcp.create(&definition).await?
-            };
-            this.apply(change.affected_topics).await
-        })
-        .await
-    }
-
-    pub async fn update_mcp(
-        &self,
-        id: i64,
-        expected_revision: u32,
-        definition: &McpDefinition,
-    ) -> Result<ApplyReport> {
-        let definition = definition.clone();
-        self.mutate(move |this| async move {
-            let change = {
-                let _write = this.config.write().await;
-                this.ensure_open()?;
-                this.mcp.update(id, expected_revision, &definition).await?
-            };
-            this.apply(change.affected_topics).await
-        })
-        .await
-    }
-
-    pub async fn delete_mcp(&self, id: i64) -> Result<ApplyReport> {
-        self.mutate(move |this| async move {
-            let change = {
-                let _write = this.config.write().await;
-                this.ensure_open()?;
-                this.mcp.delete(id).await?
-            };
-            this.apply(change.affected_topics).await
-        })
-        .await
-    }
-
-    pub async fn enable_mcp(&self, topic_id: i64, id: i64) -> Result<ApplyReport> {
-        self.mutate(move |this| async move {
-            let change = {
-                let _write = this.config.write().await;
-                this.ensure_open()?;
-                this.mcp.enable(topic_id, id).await?
-            };
-            this.apply(change.affected_topics).await
-        })
-        .await
-    }
-
-    pub async fn disable_mcp(&self, topic_id: i64, id: i64) -> Result<ApplyReport> {
-        self.mutate(move |this| async move {
-            let change = {
-                let _write = this.config.write().await;
-                this.ensure_open()?;
-                this.mcp.disable(topic_id, id).await?
-            };
-            this.apply(change.affected_topics).await
-        })
-        .await
-    }
-
-    pub async fn mcp_server(&self, id: i64) -> Result<Option<McpServerRecord>> {
-        Ok(self.mcp.get(id).await?)
-    }
-
-    pub async fn mcp_servers(&self) -> Result<Vec<McpServerRecord>> {
-        Ok(self.mcp.list().await?)
-    }
-
-    pub async fn enabled_mcp_servers(&self, topic_id: i64) -> Result<Vec<McpServerRecord>> {
-        Ok(self.mcp.enabled(topic_id).await?)
-    }
-
     /// 释放一个话题的运行绑定，保留持久启用关系
     pub async fn release_topic(&self, topic_id: i64) -> Result<()> {
+        let _gate = self.gate.lock().await;
         self.ensure_open()?;
-        let gate = self.topic_gate(topic_id);
-        let _gate = gate.lock_owned().await;
-        self.registry.release_topic(topic_id).await?;
+        let refs = {
+            let mut topics = self.lock_topics();
+            topics.remove(&topic_id)
+        };
+        if let Some(refs) = refs {
+            if !refs.main.is_empty() {
+                self.registry.release(refs.main);
+            }
+            for kind in BuiltinKind::ALL {
+                self.registry.release(kind.service_name(topic_id));
+            }
+        }
         Ok(())
     }
 
     /// 停止接纳新操作并关闭全部连接
     pub async fn shutdown(&self) -> Result<()> {
         self.mutate(move |this| async move {
-            let _write = this.config.write().await;
+            let _gate = this.gate.lock().await;
             this.closed.store(true, Ordering::SeqCst);
-            this.registry.shutdown().await?;
+            this.registry.shutdown().await;
             Ok(())
         })
         .await
@@ -301,16 +210,10 @@ impl ResourceServices {
         Ok(())
     }
 
-    fn topic_gate(&self, topic_id: i64) -> Arc<AsyncMutex<()>> {
-        let mut topics = self
-            .topics
+    fn lock_topics(&self) -> std::sync::MutexGuard<'_, HashMap<i64, TopicRefs>> {
+        self.topics
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Arc::clone(
-            topics
-                .entry(topic_id)
-                .or_insert_with(|| Arc::new(AsyncMutex::new(()))),
-        )
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     async fn apply(&self, topics: Vec<i64>) -> Result<ApplyReport> {
@@ -319,152 +222,120 @@ impl ResourceServices {
             .into_iter()
             .filter(|topic_id| seen.insert(*topic_id))
             .collect();
-        let mut sync_errors = Vec::new();
         for &topic_id in &affected_topics {
-            if let Err(error) = self.sync_topic(topic_id).await {
-                sync_errors.push(SyncFailure {
-                    topic_id,
-                    error: error.to_string(),
-                });
-            }
-        }
-        Ok(ApplyReport {
-            affected_topics,
-            sync_errors,
-        })
-    }
-
-    async fn sync_topic(&self, topic_id: i64) -> Result<()> {
-        self.ensure_open()?;
-        let gate = self.topic_gate(topic_id);
-        let _gate = gate.lock_owned().await;
-        self.ensure_open()?;
-        let mut attempt = 0;
-        loop {
-            attempt += 1;
-            let before = self.snapshot_gated(topic_id).await?;
-            self.apply_snapshot(topic_id, &before).await?;
-            let after = self.snapshot_gated(topic_id).await?;
-            if after.identity() == before.identity() {
-                return Ok(());
-            }
-            if attempt >= 2 {
-                return Err(CoreError::ResourcesChanged);
-            }
-        }
-    }
-
-    async fn tools_locked(&self, topic_id: i64, cx: &DispatchCx) -> Result<Vec<BoundTool>> {
-        self.ensure_open()?;
-        let gate = self.topic_gate(topic_id);
-        let _gate = gate.lock_owned().await;
-        self.ensure_open()?;
-        let mut attempt = 0;
-        loop {
-            attempt += 1;
-            let before = self.snapshot_gated(topic_id).await?;
-            self.apply_snapshot(topic_id, &before).await?;
-            let tools = self.registry.tools(topic_id, cx.cancel().clone()).await?;
+            let _gate = self.gate.lock().await;
             self.ensure_open()?;
-            let after = self.snapshot_gated(topic_id).await?;
-            if after.identity() == before.identity() {
-                return Ok(tools);
-            }
-            if attempt >= 2 {
-                return Err(CoreError::ResourcesChanged);
-            }
+            self.publish(topic_id).await?;
         }
+        Ok(ApplyReport { affected_topics })
     }
 
-    async fn apply_snapshot(&self, topic_id: i64, snapshot: &Snapshot) -> Result<()> {
-        self.registry
-            .sync(topic_id, SOURCE_MODS, snapshot.mods.clone())
-            .await?;
-        self.registry
-            .sync(topic_id, SOURCE_CONFIGURED, snapshot.configured.clone())
-            .await?;
-        self.registry
-            .sync_builtin(topic_id, snapshot.builtin.clone())
-            .await?;
+    /// 首次声明时按需发布；同一个话题只发布一次
+    async fn ensure_topic(&self, topic_id: i64) -> Result<()> {
+        if self.lock_topics().contains_key(&topic_id) {
+            return Ok(());
+        }
+        let _gate = self.gate.lock().await;
+        self.ensure_open()?;
+        if self.lock_topics().contains_key(&topic_id) {
+            return Ok(());
+        }
+        self.publish(topic_id).await
+    }
+
+    /// 重新发布一个话题的 mod 服务与内建服务；调用方已持 gate
+    async fn publish(&self, topic_id: i64) -> Result<()> {
+        self.ensure_open()?;
+        let mods = self.resources.topic(topic_id).await?;
+        let definitions = mod_definitions(&mods);
+        let workspace = self.workspace_of(topic_id).await?;
+        let skill_roots = skill_roots(&mods);
+
+        let (new_main, old_main) = {
+            let mut topics = self.lock_topics();
+            let refs = topics.entry(topic_id).or_insert_with(TopicRefs::default);
+            refs.generation += 1;
+            let new_main = format!("topic_{topic_id}@{}", refs.generation);
+            let old_main = std::mem::replace(&mut refs.main, new_main.clone());
+            (new_main, old_main)
+        };
+        for definition in definitions {
+            self.registry.acquire(new_main.clone(), definition);
+        }
+        if !old_main.is_empty() {
+            self.registry.release(old_main);
+        }
+
+        self.sync_builtin(
+            topic_id,
+            BuiltinKind::Fs,
+            BuiltinSnapshot::Fs(vec![workspace]),
+        )
+        .await;
+        self.sync_builtin(
+            topic_id,
+            BuiltinKind::Skills,
+            BuiltinSnapshot::Skills(skill_roots),
+        )
+        .await;
         Ok(())
     }
 
-    async fn snapshot_gated(&self, topic_id: i64) -> Result<Snapshot> {
-        let _read = self.config.read().await;
-        self.ensure_open()?;
-        self.snapshot_read(topic_id).await
-    }
-
-    async fn snapshot_read(&self, topic_id: i64) -> Result<Snapshot> {
-        let mut mods = Vec::new();
-        for module in self.resources.topic(topic_id).await? {
-            for (local, definition) in module.mcp {
-                let key = serde_json::to_string(&(module.name.as_str(), local.as_str()))
-                    .map_err(|error| CoreError::Internal(error.to_string()))?;
-                mods.push(BindingSpec {
-                    key,
-                    revision: module.version,
-                    definition,
-                });
-            }
+    /// 根快照变化时先停旧实例再启动新实例
+    async fn sync_builtin(&self, topic_id: i64, kind: BuiltinKind, snapshot: BuiltinSnapshot) {
+        let current = {
+            let topics = self.lock_topics();
+            topics
+                .get(&topic_id)
+                .and_then(|refs| refs.builtins.get(&kind).cloned())
+        };
+        if current.as_ref() == Some(&snapshot) {
+            return;
         }
-        mods.sort_by(|left, right| left.key.cmp(&right.key));
-        let configured = self.mcp.enabled(topic_id).await?;
-        let mut configured: Vec<BindingSpec> = configured
-            .into_iter()
-            .map(|record| BindingSpec {
-                key: record.id.to_string(),
-                revision: record.revision,
-                definition: record.definition,
-            })
-            .collect();
-        configured.sort_by(|left, right| left.key.cmp(&right.key));
-        Ok(Snapshot {
-            mods,
-            configured,
-            builtin: self.builtin.clone(),
-        })
-    }
-
-    async fn validate_target(&self, target: &ToolTarget) -> Result<()> {
-        match target.source.as_str() {
-            SOURCE_MODS => {
-                let key: (String, String) = serde_json::from_str(&target.key)
-                    .map_err(|_| CoreError::Denied("the tool target is invalid".to_string()))?;
-                let enabled = self.resources.topic(target.topic_id).await?;
-                let found = enabled.iter().any(|module| {
-                    module.name == key.0
-                        && module.version == target.revision
-                        && module.mcp.contains_key(&key.1)
-                });
-                if found {
-                    Ok(())
-                } else {
-                    Err(CoreError::Denied(
-                        "the tool target is not enabled".to_string(),
-                    ))
+        let service = kind.service_name(topic_id);
+        if current.is_some() {
+            self.registry.release(service.clone());
+        }
+        let started = if snapshot.is_empty() {
+            Ok(())
+        } else {
+            match &snapshot {
+                BuiltinSnapshot::Fs(roots) => {
+                    let server = FsServer::new(service.clone(), roots.clone());
+                    self.registry.acquire_builtin(service.clone(), server).await
+                }
+                BuiltinSnapshot::Skills(roots) => {
+                    let server = SkillsServer::new(service.clone(), roots.clone());
+                    self.registry.acquire_builtin(service.clone(), server).await
                 }
             }
-            SOURCE_CONFIGURED => {
-                let id: i64 = target
-                    .key
-                    .parse()
-                    .map_err(|_| CoreError::Denied("the tool target is invalid".to_string()))?;
-                let enabled = self.mcp.enabled(target.topic_id).await?;
-                let found = enabled
-                    .iter()
-                    .any(|record| record.id == id && record.revision == target.revision);
-                if found {
-                    Ok(())
-                } else {
-                    Err(CoreError::Denied(
-                        "the tool target is not enabled".to_string(),
-                    ))
+        };
+        match started {
+            Ok(()) => {
+                let mut topics = self.lock_topics();
+                if let Some(refs) = topics.get_mut(&topic_id) {
+                    refs.builtins.insert(kind, snapshot);
                 }
             }
-            SOURCE_BUILTIN => Ok(()),
-            _ => Err(CoreError::Denied("the tool source is unknown".to_string())),
+            Err(error) => {
+                log::warn!("the builtin mcp service {service} failed to start: {error}");
+            }
         }
+    }
+
+    async fn workspace_of(&self, topic_id: i64) -> Result<PathBuf> {
+        let topic = self.storage.get_topic_by_id(topic_id).await?;
+        let workspace = match topic.and_then(|topic| topic.workspace) {
+            Some(workspace) => PathBuf::from(workspace),
+            None => self.topics_root.join(topic_id.to_string()),
+        };
+        if let Err(error) = std::fs::create_dir_all(&workspace) {
+            log::warn!(
+                "the workspace {} cannot be created: {error}",
+                workspace.display()
+            );
+        }
+        Ok(workspace)
     }
 }
 
@@ -506,85 +377,174 @@ impl ModService for ResourceServices {
 
 #[async_trait::async_trait]
 impl LlmMcpService for ResourceServices {
-    async fn declarations(&self, cx: &DispatchCx, topic_id: i64) -> Result<Vec<DeclaredTool>> {
-        let tools = self.tools_locked(topic_id, cx).await?;
-        Ok(tools.into_iter().map(declared).collect())
+    async fn declarations(&self, _cx: &DispatchCx, topic_id: i64) -> Result<Vec<DeclaredTool>> {
+        self.ensure_topic(topic_id).await?;
+        let refs = {
+            let topics = self.lock_topics();
+            topics
+                .get(&topic_id)
+                .map(|refs| refs.tool_refs(topic_id))
+                .unwrap_or_default()
+        };
+        let mut seen = HashSet::new();
+        let mut tools = Vec::new();
+        for ref_id in refs {
+            for tool in self.registry.list_tools_by_ref(&ref_id).await.iter() {
+                let key = (tool.server.clone(), tool.tool.name.clone());
+                if !seen.insert(key) {
+                    continue;
+                }
+                tools.push(declared(tool));
+            }
+        }
+        Ok(tools)
     }
 
     async fn call(
         &self,
         cx: &DispatchCx,
         _call_id: &str,
-        target: &ToolTarget,
+        target: &McpTarget,
         arguments: Value,
     ) -> Result<Value> {
-        let admitted = {
-            let _read = self.config.read().await;
-            self.ensure_open()?;
-            self.validate_target(target).await?;
-            self.registry.admit(target)?
-        };
-        Ok(admitted
-            .execute(arguments, cx.cancel().clone(), cx.deadline().into_std())
-            .await?)
+        self.ensure_open()?;
+        match self
+            .registry
+            .call(
+                &target.server,
+                &target.tool,
+                arguments,
+                cx.cancel().clone(),
+                cx.deadline(),
+            )
+            .await
+        {
+            CallOutcome::Ok(value) => Ok(value),
+            CallOutcome::Failed(reason) => Err(CoreError::Denied(reason)),
+        }
     }
 }
 
-fn declared(tool: BoundTool) -> DeclaredTool {
-    let origin = ToolOrigin::Mcp {
-        target: tool.target,
+/// 一个话题当前的引用名
+struct TopicRefs {
+    main: String,
+    generation: u64,
+    builtins: BTreeMap<BuiltinKind, BuiltinSnapshot>,
+}
+
+impl Default for TopicRefs {
+    fn default() -> Self {
+        Self {
+            main: String::new(),
+            generation: 0,
+            builtins: BTreeMap::new(),
+        }
+    }
+}
+
+impl TopicRefs {
+    fn tool_refs(&self, topic_id: i64) -> Vec<String> {
+        let mut refs = Vec::with_capacity(1 + BuiltinKind::ALL.len());
+        refs.push(self.main.clone());
+        for kind in BuiltinKind::ALL {
+            refs.push(kind.service_name(topic_id));
+        }
+        refs
+    }
+}
+
+/// 内建服务的种类
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum BuiltinKind {
+    Fs,
+    Skills,
+}
+
+impl BuiltinKind {
+    const ALL: [BuiltinKind; 2] = [BuiltinKind::Fs, BuiltinKind::Skills];
+
+    fn name(self) -> &'static str {
+        match self {
+            BuiltinKind::Fs => "fs",
+            BuiltinKind::Skills => "skills",
+        }
+    }
+
+    fn service_name(self, topic_id: i64) -> String {
+        format!("wd_{}_{topic_id}", self.name())
+    }
+}
+
+/// 上次成功发布的内建根，用于判断是否需要重建
+#[derive(Clone, PartialEq, Eq)]
+enum BuiltinSnapshot {
+    Fs(Vec<PathBuf>),
+    Skills(Vec<SkillRoot>),
+}
+
+impl BuiltinSnapshot {
+    fn is_empty(&self) -> bool {
+        match self {
+            BuiltinSnapshot::Fs(roots) => roots.is_empty(),
+            BuiltinSnapshot::Skills(roots) => roots.is_empty(),
+        }
+    }
+}
+
+fn mod_definitions(mods: &[ModResources]) -> Vec<McpDefinition> {
+    let mut seen = BTreeSet::new();
+    let mut definitions = Vec::new();
+    for module in mods {
+        for (local, definition) in &module.mcp {
+            let name = format!("mod_{}_{local}", module.name);
+            if !seen.insert(name.clone()) {
+                log::warn!(
+                    "the mcp service name {name} is constructed by more than one mod; keeping the first"
+                );
+                continue;
+            }
+            let mut definition = definition.clone();
+            definition.name = name;
+            definitions.push(definition);
+        }
+    }
+    definitions
+}
+
+fn skill_roots(mods: &[ModResources]) -> Vec<SkillRoot> {
+    mods.iter()
+        .filter_map(|module| {
+            module.skills.as_ref().map(|path| SkillRoot {
+                source: module.name.clone(),
+                path: path.clone(),
+            })
+        })
+        .collect()
+}
+
+fn declared(tool: &BoundTool) -> DeclaredTool {
+    let target = McpTarget {
+        server: tool.server.clone(),
+        tool: tool.tool.name.clone(),
     };
-    let ToolOrigin::Mcp { target } = &origin else {
-        unreachable!("the origin is always an mcp tool");
-    };
-    let description = match &tool.description {
+    let origin = ToolOrigin::Mcp { target };
+    let name = origin.exposed();
+    let description = match &tool.tool.description {
         Some(description) => {
             format!(
                 "MCP tool '{}' from '{}': {description}",
-                target.tool, target.source
+                tool.tool.name, tool.server
             )
         }
-        None => format!("MCP tool '{}' from '{}'", target.tool, target.source),
+        None => format!("MCP tool '{}' from '{}'", tool.tool.name, tool.server),
     };
     DeclaredTool {
         declaration: Tools::Function(FunctionTool {
-            name: origin.exposed(),
+            name,
             description: Some(description),
-            parameters: Some(tool.input_schema),
+            parameters: Some(tool.tool.input_schema.clone()),
             strict: None,
         }),
         origin,
     }
-}
-
-#[derive(Clone)]
-struct Snapshot {
-    mods: Vec<BindingSpec>,
-    configured: Vec<BindingSpec>,
-    builtin: BuiltinRoots,
-}
-
-impl Snapshot {
-    fn identity(&self) -> Identity {
-        Identity {
-            mods: self
-                .mods
-                .iter()
-                .map(|spec| (spec.key.clone(), spec.revision))
-                .collect(),
-            configured: self
-                .configured
-                .iter()
-                .map(|spec| (spec.key.clone(), spec.revision))
-                .collect(),
-            builtin: self.builtin.clone(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Identity {
-    mods: Vec<(String, u32)>,
-    configured: Vec<(String, u32)>,
-    builtin: BuiltinRoots,
 }

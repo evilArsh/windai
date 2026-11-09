@@ -26,9 +26,6 @@ pub enum CoreError {
     #[error(transparent)]
     Mcp(#[from] McpError),
 
-    #[error("resources changed during sync")]
-    ResourcesChanged,
-
     #[error("the resource services are closed")]
     ResourcesClosed,
 
