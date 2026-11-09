@@ -1,65 +1,23 @@
-//! 集成测试共用的连接与 actor 替身
+//! 集成测试共用的总线替身与快速构造
 
 #![allow(dead_code)]
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use serde_json::Value;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
-
-use serde_json::{Value, json};
 use tempfile::TempDir;
-use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use wind_event::{
     CallCx, CallError, Dispatcher, EnabledSet, EventOutlet, Limits, ModCaller, ModRoster, Pending,
     Scope, SubmitError, Subscription,
 };
-use wind_mcp::connector::{CallOutcome, Connection, ToolDescriptor};
-use wind_mcp::error::{McpError, Result as McpResult};
 use wind_mcp::events::{CORE_MCP_LAUNCH, CORE_MCP_REPLACED};
-use wind_mcp::options::McpOptions;
-use wind_mcp::registry::{BoundTool, BoxFuture, LaunchRequest, Launcher, RegistryHandle, Started};
-use wind_mcp::roots::{Roots, ScopeRoots};
-use wind_mcp::runner::plan;
-use wind_mcp::spec::{ServiceSpec, StdioSpec, Transport};
+use wind_mcp::{BoundTool, CallOutcome, Catalog, McpOptions, RegistryHandle};
+use wind_wire::mcp::{McpConfig, McpDefinition};
 
 const RECORDING_MOD: &str = "recording";
-
-pub async fn open_test_server() -> Arc<Connection> {
-    open_test_server_inner(McpOptions::default(), &[]).await
-}
-
-pub async fn open_test_server_with(options: McpOptions) -> Arc<Connection> {
-    open_test_server_inner(options, &[]).await
-}
-
-pub async fn open_test_server_with_envs(envs: &[(&str, &str)]) -> Arc<Connection> {
-    open_test_server_inner(McpOptions::default(), envs).await
-}
-
-async fn open_test_server_inner(options: McpOptions, envs: &[(&str, &str)]) -> Arc<Connection> {
-    let command = env!("CARGO_BIN_EXE_mcp_test_server").to_owned();
-    let cwd = temporary_directory();
-    let spec = ServiceSpec {
-        name: "test".to_owned(),
-        description: None,
-        transport: Transport::Stdio(StdioSpec {
-            command,
-            args: Vec::new(),
-            env: env_pairs(envs),
-            cwd,
-        }),
-    };
-    let roots = Roots::new(test_server_directory());
-    let Transport::Stdio(stdio) = &spec.transport else {
-        panic!("the test server must use the stdio transport");
-    };
-    let plan = plan(stdio, &roots).expect("the test server must plan");
-    Connection::open(&spec, &plan, &options)
-        .await
-        .expect("the test server must connect")
-}
 
 pub fn bus() -> Arc<Dispatcher> {
     Arc::new(Dispatcher::new(
@@ -72,51 +30,56 @@ pub fn bus() -> Arc<Dispatcher> {
 }
 
 pub fn options() -> McpOptions {
-    McpOptions::default()
+    McpOptions::new(test_server_directory())
 }
 
-pub fn roots() -> Roots {
-    Roots::new(test_server_directory())
-}
-
-pub fn scope_roots(workspace: &[PathBuf]) -> ScopeRoots {
-    ScopeRoots {
-        workspace: workspace.to_vec(),
-        skills: Vec::new(),
+pub fn definition(name: &str) -> McpDefinition {
+    McpDefinition {
+        name: name.to_owned(),
+        description: None,
+        config: McpConfig::Stdio {
+            command: env!("CARGO_BIN_EXE_mcp_test_server").to_owned(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            cwd: test_server_directory(),
+        },
     }
 }
 
-pub fn spec(name: &str) -> ServiceSpec {
-    service_spec(name, BTreeMap::new())
+pub fn with_env(mut definition: McpDefinition, key: &str, value: &str) -> McpDefinition {
+    let env = match &mut definition.config {
+        McpConfig::Stdio { env, .. } => env,
+        McpConfig::StreamableHttp { .. } => panic!("the test definition must use stdio"),
+    };
+    env.insert(key.to_owned(), value.to_owned());
+    definition
 }
 
-pub fn stderr_spec(name: &str, line: &str) -> ServiceSpec {
-    ServiceSpec {
+pub fn with_envs<'a>(
+    mut definition: McpDefinition,
+    envs: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> McpDefinition {
+    let env = match &mut definition.config {
+        McpConfig::Stdio { env, .. } => env,
+        McpConfig::StreamableHttp { .. } => panic!("the test definition must use stdio"),
+    };
+    for (key, value) in envs {
+        env.insert(key.to_owned(), value.to_owned());
+    }
+    definition
+}
+
+pub fn stderr_definition(name: &str, line: &str) -> McpDefinition {
+    McpDefinition {
         name: name.to_owned(),
         description: None,
-        transport: Transport::Stdio(StdioSpec {
+        config: McpConfig::Stdio {
             command: env!("CARGO_BIN_EXE_mcp_exec_helper").to_owned(),
             args: vec!["stderr".to_owned(), line.to_owned()],
             env: BTreeMap::new(),
             cwd: test_server_directory(),
-        }),
+        },
     }
-}
-
-pub fn spec_with_env(name: &str, key: &str, value: &str) -> ServiceSpec {
-    let mut env = BTreeMap::new();
-    env.insert(key.to_owned(), value.to_owned());
-    service_spec(name, env)
-}
-
-pub fn spec_with_envs(name: &str, envs: &[(&str, &str)]) -> ServiceSpec {
-    service_spec(name, env_pairs(envs))
-}
-
-fn env_pairs(envs: &[(&str, &str)]) -> BTreeMap<String, String> {
-    envs.iter()
-        .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
-        .collect()
 }
 
 pub async fn wait_started(handle: &RegistryHandle, name: &str) {
@@ -128,21 +91,7 @@ pub async fn wait_started(handle: &RegistryHandle, name: &str) {
         }
         assert!(
             started.elapsed() < Duration::from_secs(10),
-            "the service must start"
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-}
-
-pub async fn wait_generation(handle: &RegistryHandle, name: &str, expected: u64) {
-    let started = Instant::now();
-    loop {
-        if handle.entry_generation(name).await == Some(expected) {
-            return;
-        }
-        assert!(
-            started.elapsed() < Duration::from_secs(10),
-            "the entry must reach generation {expected}"
+            "the service {name} must start"
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -151,34 +100,13 @@ pub async fn wait_generation(handle: &RegistryHandle, name: &str, expected: u64)
 pub async fn wait_gone(handle: &RegistryHandle, name: &str) {
     let started = Instant::now();
     loop {
-        if handle.entry_generation(name).await.is_none() {
+        let catalog = handle.list_tools().await;
+        if !catalog.iter().any(|bound| bound.server == name) {
             return;
         }
         assert!(
             started.elapsed() < Duration::from_secs(10),
-            "the entry must be removed"
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-}
-
-pub async fn entry_generation(handle: &RegistryHandle, name: &str) -> u64 {
-    handle
-        .entry_generation(name)
-        .await
-        .expect("the entry must exist")
-}
-
-pub async fn first_tool(handle: &RegistryHandle, server: &str) -> BoundTool {
-    let started = Instant::now();
-    loop {
-        let catalog = handle.list_tools().await;
-        if let Some(bound) = catalog.iter().find(|bound| bound.server == server) {
-            return bound.clone();
-        }
-        assert!(
-            started.elapsed() < Duration::from_secs(10),
-            "the service {server} must expose a tool"
+            "the service {name} must be removed"
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -208,255 +136,27 @@ pub async fn call_tool(tool: &BoundTool, args: Value) -> CallOutcome {
         .execute(
             args,
             CancellationToken::new(),
-            Instant::now() + Duration::from_secs(5),
+            tokio::time::Instant::now() + Duration::from_secs(5),
         )
         .await
 }
 
 pub async fn tool_names(handle: &RegistryHandle) -> Vec<String> {
-    let catalog = handle.list_tools().await;
+    let catalog: Catalog = handle.list_tools().await;
     catalog
         .iter()
         .map(|bound| bound.tool.name.clone())
         .collect()
 }
 
-#[derive(Clone, Default)]
-pub struct ScriptedLauncher {
-    inner: Arc<Scripted>,
-}
-
-#[derive(Default)]
-struct Scripted {
-    waits: Mutex<HashMap<(String, u64), ScriptWait>>,
-    tools: Mutex<HashMap<String, Vec<String>>>,
-    generation_tools: Mutex<HashMap<(String, u64), Vec<String>>>,
-    panics: Mutex<HashSet<(String, u64)>>,
-}
-
-enum ScriptWait {
-    Waiting(oneshot::Sender<McpResult<Started>>),
-    Ready(McpResult<Started>),
-}
-
-impl ScriptedLauncher {
-    pub fn serve_tools(&self, name: &str, tools: &[&str]) {
-        self.inner
-            .tools
-            .lock()
-            .expect("lock the scripted tools")
-            .insert(
-                name.to_owned(),
-                tools.iter().map(|tool| (*tool).to_owned()).collect(),
-            );
-    }
-
-    pub fn serve_tools_for(&self, name: &str, generation: u64, tools: &[&str]) {
-        self.inner
-            .generation_tools
-            .lock()
-            .expect("lock the generation tools")
-            .insert(
-                (name.to_owned(), generation),
-                tools.iter().map(|tool| (*tool).to_owned()).collect(),
-            );
-    }
-
-    pub fn panic_on_start(&self, name: &str, generation: u64) {
-        self.inner
-            .panics
-            .lock()
-            .expect("lock the panicking starts")
-            .insert((name.to_owned(), generation));
-    }
-
-    pub fn complete(&self, name: &str, generation: u64) {
-        let inner = Arc::clone(&self.inner);
-        let name = name.to_owned();
-        tokio::spawn(async move {
-            let started = Started {
-                connection: open_test_server().await,
-                tools: inner.tools_for(&name, generation),
-                server_task: None,
-            };
-            inner.deliver(&name, generation, Ok(started));
-        });
-    }
-
-    pub fn fail(&self, name: &str, generation: u64, message: &str) {
-        self.inner
-            .deliver(name, generation, Err(McpError::Service(message.to_owned())));
-    }
-}
-
-impl Scripted {
-    fn tools_for(&self, name: &str, generation: u64) -> Vec<ToolDescriptor> {
-        let names = self
-            .generation_tools
-            .lock()
-            .expect("lock the generation tools")
-            .get(&(name.to_owned(), generation))
-            .cloned()
-            .or_else(|| {
-                self.tools
-                    .lock()
-                    .expect("lock the scripted tools")
-                    .get(name)
-                    .cloned()
-            })
-            .unwrap_or_else(|| vec!["echo".to_owned()]);
-        descriptors(names)
-    }
-
-    fn tool_descriptors(&self, name: &str) -> Vec<ToolDescriptor> {
-        let names = self
-            .tools
-            .lock()
-            .expect("lock the scripted tools")
-            .get(name)
-            .cloned()
-            .unwrap_or_else(|| vec!["echo".to_owned()]);
-        descriptors(names)
-    }
-
-    fn deliver(&self, name: &str, generation: u64, result: McpResult<Started>) {
-        let key = (name.to_owned(), generation);
-        let mut pending = Some(result);
-        let waiting = {
-            let mut waits = self.waits.lock().expect("lock the scripted waits");
-            match waits.remove(&key) {
-                Some(ScriptWait::Waiting(sender)) => Some(sender),
-                Some(ScriptWait::Ready(previous)) => {
-                    waits.insert(key, ScriptWait::Ready(previous));
-                    None
-                }
-                None => {
-                    waits.insert(
-                        key,
-                        ScriptWait::Ready(
-                            pending.take().expect("the delivered result must be fresh"),
-                        ),
-                    );
-                    None
-                }
-            }
-        };
-        if let Some(sender) = waiting {
-            let result = pending.take().expect("the delivered result must be fresh");
-            if let Err(result) = sender.send(result)
-                && let Ok(started) = result
-            {
-                discard(started);
-            }
-        }
-        if let Some(result) = pending
-            && let Ok(started) = result
-        {
-            discard(started);
-        }
-    }
-}
-
-fn descriptors(names: Vec<String>) -> Vec<ToolDescriptor> {
-    names
-        .into_iter()
-        .map(|name| ToolDescriptor {
-            name,
-            description: None,
-            input_schema: json!({"type": "object"}),
-        })
-        .collect()
-}
-
-impl Launcher for ScriptedLauncher {
-    fn start<'a>(
-        &'a self,
-        request: &'a LaunchRequest,
-        _roots: &'a Roots,
-        _bus: &'a Dispatcher,
-        generation: u64,
-    ) -> BoxFuture<'a, McpResult<Started>> {
-        Box::pin(async move {
-            let key = (request.name(), generation);
-            if self
-                .inner
-                .panics
-                .lock()
-                .expect("lock the panicking starts")
-                .contains(&key)
-            {
-                panic!(
-                    "the scripted launcher panicked for {} generation {generation}",
-                    key.0
-                );
-            }
-            let (sender, receiver) = oneshot::channel();
-            let ready = {
-                let mut waits = self.inner.waits.lock().expect("lock the scripted waits");
-                match waits.remove(&key) {
-                    Some(ScriptWait::Ready(result)) => Some(result),
-                    Some(ScriptWait::Waiting(_)) => {
-                        panic!(
-                            "the scripted launcher started {} generation {generation} twice",
-                            key.0
-                        );
-                    }
-                    None => {
-                        waits.insert(key, ScriptWait::Waiting(sender));
-                        None
-                    }
-                }
-            };
-            match ready {
-                Some(result) => result,
-                None => receiver.await.unwrap_or_else(|_| {
-                    Err(McpError::Service(
-                        "the scripted launch was dropped".to_owned(),
-                    ))
-                }),
-            }
-        })
-    }
-
-    fn list_tools<'a>(
-        &'a self,
-        name: &'a str,
-        _connection: &'a Arc<Connection>,
-    ) -> BoxFuture<'a, McpResult<Vec<ToolDescriptor>>> {
-        Box::pin(async move { Ok(self.inner.tool_descriptors(name)) })
-    }
-}
-
-fn discard(started: Started) {
-    tokio::spawn(async move {
-        started.connection.close().await;
-        if let Some(task) = started.server_task {
-            task.abort();
-        }
-    });
-}
-
-fn service_spec(name: &str, env: BTreeMap<String, String>) -> ServiceSpec {
-    ServiceSpec {
-        name: name.to_owned(),
-        description: None,
-        transport: Transport::Stdio(StdioSpec {
-            command: env!("CARGO_BIN_EXE_mcp_test_server").to_owned(),
-            args: Vec::new(),
-            env,
-            cwd: test_server_directory(),
-        }),
-    }
-}
-
-fn test_server_directory() -> PathBuf {
+pub fn test_server_directory() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_mcp_test_server"))
         .parent()
         .expect("the test server binary must have a parent")
         .to_path_buf()
 }
 
-fn temporary_directory() -> PathBuf {
+pub fn temporary_directory() -> PathBuf {
     static DIRECTORIES: OnceLock<Mutex<Vec<TempDir>>> = OnceLock::new();
     let directory = TempDir::new().expect("create a temporary directory");
     let path = directory.path().to_path_buf();

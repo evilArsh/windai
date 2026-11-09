@@ -4,8 +4,6 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::result::Result as StdResult;
 
-use crate::roots::{Roots, ScopeId};
-
 /// 能力层错误码
 #[derive(thiserror::Error, Debug, strum::AsRefStr)]
 #[strum(serialize_all = "SCREAMING_SNAKE_CASE")]
@@ -48,29 +46,26 @@ const MAX_SYMLINK_DEPTH: u16 = 40;
 
 #[derive(Clone)]
 pub struct Sandbox {
-    roots: Roots,
-    scope: ScopeId,
+    snapshot: Snapshot,
 }
 
 impl Sandbox {
-    pub fn new(roots: Roots, scope: ScopeId) -> Self {
-        Self { roots, scope }
+    pub fn new(roots: Vec<PathBuf>) -> Self {
+        Self {
+            snapshot: Snapshot::new(roots),
+        }
     }
 
     pub fn snapshot(&self) -> Result<Snapshot> {
-        let Some(scope) = self.roots.scope(&self.scope) else {
-            return Err(not_configured());
-        };
-        let snapshot = Snapshot::new(scope.workspace);
-        if snapshot.roots.is_empty() {
+        if self.snapshot.roots.is_empty() {
             return Err(not_configured());
         }
-        Ok(snapshot)
+        Ok(self.snapshot.clone())
     }
 }
 
 fn not_configured() -> FsError {
-    FsError::NotAllowed("no workspace roots are configured for the scope".to_owned())
+    FsError::NotAllowed("no workspace roots are configured".to_owned())
 }
 
 /// 一次工具调用使用的根集合，构造时已 canonicalize
@@ -181,22 +176,10 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{FsError, Sandbox};
-    use crate::roots::{Roots, ScopeId, ScopeRoots};
 
     #[test]
     fn empty_workspace_roots_are_rejected() {
-        let tmp = TempDir::new().expect("create a temp dir");
-        let roots = Roots::new(tmp.path().join("mods"));
-        let scope = ScopeId::new("topic:1");
-        roots.set_scope(
-            &scope,
-            ScopeRoots {
-                workspace: vec![PathBuf::new()],
-                skills: Vec::new(),
-            },
-        );
-
-        let error = Sandbox::new(roots, scope)
+        let error = Sandbox::new(vec![PathBuf::new()])
             .snapshot()
             .expect_err("an empty workspace root must be rejected");
         assert!(
@@ -214,17 +197,8 @@ mod tests {
         let tmp = TempDir::new().expect("create a temp dir");
         let workspace = tmp.path().join("ws");
         std::fs::create_dir_all(&workspace).expect("create the workspace");
-        let roots = Roots::new(tmp.path().join("mods"));
-        let scope = ScopeId::new("topic:1");
-        roots.set_scope(
-            &scope,
-            ScopeRoots {
-                workspace: vec![PathBuf::new(), workspace.clone()],
-                skills: Vec::new(),
-            },
-        );
 
-        let snapshot = Sandbox::new(roots, scope)
+        let snapshot = Sandbox::new(vec![PathBuf::new(), workspace.clone()])
             .snapshot()
             .expect("the valid root must survive filtering");
         let expected = std::fs::canonicalize(&workspace).expect("canonicalize the workspace");

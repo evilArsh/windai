@@ -1,22 +1,19 @@
-use std::path::PathBuf;
-
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
+use rmcp::model::{Implementation, ServerCapabilities, ServerConfig};
 use rmcp::{ErrorData, ServerHandler, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
-
-use crate::roots::{Roots, ScopeId};
+use std::path::PathBuf;
 
 mod ops;
 mod sandbox;
-
-pub use sandbox::FsError;
 
 use ops::{
     ExecResult, ListDirResult, ReadFileResult, WriteFileResult, exec, list_dir, read_file,
     write_file,
 };
+pub use sandbox::FsError;
 use sandbox::Sandbox;
 
 impl From<FsError> for ErrorData {
@@ -68,16 +65,19 @@ pub struct ExecRequest {
     pub timeout: u64,
 }
 
-/// wind-fs MCP 服务：文件/进程能力
+/// 文件与进程能力服务
 pub struct FsServer {
+    name: String,
     sandbox: Sandbox,
     tool_router: ToolRouter<Self>,
 }
 
 impl FsServer {
-    pub fn new(roots: Roots, scope: ScopeId) -> Self {
+    /// `workspace` 是允许访问的根目录，空目录会被忽略
+    pub fn new(name: impl Into<String>, workspace: Vec<PathBuf>) -> Self {
         Self {
-            sandbox: Sandbox::new(roots, scope),
+            name: name.into(),
+            sandbox: Sandbox::new(workspace),
             tool_router: Self::tool_router(),
         }
     }
@@ -193,4 +193,11 @@ impl FsServer {
 }
 
 #[tool_handler(router = self.tool_router)]
-impl ServerHandler for FsServer {}
+impl ServerHandler for FsServer {
+    fn get_info(&self) -> ServerConfig {
+        let mut server_info = Implementation::new(self.name.clone(), env!("CARGO_PKG_VERSION"));
+        server_info.description = Some("file and process capability".to_owned());
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(server_info)
+    }
+}

@@ -1,35 +1,20 @@
-use std::sync::Arc;
-
-use rmcp::{ServerHandler, ServiceExt};
-use tokio::task::JoinHandle;
-
-use crate::connector::Connection;
-use crate::error::Result;
-use crate::options::McpOptions;
-use crate::registry::BuiltinKind;
-use crate::roots::{Roots, ScopeId};
+//! 内建 MCP 服务
 
 pub mod fs;
 pub mod skills;
 
-/// duplex 通道的缓冲字节数
+use super::connector::Connection;
+use super::error::Result;
+use super::options::McpOptions;
+use rmcp::{ServerHandler, ServiceExt};
+use std::sync::Arc;
+use tokio::task::JoinHandle;
+
+/// 进程内通信缓冲区字节数
 const DUPLEX_BYTES: usize = 64 * 1024;
 
-pub async fn connect_builtin(
-    kind: BuiltinKind,
-    scope: ScopeId,
-    roots: Roots,
-    options: &McpOptions,
-) -> Result<(Arc<Connection>, JoinHandle<()>)> {
-    match kind {
-        BuiltinKind::Fs => serve_builtin(fs::FsServer::new(roots, scope), options).await,
-        BuiltinKind::Skills => {
-            serve_builtin(skills::SkillsServer::new(roots, scope), options).await
-        }
-    }
-}
-
-async fn serve_builtin<S>(
+/// 在进程内启动服务端并完成客户端握手
+pub(crate) async fn connect<S>(
     server: S,
     options: &McpOptions,
 ) -> Result<(Arc<Connection>, JoinHandle<()>)>
@@ -37,16 +22,16 @@ where
     S: ServerHandler,
 {
     let (client, server_io) = tokio::io::duplex(DUPLEX_BYTES);
-    let (client_read, client_write) = tokio::io::split(client);
+    let (reader, writer) = tokio::io::split(client);
     let task = tokio::spawn(async move {
         match server.serve(server_io).await {
             Ok(service) => {
                 let _ = service.waiting().await;
             }
-            Err(error) => log::warn!("[mcp] the builtin server failed: {error}"),
+            Err(error) => log::warn!("the builtin mcp server failed: {error}"),
         }
     });
-    match Connection::attach(client_read, client_write, options).await {
+    match Connection::attach(reader, writer, options).await {
         Ok(connection) => Ok((connection, task)),
         Err(error) => {
             task.abort();

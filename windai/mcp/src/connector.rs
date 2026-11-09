@@ -1,10 +1,6 @@
-use std::process::Stdio;
-use std::sync::Arc;
-#[cfg(unix)]
-use std::sync::atomic::AtomicU32;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::time::Instant;
-
+use crate::error::{McpError, Result};
+use crate::options::McpOptions;
+use crate::runner::LaunchPlan;
 use process_wrap::tokio::CommandWrap;
 #[cfg(unix)]
 use process_wrap::tokio::ProcessGroup;
@@ -14,20 +10,26 @@ use rmcp::transport::streamable_http_client::StreamableHttpClientTransport;
 use rmcp::transport::{IntoTransport, TokioChildProcess};
 use rmcp::{RoleClient, ServiceExt};
 use serde_json::Value;
+use std::collections::BTreeMap;
+use std::process::Stdio;
+use std::sync::Arc;
+#[cfg(unix)]
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
 use tokio::process::{ChildStderr, Command};
 use tokio::sync::{Mutex, Notify};
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-
-use crate::error::{McpError, Result};
-use crate::options::{LogSink, McpOptions};
-use crate::runner::LaunchPlan;
-use crate::spec::{ServiceSpec, StdioSpec, Transport};
+use wind_wire::mcp::{McpConfig, McpDefinition};
 
 type Client = RunningService<RoleClient, Box<dyn DynService<RoleClient>>>;
 
 /// stderr 单行保留的字节数
 const STDERR_LINE_LIMIT: usize = 64 * 1024;
+
+/// 接收服务端 stderr 的一行
+pub(crate) type LogSink = Arc<dyn Fn(&str) + Send + Sync>;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolDescriptor {
@@ -78,13 +80,14 @@ impl Drop for Inflight<'_> {
 
 impl Connection {
     pub async fn open(
-        spec: &ServiceSpec,
+        definition: &McpDefinition,
         plan: &LaunchPlan,
         options: &McpOptions,
+        log: Option<LogSink>,
     ) -> Result<Arc<Connection>> {
-        match &spec.transport {
-            Transport::Stdio(stdio) => {
-                let command = command(plan, stdio);
+        match &definition.config {
+            McpConfig::Stdio { env, .. } => {
+                let command = command(plan, env);
                 let (transport, stderr) = TokioChildProcess::builder(command)
                     .stderr(Stdio::piped())
                     .spawn()
@@ -92,7 +95,7 @@ impl Connection {
                 #[cfg(unix)]
                 let pgid = transport.id();
                 if let Some(stderr) = stderr {
-                    drain_stderr(stderr, options.log.clone());
+                    drain_stderr(stderr, log);
                 }
                 let connection = handshake(transport, options).await?;
                 #[cfg(unix)]
@@ -101,7 +104,7 @@ impl Connection {
                 }
                 Ok(connection)
             }
-            Transport::Streamable { url } => {
+            McpConfig::StreamableHttp { url } => {
                 let transport = StreamableHttpClientTransport::from_uri(url.as_str());
                 handshake(transport, options).await
             }
@@ -267,14 +270,14 @@ fn lifecycle() -> ClientLifecycleMode {
     }
 }
 
-fn command(plan: &LaunchPlan, stdio: &StdioSpec) -> CommandWrap {
+fn command(plan: &LaunchPlan, env: &BTreeMap<String, String>) -> CommandWrap {
     let mut command = Command::new(&plan.program);
     command
         .args(&plan.args)
-        .current_dir(&stdio.cwd)
+        .current_dir(&plan.cwd)
         .env_clear()
         .kill_on_drop(true);
-    for (key, value) in &stdio.env {
+    for (key, value) in env {
         command.env(key, value);
     }
     #[cfg(unix)]
@@ -351,8 +354,7 @@ mod tests {
     use serde_json::json;
     use tokio::io::AsyncWriteExt;
 
-    use super::{STDERR_LINE_LIMIT, ToolDescriptor, drain_reader};
-    use crate::options::LogSink;
+    use super::{LogSink, STDERR_LINE_LIMIT, ToolDescriptor, drain_reader};
 
     #[test]
     fn tool_descriptor_keeps_the_schema() {

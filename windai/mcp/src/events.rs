@@ -1,74 +1,80 @@
-use std::time::Duration;
-
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use strum::AsRefStr;
-use wind_event::{
-    DispatchCx, Origin, Scope, Source,
-    def::{Directory, EventDef, Shape},
-    schema,
-};
+use wind_event::def::{Directory, EventDef, Shape, schema};
+use wind_event::{DispatchCx, Origin, Scope, Source};
+use wind_wire::mcp::McpDefinition;
 
-use crate::spec::ServiceSpec;
-
-/// 单条 observe 事件的派发预算
+/// 观察类事件的总预算
 pub const DEFAULT_BUDGET: Duration = Duration::from_secs(10);
-
-/// 单条 intercept 事件的派发预算
+/// 改写类事件的预算
 pub const INTERCEPT_BUDGET: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, AsRefStr)]
 #[strum(serialize_all = "snake_case")]
 pub enum StopReason {
+    /// 最后一个引用被释放
     Released,
+    /// 注册表关闭
     Shutdown,
+    /// 同名服务的定义被替换
     Replaced,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+/// 服务即将启动，载荷可被改写
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct McpLaunch {
     pub name: String,
+    /// 当前持有该服务的引用
     pub refs: Vec<String>,
-    pub spec: ServiceSpec,
+    pub definition: McpDefinition,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+/// 同名服务的定义被替换，载荷可被改写
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct McpReplaced {
     pub name: String,
     pub refs: Vec<String>,
-    pub old: ServiceSpec,
-    pub new: ServiceSpec,
+    pub old: McpDefinition,
+    pub new: McpDefinition,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+/// 服务已进入启动流程
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct McpStarting {
     pub name: String,
     pub refs: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+/// 服务已启动并可调用
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct McpStarted {
     pub name: String,
     pub refs: Vec<String>,
     pub tools: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+/// 服务启动失败
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct McpFailed {
     pub name: String,
     pub refs: Vec<String>,
     pub error: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+/// 服务已停止
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct McpStopped {
     pub name: String,
     pub refs: Vec<String>,
     pub reason: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+/// 服务输出了一行日志
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct McpLog {
     pub name: String,
+    /// 输出流，目前只有 stderr
     pub stream: String,
     pub line: String,
 }
@@ -79,38 +85,32 @@ pub const CORE_MCP_LAUNCH: EventDef<McpLaunch> = EventDef::new(
     true,
     schema::<McpLaunch>,
 );
-
 pub const CORE_MCP_REPLACED: EventDef<McpReplaced> = EventDef::new(
     "core/mcp.replaced",
     Shape::Intercept,
     true,
     schema::<McpReplaced>,
 );
-
 pub const CORE_MCP_STARTING: EventDef<McpStarting> = EventDef::new(
     "core/mcp.starting",
     Shape::Observe,
     true,
     schema::<McpStarting>,
 );
-
 pub const CORE_MCP_STARTED: EventDef<McpStarted> = EventDef::new(
     "core/mcp.started",
     Shape::Observe,
     true,
     schema::<McpStarted>,
 );
-
 pub const CORE_MCP_FAILED: EventDef<McpFailed> =
     EventDef::new("core/mcp.failed", Shape::Observe, true, schema::<McpFailed>);
-
 pub const CORE_MCP_STOPPED: EventDef<McpStopped> = EventDef::new(
     "core/mcp.stopped",
     Shape::Observe,
     true,
     schema::<McpStopped>,
 );
-
 pub const CORE_MCP_LOG: EventDef<McpLog> =
     EventDef::new("core/mcp.log", Shape::Observe, true, schema::<McpLog>);
 

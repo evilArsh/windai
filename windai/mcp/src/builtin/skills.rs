@@ -1,17 +1,22 @@
-use std::fs;
-use std::path::PathBuf;
-
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
+use rmcp::model::{Implementation, ServerCapabilities, ServerConfig};
 use rmcp::{ErrorData, ServerHandler, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
-
-use crate::roots::{Roots, ScopeId, SkillRoot};
+use std::fs;
+use std::path::PathBuf;
 
 mod scan;
 
 pub use scan::{SkillError, SkillsListResult, SkillsMeta};
+
+/// 一个技能根及其来源名
+#[derive(Clone, Debug)]
+pub struct SkillRoot {
+    pub source: String,
+    pub path: PathBuf,
+}
 
 /// 列举技能的请求
 #[derive(Deserialize, JsonSchema)]
@@ -26,44 +31,38 @@ pub struct SkillsListRequest {
 
 /// 技能目录工具
 pub struct SkillsServer {
-    roots: Roots,
-    scope: ScopeId,
+    name: String,
+    roots: Vec<SkillRoot>,
     tool_router: ToolRouter<Self>,
 }
 
 impl SkillsServer {
-    pub fn new(roots: Roots, scope: ScopeId) -> Self {
+    /// 空路径的技能根会被忽略
+    pub fn new(name: impl Into<String>, roots: Vec<SkillRoot>) -> Self {
         Self {
+            name: name.into(),
             roots,
-            scope,
             tool_router: Self::tool_router(),
         }
     }
 
     fn skill_roots(&self) -> Result<Vec<SkillRoot>, ErrorData> {
-        let Some(scope) = self.roots.scope(&self.scope) else {
-            return Err(self.not_configured());
-        };
-        let roots: Vec<SkillRoot> = scope
-            .skills
-            .into_iter()
+        let roots: Vec<SkillRoot> = self
+            .roots
+            .iter()
             .filter(|root| !root.path.as_os_str().is_empty())
             .map(|root| SkillRoot {
-                source: root.source,
-                path: fs::canonicalize(&root.path).unwrap_or(root.path),
+                source: root.source.clone(),
+                path: fs::canonicalize(&root.path).unwrap_or_else(|_| root.path.clone()),
             })
             .collect();
         if roots.is_empty() {
-            return Err(self.not_configured());
+            return Err(ErrorData::internal_error(
+                "no skill roots are configured".to_owned(),
+                None,
+            ));
         }
         Ok(roots)
-    }
-
-    fn not_configured(&self) -> ErrorData {
-        ErrorData::internal_error(
-            format!("no skill roots are configured for the scope {}", self.scope),
-            None,
-        )
     }
 }
 
@@ -103,7 +102,14 @@ impl SkillsServer {
 }
 
 #[tool_handler(router = self.tool_router)]
-impl ServerHandler for SkillsServer {}
+impl ServerHandler for SkillsServer {
+    fn get_info(&self) -> ServerConfig {
+        let mut server_info = Implementation::new(self.name.clone(), env!("CARGO_PKG_VERSION"));
+        server_info.description = Some("skill discovery capability".to_owned());
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(server_info)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -111,32 +117,26 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::SkillsServer;
-    use crate::roots::{Roots, ScopeId, ScopeRoots, SkillRoot};
+    use super::{SkillRoot, SkillsServer};
 
     #[test]
     fn empty_skill_roots_are_filtered_from_the_snapshot() {
         let tmp = TempDir::new().expect("create a temp dir");
-        let roots = Roots::new(tmp.path().join("mods"));
-        let scope = ScopeId::new("topic:1");
-        roots.set_scope(
-            &scope,
-            ScopeRoots {
-                workspace: Vec::new(),
-                skills: vec![
-                    SkillRoot {
-                        source: "empty".to_owned(),
-                        path: PathBuf::new(),
-                    },
-                    SkillRoot {
-                        source: "valid".to_owned(),
-                        path: tmp.path().to_path_buf(),
-                    },
-                ],
-            },
+        let server = SkillsServer::new(
+            "wind-mcp-skills",
+            vec![
+                SkillRoot {
+                    source: "empty".to_owned(),
+                    path: PathBuf::new(),
+                },
+                SkillRoot {
+                    source: "valid".to_owned(),
+                    path: tmp.path().to_path_buf(),
+                },
+            ],
         );
 
-        let snapshot = SkillsServer::new(roots, scope)
+        let snapshot = server
             .skill_roots()
             .expect("the valid skill root must survive");
         assert_eq!(
@@ -149,21 +149,15 @@ mod tests {
 
     #[test]
     fn an_all_empty_skill_scope_fails_the_snapshot() {
-        let tmp = TempDir::new().expect("create a temp dir");
-        let roots = Roots::new(tmp.path().join("mods"));
-        let scope = ScopeId::new("topic:1");
-        roots.set_scope(
-            &scope,
-            ScopeRoots {
-                workspace: Vec::new(),
-                skills: vec![SkillRoot {
-                    source: "empty".to_owned(),
-                    path: PathBuf::new(),
-                }],
-            },
+        let server = SkillsServer::new(
+            "wind-mcp-skills",
+            vec![SkillRoot {
+                source: "empty".to_owned(),
+                path: PathBuf::new(),
+            }],
         );
 
-        let error = SkillsServer::new(roots, scope)
+        let error = server
             .skill_roots()
             .expect_err("an empty skill root must be rejected");
         assert!(

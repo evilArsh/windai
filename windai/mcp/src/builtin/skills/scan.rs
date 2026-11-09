@@ -8,7 +8,7 @@ use yaml_rust2::Yaml;
 use yaml_rust2::YamlLoader;
 use yaml_rust2::yaml::Hash;
 
-use crate::roots::SkillRoot;
+use super::SkillRoot;
 
 pub const SKILL_NAME: &str = "SKILL.md";
 /// 技能名的字符上限
@@ -261,7 +261,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::scan;
-    use crate::roots::SkillRoot;
+    use crate::builtin::skills::SkillRoot;
 
     fn skill_root(source: &str, path: &Path) -> SkillRoot {
         SkillRoot {
