@@ -182,6 +182,28 @@ async fn release_stops_a_running_service() {
 }
 
 #[tokio::test]
+async fn acquire_after_release_restarts_the_service() {
+    let handle = init(options(), bus());
+    handle.acquire("r1".to_owned(), server_definition("demo"));
+    wait_started(&handle, "demo").await;
+    handle.release("r1".to_owned());
+    handle.acquire("r2".to_owned(), server_definition("demo"));
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if !handle.list_tools_by_ref("r2").await.is_empty() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "a re-acquire during the stop must restart the service"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn launch_can_be_rewritten_before_connecting() {
     let bus = RecordingBus::new();
     bus.rewrite("core/mcp.launch", |mut payload| {

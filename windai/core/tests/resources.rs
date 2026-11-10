@@ -343,7 +343,7 @@ async fn disable_removes_the_tools() {
     fixture.services.shutdown().await.expect("shutdown");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_first_declarations_publish_once() {
     let fixture = Fixture::new().await;
     let topic_id = fixture.topic().await;
@@ -373,14 +373,20 @@ async fn concurrent_first_declarations_publish_once() {
         .await
         .expect("enable");
 
-    let listings: Vec<_> = (0..10)
-        .map(|_| {
-            let services = fixture.services.clone();
-            async move { LlmMcpService::declarations(&services, &cx(), topic_id).await }
-        })
-        .collect();
-    for result in futures::future::join_all(listings).await {
-        result.expect("the concurrent declarations must succeed");
+    let barrier = Arc::new(tokio::sync::Barrier::new(10));
+    let mut listings = tokio::task::JoinSet::new();
+    for _ in 0..10 {
+        let services = fixture.services.clone();
+        let barrier = barrier.clone();
+        listings.spawn(async move {
+            barrier.wait().await;
+            LlmMcpService::declarations(&services, &cx(), topic_id).await
+        });
+    }
+    while let Some(result) = listings.join_next().await {
+        result
+            .expect("the declaration task must not panic")
+            .expect("the concurrent declarations must succeed");
     }
     wait_tools(&fixture.services, topic_id, |tools| {
         tools.iter().any(|tool| is_from(tool, "mod_demo_tools"))
@@ -389,6 +395,22 @@ async fn concurrent_first_declarations_publish_once() {
 
     let log = fs::read_to_string(&start_log).expect("the start log must exist");
     assert_eq!(log.lines().count(), 1, "the server must start once: {log}");
+    assert!(
+        !fixture
+            .registry
+            .list_tools_by_ref(&format!("topic_{topic_id}@1"))
+            .await
+            .is_empty(),
+        "the first generation must hold the tools"
+    );
+    assert!(
+        fixture
+            .registry
+            .list_tools_by_ref(&format!("topic_{topic_id}@2"))
+            .await
+            .is_empty(),
+        "the topic must publish exactly once"
+    );
 
     fixture.services.shutdown().await.expect("shutdown");
 }
@@ -981,4 +1003,152 @@ async fn release_topic_and_shutdown_close_runtime_state() {
         .await
         .expect_err("a closed adapter must reject management");
     assert!(matches!(error, CoreError::ResourcesClosed), "{error}");
+}
+
+#[tokio::test]
+async fn release_topic_then_declare_republishes_the_tools() {
+    let fixture = Fixture::new().await;
+    let topic_id = fixture.topic().await;
+    let package = write_mod(
+        &fixture.dirs,
+        "demo",
+        1,
+        fixture.manifest("demo", 1, json!({"WIND_TEST_MARK": "demo"})),
+        &[],
+    );
+    fixture
+        .services
+        .install(&cx(), &package)
+        .await
+        .expect("install");
+    fixture
+        .services
+        .enable(&cx(), topic_id, "demo")
+        .await
+        .expect("enable");
+    wait_tools(&fixture.services, topic_id, |tools| {
+        tools.iter().any(|tool| is_from(tool, "mod_demo_tools"))
+    })
+    .await;
+
+    fixture
+        .services
+        .release_topic(topic_id)
+        .await
+        .expect("release");
+    wait_empty(&fixture.registry, &format!("topic_{topic_id}@1")).await;
+
+    let tools = wait_tools(&fixture.services, topic_id, |tools| {
+        tools.iter().any(|tool| is_from(tool, "mod_demo_tools"))
+    })
+    .await;
+    let context = target(find_tool(&tools, "mod_demo_tools", "context")).clone();
+    let value = call_tool(&fixture.services, &context, json!({}))
+        .await
+        .expect("a redeclared topic must answer again");
+    assert_eq!(structured(&value)["mark"], json!("demo"));
+
+    fixture.services.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn shutdown_closes_declarations_without_a_release() {
+    let fixture = Fixture::new().await;
+    let topic_id = fixture.topic().await;
+    let package = write_mod(
+        &fixture.dirs,
+        "demo",
+        1,
+        fixture.manifest("demo", 1, json!({"WIND_TEST_MARK": "demo"})),
+        &[],
+    );
+    fixture
+        .services
+        .install(&cx(), &package)
+        .await
+        .expect("install");
+    fixture
+        .services
+        .enable(&cx(), topic_id, "demo")
+        .await
+        .expect("enable");
+    wait_tools(&fixture.services, topic_id, |tools| {
+        tools.iter().any(|tool| is_from(tool, "mod_demo_tools"))
+    })
+    .await;
+
+    fixture.services.shutdown().await.expect("shutdown");
+    let error = LlmMcpService::declarations(&fixture.services, &cx(), topic_id)
+        .await
+        .expect_err("a closed adapter must reject listings");
+    assert!(matches!(error, CoreError::ResourcesClosed), "{error}");
+}
+
+#[tokio::test]
+async fn a_failed_topic_does_not_block_other_topics() {
+    let fixture = Fixture::new().await;
+    let failed_topic = fixture.topic().await;
+    let healthy_topic = fixture.topic().await;
+    let alpha = write_mod(
+        &fixture.dirs,
+        "alpha",
+        1,
+        fixture.manifest("alpha", 1, json!({"WIND_TEST_MARK": "alpha"})),
+        &[],
+    );
+    let beta_v1 = write_mod(
+        &fixture.dirs,
+        "beta",
+        1,
+        fixture.manifest("beta", 1, json!({"WIND_TEST_MARK": "beta-v1"})),
+        &[],
+    );
+    let beta_v2 = write_mod(
+        &fixture.dirs,
+        "beta",
+        2,
+        fixture.manifest("beta", 2, json!({"WIND_TEST_MARK": "beta-v2"})),
+        &[],
+    );
+    for package in [&alpha, &beta_v1] {
+        fixture
+            .services
+            .install(&cx(), package)
+            .await
+            .expect("install");
+    }
+    fixture
+        .services
+        .enable(&cx(), failed_topic, "alpha")
+        .await
+        .expect("enable alpha");
+    fixture
+        .services
+        .enable(&cx(), failed_topic, "beta")
+        .await
+        .expect("enable beta");
+    fixture
+        .services
+        .enable(&cx(), healthy_topic, "beta")
+        .await
+        .expect("enable beta");
+
+    let tools = wait_tools(&fixture.services, healthy_topic, |tools| {
+        tools.iter().any(|tool| is_from(tool, "mod_beta_tools"))
+    })
+    .await;
+    let beta_context = target(find_tool(&tools, "mod_beta_tools", "context")).clone();
+    wait_mark(&fixture.services, &beta_context, "beta-v1").await;
+
+    fs::remove_dir_all(fixture.dirs.mod_version("alpha", 1))
+        .expect("the alpha version directory must be removable");
+
+    let result = fixture.services.update(&cx(), &beta_v2).await;
+    assert!(
+        result.is_err(),
+        "the failed topic must be reported: {result:?}"
+    );
+    wait_mark(&fixture.services, &beta_context, "beta-v2").await;
+
+    fixture.services.shutdown().await.expect("shutdown");
 }

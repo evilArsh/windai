@@ -222,12 +222,19 @@ impl ResourceServices {
             .into_iter()
             .filter(|topic_id| seen.insert(*topic_id))
             .collect();
+        let mut first_error = None;
         for &topic_id in &affected_topics {
             let _gate = self.gate.lock().await;
             self.ensure_open()?;
-            self.publish(topic_id).await?;
+            if let Err(error) = self.publish(topic_id).await {
+                log::warn!("the topic {topic_id} cannot be republished: {error}");
+                first_error.get_or_insert(error);
+            }
         }
-        Ok(ApplyReport { affected_topics })
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(ApplyReport { affected_topics }),
+        }
     }
 
     /// 首次声明时按需发布；同一个话题只发布一次
@@ -378,6 +385,7 @@ impl ModService for ResourceServices {
 #[async_trait::async_trait]
 impl LlmMcpService for ResourceServices {
     async fn declarations(&self, _cx: &DispatchCx, topic_id: i64) -> Result<Vec<DeclaredTool>> {
+        self.ensure_open()?;
         self.ensure_topic(topic_id).await?;
         let refs = {
             let topics = self.lock_topics();

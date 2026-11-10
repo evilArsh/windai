@@ -417,7 +417,6 @@ impl Registry {
             }
             State::Running if same => {}
             State::Starting(_) if same => {}
-            State::Stopping(_) if same => {}
             State::Running => {
                 let previous = external_of(&entry.definition);
                 let connection = entry.connection.take();
