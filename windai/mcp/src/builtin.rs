@@ -3,9 +3,10 @@
 pub mod fs;
 pub mod skills;
 
+use crate::McpOptions;
+
 use super::connector::Connection;
 use super::error::Result;
-use super::options::McpOptions;
 use rmcp::{ServerHandler, ServiceExt};
 use std::sync::Arc;
 use tokio::task::JoinHandle;

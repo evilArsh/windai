@@ -6,7 +6,7 @@ use super::events::{
     CORE_MCP_STARTING, CORE_MCP_STOPPED, McpFailed, McpLaunch, McpLog, McpReplaced, McpStarted,
     McpStarting, McpStopped, StopReason,
 };
-use super::options::McpOptions;
+use crate::McpOptions;
 use super::runner::{self, LaunchPlan};
 use rmcp::ServerHandler;
 use serde_json::Value;
@@ -294,16 +294,16 @@ impl Registry {
         }
     }
 
-    fn handle(&mut self, command: Command, bus: &Dispatcher) -> Vec<Effect> {
+    fn handle(&mut self, command: Command, bus: &Dispatcher) -> Option<Vec<Effect>> {
         match command {
             Command::ListTools { reply } => {
                 self.flush_catalog();
                 let _ = reply.send(self.catalog.clone());
-                Vec::new()
+                None
             }
             Command::ListToolsByRef { ref_id, reply } => {
                 let _ = reply.send(self.running_tools(Some(&ref_id)));
-                Vec::new()
+                None
             }
             Command::Lookup { server, reply } => {
                 let connection = self
@@ -312,11 +312,11 @@ impl Registry {
                     .filter(|entry| matches!(entry.state, State::Running))
                     .and_then(|entry| entry.connection.as_ref().map(Arc::clone));
                 let _ = reply.send(connection);
-                Vec::new()
+                None
             }
             Command::EffectDone => {
                 self.outstanding = self.outstanding.saturating_sub(1);
-                Vec::new()
+                None
             }
             command => {
                 self.dirty = true;
@@ -356,7 +356,7 @@ impl Registry {
                     | Command::Lookup { .. }
                     | Command::EffectDone => {}
                 }
-                effects
+                Some(effects)
             }
         }
     }
@@ -821,16 +821,17 @@ async fn run(
     drop(sender);
     let mut registry = Registry::new();
     while let Some(command) = receiver.recv().await {
-        let effects = registry.handle(command, &bus);
-        registry.outstanding += effects.len();
-        for effect in effects {
-            dispatch(
-                effect,
-                weak.clone(),
-                Arc::clone(&bus),
-                options.clone(),
-                Arc::clone(&registry.locks),
-            );
+        if let Some(effects) = registry.handle(command, &bus) {
+            registry.outstanding += effects.len();
+            for effect in effects {
+                dispatch(
+                    effect,
+                    weak.clone(),
+                    Arc::clone(&bus),
+                    options.clone(),
+                    Arc::clone(&registry.locks),
+                );
+            }
         }
         registry.finish_shutdown();
     }

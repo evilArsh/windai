@@ -37,7 +37,7 @@ pub struct ResourceServices {
     resources: Resources,
     storage: Storage,
     registry: RegistryHandle,
-    /// 历史 NULL workspace 的兜底根
+    /// 默认 topic 根
     topics_root: PathBuf,
     gate: Arc<AsyncMutex<()>>,
     topics: Arc<Mutex<HashMap<i64, TopicRefs>>>,

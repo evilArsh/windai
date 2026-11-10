@@ -1,5 +1,5 @@
 use crate::error::{McpError, Result};
-use crate::options::McpOptions;
+use crate::McpOptions;
 use crate::runner::LaunchPlan;
 use process_wrap::tokio::CommandWrap;
 #[cfg(unix)]
