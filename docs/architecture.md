@@ -1,267 +1,253 @@
-# 架构骨架
+# 架构
 
-目标：单实例、一个话题一个会话、除数据库写之外全部并发、多个浏览器看同一话题时一致。
-本文给骨架：crate、任务、职责、规则、重构顺序。事件与日志的字段合同见 `docs/event-identity.md`，调用关系见 `docs/event-flow.md`。
+windai 是一个单进程的 agent harness 库。宿主应用装配本仓库的 crate，按话题驱动 agent 实例；
+模型调用、工具执行、mod 生命周期与事件投递都在同一进程内完成。
 
-## 约束
+本文给出 crate 划分、进程内拓扑、事件与数据库两条写入通路，以及宿主必须接上的位置。
+事件的身份、派发与投递细节见「事件」；数据库表与写入路径见「存储」；agent 状态机见
+「Agent 树」；模型回合见「LLM 回合」；mod 打包与生命周期见「Mod」；MCP 连接与内建服务见
+「MCP」。
+
+## 范围
 
 - 单进程，不做多实例，不做跨进程广播。
-- 同一话题同时只有一个会话在改状态；多个浏览器只读。
-- 数据库写串行（SQLite 单写者），其余并发。
-- 崩溃后不丢已广播的事件号，号不复用。
+- 宿主按话题建立一个 `Agent<LlmDomain>` 事件循环。同一话题内的树状态变更由该循环串行归约；
+  不同话题的 `Agent` 互不阻塞。
+- 数据库为 SQLite，连接池最多五个连接，写事务一律 `BEGIN IMMEDIATE`，因此写事务串行；
+  读事务走 WAL（write-ahead log）快照，不阻塞写。
+- 事件身份由 `(epoch, seq)` 组成。`epoch` 每次 `feed::open` 从数据库领取，`seq` 由本次
+  feed 在内存中分配。事件的位置不是 `event_log.id`。
+- 流式块内容只在内存中累加。助手消息的块行在消息完成时一次写入；用户消息与工具结果的块行在消息创建时写入。写入数据库的块与流式增量不是同一份数据。
+- HTTP/SSE、WebSocket 与前端底座不在本仓库内。宿主通过 `FeedHandle::subscribe` 取得实时流，
+  自行提供端点；数据库中的领域表与 `event_log` 由宿主自行查询。
+- `wind-scripts` 是唯一尚未实现的 crate。它要提供 `wind_mod::Compiler` 与
+  `wind_event::ModCaller` 的实现；当前仓库以 `None` 编译器运行，只接受不声明脚本的资源型 mod。
 
 ## crate 与依赖
 
-| crate | 依赖 | 职责 |
+| crate | 依赖的内部 crate | 职责 |
 | --- | --- | --- |
-| `wind-wire` | — | 线格式：`Message`、`Content`、`Role`、工具声明 |
-| `wind-stream` | wire | `Block`、`BlockKind`、事件载荷、块累加器 |
-| `wind-event` | — | 信封、事件目录、派发、订阅索引、预算、`EventOutlet` 与 `Observer` 契约 |
-| `wind-storage` | event, wire, ai | schema、SQL、行模型 |
-| `wind-feed` | event, stream, storage, wire | 写入者、订阅者表、帧、历史、快照、补值 |
-| `wind-ai` | wire | provider 配置、适配器、SSE 解析 |
-| `wind-rule` | wire | 规则引擎 |
-| `wind-core` | feed, ai, rule, stream, wire | agent 状态机、轮次、投影、工具执行 |
-| `wind-mod` | core, event | 清单、安装、编译、能力裁剪、启用集 |
-| `wind-script` | mod, core, event | QuickJS 宿主：运行时、解释器线程池、门面 |
-| `wind-mcp` | core, event, wire | MCP 连接、注册表、工具目录 |
-| `wind-runtime` | 全部 | 组合根、启动、恢复、关停 |
+| `wind-wire` | 无 | 跨层数据类型：`Message`、`Block`、`Body`、`Role`、工具声明、MCP 定义、事件信封与 `FeedEvent` |
+| `wind-event` | wire | 事件目录、信封、派发、限流、订阅索引、observe 投递池、mod 事件出口与三个宿主 trait |
+| `wind-storage` | wire | SQLite schema、事务封装、行模型、按领域划分的语句集 |
+| `wind-ai` | wire | 提供商适配器、请求构造、SSE 解析、HTTP 发送 |
+| `wind-rule` | 无 | 面向请求体的 JSON 规则引擎 |
+| `wind-mod` | wire, event, storage | 清单、包、安装器、资源读取、启用集合、清单 schema |
+| `wind-mcp` | wire, event | MCP 注册表、连接、启动规划、内建 `fs` 与 `skills` 服务 |
+| `wind-core` | wire, event, storage, ai, rule, mod, mcp | agent 树、LLM 回合、feed、资源适配 |
 
-`wind-event` 不依赖任何其他内部 crate；`storage` 依赖 `event`，不允许反向。
-HTTP/SSE 端点不在本骨架内，宿主应用只调用 `Hub::subscribe` 取帧流。
-
-## 进程内任务
+依赖方向：
 
 ```text
-┌ runtime ───────────────────────────────────────────────────────┐
-│ assembly                                                       │
-│                                                                │
-│  writer 任务 ×1      DB 写：批量事务、拿 pos、提交后广播       │
-│                                                                │
-│  hub                每话题一张表：订阅连接队列 + 未完成块       │
-│                                                                │
-│  session(话题 A)     agent 循环：输入、模型、工具、定稿         │
-│  session(话题 B)     ↑ 互不阻塞                                │
-│                                                                │
-│  SSE 连接 × N        只读自己那条队列                          │
-│                                                                │
-│  解释器线程池        mod 调用，每次调用新建运行时              │
-│  MCP 连接 × M        工具调用，按请求 id 复用                  │
-└────────────────────────────────────────────────────────────────┘
+                        ┌─────────┐
+                        │  wire   │
+                        └────┬────┘
+          ┌──────────────────┼──────────────────┐
+          ▼                  ▼                  ▼
+     ┌─────────┐        ┌─────────┐        ┌─────────┐
+     │ event   │        │ storage │        │   ai    │
+     └────┬────┘        └────┬────┘        └────┬────┘
+          │                  │                  │
+          ├──────────┐       │                  │
+          ▼          ▼       ▼                  │
+     ┌─────────┐  ┌──────────────┐              │
+     │   mcp   │  │     mod      │              │
+     └────┬────┘  └──────┬───────┘              │
+          │              │                      │
+          └──────┬───────┴──────────┬───────────┘
+                 ▼                  ▼
+            ┌──────────────────────────┐      ┌─────────┐
+            │         core             │◄─────│  rule   │
+            └──────────────────────────┘      └─────────┘
 ```
 
-| 单元 | 实例数 | 并发方式 | 共享什么 |
+`wind-core` 是唯一同时依赖全部内部 crate 的 crate。`wind-core::feed` 是 feed 的实现位置，
+不存在独立的 `wind-feed` crate；块类型在 `wind-wire`，不存在独立的 `wind-stream` crate；
+组合根与 HTTP 端点在宿主应用，不存在 `wind-runtime` crate。
+
+## 进程内拓扑
+
+```text
+宿主应用
+├─ FeedRuntime（任务）
+│  ├─ Hub：命令循环、事件身份、保留窗口、订阅者
+│  └─ Writer（任务）：批量写 event_log
+├─ Dispatcher（共享 Arc）
+│  └─ ObservePool（任务）：observe 事件合批与 mod 调用
+├─ RegistryHandle（actor 任务）
+│  ├─ Connection × N：外部 MCP 服务
+│  └─ 内建 fs / skills：进程内 duplex 连接
+├─ Agent<LlmDomain>（每话题一个任务）
+│  ├─ Tree：相位归约
+│  └─ Jobs（每次运行一个任务）
+├─ LlmRunner（共享）
+├─ ResourceServices（共享，发布串行化）
+└─ Storage（连接池，最多五个连接）
+```
+
+| 单元 | 实例数 | 并发方式 | 共享状态 |
 | --- | --- | --- | --- |
-| 话题会话 | 每话题一个 | tokio task | 本话题的累加器与订阅者表 |
-| 写入者 | 1 | 单任务串行 | 写连接 |
-| 订阅连接 | 每浏览器一条 | tokio task | 本连接的帧队列 |
-| 读查询 | 连接池 | 并发 | WAL 读快照 |
-| mod 调用 | 线程池 | 每次调用新建运行时 | 无（状态在库） |
-| MCP 调用 | 每服务一条 | 请求 id 复用 | 连接 |
+| `FeedRuntime` | 每个 feed 一个 | 单任务命令循环 | `Hub`、保留窗口、订阅者表 |
+| `Writer` | 每个 feed 一个 | 单任务批量写 | `Storage` |
+| `Dispatcher` | 每个进程一个 | 同步方法，可被任意任务调用 | 事件目录、订阅索引、限流窗口、`EventOutlet` |
+| `ObservePool` | 每个 `Dispatcher` 一个 | 单任务消费，按窗口合批 | 调用队列 |
+| `RegistryHandle` | 每个进程一个 | actor 任务；启动与停止派生效果任务，调用在调用方任务里执行 | 服务表、引用集合、工具缓存 |
+| `Agent` | 每个话题一个 | 单任务归约 | 树、待消费输入 |
+| `Jobs` | 每个运行中的节点一个任务 | `tokio::spawn`，可取消 | 运行中任务的取消令牌 |
+| `ResourceServices` | 每个进程一个 | 发布操作在 `gate` 上串行 | 话题引用、已发布的内建资源 |
+| `Storage` | 句柄可克隆 | 连接池并发 | SQLite 数据库 |
 
-串行点只有三处：数据库写锁、写入者队列、单个话题的投递锁。三者都不跨话题。
+`Agent` 的 `Runner` 是一个 `Arc<dyn Runner<D>>`。本仓库提供的实现是 `LlmRunner`，它把
+`wind-ai` 的响应转成块、写入领域表，并通过 `Dispatcher` 发出事件。`Agent` 不直接调用模型。
 
-调用方向、每条边的性质、拦截与流式的时序，见 `docs/event-flow.md` 的「模块交互模型」。
+## 两条写入通路
 
-## 两条通路
-
-写库的东西和只广播的东西不走同一条路，否则一个话题的提交会拖住另一个话题的打字流。
-
-```text
-话题 A 的会话                        话题 B 的会话
-   │ plan/apply（A 的累加器）           │ plan/apply（B 的累加器）
-   ├─ 分片 ──► A 的订阅者表 ──► 连接1   ├─ 分片 ──► B 的订阅者表 ──► 连接2
-   │                                    │
-   └─ 开块/提交/定稿 ──┐                └─ 开块/提交/定稿 ──┐
-                       ▼                                    ▼
-                  写入者（单任务）
-                  批量事务 ──► pos ──► 广播 ──► 回执
-```
-
-规则：
-
-- 写库的事件进写入者，批量提交，拿到 `pos` 后按顺序广播。
-- 分片不写库，直接进本话题的订阅者表。
-- **广播先于回执**：写入者先广播开块帧，再把 `block.id` 交回会话；会话拿到回执后才允许产生分片。因此分片永远不会早于它所属的开块帧。
-- `boundary` 按话题取：`MAX(id) WHERE scope`。
-
-## 一致性规则
-
-1. 客户端可见 ⇒ 已提交。广播发生在提交之后。
-2. `pos` 只增不复用。表自增 + 单写入者 + `synchronous = FULL`。
-3. 广播先于回执。分片只能在其开块帧广播之后产生。
-4. 每个订阅只读一个作用域。跨话题顺序不做保证。
-5. 日志只存键与事实。值在读取时从对象表取。
-6. 未完成块的内容只有一份，在内存；`block` 行里内容是空串。
-7. 块标识由库给，会话拿到后才写入累加器。
-8. 快照的集合查库，内容用内存覆盖；两者都在本话题的锁内取。
-
-## 模块骨架
-
-### `wind-event`（已实现）
+领域行与事件不走同一条路。领域表由各自的拥有者直接写；事件统一经过 feed。feed 的保留窗口
+是内存中尚未被 Writer 回报或 `Close` 释放的事件集合；出窗是从该集合移除一条事件。
 
 ```text
-envelope.rs     Envelope<P>（无位置）、Scope、Origin、Source
-def.rs          Shape、EventDef、EventMeta、Directory
-context.rs      DispatchCx、DispatchGuard
-guard.rs        Guards、Limits、OverLimit
-dispatch.rs     形态检查、预算、改写链、submit、Observer 实现
-subscription.rs Subscription、EnabledSet、SubscriptionIndex（按 rank 排序）
-pool.rs         ObservePool：合批、超时、失败回报
-mod_call.rs     ModCaller、CallCx、CallMode、CallError
-outlet.rs       Pending、Committed、EventOutlet
-events.rs       dispatch.timeout / dispatch.failed
-lib.rs          Observer、ModCaller、ModRoster 三个 trait
+LlmRunner / Installer / Agent / MCP
+   │
+   ├─ 领域行 ──────────────────────────────► Storage ──► SQLite
+   │  （turn / message / block / agent_* / mods / external_waits …）
+   │
+   └─ 事件 ──► Dispatcher ──► EventOutlet::submit ──► FeedRuntime
+                                                         │
+                                   ┌─────────────────────┼─────────────────────┐
+                                   ▼                     ▼                     ▼
+                              订阅者队列            保留窗口              Writer
+                              （前端实时流）       （回补与出窗）        （event_log）
 ```
 
-### `wind-stream`
+两条通路没有共享事务：
 
-```text
-id.rs           BlockId(i64)、MessageId、TurnId
-block.rs        Block、BlockKind、content/data 约定
-payload.rs      block.open / delta / committed 的载荷
-accumulator.rs  开块、续写、定稿；标识由外部绑定
-```
+- 块行与其 `core/block.committed` 事件不在同一事务。`MessageStream::complete` 先在一个事务里
+  写入块并定稿消息，提交成功后才发出 `core/block.committed` 与 `core/message.seal`。
+- mod 安装先提交数据库事务，再重建订阅索引并发出 `core/mod.installed` 等事件。
+- Writer 写入失败时丢弃该批事件，但 Hub 仍会把它从保留窗口取出并通知观察者。数据库历史可能
+  缺行，mod 仍可能收到该事件。
+- 事件写入成功也不代表领域行存在。历史读取必须把事件载荷与领域表分别解释。
 
-### `wind-storage`
+因此，`event_log` 不是领域表的变更日志，领域表也不是事件日志的投影。两者的唯一共同点是
+事件载荷中引用的领域标识。
 
-```text
-db.rs           连接池、WAL、synchronous=FULL、BEGIN IMMEDIATE
-schema.rs       全部建表与索引
-executor.rs     事务封装
-models/         turn、message、block、agent_instances、pending、wait、spawn、mod、config
-vendors/        按领域的语句集
-```
+## 事件通路的分支
 
-### `wind-feed`
+`FeedRuntime::Hub::emit` 在同步代码里决定一条事件去往哪里。形态与保留策略共同决定分支。
+保留策略的四种取值 `Journal`、`Group`、`Close`、`Live` 的完整语义见「事件」。
 
-```text
-writer.rs       队列、批量事务、pos、提交后广播、回执
-hub.rs          订阅者表、历史、快照、补值
-session.rs      每话题的累加器与投递锁
-frame.rs        Frame::Event{pos, envelope} / Frame::Snapshot{baseline}
-queue.rs        有界帧队列：Fragment 丢旧、Journal 断开
-subscribe.rs    握手参数、Subscriber
-log.rs          LogRecord（组合 Envelope）、行互转、可见性
-```
+| 形态 | 保留策略 | 进保留窗口 | 推订阅者 | 通知 observe 订阅 | 写 `event_log` |
+| --- | --- | --- | --- | --- | --- |
+| `observe` | `Journal` | 是 | 立即 | Writer 回报后 | 是 |
+| `observe` | `Group` | 是 | 立即 | 立即 | 否 |
+| `observe` | `Close` | 否，并释放同组 | 立即 | 立即 | 否 |
+| `observe` | `Live` | 否 | 立即 | 立即 | 否 |
+| `intercept` | `Journal` | 否 | 否 | 从不 | 是 |
+| `intercept` | `Live` | 否 | 否 | 从不 | 否 |
 
-### `wind-core`
+`observe` 是对前端可见的唯一形态。`intercept` 的改写发生在调用方同步等待的链里，不作为
+观察事件投递。保留策略的完整语义与事件目录见「事件」。
 
-```text
-agent/hub.rs        会话登记、启停、恢复
-agent/tree.rs       FSM、域事件、归约
-agent/behavior.rs   一次输入的完整路径
-agent/tool.rs       工具计划与执行
-agent/jobs.rs       后台任务
-llm/turn.rs         轮次编排：建轮、建消息、请求、定稿
-llm/execute.rs      模型调用
-llm/prompt.rs       提示词
-llm/tools.rs        工具清单
-conversation/writer.rs   plan、apply、commit、seal
-conversation/assembler.rs 投影、normalize、repair_tools
-conversation/events.rs    块事件定义
-```
+前端订阅只回放内存保留窗口，不回放数据库。`Opening.cut` 给出订阅时刻的 `EventKey` 上界，
+宿主若要从 `event_log` 取更早的历史，需自行按 `(epoch, seq)` 拼接并去重。当前
+`wind-storage` 没有读取 `event_log` 的语句。
 
-### `wind-mod` 与 `wind-script`
+## 顺序与一致性
 
-```text
-mod/manifest.rs   清单
-mod/compiler.rs   安装期编译为字节码
-mod/catalogue.rs  事件目录合并
-mod/enablement.rs 话题启用集
-mod/capability.rs 能力裁剪矩阵
-script/runtime.rs 一次调用的装配
-script/threads.rs 解释器线程池
-script/loader.rs  模块加载器
-script/facade/    ctx.agent / ctx.state / ctx.http / ctx.fs
-script/deployment.rs  部署与版本
-```
-
-### `wind-mcp` 与 `wind-runtime`
-
-```text
-mcp/registry.rs   服务注册、工具目录
-mcp/connector.rs  连接与请求 id
-mcp/runtime.rs    调用执行
-runtime/assembly.rs  装配：storage → feed → event → core → mod → script → mcp
-runtime/recovery.rs  启动恢复：清理残块、恢复未完成轮次
-runtime/tree.rs      多话题会话的持有与关停
-runtime/shutdown.rs  排空写入者、关闭连接
-```
+- `EventKey` 按 `(epoch, seq)` 字典序。`epoch` 每次 `feed::open` 递增，`seq` 在本次 feed 内
+  严格递增。`event_log` 对 `(epoch, seq)` 建唯一约束，因此同一数据库内的身份不复用。
+- 事件身份只由 Hub 的单任务循环分配，所以分配顺序就是事件序。`Writer` 只负责持久化，
+  不重新排序。
+- `Journal` 形态的 `observe` 事件在写入数据库提交之后才通知 mod。写入失败也会通知，因此
+  mod 看到的事件序与 `event_log` 的行序一致，但可能包含历史中缺失的事件。
+- 非 `Journal` 的 `observe` 事件（流式增量、消息定稿、实时块、MCP 日志等）在 Hub 内同步
+  投递，不等待数据库。
+- 订阅者的回放按 `EventKey` 升序；回放结束后接实时队列。队列满时该订阅被取消，`recv`
+  返回 `None`，由宿主重连并从领域表或历史重建。
+- 块内容的顺序由 `Block.seq` 与 `Block.revision` 表达。`seq` 在一条消息内从 0 递增；
+  可追加块每追加一段 `revision` 递增。块行不保存中间版本，只有定稿值。
 
 ## 关键接口
 
-```rust
-// wind-event（已实现）
-pub struct Envelope<P> { time, name, scope, origin, source, payload }
-pub struct Pending { shape: Shape, log: bool, envelope: Envelope<Value> }
-pub struct Committed { pos: i64, shape: Shape, envelope: Envelope<Value> }
-pub trait EventOutlet: Send + Sync { fn submit(&self, pending: Pending); }
-pub trait Observer: Send + Sync { fn on_committed(&self, meta: &EventMeta, committed: &Committed); }
-pub trait ModCaller: Send + Sync { async fn call(..) -> Result<Option<Value>, CallError>; }
-pub trait ModRoster: Send + Sync { fn enabled(&self, scope: &Scope) -> EnabledSet; }
+| trait | 由谁实现 | 用途 |
+| --- | --- | --- |
+| `wind_event::EventOutlet` | `wind_core::feed::FeedHandle` | 事件离开派发层的唯一出口；实现只把 `Pending` 入队 |
+| `wind_event::Observer` | `wind_event::Dispatcher` | 接收已提交或即时事件；`Journal` 在提交后、其余在投递时调用 |
+| `wind_event::ModCaller` | 仓库内无实现 | 调用 mod 处理函数；`wind-scripts` 的目标实现位 |
+| `wind_event::ModRoster` | `wind_mod::roster::Roster` | 按作用域给出启用的 mod 名集合 |
+| `wind_mod::Compiler` | 仓库内无实现 | 安装期把 `scripts/` 编译成 `CompiledScripts`；`wind-scripts` 的目标实现位 |
+| `wind_core::llm::ModService` | `wind_core::resources::ResourceServices` | 提供提示词片段、mod 工具、mod 版本与 request 调用 |
+| `wind_core::llm::McpService` | `wind_core::resources::ResourceServices` | 列出并调用 MCP 工具 |
+| `wind_core::agent::Runner<D>` | `wind_core::llm::LlmRunner` | 执行一次节点运行 |
+| `wind_core::agent::tree::Domain` | `wind_core::llm::domain::LlmDomain` | 声明运行的输入、挂起、恢复、输出与错误类型 |
 
-// wind-feed（未实现）
-impl EventOutlet for WriteHandle;
-impl WriteHandle {
-    fn block_open(&self, req: BlockOpen) -> oneshot::Receiver<Result<i64, WriteError>>;
-    fn block_commit(&self, req: BlockCommit);
-    fn message_seal(&self, req: MessageSeal);
-}
-impl Hub {
-    fn subscribe(&self, req: Subscribe) -> Opening;      // 锁内取 boundary 与快照
-    fn publish_committed(&self, event: &Committed);      // 写入者调用
-    fn publish_delta(&self, delta: Delta);               // 会话直接调用，不写库
-}
-impl Observer for Hub;
+`Dispatcher` 同时是 `Observer` 与事件生产入口。`ResourceServices` 同时实现 `ModService` 与
+`McpService`，把 mod 资源、内建 MCP 与外部 MCP 汇总成 LLM 可见的工具目录。
 
-// wind-core（未实现）
-impl ModCaller for Session;                               // 拦截链
-impl ModRoster for Session;                               // 该作用域启用的 mod
-```
+## 宿主装配
+
+仓库内没有组合根。测试的 `Bus::open` 展示了一种可用装配顺序：
+
+| 步 | 动作 |
+| --- | --- |
+| 1 | `Storage::open(path)` 打开数据库并建表 |
+| 2 | `feed::open(storage.clone(), FeedOptions)` 得到 `FeedHandle` 与 `FeedRuntime` |
+| 3 | 合并各子系统的事件目录：`wind_event::directory()`、`agent::events::directory()`、`llm::events::directory()`、`wind_mod::events::directory()`、`wind_mcp::events::directory()` |
+| 4 | `Roster::load(&storage)` 读取启用关系 |
+| 5 | `Dispatcher::new(directory, roster, mod_caller, outlet, Limits::default())`；`outlet` 是步骤 2 的 `FeedHandle` |
+| 6 | `wind_mcp::init(McpOptions, dispatcher)` 启动注册表 |
+| 7 | `Installer::new(storage, dispatcher, roster, dirs, compiler)`；没有脚本引擎时 `compiler` 为 `None` |
+| 8 | `Resources::new(storage, dirs)` 与 `ResourceServices::new(installer, resources, storage, registry, topics_root)` |
+| 9 | `services.restore()` 从数据库恢复订阅与启用集合；`installer.restore()` 会重建 `Dispatcher` 的订阅索引与 `Roster` |
+| 10 | `tokio::spawn(runtime.run(vec![Arc::downgrade(&dispatcher)]))` 启动 feed；观察者必须在 `run` 之前挂上 |
+| 11 | `LlmRunner::new(storage, dispatcher, services.clone(), services.clone())` |
+| 12 | 每个话题 `Agent::start(AgentOptions { topic_id, storage, dispatcher, runner, restored, cancel })` |
+| 13 | 用 `storage.create_agent_instance(...)` 建主实例行，再用 `storage.create_pending(...)` 放入输入，最后 `AgentHandle::spawn` 或 `enqueue` |
+| 14 | `FeedHandle::subscribe()` 取实时流，宿主自行编码为 SSE/WebSocket 并转发给前端 |
+| 15 | 收到 `Outcome::Suspend` 后，宿主保存 `external_wait_id`；用户答复时用 `AgentHandle::resume` 传入 `WaitAnswer` |
+| 16 | 关停时先 `services.shutdown()`，再 `FeedHandle::shutdown()`，最后等待 `FeedRuntime::run` 返回 |
+
+宿主必须自行提供的能力：
+
+- 主实例的 `agent_instances` 行。`create_spawn_requests` 只为子实例建行；`Agent` 的相位
+  持久化假设行已存在。行不存在时 `update_instance_phase` 返回 `NoRowsAffected`，`Agent`
+  只记录日志并发出 `core/agent.persist_failed`。
+- 用户输入的入口。`wind-core` 没有“接收用户输入”的函数；宿主写 `agent_pending` 行并把
+  `LlmSpec { pending_id }` 交给 `AgentHandle`。
+- HTTP/SSE 端点与前端底座。`FeedHandle` 只提供进程内订阅。
+- 审批答复的入口。`external_waits` 行由 `LlmRunner` 在 `suspend` 时创建，宿主负责展示与
+  回填 `WaitAnswer`。
+- 事件历史的查询与分页。`wind-storage` 只写 `event_log`。
+- `wind-scripts`。没有它时，`Installer` 拒绝声明 `requests` 或 `events.on` 的 mod，
+  `ResourceServices::agent_tools` 返回空表，`ResourceServices::call` 返回 `Denied`。
 
 ## 数据库
 
-`turn`、`message`、`block`、`event_log` 的列与索引见 `docs/event-identity.md`。
-本骨架补两条运行时约束：
+连接参数与连接池设置：
 
-- `PRAGMA journal_mode = WAL`、`PRAGMA synchronous = FULL`。
-- 写事务一律 `BEGIN IMMEDIATE`；读不加锁，直接走 WAL 快照。
+- `filename(path)`、`create_if_missing(true)`
+- `PRAGMA journal_mode = WAL`
+- `busy_timeout = 8s`
+- `foreign_keys = true`
+- 连接池上限五个
 
-## 重构顺序
+`Storage::open` 在建表前开启写事务，建表语句全部带 `IF NOT EXISTS`。写事务使用
+`BEGIN IMMEDIATE`；只读事务使用 `BEGIN`。
 
-每一步都有可验收的出口。
+`synchronous` 未显式设置，使用 SQLite 对该 journal 模式的默认值。需要改变持久性保证时，
+在 `wind-storage::db::open_pool` 统一设置，不要在各语句集里零散设置。
 
-| 步 | 内容 | 出口 |
-| --- | --- | --- |
-| 1 | 建 `wind-feed`；`storage` 换新 schema 与语句 | 存储测试通过：开块、提交、日志区间、快照、补值 |
-| 2 | `wind-stream`：去掉发号，改为外部绑定 | 累加器测试通过 |
-| 3 | `wind-event`：`sink`/`observer`，派发改“先写后发” | 派发测试用 `RecordingSink` 通过 |
-| 4 | `wind-feed`：写入者 + hub + 帧 | 并发测试：两话题同时出字，互不阻塞 |
-| 5 | `wind-core`：会话写入与投影 | 一轮对话端到端，落库与帧一致 |
-| 6 | `wind-core`：agent 状态机与恢复 | 崩溃后重启，未完成轮次可解释 |
-| 7 | `wind-mod` + `wind-script`：旁路收进 `Dispatcher` | mod 发事件不再直推 hub |
-| 8 | `wind-mcp` + `wind-runtime` 装配 | 多浏览器同话题一致、断线重连一致 |
+## 当前实现边界
 
-## 从 `windai-bak` 删掉
+以下是代码事实，不代表期望行为。子系统文档会给出更细的边界。
 
-| 删除 | 原因 |
+| 项 | 现状 |
 | --- | --- |
-| `feed/hub.rs` 的 `pending` / `flush` / `high_water` / `inflight` | 日志与水位改由写入者与库承担 |
-| `stream/accumulator.rs` 的 `next_id` / `after` / `allocate_id` | 标识由库给 |
-| `feed/log.rs` | 并入 `feed/log.rs` 的组合信封版本 |
-| `mod/src/feed.rs` 的 `emit` / `retract` 自建信封 | 改走 `Dispatcher::emit_mod` |
-| `event` 的 `EventSeq` 与播种 | 位置来自日志行 |
-| `schema` 的 `is_boundary` | 从未写过真值 |
-
-## 我替你定的
-
-以下几条是我的判断，改动成本低，但会影响后续代码，写在这里便于你否掉：
-
-1. **新 crate `wind-feed`**：写入者与 hub 不放进 `core`，让“只有这里能写 `event_log`”变成 crate 边界。
-2. **`synchronous = FULL`**：`NORMAL` 掉电会丢号并复用，客户端会静默丢事件。批量提交抵消 fsync 开销。
-3. **分片不进写入者**：否则一个话题的提交会拖慢别的话题的打字流；靠“广播先于回执”保证顺序。
-4. **`hub` 按话题分表**：订阅者表与累加器都按话题隔离，锁粒度是话题。
-5. **`core/llm.request` 的请求体不入日志**：一条几 MB 的记录会穿过唯一写入者，拖住所有话题。日志只存 `model_id`、`message_id`、消息条数与字节数。
-6. **mod 调用不共享运行时**：沿用 `windai-bak/script` 的做法，每次调用新建 QuickJS 运行时并复用解释器线程池，池大小默认 `min(4, 核数)`；因此 mod 之间、话题之间都不串行。
-7. **会话按话题懒启动、空闲回收**：状态全部落库，回收后可从 `agent_instances` 恢复。
+| `wind-scripts` | 不存在。`Installer` 的 `compiler` 只能为 `None`；`ModCaller` 没有仓库内实现 |
+| 事件历史读取 | `event_log` 只写不读；`Opening.cut` 只提供拼接口 |
+| 全局作用域的事件订阅 | `Roster::enabled` 只为话题作用域返回 mod 集合；`core/mcp.*` 等全局事件不会命中任何 mod 订阅 |
+| 后台子实例结果 | `PendingKind::BackgroundResult`、`spawn_calls.result_delivered_at` 与 `AgentHandle::deliver` 均无生产者 |
+| 主实例行 | 由宿主创建；库内没有创建主实例的语句 |
+| `wind_spawn_agent` 的 `fork` | 参数被解析，但 `create_spawn_requests` 不使用它 |
+| mod 状态 | `Capability::State` / `Capability::Storage` 已声明，数据库没有对应表，宿主也没有注入实现 |
+| UI | 只识别 `ui/index.js` 并在 `core/mod.installed` / `core/mod.updated` 中给出 `ui_entry`；资源的实际服务由前端底座负责 |

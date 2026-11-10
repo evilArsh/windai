@@ -32,9 +32,14 @@
 可参考设计文档：
 
 - `docs/architecture.md`
-- `docs/event-design-qa.md`
-- `docs/event-flow.md`
-- `docs/event-identity.md`
+- `docs/events.md`
+- `docs/storage.md`
+- `docs/agent.md`
+- `docs/llm.md`
+- `docs/ai.md`
+- `docs/rule.md`
+- `docs/mod.md`
+- `docs/mcp.md`
 
 门面契约参考：
 

@@ -13,7 +13,7 @@
 ### 一、crate 头
 
 `//!` 标题，加「一次调用：」引导的阶段表、流程图，加运行环境事实。例如
-`windai/script/src/lib.rs`：
+`windai/scripts/src/lib.rs`（`wind-scripts` 尚未实现）：
 
 ````rust
 //! QuickJS 上的 mod 宿主

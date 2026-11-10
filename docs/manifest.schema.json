@@ -57,7 +57,7 @@
       }
     },
     "events": {
-      "description": "事件处理\n\n# on\n订阅宿主的事件，订阅后宿主会唤醒 mod 并且执行 `handler` 中声明的 js 函数\n# emit\njs 向宿主发送事件的通道",
+      "description": "事件处理\n\n# on\n订阅宿主的事件，订阅后宿主会调用 mod 的 `handler` 中声明的 js 函数\n# emit\njs 向宿主发送事件的通道",
       "$ref": "#/$defs/Events",
       "default": {
         "on": {},
