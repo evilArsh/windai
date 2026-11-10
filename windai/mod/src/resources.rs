@@ -38,6 +38,14 @@ impl Resources {
         Self { storage, dirs }
     }
 
+    pub fn public_skills(&self) -> PathBuf {
+        self.dirs.public_skills()
+    }
+
+    pub fn mods_root(&self) -> PathBuf {
+        self.dirs.mods_root()
+    }
+
     /// 话题启用的 mod 资源，按 mod 名排序
     pub async fn topic(&self, topic_id: i64) -> Result<Vec<ModResources>> {
         let rows = self

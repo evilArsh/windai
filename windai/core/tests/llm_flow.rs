@@ -10,23 +10,23 @@
 #[path = "common/lib.rs"]
 mod common;
 
-use std::sync::Arc;
-
 #[tokio::test]
 async fn an_agent_turn_against_the_real_provider_prints_its_events() {
     common::init_log();
-    let storage = common::open_storage("llm_flow").await;
-    let model = common::seed_provider(&storage).await;
-    let seed = common::seed_root(&storage, "llm flow", model, "用一句话回答：2+2 等于几").await;
-    let instance = seed.1;
+    let fixture = common::Fixture::open("llm_flow").await;
+    let model = common::seed_provider(&fixture).await;
+    let root = common::seed_topic(&fixture, "llm flow", model).await;
+    let instance = root.instance;
+    let pending =
+        common::seed_pending(&fixture.storage, instance, "用一句话回答：2+2 等于几").await;
 
-    let mut bus = common::Bus::open(&storage).await;
-    let handle = common::start_agent(&storage, Arc::clone(&bus.dispatcher), seed).await;
+    let mut bus = common::Bus::open(&fixture).await;
+    let handle = common::start_agent(&bus, &fixture.storage, &root, pending).await;
 
     let mut phase = None;
     let mut sealed = false;
     while !sealed {
-        let event = common::next_event(&mut bus.events).await;
+        let event = common::next_event(&mut bus.events, log::Level::Info).await;
         if let Some(current) = common::terminal_phase(&event, instance) {
             phase = Some(current);
         }
@@ -37,7 +37,7 @@ async fn an_agent_turn_against_the_real_provider_prints_its_events() {
     handle.wait_stopped().await;
     bus.close().await;
 
-    let reply = common::assistant_reply(&storage, instance).await;
+    let reply = common::assistant_reply(&fixture.storage, instance).await;
     log::info!("assistant: {reply}");
     assert_eq!(phase.as_deref(), Some("done"), "节点必须跑完");
     assert!(!reply.trim().is_empty(), "模型必须给出回答");

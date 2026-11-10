@@ -51,7 +51,6 @@ CREATE TABLE IF NOT EXISTS topics (
     model_id    BIGINT,
     workspace   TEXT,
     icon        TEXT,
-    workspace   TEXT,
     created_at  BIGINT,
     updated_at  BIGINT
 );

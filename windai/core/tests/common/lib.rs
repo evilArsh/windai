@@ -1,4 +1,4 @@
-//! 集成测试共用的播种、替身与事件订阅
+//! 集成测试共用的环境装配、播种与事件订阅
 //!
 //! 每个测试目标只用其中一部分，未被用到的项不算缺陷
 #![allow(dead_code)]
@@ -10,29 +10,21 @@ use std::time::Duration;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use wind_core::agent::handler::{Agent, AgentHandle, AgentOptions};
-use wind_core::error::CoreError;
 use wind_core::feed::{self, FeedError, FeedHandle, FeedOptions, ShutdownReport};
+use wind_core::llm::LlmRunner;
 use wind_core::llm::domain::{LlmDomain, LlmSpec};
-use wind_core::llm::events::CORE_LLM_REQUEST;
-use wind_core::llm::tools::{DeclaredTool, ToolOrigin};
-use wind_core::llm::{LlmRunner, McpService, ModService};
+use wind_core::resources::ResourceServices;
 use wind_event::{
-    CallCx, CallError, DispatchCx, Dispatcher, EnabledSet, Limits, ModCaller, ModRoster, Observer,
-    Scope, Subscription,
+    CallCx, CallError, Dispatcher, Limits, ModCaller, ModRoster, Observer, Subscription,
 };
+use wind_mcp::McpOptions;
+use wind_mod::dirs::AppDirs;
+use wind_mod::installer::Installer;
+use wind_mod::resources::Resources;
+use wind_mod::roster::Roster;
 use wind_storage::Storage;
 use wind_wire::event::FeedEvent;
-use wind_wire::tool::{FunctionTool, Tools};
 use wind_wire::{AdapterType, AgentRole, Body, Content, PendingKind, Role};
-
-/// 事件替身的 mod 名
-pub const SPY_MOD: &str = "spy";
-
-/// 工具替身的 mod 名
-pub const FS_MOD: &str = "fs";
-
-/// 列 home 目录的 request 名
-pub const LIST_REQUEST: &str = "list_home";
 
 /// 按 .env 的 RUST_LOG 打开日志
 pub fn init_log() {
@@ -42,23 +34,56 @@ pub fn init_log() {
         .try_init();
 }
 
-/// 每次运行都从空的数据库开始
-pub async fn open_storage(name: &str) -> Storage {
-    let dir = dirs::home_dir()
-        .expect("需要 home 目录")
-        .join(".windai_test");
-    tokio::fs::create_dir_all(&dir).await.expect("建测试目录");
-    let path = dir.join(format!("{name}.db"));
-    for suffix in ["", "-wal", "-shm"] {
-        let mut file = path.clone().into_os_string();
-        file.push(suffix);
-        let _ = tokio::fs::remove_file(PathBuf::from(file)).await;
+/// 一次测试独占的应用目录与数据库
+pub struct Fixture {
+    pub storage: Storage,
+    pub dirs: AppDirs,
+}
+
+impl Fixture {
+    /// 每次运行都从空的目录与数据库开始
+    pub async fn open(name: &str) -> Self {
+        let root = dirs::home_dir()
+            .expect("需要 home 目录")
+            .join(".windai_test")
+            .join(name);
+        let _ = tokio::fs::remove_dir_all(&root).await;
+        tokio::fs::create_dir_all(root.join("mods"))
+            .await
+            .expect("建测试目录");
+        Self::with_dirs(AppDirs::under(root)).await
     }
-    Storage::open(&path).await.expect("打开测试数据库")
+
+    /// 复用 `.windai_test/mods`：只重建数据库与话题，手改的 mod 包保留
+    pub async fn shared_mods() -> Self {
+        let dirs = AppDirs::under(
+            dirs::home_dir()
+                .expect("需要 home 目录")
+                .join(".windai_test"),
+        );
+        tokio::fs::create_dir_all(dirs.mods_root())
+            .await
+            .expect("建 mods 目录");
+        let _ = tokio::fs::remove_dir_all(dirs.topics_root()).await;
+        Self::with_dirs(dirs).await
+    }
+
+    async fn with_dirs(dirs: AppDirs) -> Self {
+        for suffix in ["", "-wal", "-shm"] {
+            let mut file = dirs.db_file().into_os_string();
+            file.push(suffix);
+            let _ = tokio::fs::remove_file(PathBuf::from(file)).await;
+        }
+        let storage = Storage::open(&dirs.db_file())
+            .await
+            .expect("打开测试数据库");
+        Self { storage, dirs }
+    }
 }
 
 /// 按 .env 建提供商、凭证与模型
-pub async fn seed_provider(storage: &Storage) -> i64 {
+pub async fn seed_provider(fixture: &Fixture) -> i64 {
+    let storage = &fixture.storage;
     let provider = storage
         .create_provider("dotenv", &env("TEST_BASE_URL"))
         .await
@@ -83,22 +108,45 @@ pub async fn seed_provider(storage: &Storage) -> i64 {
         .expect("建模型")
 }
 
-/// 建话题、主实例与一条待消费输入，返回话题、实例与输入标识
-pub async fn seed_root(
-    storage: &Storage,
-    label: &str,
-    model: i64,
-    prompt: &str,
-) -> (i64, i64, i64) {
+/// 等待首轮输入的主实例
+pub struct Root {
+    pub topic: i64,
+    pub instance: i64,
+    /// 话题工作区，内建文件工具的沙箱根
+    pub workspace: PathBuf,
+}
+
+/// 建话题与主实例
+pub async fn seed_topic(fixture: &Fixture, label: &str, model: i64) -> Root {
+    let storage = &fixture.storage;
+    let workspace = fixture.dirs.topics_root().join(label);
+    tokio::fs::create_dir_all(&workspace)
+        .await
+        .expect("建话题工作区");
     let topic = storage
-        .create_topic(None, label, Some(model), None, None)
+        .create_topic(
+            None,
+            label,
+            Some(model),
+            None,
+            Some(workspace.to_string_lossy().as_ref()),
+        )
         .await
         .expect("建话题");
     let instance = storage
         .create_agent_instance(topic, None, AgentRole::Main, None, "running", None)
         .await
         .expect("建主实例");
-    let pending = storage
+    Root {
+        topic,
+        instance,
+        workspace,
+    }
+}
+
+/// 放一条待消费输入，返回它的标识
+pub async fn seed_pending(storage: &Storage, instance: i64, prompt: &str) -> i64 {
+    storage
         .create_pending(
             instance,
             PendingKind::User,
@@ -106,36 +154,36 @@ pub async fn seed_root(
             None,
         )
         .await
-        .expect("放一条待消费输入");
-    (topic, instance, pending)
+        .expect("放一条待消费输入")
 }
 
 /// 挂上 LlmRunner 并投放主节点
 pub async fn start_agent(
+    bus: &Bus,
     storage: &Storage,
-    dispatcher: Arc<Dispatcher>,
-    (topic, instance, pending): (i64, i64, i64),
+    root: &Root,
+    pending: i64,
 ) -> AgentHandle<LlmDomain> {
     let runner = Arc::new(LlmRunner::new(
         storage.clone(),
-        Arc::clone(&dispatcher),
-        Arc::new(Services),
-        Arc::new(Services),
+        Arc::clone(&bus.dispatcher),
+        bus.services.clone(),
+        bus.services.clone(),
     ));
     let handle = Agent::<LlmDomain>::start(AgentOptions {
-        topic_id: topic,
+        topic_id: root.topic,
         storage: storage.clone(),
-        dispatcher,
+        dispatcher: Arc::clone(&bus.dispatcher),
         runner,
         restored: Vec::new(),
         cancel: CancellationToken::new(),
     });
     handle
         .spawn(
-            instance,
+            root.instance,
             None,
             LlmSpec {
-                instance_id: instance,
+                instance_id: root.instance,
                 message_id: None,
                 pending_id: Some(pending),
                 turn_id: None,
@@ -147,31 +195,51 @@ pub async fn start_agent(
     handle
 }
 
-/// feed、派发总线与订阅端的组合
+/// feed、派发总线、资源适配与订阅端的组合
 pub struct Bus {
     pub dispatcher: Arc<Dispatcher>,
     pub events: feed::Subscription,
+    pub services: Arc<ResourceServices>,
     outlet: FeedHandle,
     runtime: tokio::task::JoinHandle<std::result::Result<ShutdownReport, FeedError>>,
 }
 
 impl Bus {
-    pub async fn open(storage: &Storage) -> Self {
-        let (outlet, runtime) = feed::open(storage.clone(), FeedOptions::default())
+    pub async fn open(fixture: &Fixture) -> Self {
+        let dirs = fixture.dirs.clone();
+        let (outlet, runtime) = feed::open(fixture.storage.clone(), FeedOptions::default())
             .await
             .expect("打开 feed");
 
+        let roster = Arc::new(Roster::load(&fixture.storage).await.expect("读启用集合"));
         let directory = wind_event::directory()
             .merge(wind_core::agent::events::directory())
-            .merge(wind_core::llm::events::directory());
+            .merge(wind_core::llm::events::directory())
+            .merge(wind_mod::events::directory())
+            .merge(wind_mcp::events::directory());
         let dispatcher = Arc::new(Dispatcher::new(
             directory,
-            Arc::new(Spy),
-            Arc::new(Spy),
+            Arc::clone(&roster) as Arc<dyn ModRoster>,
+            Arc::new(NoCaller),
             Arc::new(outlet.clone()),
             Limits::default(),
         ));
-        dispatcher.rebuild_index(spy_subscriptions());
+
+        let registry = wind_mcp::init(McpOptions::new(dirs.mods_root()), Arc::clone(&dispatcher));
+        let installer = Installer::new(
+            fixture.storage.clone(),
+            Arc::clone(&dispatcher),
+            roster,
+            dirs.clone(),
+            None,
+        );
+        let services = Arc::new(ResourceServices::new(
+            installer,
+            Resources::new(fixture.storage.clone(), dirs.clone()),
+            fixture.storage.clone(),
+            registry,
+            dirs.topics_root(),
+        ));
 
         let observer_handle: Arc<dyn Observer> = dispatcher.clone();
         let runtime = tokio::spawn(runtime.run(vec![Arc::downgrade(&observer_handle)]));
@@ -180,12 +248,14 @@ impl Bus {
         Self {
             dispatcher,
             events,
+            services,
             outlet,
             runtime,
         }
     }
 
     pub async fn close(self) {
+        self.services.shutdown().await.expect("关闭资源适配");
         self.outlet.shutdown().await.expect("关闭 feed");
         self.runtime
             .await
@@ -194,16 +264,34 @@ impl Bus {
     }
 }
 
-/// 取一条事件并按 RUST_LOG 打印
-pub async fn next_event(events: &mut feed::Subscription) -> Arc<FeedEvent> {
+/// 没有脚本引擎时的 mod 调用端
+pub struct NoCaller;
+
+#[async_trait::async_trait]
+impl ModCaller for NoCaller {
+    async fn call(
+        &self,
+        _sub: &Subscription,
+        _payload: Value,
+        _cx: CallCx,
+    ) -> Result<Option<Value>, CallError> {
+        Err(CallError::Internal("mod calls are unavailable".to_string()))
+    }
+}
+
+/// 取一条事件并按给定级别打印
+pub async fn next_event(events: &mut feed::Subscription, level: log::Level) -> Arc<FeedEvent> {
     let event = timeout(Duration::from_secs(180), events.recv())
         .await
         .expect("事件必须在期限内到达")
         .expect("feed 不能提前关闭")
         .expect("feed 不能提前关闭");
-    match event.envelope.payload.as_ref() {
-        Some(payload) => log::info!("{} {}\n{}", event.key, event.envelope.name, pretty(payload)),
-        None => log::info!("{} {}", event.key, event.envelope.name),
+    if event.envelope.name != wind_mcp::events::CORE_MCP_LOG.name {
+        let text = match event.envelope.payload.as_ref() {
+            Some(payload) => format!("{} {}\n{}", event.key, event.envelope.name, pretty(payload)),
+            None => format!("{} {}", event.key, event.envelope.name),
+        };
+        log::log!(level, "{text}");
     }
     event
 }
@@ -236,137 +324,6 @@ pub fn terminal_phase(event: &FeedEvent, instance_id: i64) -> Option<String> {
     }
     let phase = payload.get("phase")?.as_str()?;
     matches!(phase, "done" | "failed" | "aborted" | "cancelled").then(|| phase.to_string())
-}
-
-/// 事件派发端替身：订阅 llm 请求，把请求体写进日志
-pub struct Spy;
-
-impl ModRoster for Spy {
-    fn enabled(&self, _scope: &Scope) -> EnabledSet {
-        EnabledSet::from_names([SPY_MOD.to_string()])
-    }
-}
-
-#[async_trait::async_trait]
-impl ModCaller for Spy {
-    async fn call(
-        &self,
-        sub: &Subscription,
-        payload: Value,
-        _cx: CallCx,
-    ) -> Result<Option<Value>, CallError> {
-        log::info!("[spy] {}\n{}", sub.event, pretty(&payload));
-        Ok(None)
-    }
-}
-
-fn spy_subscriptions() -> Vec<Subscription> {
-    vec![
-        Subscription {
-            mod_name: SPY_MOD.to_string(),
-            mod_version: 0,
-            event: CORE_LLM_REQUEST.name,
-            handler: "log".to_string(),
-            timeout_ms: 5_000,
-        },
-        Subscription {
-            mod_name: SPY_MOD.to_string(),
-            mod_version: 0,
-            event: wind_core::llm::events::CORE_RULE_APPLY.name,
-            handler: "log".to_string(),
-            timeout_ms: 5_000,
-        },
-    ]
-}
-
-/// llm 侧替身：一条提示词与一个列 home 目录的工具
-pub struct Services;
-
-#[async_trait::async_trait]
-impl ModService for Services {
-    async fn prompt_fragments(&self, _topic_id: i64) -> Result<Vec<String>, CoreError> {
-        Ok(vec!["回答保持简短".to_string()])
-    }
-
-    async fn agent_tools(&self, _topic_id: i64) -> Result<Vec<DeclaredTool>, CoreError> {
-        Ok(vec![list_home_tool()])
-    }
-
-    async fn version_of(&self, _mod_name: &str) -> Result<i64, CoreError> {
-        Ok(1)
-    }
-
-    async fn call(
-        &self,
-        _scope: &Scope,
-        _mod_name: &str,
-        _version: i64,
-        request: &str,
-        _input: Value,
-    ) -> Result<Value, CoreError> {
-        match request {
-            LIST_REQUEST => Ok(list_home()),
-            other => Err(CoreError::Denied(format!("unknown request {other}"))),
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl McpService for Services {
-    async fn declarations(
-        &self,
-        _cx: &DispatchCx,
-        _topic_id: i64,
-    ) -> Result<Vec<DeclaredTool>, CoreError> {
-        Ok(Vec::new())
-    }
-
-    async fn call(
-        &self,
-        _cx: &DispatchCx,
-        _call_id: &str,
-        _target: &wind_core::llm::tools::McpTarget,
-        _arguments: Value,
-    ) -> Result<Value, CoreError> {
-        Ok(Value::Null)
-    }
-}
-
-fn list_home_tool() -> DeclaredTool {
-    let origin = ToolOrigin::ModRequest {
-        mod_name: FS_MOD.to_string(),
-        request: LIST_REQUEST.to_string(),
-    };
-    DeclaredTool {
-        declaration: Tools::Function(FunctionTool {
-            name: origin.exposed(),
-            description: Some(
-                "List the entry names of the current user's home directory (~)".to_string(),
-            ),
-            parameters: Some(serde_json::json!({ "type": "object", "properties": {} })),
-            strict: None,
-        }),
-        origin,
-    }
-}
-
-fn list_home() -> Value {
-    serde_json::json!({
-        "path": dirs::home_dir().expect("需要 home 目录").to_string_lossy(),
-        "entries": home_entries(),
-    })
-}
-
-/// home 目录的全部条目名，已排序
-pub fn home_entries() -> Vec<String> {
-    let home = dirs::home_dir().expect("需要 home 目录");
-    let mut entries: Vec<String> = std::fs::read_dir(home)
-        .expect("读 home 目录")
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .collect();
-    entries.sort();
-    entries
 }
 
 /// 取实例助手消息里的全部文本

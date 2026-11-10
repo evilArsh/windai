@@ -20,13 +20,22 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
 use tokio::process::{ChildStderr, Command};
 use tokio::sync::{Mutex, Notify};
 use tokio::time::Instant;
+use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use wind_wire::mcp::{McpConfig, McpDefinition};
+
+use std::time::Duration;
 
 type Client = RunningService<RoleClient, Box<dyn DynService<RoleClient>>>;
 
 /// stderr 单行保留的字节数
 const STDERR_LINE_LIMIT: usize = 64 * 1024;
+
+/// 一次 core/mcp.log 最多携带的字节数
+const STDERR_BATCH_BYTES: usize = 3 * 1024;
+
+/// stderr 缓冲的空闲冲刷间隔
+const STDERR_FLUSH_IDLE: Duration = Duration::from_millis(200);
 
 /// 接收服务端 stderr 的一行
 pub(crate) type LogSink = Arc<dyn Fn(&str) + Send + Sync>;
@@ -275,7 +284,8 @@ fn command(plan: &LaunchPlan, env: &BTreeMap<String, String>) -> CommandWrap {
     command
         .args(&plan.args)
         .current_dir(&plan.cwd)
-        .env_clear()
+        // TODO: 沙箱化后恢复环境隔离
+        // .env_clear()
         .kill_on_drop(true);
     for (key, value) in env {
         command.env(key, value);
@@ -301,15 +311,20 @@ where
     R: AsyncRead + Unpin,
 {
     let mut reader = BufReader::new(reader);
+    let mut batch = String::new();
     let mut line = Vec::new();
     let mut truncated = false;
     loop {
-        let available = match reader.fill_buf().await {
-            Ok(available) => available,
-            Err(error) => {
+        let available = match timeout(STDERR_FLUSH_IDLE, reader.fill_buf()).await {
+            Err(_) => {
+                flush(&mut batch, &log);
+                continue;
+            }
+            Ok(Err(error)) => {
                 log::warn!("cannot read the server stderr: {error}");
                 break;
             }
+            Ok(Ok(available)) => available,
         };
         if available.is_empty() {
             break;
@@ -327,23 +342,38 @@ where
         }
         reader.consume(consumed);
         if newline.is_some() {
-            emit_line(&mut line, true, &log);
+            append_line(&mut batch, &mut line, true);
             truncated = false;
+            if batch.len() >= STDERR_BATCH_BYTES {
+                flush(&mut batch, &log);
+            }
         }
     }
     if !line.is_empty() || truncated {
-        emit_line(&mut line, false, &log);
+        append_line(&mut batch, &mut line, false);
     }
+    flush(&mut batch, &log);
 }
 
-fn emit_line(line: &mut Vec<u8>, terminated: bool, log: &Option<LogSink>) {
+fn append_line(batch: &mut String, line: &mut Vec<u8>, terminated: bool) {
     if terminated && line.ends_with(b"\r") {
         line.pop();
     }
-    if let Some(log) = log {
-        log(&String::from_utf8_lossy(line));
+    if !batch.is_empty() {
+        batch.push('\n');
     }
+    batch.push_str(&String::from_utf8_lossy(line));
     line.clear();
+}
+
+fn flush(batch: &mut String, log: &Option<LogSink>) {
+    if batch.is_empty() {
+        return;
+    }
+    if let Some(log) = log {
+        log(batch);
+    }
+    batch.clear();
 }
 
 #[cfg(test)]
@@ -390,9 +420,8 @@ mod tests {
         drop(writer);
         task.await.expect("the stderr reader must finish");
         let captured = captured.lock().expect("lock the captured lines");
-        assert_eq!(captured.len(), 2);
-        assert_eq!(captured[0], "ok");
-        assert_eq!(captured[1], "\u{FFFD}bad");
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0], "ok\n\u{FFFD}bad");
     }
 
     #[tokio::test]

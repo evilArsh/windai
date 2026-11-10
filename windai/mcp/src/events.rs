@@ -112,7 +112,7 @@ pub const CORE_MCP_STOPPED: EventDef<McpStopped> = EventDef::new(
     schema::<McpStopped>,
 );
 pub const CORE_MCP_LOG: EventDef<McpLog> =
-    EventDef::new("core/mcp.log", Shape::Observe, true, schema::<McpLog>);
+    EventDef::new("core/mcp.log", Shape::Observe, false, schema::<McpLog>);
 
 pub fn directory() -> Directory {
     Directory::from_metas([

@@ -1,4 +1,4 @@
-use super::{BuiltinResources, BuiltinScope, replace};
+use super::{BuiltinScope, replace};
 use crate::RegistryHandle;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
@@ -8,6 +8,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 
 mod scan;
 
@@ -18,6 +19,30 @@ pub use scan::{SkillError, SkillsListResult, SkillsMeta};
 pub struct SkillRoot {
     pub source: String,
     pub path: PathBuf,
+}
+
+/// 技能根集合：发布方整体替换，服务端按调用读取
+#[derive(Clone)]
+pub struct SkillRoots(Arc<RwLock<Vec<SkillRoot>>>);
+
+impl SkillRoots {
+    pub fn new(roots: Vec<SkillRoot>) -> Self {
+        Self(Arc::new(RwLock::new(roots)))
+    }
+
+    pub fn replace(&self, roots: Vec<SkillRoot>) {
+        *self
+            .0
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = roots;
+    }
+
+    fn snapshot(&self) -> Vec<SkillRoot> {
+        self.0
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
 }
 
 /// 列举技能的请求
@@ -34,13 +59,12 @@ pub struct SkillsListRequest {
 /// 技能目录工具
 pub struct SkillsServer {
     name: String,
-    roots: Vec<SkillRoot>,
+    roots: SkillRoots,
     tool_router: ToolRouter<Self>,
 }
 
 impl SkillsServer {
-    /// 空路径的技能根会被忽略
-    pub fn new(name: impl Into<String>, roots: Vec<SkillRoot>) -> Self {
+    pub fn new(name: impl Into<String>, roots: SkillRoots) -> Self {
         Self {
             name: name.into(),
             roots,
@@ -51,11 +75,15 @@ impl SkillsServer {
     fn skill_roots(&self) -> Result<Vec<SkillRoot>, ErrorData> {
         let roots: Vec<SkillRoot> = self
             .roots
-            .iter()
+            .snapshot()
+            .into_iter()
             .filter(|root| !root.path.as_os_str().is_empty())
-            .map(|root| SkillRoot {
-                source: root.source.clone(),
-                path: fs::canonicalize(&root.path).unwrap_or_else(|_| root.path.clone()),
+            .map(|root| {
+                let path = fs::canonicalize(&root.path).unwrap_or_else(|_| root.path.clone());
+                SkillRoot {
+                    source: root.source,
+                    path,
+                }
             })
             .collect();
         if roots.is_empty() {
@@ -116,19 +144,8 @@ impl ServerHandler for SkillsServer {
 /// 服务名里的固定段
 pub(super) const SLOT: &str = "skills";
 
-pub(super) async fn sync(
-    registry: &RegistryHandle,
-    scope: BuiltinScope,
-    resources: &BuiltinResources,
-) {
+pub(super) async fn sync(registry: &RegistryHandle, scope: BuiltinScope, roots: SkillRoots) {
     let name = scope.service_name(SLOT);
-    let server = if resources.skill_roots.is_empty() {
-        None
-    } else {
-        Some(SkillsServer::new(
-            name.clone(),
-            resources.skill_roots.clone(),
-        ))
-    };
-    replace(registry, name, server).await;
+    let server = SkillsServer::new(name.clone(), roots);
+    replace(registry, name, Some(server)).await;
 }

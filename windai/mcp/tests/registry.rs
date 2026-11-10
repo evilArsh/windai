@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 use wind_mcp::builtin::fs::FsServer;
-use wind_mcp::builtin::skills::{SkillRoot, SkillsServer};
+use wind_mcp::builtin::skills::{SkillRoot, SkillRoots, SkillsServer};
 use wind_mcp::{BoundTool, CallOutcome, RegistryHandle, init};
 
 #[path = "support/mod.rs"]
@@ -440,10 +440,10 @@ async fn builtin_skills_lists_skills_within_its_roots() {
             "t1".to_owned(),
             SkillsServer::new(
                 "skills:topic:1",
-                vec![SkillRoot {
+                SkillRoots::new(vec![SkillRoot {
                     source: "s1".to_owned(),
                     path: root.clone(),
-                }],
+                }]),
             ),
         )
         .await

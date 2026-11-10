@@ -11,6 +11,7 @@ use serde_json::Value;
 use tokio::sync::{Mutex as AsyncMutex, oneshot};
 use wind_event::{DispatchCx, Scope};
 use wind_mcp::builtin::skills::SkillRoot;
+use wind_mcp::builtin::skills::SkillRoots;
 use wind_mcp::builtin::{self, BuiltinResources, BuiltinScope};
 use wind_mcp::{BoundTool, CallOutcome, RegistryHandle};
 use wind_mod::installer::{Installer, UnavailableMod};
@@ -252,19 +253,30 @@ impl ResourceServices {
         self.ensure_open()?;
         let mods = self.resources.topic(topic_id).await?;
         let definitions = mod_definitions(&mods);
-        let resources = BuiltinResources {
-            workspace: self.workspace_of(topic_id).await?,
-            skill_roots: skill_roots(&mods),
-        };
+        let workspace = self.workspace_of(topic_id).await?;
+        let roots = skill_roots(&mods, self.resources.public_skills());
 
-        let (new_main, old_main, previous) = {
+        let (new_main, old_main, previous, resources) = {
             let mut topics = self.lock_topics();
             let refs = topics.entry(topic_id).or_default();
             refs.generation += 1;
             let new_main = TopicRefs::new_ref_name(topic_id, refs.generation);
             let old_main = std::mem::replace(&mut refs.main, new_main.clone());
-            let previous = refs.resources.replace(resources.clone());
-            (new_main, old_main, previous)
+            let previous = refs.resources.clone();
+            let skill_roots = match &previous {
+                Some(previous) => {
+                    previous.skill_roots.replace(roots);
+                    previous.skill_roots.clone()
+                }
+                None => SkillRoots::new(roots),
+            };
+            let resources = BuiltinResources {
+                workspace,
+                shared_roots: vec![self.resources.public_skills(), self.resources.mods_root()],
+                skill_roots,
+            };
+            refs.resources = Some(resources.clone());
+            (new_main, old_main, previous, resources)
         };
 
         for definition in definitions {
@@ -422,15 +434,18 @@ fn mod_definitions(mods: &[ModResources]) -> Vec<McpDefinition> {
     definitions
 }
 
-fn skill_roots(mods: &[ModResources]) -> Vec<SkillRoot> {
-    mods.iter()
-        .filter_map(|module| {
-            module.skills.as_ref().map(|path| SkillRoot {
-                source: module.name.clone(),
-                path: path.clone(),
-            })
+fn skill_roots(mods: &[ModResources], public: PathBuf) -> Vec<SkillRoot> {
+    let mut roots = vec![SkillRoot {
+        source: "public".to_string(),
+        path: public,
+    }];
+    roots.extend(mods.iter().filter_map(|module| {
+        module.skills.as_ref().map(|path| SkillRoot {
+            source: module.name.clone(),
+            path: path.clone(),
         })
-        .collect()
+    }));
+    roots
 }
 
 fn declared(tool: &BoundTool) -> DeclaredTool {

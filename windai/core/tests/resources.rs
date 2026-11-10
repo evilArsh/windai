@@ -710,7 +710,7 @@ async fn a_failed_mod_service_does_not_block_other_tools() {
 }
 
 #[tokio::test]
-async fn builtin_fs_uses_the_topic_workspace() {
+async fn builtin_fs_serves_the_workspace_and_shared_roots() {
     let fixture = Fixture::new().await;
     let workspace = fixture.dir.path().join("workspace");
     fs::create_dir_all(&workspace).expect("the workspace must be created");
@@ -774,6 +774,32 @@ async fn builtin_fs_uses_the_topic_workspace() {
     assert!(
         structured(&value)["error"].is_string(),
         "a path outside the workspace must be rejected: {value}"
+    );
+
+    let value = call_tool(
+        &fixture.services,
+        &list,
+        json!({"path": fixture.dirs.mods_root().to_string_lossy()}),
+    )
+    .await
+    .expect("the shared roots must be listable");
+    assert!(
+        structured(&value)["error"].is_null(),
+        "the shared mods root listing must succeed: {value}"
+    );
+
+    let sibling = fixture.dirs.topics_root().join("other");
+    fs::create_dir_all(&sibling).expect("the sibling topic directory must be created");
+    let value = call_tool(
+        &fixture.services,
+        &list,
+        json!({"path": sibling.to_string_lossy()}),
+    )
+    .await
+    .expect("the sandbox must answer with a failure result");
+    assert!(
+        structured(&value)["error"].is_string(),
+        "another topic's directory must be rejected: {value}"
     );
 
     fixture.services.shutdown().await.expect("shutdown");

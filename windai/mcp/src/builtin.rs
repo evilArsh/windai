@@ -3,7 +3,7 @@
 pub mod fs;
 pub mod skills;
 
-use self::skills::SkillRoot;
+use self::skills::SkillRoots;
 use super::connector::Connection;
 use super::error::Result;
 use crate::McpOptions;
@@ -20,8 +20,11 @@ const DUPLEX_BYTES: usize = 64 * 1024;
 /// 内建服务用到的公共资源
 #[derive(Clone)]
 pub struct BuiltinResources {
+    /// 话题工作区
     pub workspace: PathBuf,
-    pub skill_roots: Vec<SkillRoot>,
+    /// 各话题共用的资源目录
+    pub shared_roots: Vec<PathBuf>,
+    pub skill_roots: SkillRoots,
 }
 
 /// 内建服务的挂载范围
@@ -42,18 +45,21 @@ impl BuiltinScope {
     }
 }
 
-/// 各项资源相对上次同步是否变化
+/// 各项资源相对上次同步的变化
 #[derive(Default)]
 struct Changed {
-    workspace: bool,
-    skill_roots: bool,
+    fs: bool,
+    /// 技能根原地替换，只有首次同步需要建服务
+    skills: bool,
 }
 
 impl BuiltinResources {
     fn changed_from(&self, previous: Option<&BuiltinResources>) -> Changed {
         Changed {
-            workspace: previous.is_none_or(|previous| previous.workspace != self.workspace),
-            skill_roots: previous.is_none_or(|previous| previous.skill_roots != self.skill_roots),
+            fs: previous.is_none_or(|previous| {
+                previous.workspace != self.workspace || previous.shared_roots != self.shared_roots
+            }),
+            skills: previous.is_none(),
         }
     }
 }
@@ -68,11 +74,11 @@ pub async fn sync(
     resources: &BuiltinResources,
 ) {
     let changed = resources.changed_from(previous);
-    if changed.workspace {
+    if changed.fs {
         fs::sync(registry, scope, resources).await;
     }
-    if changed.skill_roots {
-        skills::sync(registry, scope, resources).await;
+    if changed.skills {
+        skills::sync(registry, scope, resources.skill_roots.clone()).await;
     }
 }
 
@@ -128,19 +134,22 @@ where
 #[cfg(test)]
 mod tests {
     use super::{BuiltinResources, BuiltinScope, refs};
-    use crate::builtin::skills::SkillRoot;
+    use crate::builtin::skills::{SkillRoot, SkillRoots};
     use std::path::PathBuf;
 
     fn resources(workspace: &str, roots: &[&str]) -> BuiltinResources {
         BuiltinResources {
             workspace: PathBuf::from(workspace),
-            skill_roots: roots
-                .iter()
-                .map(|root| SkillRoot {
-                    source: (*root).to_owned(),
-                    path: PathBuf::from(root),
-                })
-                .collect(),
+            shared_roots: vec![PathBuf::from("shared")],
+            skill_roots: SkillRoots::new(
+                roots
+                    .iter()
+                    .map(|root| SkillRoot {
+                        source: (*root).to_owned(),
+                        path: PathBuf::from(root),
+                    })
+                    .collect(),
+            ),
         }
     }
 
@@ -151,21 +160,25 @@ mod tests {
     }
 
     #[test]
-    fn a_changed_resource_is_flagged_alone() {
+    fn a_moved_workspace_rebuilds_the_file_service() {
         let previous = resources("a", &["s"]);
         let changed = resources("b", &["s"]).changed_from(Some(&previous));
-        assert!(changed.workspace);
-        assert!(!changed.skill_roots);
-
-        let changed = resources("a", &["t"]).changed_from(Some(&previous));
-        assert!(!changed.workspace);
-        assert!(changed.skill_roots);
+        assert!(changed.fs);
+        assert!(!changed.skills);
     }
 
     #[test]
-    fn the_first_sync_flags_every_resource() {
+    fn a_changed_skill_root_keeps_the_running_service() {
+        let previous = resources("a", &["s"]);
+        let changed = resources("a", &["t"]).changed_from(Some(&previous));
+        assert!(!changed.fs);
+        assert!(!changed.skills);
+    }
+
+    #[test]
+    fn the_first_sync_starts_every_service() {
         let changed = resources("a", &["s"]).changed_from(None);
-        assert!(changed.workspace);
-        assert!(changed.skill_roots);
+        assert!(changed.fs);
+        assert!(changed.skills);
     }
 }
