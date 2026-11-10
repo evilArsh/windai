@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS topics (
     parent_id   BIGINT,
     label       TEXT    NOT NULL,
     model_id    BIGINT,
+    workspace   TEXT,
     icon        TEXT,
     workspace   TEXT,
     created_at  BIGINT,
@@ -209,16 +210,4 @@ pub async fn create_if_missing(pool: &DbPool) -> Result<()> {
     sqlx::raw_sql(SCHEMA).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(())
-}
-
-/// 给已有数据库补充后加的列
-pub async fn ensure_columns(pool: &DbPool) -> Result<()> {
-    match sqlx::query("ALTER TABLE topics ADD COLUMN workspace TEXT")
-        .execute(pool)
-        .await
-    {
-        Ok(_) => Ok(()),
-        Err(sqlx::Error::Database(error)) if error.message().contains("duplicate column") => Ok(()),
-        Err(error) => Err(error.into()),
-    }
 }

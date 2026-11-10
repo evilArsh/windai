@@ -38,8 +38,7 @@ impl Db {
     }
 
     pub async fn init_schema(&self) -> Result<()> {
-        schema::create_if_missing(&self.pool).await?;
-        schema::ensure_columns(&self.pool).await
+        schema::create_if_missing(&self.pool).await
     }
 
     pub fn pool(&self) -> &DbPool {

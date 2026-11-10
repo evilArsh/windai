@@ -1,3 +1,5 @@
+use super::{BuiltinResources, BuiltinScope, replace};
+use crate::RegistryHandle;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{Implementation, ServerCapabilities, ServerConfig};
@@ -109,4 +111,24 @@ impl ServerHandler for SkillsServer {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(server_info)
     }
+}
+
+/// 服务名里的固定段
+pub(super) const SLOT: &str = "skills";
+
+pub(super) async fn sync(
+    registry: &RegistryHandle,
+    scope: BuiltinScope,
+    resources: &BuiltinResources,
+) {
+    let name = scope.service_name(SLOT);
+    let server = if resources.skill_roots.is_empty() {
+        None
+    } else {
+        Some(SkillsServer::new(
+            name.clone(),
+            resources.skill_roots.clone(),
+        ))
+    };
+    replace(registry, name, server).await;
 }

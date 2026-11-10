@@ -1,3 +1,5 @@
+use super::{BuiltinResources, BuiltinScope, replace};
+use crate::RegistryHandle;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{Implementation, ServerCapabilities, ServerConfig};
@@ -200,4 +202,17 @@ impl ServerHandler for FsServer {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(server_info)
     }
+}
+
+/// 服务名里的固定段
+pub(super) const SLOT: &str = "fs";
+
+pub(super) async fn sync(
+    registry: &RegistryHandle,
+    scope: BuiltinScope,
+    resources: &BuiltinResources,
+) {
+    let name = scope.service_name(SLOT);
+    let server = FsServer::new(name.clone(), vec![resources.workspace.clone()]);
+    replace(registry, name, Some(server)).await;
 }

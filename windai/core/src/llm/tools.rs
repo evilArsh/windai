@@ -76,15 +76,12 @@ impl ToolOrigin {
     pub fn exposed(&self) -> String {
         match self {
             ToolOrigin::Agent { name } => name.clone(),
-            ToolOrigin::Mcp { target } => mcp_tool_name(target),
+            ToolOrigin::Mcp { target } => {
+                format!("{}{MCP_TOOL_IDENTIFIER}{}", target.server, target.tool)
+            }
             ToolOrigin::ModRequest { mod_name, request } => format!("m_{mod_name}__{request}"),
         }
     }
-}
-
-/// 由服务名与工具名生成模型可见的工具名
-pub(crate) fn mcp_tool_name(target: &McpTarget) -> String {
-    format!("{}{MCP_TOOL_IDENTIFIER}{}", target.server, target.tool)
 }
 
 pub struct ToolCatalog {

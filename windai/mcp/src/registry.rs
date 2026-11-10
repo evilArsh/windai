@@ -6,8 +6,8 @@ use super::events::{
     CORE_MCP_STARTING, CORE_MCP_STOPPED, McpFailed, McpLaunch, McpLog, McpReplaced, McpStarted,
     McpStarting, McpStopped, StopReason,
 };
-use crate::McpOptions;
 use super::runner::{self, LaunchPlan};
+use crate::McpOptions;
 use rmcp::ServerHandler;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -131,15 +131,15 @@ impl RegistryHandle {
         cancel: CancellationToken,
         deadline: Instant,
     ) -> CallOutcome {
-        let (reply, response) = oneshot::channel();
+        let (look_tx, look_rx) = oneshot::channel();
         let command = Command::Lookup {
             server: server.to_string(),
-            reply,
+            reply: look_tx,
         };
         if self.commands.send(command).is_err() {
             return CallOutcome::Failed("the mcp registry is shutting down".to_string());
         }
-        match response.await {
+        match look_rx.await {
             Ok(Some(connection)) => connection.call(tool, arguments, cancel, deadline).await,
             _ => CallOutcome::Failed(format!("the mcp server {server} is not running")),
         }

@@ -1,6 +1,6 @@
 //! mod 与内建 MCP 的资源适配
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,8 +10,8 @@ use futures::FutureExt;
 use serde_json::Value;
 use tokio::sync::{Mutex as AsyncMutex, oneshot};
 use wind_event::{DispatchCx, Scope};
-use wind_mcp::builtin::fs::FsServer;
-use wind_mcp::builtin::skills::{SkillRoot, SkillsServer};
+use wind_mcp::builtin::skills::SkillRoot;
+use wind_mcp::builtin::{self, BuiltinResources, BuiltinScope};
 use wind_mcp::{BoundTool, CallOutcome, RegistryHandle};
 use wind_mod::installer::{Installer, UnavailableMod};
 use wind_mod::resources::{ModResources, Resources};
@@ -150,26 +150,23 @@ impl ResourceServices {
     pub async fn release_topic(&self, topic_id: i64) -> Result<()> {
         let _gate = self.gate.lock().await;
         self.ensure_open()?;
-        let refs = {
-            let mut topics = self.lock_topics();
-            topics.remove(&topic_id)
-        };
-        if let Some(refs) = refs {
-            if !refs.main.is_empty() {
-                self.registry.release(refs.main);
-            }
-            for kind in BuiltinKind::ALL {
-                self.registry.release(kind.service_name(topic_id));
-            }
+        let released = self.lock_topics().remove(&topic_id);
+        if let Some(topic) = released
+            && !topic.main.is_empty()
+        {
+            self.registry.release(topic.main);
         }
+        builtin::release(&self.registry, BuiltinScope::Topic(topic_id));
         Ok(())
     }
 
     /// 停止接纳新操作并关闭全部连接
     pub async fn shutdown(&self) -> Result<()> {
         self.mutate(move |this| async move {
-            let _gate = this.gate.lock().await;
-            this.closed.store(true, Ordering::SeqCst);
+            {
+                let _gate = this.gate.lock().await;
+                this.closed.store(true, Ordering::SeqCst);
+            }
             this.registry.shutdown().await;
             Ok(())
         })
@@ -255,17 +252,21 @@ impl ResourceServices {
         self.ensure_open()?;
         let mods = self.resources.topic(topic_id).await?;
         let definitions = mod_definitions(&mods);
-        let workspace = self.workspace_of(topic_id).await?;
-        let skill_roots = skill_roots(&mods);
+        let resources = BuiltinResources {
+            workspace: self.workspace_of(topic_id).await?,
+            skill_roots: skill_roots(&mods),
+        };
 
-        let (new_main, old_main) = {
+        let (new_main, old_main, previous) = {
             let mut topics = self.lock_topics();
             let refs = topics.entry(topic_id).or_default();
             refs.generation += 1;
-            let new_main = format!("topic_{topic_id}@{}", refs.generation);
+            let new_main = TopicRefs::new_ref_name(topic_id, refs.generation);
             let old_main = std::mem::replace(&mut refs.main, new_main.clone());
-            (new_main, old_main)
+            let previous = refs.resources.replace(resources.clone());
+            (new_main, old_main, previous)
         };
+
         for definition in definitions {
             self.registry.acquire(new_main.clone(), definition);
         }
@@ -273,61 +274,14 @@ impl ResourceServices {
             self.registry.release(old_main);
         }
 
-        self.sync_builtin(
-            topic_id,
-            BuiltinKind::Fs,
-            BuiltinSnapshot::Fs(vec![workspace]),
-        )
-        .await;
-        self.sync_builtin(
-            topic_id,
-            BuiltinKind::Skills,
-            BuiltinSnapshot::Skills(skill_roots),
+        builtin::sync(
+            &self.registry,
+            BuiltinScope::Topic(topic_id),
+            previous.as_ref(),
+            &resources,
         )
         .await;
         Ok(())
-    }
-
-    /// 根快照变化时先停旧实例再启动新实例
-    async fn sync_builtin(&self, topic_id: i64, kind: BuiltinKind, snapshot: BuiltinSnapshot) {
-        let current = {
-            let topics = self.lock_topics();
-            topics
-                .get(&topic_id)
-                .and_then(|refs| refs.builtins.get(&kind).cloned())
-        };
-        if current.as_ref() == Some(&snapshot) {
-            return;
-        }
-        let service = kind.service_name(topic_id);
-        if current.is_some() {
-            self.registry.release(service.clone());
-        }
-        let started = if snapshot.is_empty() {
-            Ok(())
-        } else {
-            match &snapshot {
-                BuiltinSnapshot::Fs(roots) => {
-                    let server = FsServer::new(service.clone(), roots.clone());
-                    self.registry.acquire_builtin(service.clone(), server).await
-                }
-                BuiltinSnapshot::Skills(roots) => {
-                    let server = SkillsServer::new(service.clone(), roots.clone());
-                    self.registry.acquire_builtin(service.clone(), server).await
-                }
-            }
-        };
-        match started {
-            Ok(()) => {
-                let mut topics = self.lock_topics();
-                if let Some(refs) = topics.get_mut(&topic_id) {
-                    refs.builtins.insert(kind, snapshot);
-                }
-            }
-            Err(error) => {
-                log::warn!("the builtin mcp service {service} failed to start: {error}");
-            }
-        }
     }
 
     async fn workspace_of(&self, topic_id: i64) -> Result<PathBuf> {
@@ -387,13 +341,12 @@ impl LlmMcpService for ResourceServices {
     async fn declarations(&self, _cx: &DispatchCx, topic_id: i64) -> Result<Vec<DeclaredTool>> {
         self.ensure_open()?;
         self.ensure_topic(topic_id).await?;
-        let refs = {
+        let mut refs = Vec::new();
+        refs.extend({
             let topics = self.lock_topics();
-            topics
-                .get(&topic_id)
-                .map(|refs| refs.tool_refs(topic_id))
-                .unwrap_or_default()
-        };
+            topics.get(&topic_id).map(|topic| topic.main.clone())
+        });
+        refs.extend(builtin::refs(BuiltinScope::Topic(topic_id)));
         let mut seen = HashSet::new();
         let mut tools = Vec::new();
         for ref_id in refs {
@@ -436,57 +389,16 @@ impl LlmMcpService for ResourceServices {
 /// 一个话题当前的引用名
 #[derive(Default)]
 struct TopicRefs {
+    /// topic_{topic_id}@{generation}
     main: String,
     generation: u64,
-    builtins: BTreeMap<BuiltinKind, BuiltinSnapshot>,
+    /// 上次同步出去的内建资源
+    resources: Option<BuiltinResources>,
 }
 
 impl TopicRefs {
-    fn tool_refs(&self, topic_id: i64) -> Vec<String> {
-        let mut refs = Vec::with_capacity(1 + BuiltinKind::ALL.len());
-        refs.push(self.main.clone());
-        for kind in BuiltinKind::ALL {
-            refs.push(kind.service_name(topic_id));
-        }
-        refs
-    }
-}
-
-/// 内建服务的种类
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum BuiltinKind {
-    Fs,
-    Skills,
-}
-
-impl BuiltinKind {
-    const ALL: [BuiltinKind; 2] = [BuiltinKind::Fs, BuiltinKind::Skills];
-
-    fn name(self) -> &'static str {
-        match self {
-            BuiltinKind::Fs => "fs",
-            BuiltinKind::Skills => "skills",
-        }
-    }
-
-    fn service_name(self, topic_id: i64) -> String {
-        format!("wd_{}_{topic_id}", self.name())
-    }
-}
-
-/// 上次成功发布的内建根，用于判断是否需要重建
-#[derive(Clone, PartialEq, Eq)]
-enum BuiltinSnapshot {
-    Fs(Vec<PathBuf>),
-    Skills(Vec<SkillRoot>),
-}
-
-impl BuiltinSnapshot {
-    fn is_empty(&self) -> bool {
-        match self {
-            BuiltinSnapshot::Fs(roots) => roots.is_empty(),
-            BuiltinSnapshot::Skills(roots) => roots.is_empty(),
-        }
+    fn new_ref_name(topic_id: i64, generation: u64) -> String {
+        format!("topic_{topic_id}@{generation}")
     }
 }
 

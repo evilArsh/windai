@@ -7,14 +7,13 @@ pub mod events;
 mod registry;
 mod runner;
 
-use std::sync::Arc;
-use std::path::PathBuf;
-use std::time::Duration;
 pub use connector::{CallOutcome, ToolDescriptor};
 pub use error::{McpError, Result};
 pub use registry::{BoundTool, Catalog, RegistryHandle};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 use wind_event::Dispatcher;
-
 
 #[derive(Clone)]
 pub struct McpOptions {
@@ -41,8 +40,6 @@ impl McpOptions {
         }
     }
 }
-
-
 
 /// 创建注册表；全局内建 MCP 在此启动
 pub fn init(options: McpOptions, bus: Arc<Dispatcher>) -> RegistryHandle {
