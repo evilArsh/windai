@@ -1,5 +1,4 @@
 use crate::{
-    Compiler,
     error::{ModError, Result},
     events::{
         CORE_MOD_DELETED, CORE_MOD_INSTALLED, CORE_MOD_UPDATED, ModDeleted, ModInstalled,
@@ -14,7 +13,7 @@ use std::{collections::HashSet, path::Path, sync::Arc};
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use wind_event::{DispatchCx, Dispatcher, Subscription};
 use wind_storage::{Mod, Storage, StorageTx, error::StorageError};
-use wind_wire::{AppDirs, CompiledScripts, MOD_UI_ENTRY};
+use wind_wire::{AppDirs, CompiledScripts, MOD_UI_ENTRY, ScriptService};
 
 pub(crate) const FIRST_VERSION: u32 = 1;
 
@@ -39,7 +38,7 @@ pub struct Installer {
     bus: Arc<Dispatcher>,
     dirs: AppDirs,
     roster: Arc<Roster>,
-    compiler: Option<Arc<dyn Compiler>>,
+    compiler: Option<Arc<dyn ScriptService>>,
     write: Arc<Mutex<()>>,
 }
 
@@ -49,7 +48,7 @@ impl Installer {
         bus: Arc<Dispatcher>,
         roster: Arc<Roster>,
         dirs: AppDirs,
-        compiler: Option<Arc<dyn Compiler>>,
+        compiler: Option<Arc<dyn ScriptService>>,
     ) -> Self {
         Self {
             storage,
@@ -379,7 +378,7 @@ impl Installer {
                 Ok(None)
             };
         };
-        // TODO: wind-scripts 实现验证
+        // TODO: wind-script 实现验证
         let compiled = compiler
             .compile(&package.root, &handlers_of(&package.manifest))
             .map_err(|reason| ModError::Rejected {

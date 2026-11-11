@@ -1,12 +1,13 @@
-use super::{McpService, ModService};
 use crate::{
     agent::SPAWN_AGENT_NAME,
     error::{CoreError, Result},
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashMap;
 use wind_event::{DispatchCx, schema};
 use wind_wire::{
-    AgentMode, FunctionCallOutput,
+    AgentMode, FunctionCallOutput, McpService, ToolCallParam,
     tool::{FunctionCall, FunctionTool, Tools},
 };
 
@@ -38,12 +39,6 @@ pub struct ExecutedPlan {
     pub spawns: Vec<SpawnAgentAction>,
 }
 
-#[derive(Debug, Clone)]
-pub struct DeclaredTool {
-    pub origin: ToolOrigin,
-    pub declaration: Tools,
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SpawnAgentRequest {
     pub mode: AgentMode,
@@ -59,29 +54,19 @@ pub struct SpawnAgentAction {
     pub data: SpawnAgentRequest,
 }
 
-/// 定位一个 MCP 工具：服务名加原始工具名
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct McpTarget {
-    pub server: String,
-    pub tool: String,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolOrigin {
+    Agent,
+    Mcp,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ToolOrigin {
-    Agent { name: String },
-    Mcp { target: McpTarget },
-    ModRequest { mod_name: String, request: String },
+pub(crate) fn mcp_tool_name(server: &str, tool: &str) -> String {
+    format!("{server}{MCP_TOOL_IDENTIFIER}{tool}")
 }
-impl ToolOrigin {
-    pub fn exposed(&self) -> String {
-        match self {
-            ToolOrigin::Agent { name } => name.clone(),
-            ToolOrigin::Mcp { target } => {
-                format!("{}{MCP_TOOL_IDENTIFIER}{}", target.server, target.tool)
-            }
-            ToolOrigin::ModRequest { mod_name, request } => format!("m_{mod_name}__{request}"),
-        }
-    }
+
+fn split_mcp_tool_name(name: &str) -> Option<(&str, &str)> {
+    let (server, tool) = name.split_once(MCP_TOOL_IDENTIFIER)?;
+    (!server.is_empty() && !tool.is_empty()).then_some((server, tool))
 }
 
 pub struct ToolCatalog {
@@ -89,21 +74,29 @@ pub struct ToolCatalog {
 }
 
 impl ToolCatalog {
-    pub fn assemble(from_mods: Vec<DeclaredTool>, from_mcp: Vec<DeclaredTool>) -> Result<Self> {
+    pub fn assemble(from_mcp: Vec<Tools>) -> Result<Self> {
         let mut entries: Vec<(ToolOrigin, Tools)> = Vec::new();
-        for declared in from_mods.into_iter().chain(from_mcp) {
-            let name = declared.origin.exposed();
-            if entries.iter().any(|(origin, _)| origin.exposed() == name) {
-                return Err(CoreError::ToolNameConflict { name });
+        for tool in from_mcp {
+            let name = tool_name(&tool);
+            if entries
+                .iter()
+                .any(|(_, declared)| tool_name(declared) == name)
+            {
+                return Err(CoreError::ToolNameConflict {
+                    name: name.to_string(),
+                });
             }
-            entries.push((declared.origin, declared.declaration));
+            entries.push((ToolOrigin::Mcp, tool));
         }
         for tool in tool_declarations() {
             let name = tool_name(&tool);
-            if entries.iter().any(|(origin, _)| origin.exposed() == name) {
+            if entries
+                .iter()
+                .any(|(_, declared)| tool_name(declared) == name)
+            {
                 continue;
             }
-            entries.push((ToolOrigin::Agent { name }, tool));
+            entries.push((ToolOrigin::Agent, tool));
         }
         Ok(Self { entries })
     }
@@ -115,7 +108,7 @@ impl ToolCatalog {
     pub fn lookup(&self, name: &str) -> Option<&ToolOrigin> {
         self.entries
             .iter()
-            .find(|(origin, _)| origin.exposed() == name)
+            .find(|(_, tool)| tool_name(tool) == name)
             .map(|(origin, _)| origin)
     }
 
@@ -133,30 +126,53 @@ pub async fn execute_plan(
     catalog: &ToolCatalog,
     cx: &DispatchCx,
     mcp_service: &dyn McpService,
-    mod_service: &dyn ModService,
 ) -> Result<ExecutedPlan> {
-    let mut results = Vec::with_capacity(calls.len());
+    let mut slots: Vec<Option<FunctionCallOutput>> = calls.iter().map(|_| None).collect();
     let mut agent_calls = Vec::new();
-    for call in calls {
+    let mut batch = Vec::new();
+    for (index, call) in calls.iter().enumerate() {
         let Some(origin) = catalog.lookup(&call.name) else {
-            results.push(unknown_result(&call.call_id, &call.name));
+            slots[index] = Some(unknown_result(&call.call_id, &call.name));
             continue;
         };
         match origin {
-            ToolOrigin::Agent { .. } => agent_calls.push(call),
-            ToolOrigin::Mcp { target } => {
-                results.push(call_mcp(cx, mcp_service, &call, target).await);
-            }
-            ToolOrigin::ModRequest { mod_name, request } => {
-                results.push(call_mod_request(cx, mod_service, &call, mod_name, request).await?);
-            }
+            ToolOrigin::Agent => agent_calls.push(call),
+            ToolOrigin::Mcp => match tool_param(call) {
+                Ok(param) => batch.push((index, param)),
+                Err(result) => slots[index] = Some(result),
+            },
         }
     }
+    if !batch.is_empty() {
+        let (indices, params): (Vec<usize>, Vec<ToolCallParam>) = batch.into_iter().unzip();
+        let outputs = match mcp_service
+            .tool_calls(cx.deadline(), cx.cancel().clone(), params)
+            .await
+        {
+            Ok(outputs) => outputs,
+            Err(reason) => {
+                log::warn!("[llm] the mcp batch failed: {reason}");
+                Vec::new()
+            }
+        };
+        let mut by_id: HashMap<String, Value> = outputs
+            .into_iter()
+            .map(|output| (output.id, output.content))
+            .collect();
+        for index in indices {
+            let call_id = &calls[index].call_id;
+            slots[index] = Some(match by_id.remove_entry(call_id) {
+                Some((id, content)) => FunctionCallOutput { id, content },
+                None => error_result(call_id, "the call produced no result"),
+            });
+        }
+    }
+    let results = slots.into_iter().flatten().collect();
     let spawns = parse_spawn_agents(&agent_calls)?;
     Ok(ExecutedPlan { results, spawns })
 }
 
-pub fn parse_spawn_agents(calls: &[FunctionCall]) -> Result<Vec<SpawnAgentAction>> {
+pub fn parse_spawn_agents(calls: &[&FunctionCall]) -> Result<Vec<SpawnAgentAction>> {
     let mut spawn_agents: Vec<SpawnAgentAction> = Vec::new();
 
     for call in calls {
@@ -181,9 +197,9 @@ fn function_tool(name: &str, description: &str, parameters: serde_json::Value) -
     })
 }
 
-fn tool_name(tool: &Tools) -> String {
+fn tool_name(tool: &Tools) -> &str {
     match tool {
-        Tools::Function(function) => function.name.clone(),
+        Tools::Function(function) => function.name.as_str(),
     }
 }
 
@@ -212,13 +228,6 @@ fn error_result(call_id: &str, message: impl Into<String>) -> FunctionCallOutput
     }
 }
 
-fn done_result(call_id: &str, value: serde_json::Value) -> FunctionCallOutput {
-    FunctionCallOutput {
-        id: call_id.to_string(),
-        content: value,
-    }
-}
-
 pub(crate) fn denied_result(call_id: impl Into<String>, reason: &str) -> FunctionCallOutput {
     FunctionCallOutput {
         id: call_id.into(),
@@ -226,44 +235,214 @@ pub(crate) fn denied_result(call_id: impl Into<String>, reason: &str) -> Functio
     }
 }
 
-async fn call_mcp(
-    cx: &DispatchCx,
-    mcp_service: &dyn McpService,
-    call: &FunctionCall,
-    target: &McpTarget,
-) -> FunctionCallOutput {
+fn tool_param(call: &FunctionCall) -> std::result::Result<ToolCallParam, FunctionCallOutput> {
     let arguments = match parse_arguments(&call.arguments) {
         Ok(arguments) if arguments.is_object() => arguments,
         Ok(_) => {
-            return error_result(&call.call_id, "the tool arguments must be a json object");
+            return Err(error_result(
+                &call.call_id,
+                "the tool arguments must be a json object",
+            ));
         }
         Err(error) => {
-            return error_result(
+            return Err(error_result(
                 &call.call_id,
                 format!("cannot parse tool arguments: {error}"),
-            );
+            ));
         }
     };
-    match mcp_service.call(cx, &call.call_id, target, arguments).await {
-        Ok(value) => done_result(&call.call_id, value),
-        Err(error) => error_result(&call.call_id, error.to_string()),
-    }
+    let Some((server, tool)) = split_mcp_tool_name(&call.name) else {
+        return Err(error_result(
+            &call.call_id,
+            format!("the tool name {} names no server", call.name),
+        ));
+    };
+    Ok(ToolCallParam {
+        call_id: call.call_id.clone(),
+        server: server.to_string(),
+        name: tool.to_string(),
+        arguments,
+    })
 }
 
-async fn call_mod_request(
-    cx: &DispatchCx,
-    mod_service: &dyn ModService,
-    call: &FunctionCall,
-    mod_name: &str,
-    request: &str,
-) -> Result<FunctionCallOutput> {
-    let version = mod_service.version_of(mod_name).await?;
-    let input = parse_arguments(&call.arguments)?;
-    match mod_service
-        .call(&cx.scope, mod_name, version, request, input)
-        .await
-    {
-        Ok(value) => Ok(done_result(&call.call_id, value)),
-        Err(error) => Ok(denied_result(&call.call_id, &error.to_string())),
+#[cfg(test)]
+mod tests {
+    use super::{ToolCatalog, execute_plan, function_tool};
+    use serde_json::{Value, json};
+    use std::sync::Mutex;
+    use std::time::Duration;
+    use tokio_util::sync::CancellationToken;
+    use wind_event::{DispatchCx, Origin, Scope, Source};
+    use wind_wire::tool::{FunctionCall, FunctionCallOutput, Tools};
+    use wind_wire::{McpService, ToolCallParam};
+
+    #[derive(Default)]
+    struct Fake {
+        /// 每次 tool_calls 收到的 (call_id, server, tool)
+        batches: Mutex<Vec<Vec<(String, String, String)>>>,
+        failing: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl McpService for Fake {
+        async fn list_tools(&self, _topic_id: i64) -> Result<Vec<Tools>, String> {
+            Ok(Vec::new())
+        }
+
+        async fn tool_call(
+            &self,
+            _deadline: tokio::time::Instant,
+            _token: CancellationToken,
+            _param: ToolCallParam,
+        ) -> Result<Value, String> {
+            panic!("a round must go through tool_calls")
+        }
+
+        async fn tool_calls(
+            &self,
+            _deadline: tokio::time::Instant,
+            _token: CancellationToken,
+            params: Vec<ToolCallParam>,
+        ) -> Result<Vec<FunctionCallOutput>, String> {
+            let batch = params
+                .iter()
+                .map(|param| {
+                    (
+                        param.call_id.clone(),
+                        param.server.clone(),
+                        param.name.clone(),
+                    )
+                })
+                .collect();
+            self.batches
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(batch);
+            if self.failing {
+                return Err("the registry is shutting down".to_string());
+            }
+            Ok(params
+                .into_iter()
+                .rev()
+                .map(|param| FunctionCallOutput {
+                    id: param.call_id,
+                    content: json!({ "tool": param.name }),
+                })
+                .collect())
+        }
+    }
+
+    fn cx() -> DispatchCx {
+        DispatchCx::root(
+            Origin::Internal,
+            Scope::Global,
+            Source::core("test"),
+            Duration::from_secs(5),
+        )
+    }
+
+    fn call(call_id: &str, name: &str, arguments: &str) -> FunctionCall {
+        FunctionCall {
+            item_id: None,
+            call_id: call_id.to_string(),
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+        }
+    }
+
+    fn catalog() -> ToolCatalog {
+        let tools = vec![
+            function_tool("srv0m0a", "a", json!({ "type": "object" })),
+            function_tool("srv0m0b", "b", json!({ "type": "object" })),
+        ];
+        ToolCatalog::assemble(tools).expect("the catalog must assemble")
+    }
+
+    #[tokio::test]
+    async fn a_round_of_mcp_calls_runs_once_and_keeps_the_call_order() {
+        let service = Fake::default();
+        let spawn = json!({ "mode": "sync", "task": "t", "fork": false }).to_string();
+        let calls = vec![
+            call("c1", "srv0m0a", "{}"),
+            call("c2", "srv0m0b", "{}"),
+            call("c3", "wind_spawn_agent", &spawn),
+        ];
+        let plan = execute_plan(calls, &catalog(), &cx(), &service)
+            .await
+            .expect("the plan must run");
+
+        assert_eq!(plan.spawns.len(), 1, "the agent call must be spawned");
+        assert_eq!(plan.spawns[0].call_id, "c3");
+        assert_eq!(plan.results.len(), 2, "agent calls carry no tool result");
+        assert_eq!(plan.results[0].id, "c1");
+        assert_eq!(plan.results[0].content, json!({ "tool": "a" }));
+        assert_eq!(plan.results[1].id, "c2");
+        assert_eq!(plan.results[1].content, json!({ "tool": "b" }));
+
+        let batches = service
+            .batches
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(batches.len(), 1, "the round must be a single batch");
+        assert_eq!(
+            batches[0],
+            vec![
+                ("c1".to_string(), "srv".to_string(), "a".to_string()),
+                ("c2".to_string(), "srv".to_string(), "b".to_string()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_tool_does_not_join_the_batch() {
+        let service = Fake::default();
+        let calls = vec![call("c1", "missing", "{}"), call("c2", "srv0m0a", "{}")];
+        let plan = execute_plan(calls, &catalog(), &cx(), &service)
+            .await
+            .expect("the plan must run");
+
+        assert_eq!(plan.results.len(), 2);
+        assert_eq!(plan.results[0].id, "c1");
+        assert!(plan.results[0].content["error"].is_string());
+        assert_eq!(plan.results[1].id, "c2");
+        assert_eq!(plan.results[1].content, json!({ "tool": "a" }));
+
+        let batches = service
+            .batches
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(batches[0].len(), 1, "only the known tool is batched");
+    }
+
+    #[tokio::test]
+    async fn a_failed_batch_turns_every_mcp_call_into_an_error_result() {
+        let service = Fake {
+            failing: true,
+            ..Fake::default()
+        };
+        let calls = vec![call("c1", "srv0m0a", "{}"), call("c2", "srv0m0b", "{}")];
+        let plan = execute_plan(calls, &catalog(), &cx(), &service)
+            .await
+            .expect("a failed batch must not fail the round");
+
+        assert_eq!(plan.results.len(), 2);
+        assert!(
+            plan.results
+                .iter()
+                .all(|result| result.content["error"].is_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn arguments_that_are_not_an_object_produce_an_error_result() {
+        let service = Fake::default();
+        let calls = vec![call("c1", "srv0m0a", "[]"), call("c2", "srv0m0b", "{}")];
+        let plan = execute_plan(calls, &catalog(), &cx(), &service)
+            .await
+            .expect("the plan must run");
+
+        assert_eq!(plan.results[0].id, "c1");
+        assert!(plan.results[0].content["error"].is_string());
+        assert_eq!(plan.results[1].content, json!({ "tool": "b" }));
     }
 }

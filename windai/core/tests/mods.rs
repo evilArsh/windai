@@ -15,10 +15,10 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
-use wind_core::llm::McpService as LlmMcpService;
-use wind_core::llm::tools::ToolOrigin;
-use wind_core::resources::ResourceServices;
+use wind_core::resources::ResourceService;
 use wind_event::{DispatchCx, Origin, Scope, Source};
+use wind_wire::McpService;
+use wind_wire::tool::Tools;
 
 /// 用户任务，改完直接重跑
 const TASK: &str = "先列出你当前可用的全部工具，标出其中哪些来自 mod（工具名带 mod 段）。\n\n\
@@ -29,6 +29,7 @@ const TASK: &str = "先列出你当前可用的全部工具，标出其中哪些
 /// 等待 mod 服务握手的上限
 const SERVER_DEADLINE: Duration = Duration::from_secs(60);
 
+#[ignore = "need .env"]
 #[tokio::test]
 async fn the_mounted_mods_answer_the_configured_task() {
     common::init_log();
@@ -65,7 +66,7 @@ async fn the_mounted_mods_answer_the_configured_task() {
 }
 
 /// 安装并启用 `.windai_test/mods` 下的全部包，返回话题承载的 mod 服务名
-async fn mount(fixture: &common::Fixture, services: &ResourceServices, topic: i64) -> Vec<String> {
+async fn mount(fixture: &common::Fixture, services: &ResourceService, topic: i64) -> Vec<String> {
     let cx = cx();
     let mut failures = Vec::new();
     let mut declared = Vec::new();
@@ -112,17 +113,18 @@ async fn mount(fixture: &common::Fixture, services: &ResourceServices, topic: i6
 }
 
 /// 等声明的 mod 服务完成握手，工具进入目录
-async fn wait_servers(services: &ResourceServices, topic: i64, expected: &[String]) {
+async fn wait_servers(services: &ResourceService, topic: i64, expected: &[String]) {
     let deadline = Instant::now() + SERVER_DEADLINE;
     loop {
-        let tools = LlmMcpService::declarations(services, &cx(), topic)
+        let tools = McpService::list_tools(services, topic)
             .await
             .expect("列举工具");
         let ready: Vec<&str> = tools
             .iter()
-            .filter_map(|tool| match &tool.origin {
-                ToolOrigin::Mcp { target } => Some(target.server.as_str()),
-                _ => None,
+            .filter_map(|tool| match tool {
+                Tools::Function(function) => {
+                    function.name.split_once("0m0").map(|(server, _)| server)
+                }
             })
             .collect();
         let missing: Vec<&String> = expected

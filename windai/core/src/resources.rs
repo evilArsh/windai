@@ -1,28 +1,26 @@
 //! mod 与内建 MCP 的资源适配
 
+use crate::error::{CoreError, Result, panic_text};
+use crate::llm::tools::mcp_tool_name;
+use futures::FutureExt;
+use serde_json::Value;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-
-use futures::FutureExt;
-use serde_json::Value;
 use tokio::sync::{Mutex as AsyncMutex, oneshot};
-use wind_event::{DispatchCx, Scope};
-use wind_mcp::builtin::skills::SkillRoot;
-use wind_mcp::builtin::skills::SkillRoots;
+use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
+use wind_event::DispatchCx;
+use wind_mcp::builtin::skills::{SkillRoot, SkillRoots};
 use wind_mcp::builtin::{self, BuiltinResources, BuiltinScope};
 use wind_mcp::{BoundTool, CallOutcome, RegistryHandle};
 use wind_mod::installer::{Installer, UnavailableMod};
 use wind_mod::resources::{ModResources, Resources};
 use wind_storage::Storage;
-use wind_wire::McpDefinition;
 use wind_wire::tool::{FunctionTool, Tools};
-
-use crate::error::{CoreError, Result, panic_text};
-use crate::llm::tools::{DeclaredTool, McpTarget, ToolOrigin};
-use crate::llm::{McpService as LlmMcpService, ModService};
+use wind_wire::{FunctionCallOutput, McpDefinition, McpService, ModService, ToolCallParam};
 
 /// 一次资源修改的结果
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,7 +31,7 @@ pub struct ApplyReport {
 
 /// 资源发布、工具目录与调用的适配点
 #[derive(Clone)]
-pub struct ResourceServices {
+pub struct ResourceService {
     installer: Installer,
     resources: Resources,
     storage: Storage,
@@ -45,7 +43,7 @@ pub struct ResourceServices {
     closed: Arc<AtomicBool>,
 }
 
-impl ResourceServices {
+impl ResourceService {
     pub fn new(
         installer: Installer,
         resources: Resources,
@@ -178,7 +176,7 @@ impl ResourceServices {
     async fn mutate<T, F, Fut>(&self, op: F) -> Result<T>
     where
         T: Send + 'static,
-        F: FnOnce(ResourceServices) -> Fut + Send + 'static,
+        F: FnOnce(ResourceService) -> Fut + Send + 'static,
         Fut: Future<Output = Result<T>> + Send + 'static,
     {
         let this = self.clone();
@@ -310,91 +308,125 @@ impl ResourceServices {
         }
         Ok(workspace)
     }
+
+    fn open(&self) -> std::result::Result<(), String> {
+        self.ensure_open().map_err(|error| error.to_string())
+    }
+
+    async fn call_target(
+        &self,
+        deadline: Instant,
+        token: CancellationToken,
+        server: String,
+        name: String,
+        arguments: Value,
+    ) -> std::result::Result<Value, String> {
+        match self
+            .registry
+            .call(&server, &name, arguments, token, deadline)
+            .await
+        {
+            CallOutcome::Ok(value) => Ok(value),
+            CallOutcome::Failed(reason) => Err(reason),
+        }
+    }
 }
 
 #[async_trait::async_trait]
-impl ModService for ResourceServices {
-    async fn prompt_fragments(&self, topic_id: i64) -> Result<Vec<String>> {
+impl ModService for ResourceService {
+    async fn prompt_fragments(&self, topic_id: i64) -> std::result::Result<Vec<String>, String> {
         let mut fragments = Vec::new();
-        for module in self.resources.topic(topic_id).await? {
+        let modules = self
+            .resources
+            .topic(topic_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        for module in modules {
             fragments.extend(module.prompts);
         }
         Ok(fragments)
     }
 
-    async fn agent_tools(&self, _topic_id: i64) -> Result<Vec<DeclaredTool>> {
-        Ok(Vec::new())
-    }
-
-    async fn version_of(&self, mod_name: &str) -> Result<i64> {
-        self.installer
+    async fn version_of(&self, mod_name: &str) -> std::result::Result<i64, String> {
+        let module = self
+            .installer
             .get(mod_name)
-            .await?
+            .await
+            .map_err(|error| error.to_string())?;
+        module
             .map(|module| i64::from(module.version))
-            .ok_or_else(|| CoreError::Denied(format!("mod {mod_name} is not installed")))
-    }
-
-    async fn call(
-        &self,
-        _scope: &Scope,
-        _mod_name: &str,
-        _version: i64,
-        _request: &str,
-        _input: Value,
-    ) -> Result<Value> {
-        Err(CoreError::Denied(
-            "mod requests are not executable without a script engine".to_string(),
-        ))
+            .ok_or_else(|| format!("mod {mod_name} is not installed"))
     }
 }
 
 #[async_trait::async_trait]
-impl LlmMcpService for ResourceServices {
-    async fn declarations(&self, _cx: &DispatchCx, topic_id: i64) -> Result<Vec<DeclaredTool>> {
-        self.ensure_open()?;
-        self.ensure_topic(topic_id).await?;
+impl McpService for ResourceService {
+    async fn list_tools(&self, topic_id: i64) -> std::result::Result<Vec<Tools>, String> {
+        self.open()?;
+        self.ensure_topic(topic_id)
+            .await
+            .map_err(|error| error.to_string())?;
         let mut refs = Vec::new();
-        refs.extend({
-            let topics = self.lock_topics();
-            topics.get(&topic_id).map(|topic| topic.main.clone())
-        });
+        refs.extend(
+            self.lock_topics()
+                .get(&topic_id)
+                .map(|topic| topic.main.clone()),
+        );
         refs.extend(builtin::refs(BuiltinScope::Topic(topic_id)));
         let mut seen = HashSet::new();
         let mut tools = Vec::new();
         for ref_id in refs {
             for tool in self.registry.list_tools_by_ref(&ref_id).await.iter() {
-                let key = (tool.server.clone(), tool.tool.name.clone());
-                if !seen.insert(key) {
+                if !seen.insert((tool.server.clone(), tool.tool.name.clone())) {
                     continue;
                 }
-                tools.push(declared(tool));
+                tools.push(exported(tool));
             }
         }
         Ok(tools)
     }
 
-    async fn call(
+    async fn tool_call(
         &self,
-        cx: &DispatchCx,
-        _call_id: &str,
-        target: &McpTarget,
-        arguments: Value,
-    ) -> Result<Value> {
-        self.ensure_open()?;
-        match self
-            .registry
-            .call(
-                &target.server,
-                &target.tool,
-                arguments,
-                cx.cancel().clone(),
-                cx.deadline(),
-            )
+        deadline: Instant,
+        token: CancellationToken,
+        param: ToolCallParam,
+    ) -> std::result::Result<Value, String> {
+        self.open()?;
+        self.call_target(deadline, token, param.server, param.name, param.arguments)
             .await
-        {
-            CallOutcome::Ok(value) => Ok(value),
-            CallOutcome::Failed(reason) => Err(CoreError::Denied(reason)),
-        }
+    }
+
+    async fn tool_calls(
+        &self,
+        deadline: Instant,
+        token: CancellationToken,
+        params: Vec<ToolCallParam>,
+    ) -> std::result::Result<Vec<FunctionCallOutput>, String> {
+        self.open()?;
+        let calls = params.into_iter().map(|param| {
+            let token = token.clone();
+            async move {
+                let ToolCallParam {
+                    call_id,
+                    server,
+                    name,
+                    arguments,
+                } = param;
+                let content = match self
+                    .call_target(deadline, token, server, name, arguments)
+                    .await
+                {
+                    Ok(value) => value,
+                    Err(reason) => serde_json::json!({ "error": reason }),
+                };
+                FunctionCallOutput {
+                    id: call_id,
+                    content,
+                }
+            }
+        });
+        Ok(futures::future::join_all(calls).await)
     }
 }
 
@@ -448,13 +480,8 @@ fn skill_roots(mods: &[ModResources], public: PathBuf) -> Vec<SkillRoot> {
     roots
 }
 
-fn declared(tool: &BoundTool) -> DeclaredTool {
-    let target = McpTarget {
-        server: tool.server.clone(),
-        tool: tool.tool.name.clone(),
-    };
-    let origin = ToolOrigin::Mcp { target };
-    let name = origin.exposed();
+fn exported(tool: &BoundTool) -> Tools {
+    let name = mcp_tool_name(&tool.server, &tool.tool.name);
     let description = match &tool.tool.description {
         Some(description) => {
             format!(
@@ -464,13 +491,10 @@ fn declared(tool: &BoundTool) -> DeclaredTool {
         }
         None => format!("MCP tool '{}' from '{}'", tool.tool.name, tool.server),
     };
-    DeclaredTool {
-        declaration: Tools::Function(FunctionTool {
-            name,
-            description: Some(description),
-            parameters: Some(tool.tool.input_schema.clone()),
-            strict: None,
-        }),
-        origin,
-    }
+    Tools::Function(FunctionTool {
+        name,
+        description: Some(description),
+        parameters: Some(tool.tool.input_schema.clone()),
+        strict: None,
+    })
 }

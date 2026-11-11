@@ -3499,6 +3499,7 @@ dependencies = [
  "wind-mcp",
  "wind-mod",
  "wind-rule",
+ "wind-script",
  "wind-storage",
  "wind-wire",
 ]
@@ -3617,12 +3618,15 @@ dependencies = [
 name = "wind-wire"
 version = "0.2.0"
 dependencies = [
+ "async-trait",
  "dirs",
  "schemars",
  "serde",
  "serde_json",
  "strum",
  "thiserror",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

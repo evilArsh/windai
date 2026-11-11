@@ -10,6 +10,7 @@
 #[path = "common/lib.rs"]
 mod common;
 
+#[ignore = "need .env"]
 #[tokio::test]
 async fn an_agent_turn_against_the_real_provider_prints_its_events() {
     common::init_log();

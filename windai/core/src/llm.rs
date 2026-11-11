@@ -5,17 +5,17 @@ use self::events::{
 };
 use self::rule::{apply_rules, context_of};
 use self::stream::{MessageStream, notify_persisted_block};
-use self::tools::{DeclaredTool, ExecutedPlan, McpTarget, SpawnAgentAction, denied_result};
+use self::tools::{ExecutedPlan, SpawnAgentAction, denied_result};
 use crate::agent::{Ctx, Input, Outcome, Runner, SpawnRequest};
 use crate::error::CoreError;
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
-use wind_event::{DispatchCx, Dispatcher, Scope};
+use wind_event::{DispatchCx, Dispatcher};
 use wind_storage::error::StorageError;
 use wind_storage::{Storage, Topic};
-use wind_wire::{Content, FunctionCall, FunctionCallOutput, Message, Role};
+use wind_wire::{Content, FunctionCall, FunctionCallOutput, McpService, Message, ModService, Role};
 
 pub mod block;
 pub mod domain;
@@ -29,39 +29,6 @@ pub(crate) mod turn;
 
 /// 一次请求最多跑几轮工具调用
 pub const DEFAULT_MAX_ROUNDS: u32 = 40;
-
-#[async_trait::async_trait]
-pub trait ModService: Send + Sync {
-    async fn prompt_fragments(&self, topic_id: i64) -> Result<Vec<String>, CoreError>;
-    async fn agent_tools(&self, topic_id: i64) -> Result<Vec<DeclaredTool>, CoreError>;
-    async fn version_of(&self, mod_name: &str) -> Result<i64, CoreError>;
-    /// 调用 mod 中的 scripts 脚本。调用入口为 `request` handler
-    async fn call(
-        &self,
-        scope: &Scope,
-        mod_name: &str,
-        version: i64,
-        request: &str,
-        input: serde_json::Value,
-    ) -> Result<serde_json::Value, CoreError>;
-}
-
-#[async_trait::async_trait]
-pub trait McpService: Send + Sync {
-    async fn declarations(
-        &self,
-        cx: &DispatchCx,
-        topic_id: i64,
-    ) -> Result<Vec<DeclaredTool>, CoreError>;
-
-    async fn call(
-        &self,
-        cx: &DispatchCx,
-        call_id: &str,
-        target: &McpTarget,
-        arguments: serde_json::Value,
-    ) -> Result<serde_json::Value, CoreError>;
-}
 
 pub struct LlmRunner {
     pub(crate) bus: Arc<Dispatcher>,
@@ -282,15 +249,9 @@ impl LlmRunner {
                 return Ok(Outcome::Suspend(Suspended { external_wait_id }));
             }
             let calls = filter_calls(&original_calls, &decided_calls.calls);
-            let executed = tools::execute_plan(
-                calls,
-                &prepared.catalog,
-                &cx,
-                &*self.mcp_service,
-                &*self.mod_service,
-            )
-            .await
-            .map_err(|error| failure(error, Some(message_id)))?;
+            let executed = tools::execute_plan(calls, &prepared.catalog, &cx, &*self.mcp_service)
+                .await
+                .map_err(|error| failure(error, Some(message_id)))?;
 
             let ExecutedPlan { spawns, results } = executed;
             let has_results = !results.is_empty();
@@ -415,15 +376,9 @@ impl LlmRunner {
             .filter(|call| decisions.get(&call.call_id).copied().unwrap_or(true))
             .cloned()
             .collect();
-        let executed = tools::execute_plan(
-            allowed,
-            &prepared.catalog,
-            &cx,
-            &*self.mcp_service,
-            &*self.mod_service,
-        )
-        .await
-        .map_err(|error| failure(error, Some(wait.message_id)))?;
+        let executed = tools::execute_plan(allowed, &prepared.catalog, &cx, &*self.mcp_service)
+            .await
+            .map_err(|error| failure(error, Some(wait.message_id)))?;
         let (ordered, spawns) = merge_resume_results(calls, &mut decisions, executed);
         if !ordered.is_empty() {
             self.commit_tool_results(&cx, turn.id, wait.message_id, ordered)

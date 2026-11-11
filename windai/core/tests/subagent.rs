@@ -14,6 +14,7 @@ use wind_wire::AgentRole;
 /// 工作区里的标记文件，子实例列出文件名后必须回流到主实例
 const MARKER: &str = "note.txt";
 
+#[ignore = "need .env"]
 #[tokio::test]
 async fn a_child_instance_lists_the_topic_workspace_for_its_parent() {
     common::init_log();

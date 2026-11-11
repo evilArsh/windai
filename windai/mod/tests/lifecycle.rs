@@ -10,7 +10,6 @@ use wind_event::{
     CallCx, CallError, DispatchCx, Dispatcher, EventOutlet, Limits, ModCaller, ModRoster, Origin,
     Pending, Scope, Source, SubmitError, Subscription,
 };
-use wind_mod::Compiler;
 use wind_mod::error::ModError;
 use wind_mod::events;
 use wind_mod::installer::Installer;
@@ -19,6 +18,7 @@ use wind_mod::roster::Roster;
 use wind_storage::Storage;
 use wind_wire::AppDirs;
 use wind_wire::CompiledScripts;
+use wind_wire::ScriptService;
 
 struct RecordingCaller {
     calls: Mutex<Vec<String>>,
@@ -117,7 +117,8 @@ impl TestCompiler {
     }
 }
 
-impl Compiler for TestCompiler {
+#[async_trait::async_trait]
+impl ScriptService for TestCompiler {
     fn compile(
         &self,
         _root: &Path,
@@ -131,6 +132,16 @@ impl Compiler for TestCompiler {
             return Err("the script does not compile".to_string());
         }
         Ok(Some(scripts()))
+    }
+
+    async fn call(
+        &self,
+        _mod_name: &str,
+        _version: i64,
+        _request: &str,
+        _input: Value,
+    ) -> Result<Value, String> {
+        todo!()
     }
 }
 
@@ -181,7 +192,7 @@ impl Harness {
         }
     }
 
-    fn installer(&self, compiler: Option<Arc<dyn Compiler>>) -> Installer {
+    fn installer(&self, compiler: Option<Arc<dyn ScriptService>>) -> Installer {
         Installer::new(
             self.storage.clone(),
             Arc::clone(&self.bus),

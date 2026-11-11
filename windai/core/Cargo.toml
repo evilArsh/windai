@@ -13,6 +13,7 @@ wind-rule = { path = "../rule" }
 wind-storage = { path = "../storage" }
 wind-mod = { path = "../mod" }
 wind-mcp = { path = "../mcp" }
+wind-script = { path = "../script" }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }

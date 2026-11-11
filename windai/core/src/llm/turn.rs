@@ -50,6 +50,7 @@ pub struct WrittenBlocks {
 #[derive(Debug, Clone, Copy)]
 pub struct ComposedInput {
     pub turn_id: i64,
+    #[allow(dead_code)]
     pub message_id: i64,
 }
 
@@ -196,7 +197,10 @@ pub async fn prepare(
     let provider = provider
         .ok_or_else(|| CoreError::Denied(format!("provider {} is unknown", model.provider_id)))?;
     let rules = compile_rules(&storage.list_rules(provider.id, model.adapter).await?)?;
-    let fragments = mod_service.prompt_fragments(topic.id).await?;
+    let fragments = mod_service
+        .prompt_fragments(topic.id)
+        .await
+        .map_err(CoreError::Internal)?;
     let prompt = bus
         .decide(
             &CORE_PROMPT_COLLECT,
@@ -210,9 +214,11 @@ pub async fn prepare(
         .await
         .fragments
         .join("\n\n");
-    let from_mods = mod_service.agent_tools(topic.id).await?;
-    let from_mcp = mcp_service.declarations(cx, topic.id).await?;
-    let catalog = Arc::new(ToolCatalog::assemble(from_mods, from_mcp)?);
+    let from_mcp = mcp_service
+        .list_tools(topic.id)
+        .await
+        .map_err(CoreError::Internal)?;
+    let catalog = Arc::new(ToolCatalog::assemble(from_mcp)?);
     Ok(Prepared {
         adapter: adapter_of(model.adapter),
         model: ChatModel {

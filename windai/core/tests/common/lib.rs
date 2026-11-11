@@ -13,7 +13,7 @@ use wind_core::agent::handler::{Agent, AgentHandle, AgentOptions};
 use wind_core::feed::{self, FeedError, FeedHandle, FeedOptions, ShutdownReport};
 use wind_core::llm::LlmRunner;
 use wind_core::llm::domain::{LlmDomain, LlmSpec};
-use wind_core::resources::ResourceServices;
+use wind_core::resources::ResourceService;
 use wind_event::{
     CallCx, CallError, Dispatcher, Limits, ModCaller, ModRoster, Observer, Subscription,
 };
@@ -199,7 +199,7 @@ pub async fn start_agent(
 pub struct Bus {
     pub dispatcher: Arc<Dispatcher>,
     pub events: feed::Subscription,
-    pub services: Arc<ResourceServices>,
+    pub services: Arc<ResourceService>,
     outlet: FeedHandle,
     runtime: tokio::task::JoinHandle<std::result::Result<ShutdownReport, FeedError>>,
 }
@@ -233,7 +233,7 @@ impl Bus {
             dirs.clone(),
             None,
         );
-        let services = Arc::new(ResourceServices::new(
+        let services = Arc::new(ResourceService::new(
             installer,
             Resources::new(fixture.storage.clone(), dirs.clone()),
             fixture.storage.clone(),

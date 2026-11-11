@@ -7,10 +7,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use tempfile::TempDir;
+use tokio_util::sync::CancellationToken;
 use wind_core::error::CoreError;
-use wind_core::llm::tools::{DeclaredTool, McpTarget, ToolOrigin};
-use wind_core::llm::{McpService as LlmMcpService, ModService};
-use wind_core::resources::ResourceServices;
+use wind_core::resources::ResourceService;
 use wind_event::{
     CallCx, CallError, DispatchCx, Dispatcher, EventOutlet, Limits, ModCaller, ModRoster, Origin,
     Pending, Scope, Source, SubmitError, Subscription,
@@ -20,7 +19,8 @@ use wind_mod::installer::Installer;
 use wind_mod::resources::Resources;
 use wind_mod::roster::Roster;
 use wind_storage::Storage;
-use wind_wire::AppDirs;
+use wind_wire::tool::Tools;
+use wind_wire::{AppDirs, McpService, ModService, ToolCallParam};
 
 struct Fixture {
     dir: TempDir,
@@ -29,7 +29,7 @@ struct Fixture {
     /// 复制进 mods 根的测试 MCP 服务
     server: PathBuf,
     registry: RegistryHandle,
-    services: ResourceServices,
+    services: ResourceService,
 }
 
 impl Fixture {
@@ -97,7 +97,7 @@ impl Fixture {
             None,
         );
         let resources = Resources::new(storage.clone(), dirs.clone());
-        let services = ResourceServices::new(
+        let services = ResourceService::new(
             installer.clone(),
             resources,
             storage.clone(),
@@ -170,63 +170,78 @@ fn write_mod(
     root
 }
 
-fn target(tool: &DeclaredTool) -> &McpTarget {
-    match &tool.origin {
-        ToolOrigin::Mcp { target } => target,
-        other => panic!("the tool must be an mcp tool: {other:?}"),
+fn tool_name(tool: &Tools) -> &str {
+    match tool {
+        Tools::Function(function) => function.name.as_str(),
     }
 }
 
-fn declaration_name(tool: &DeclaredTool) -> String {
-    match &tool.declaration {
-        wind_wire::tool::Tools::Function(function) => function.name.clone(),
-    }
+fn name_of(server: &str, tool: &str) -> String {
+    format!("{server}0m0{tool}")
 }
 
-fn is_from(tool: &DeclaredTool, server: &str) -> bool {
-    matches!(&tool.origin, ToolOrigin::Mcp { target } if target.server == server)
+fn is_from(tool: &Tools, server: &str) -> bool {
+    tool_name(tool)
+        .split_once("0m0")
+        .is_some_and(|(declared, _)| declared == server)
 }
 
-fn find_tool<'a>(tools: &'a [DeclaredTool], server: &str, name: &str) -> &'a DeclaredTool {
+fn find_tool(tools: &[Tools], server: &str, name: &str) -> String {
+    let expected = name_of(server, name);
     tools
         .iter()
-        .find(|tool| {
-            matches!(
-                &tool.origin,
-                ToolOrigin::Mcp { target }
-                    if target.server == server && target.tool == name
-            )
-        })
+        .map(tool_name)
+        .find(|declared| *declared == expected)
         .unwrap_or_else(|| panic!("the {server}/{name} tool must be declared: {tools:?}"))
+        .to_string()
 }
 
-async fn declarations(services: &ResourceServices, topic_id: i64) -> Vec<DeclaredTool> {
-    LlmMcpService::declarations(services, &cx(), topic_id)
+async fn declarations(services: &ResourceService, topic_id: i64) -> Vec<Tools> {
+    McpService::list_tools(services, topic_id)
         .await
         .expect("the declarations must be assembled")
 }
 
-async fn prompts(services: &ResourceServices, topic_id: i64) -> Vec<String> {
+async fn prompts(services: &ResourceService, topic_id: i64) -> Vec<String> {
     ModService::prompt_fragments(services, topic_id)
         .await
         .expect("the prompts must be assembled")
 }
 
 async fn call_tool(
-    services: &ResourceServices,
-    target: &McpTarget,
+    services: &ResourceService,
+    name: &str,
     arguments: Value,
-) -> Result<Value, CoreError> {
-    LlmMcpService::call(services, &cx(), "call-1", target, arguments).await
+) -> Result<Value, String> {
+    call_named(services, name, arguments, CancellationToken::new()).await
 }
 
-async fn wait_tools<F>(
-    services: &ResourceServices,
-    topic_id: i64,
-    mut ready: F,
-) -> Vec<DeclaredTool>
+async fn call_named(
+    services: &ResourceService,
+    name: &str,
+    arguments: Value,
+    token: CancellationToken,
+) -> Result<Value, String> {
+    let (server, tool) = name
+        .split_once("0m0")
+        .unwrap_or_else(|| panic!("the tool name {name} names no server"));
+    McpService::tool_call(
+        services,
+        tokio::time::Instant::now() + Duration::from_secs(60),
+        token,
+        ToolCallParam {
+            call_id: "call-1".to_string(),
+            server: server.to_string(),
+            name: tool.to_string(),
+            arguments,
+        },
+    )
+    .await
+}
+
+async fn wait_tools<F>(services: &ResourceService, topic_id: i64, mut ready: F) -> Vec<Tools>
 where
-    F: FnMut(&[DeclaredTool]) -> bool,
+    F: FnMut(&[Tools]) -> bool,
 {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -280,11 +295,8 @@ async fn enable_publishes_mod_tools_and_call_returns_its_value() {
     })
     .await;
     let context = find_tool(&tools, "mod_demo_tools", "context");
-    assert_eq!(
-        declaration_name(context),
-        "mod_demo_tools0m0context".to_string()
-    );
-    let value = call_tool(&fixture.services, target(context), json!({}))
+    assert_eq!(context, "mod_demo_tools0m0context".to_string());
+    let value = call_tool(&fixture.services, &context, json!({}))
         .await
         .expect("the mod tool must answer");
     assert_eq!(structured(&value)["mark"], json!("demo"));
@@ -317,7 +329,7 @@ async fn disable_removes_the_tools() {
         tools.iter().any(|tool| is_from(tool, "mod_demo_tools"))
     })
     .await;
-    let context = target(find_tool(&tools, "mod_demo_tools", "context")).clone();
+    let context = find_tool(&tools, "mod_demo_tools", "context");
     call_tool(&fixture.services, &context, json!({}))
         .await
         .expect("the tool must answer before the change");
@@ -336,7 +348,7 @@ async fn disable_removes_the_tools() {
         .await
         .expect_err("a disabled service must reject new calls");
     assert!(
-        matches!(error, CoreError::Denied(_)),
+        error.contains("not running"),
         "the rejection must name the disabled state: {error}"
     );
 
@@ -380,7 +392,7 @@ async fn concurrent_first_declarations_publish_once() {
         let barrier = barrier.clone();
         listings.spawn(async move {
             barrier.wait().await;
-            LlmMcpService::declarations(&services, &cx(), topic_id).await
+            McpService::list_tools(&services, topic_id).await
         });
     }
     while let Some(result) = listings.join_next().await {
@@ -415,7 +427,7 @@ async fn concurrent_first_declarations_publish_once() {
     fixture.services.shutdown().await.expect("shutdown");
 }
 
-async fn wait_mark(services: &ResourceServices, tool: &McpTarget, expected: &str) -> Value {
+async fn wait_mark(services: &ResourceService, tool: &str, expected: &str) -> Value {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if let Ok(value) = call_tool(services, tool, json!({})).await
@@ -425,8 +437,7 @@ async fn wait_mark(services: &ResourceServices, tool: &McpTarget, expected: &str
         }
         assert!(
             Instant::now() < deadline,
-            "the mark of {} must become {expected}",
-            tool.server
+            "the mark of {tool} must become {expected}"
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -458,8 +469,8 @@ fn skill_sources(value: &Value) -> Vec<String> {
 }
 
 async fn wait_skills(
-    services: &ResourceServices,
-    tool: &McpTarget,
+    services: &ResourceService,
+    tool: &str,
     dir: &str,
     expected: &[&str],
 ) -> Vec<String> {
@@ -480,7 +491,7 @@ async fn wait_skills(
     }
 }
 
-async fn wait_skills_rejected(services: &ResourceServices, tool: &McpTarget, dir: &str) {
+async fn wait_skills_rejected(services: &ResourceService, tool: &str, dir: &str) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if call_tool(services, tool, json!({ "dir": dir }))
@@ -556,8 +567,8 @@ async fn update_keeps_unchanged_servers_running() {
             && tools.iter().any(|tool| is_from(tool, "mod_beta_tools"))
     })
     .await;
-    let alpha_context = target(find_tool(&tools, "mod_alpha_tools", "context")).clone();
-    let beta_context = target(find_tool(&tools, "mod_beta_tools", "context")).clone();
+    let alpha_context = find_tool(&tools, "mod_alpha_tools", "context");
+    let beta_context = find_tool(&tools, "mod_beta_tools", "context");
     wait_mark(&fixture.services, &beta_context, "beta-v1").await;
 
     fixture
@@ -622,16 +633,17 @@ async fn duplicate_constructed_names_keep_the_first() {
         tools.iter().any(|tool| is_from(tool, "mod_ab_c_d"))
     })
     .await;
-    let contexts: Vec<&DeclaredTool> = tools
+    let contexts: Vec<&str> = tools
         .iter()
-        .filter(|tool| is_from(tool, "mod_ab_c_d") && target(tool).tool == "context")
+        .map(tool_name)
+        .filter(|name| name.starts_with(&name_of("mod_ab_c_d", "context")))
         .collect();
     assert_eq!(
         contexts.len(),
         1,
         "the duplicate service must be declared once: {tools:?}"
     );
-    let value = call_tool(&fixture.services, target(contexts[0]), json!({}))
+    let value = call_tool(&fixture.services, contexts[0], json!({}))
         .await
         .expect("the kept service must answer");
     assert_eq!(
@@ -693,7 +705,7 @@ async fn a_failed_mod_service_does_not_block_other_tools() {
         tools.iter().any(|tool| is_from(tool, "mod_good_tools"))
     })
     .await;
-    let context = target(find_tool(&tools, "mod_good_tools", "context")).clone();
+    let context = find_tool(&tools, "mod_good_tools", "context");
     let value = call_tool(&fixture.services, &context, json!({}))
         .await
         .expect("the healthy service must answer");
@@ -745,7 +757,7 @@ async fn builtin_fs_serves_the_workspace_and_shared_roots() {
         tools.iter().any(|tool| is_from(tool, &server))
     })
     .await;
-    let list = target(find_tool(&tools, &server, "list_dir")).clone();
+    let list = find_tool(&tools, &server, "list_dir");
     let value = call_tool(
         &fixture.services,
         &list,
@@ -854,7 +866,7 @@ async fn builtin_skills_rebuilds_when_mods_change() {
         tools.iter().any(|tool| is_from(tool, &server))
     })
     .await;
-    let skill_tool = target(find_tool(&tools, &server, "skills_list")).clone();
+    let skill_tool = find_tool(&tools, &server, "skills_list");
     wait_skills(
         &fixture.services,
         &skill_tool,
@@ -939,22 +951,14 @@ async fn cancelled_tool_call_stops_waiting() {
         tools.iter().any(|tool| is_from(tool, "mod_demo_tools"))
     })
     .await;
-    let wait = target(find_tool(&tools, "mod_demo_tools", "wait")).clone();
+    let wait = find_tool(&tools, "mod_demo_tools", "wait");
 
-    let call_cx = cx();
-    let cancel = call_cx.cancel().clone();
+    let cancel = CancellationToken::new();
     let calling = tokio::spawn({
         let services = fixture.services.clone();
-        async move {
-            LlmMcpService::call(
-                &services,
-                &call_cx,
-                "wait",
-                &wait,
-                json!({"millis": 30_000}),
-            )
-            .await
-        }
+        let cancel = cancel.clone();
+        let wait = wait.clone();
+        async move { call_named(&services, &wait, json!({"millis": 30_000}), cancel).await }
     });
     tokio::time::sleep(Duration::from_millis(100)).await;
     cancel.cancel();
@@ -969,7 +973,7 @@ async fn cancelled_tool_call_stops_waiting() {
     );
 
     let tools = declarations(&fixture.services, topic_id).await;
-    let context = target(find_tool(&tools, "mod_demo_tools", "context")).clone();
+    let context = find_tool(&tools, "mod_demo_tools", "context");
     call_tool(&fixture.services, &context, json!({}))
         .await
         .expect("the connection must stay usable");
@@ -1001,7 +1005,7 @@ async fn release_topic_and_shutdown_close_runtime_state() {
         tools.iter().any(|tool| is_from(tool, "mod_demo_tools"))
     })
     .await;
-    let context = target(find_tool(&tools, "mod_demo_tools", "context")).clone();
+    let context = find_tool(&tools, "mod_demo_tools", "context");
 
     fixture
         .services
@@ -1018,10 +1022,10 @@ async fn release_topic_and_shutdown_close_runtime_state() {
     );
 
     fixture.services.shutdown().await.expect("shutdown");
-    let error = LlmMcpService::declarations(&fixture.services, &cx(), topic_id)
+    let error = McpService::list_tools(&fixture.services, topic_id)
         .await
         .expect_err("a closed adapter must reject listings");
-    assert!(matches!(error, CoreError::ResourcesClosed), "{error}");
+    assert!(error.contains("closed"), "{error}");
     let topic = fixture.topic().await;
     let error = fixture
         .services
@@ -1068,7 +1072,7 @@ async fn release_topic_then_declare_republishes_the_tools() {
         tools.iter().any(|tool| is_from(tool, "mod_demo_tools"))
     })
     .await;
-    let context = target(find_tool(&tools, "mod_demo_tools", "context")).clone();
+    let context = find_tool(&tools, "mod_demo_tools", "context");
     let value = call_tool(&fixture.services, &context, json!({}))
         .await
         .expect("a redeclared topic must answer again");
@@ -1104,10 +1108,10 @@ async fn shutdown_closes_declarations_without_a_release() {
     .await;
 
     fixture.services.shutdown().await.expect("shutdown");
-    let error = LlmMcpService::declarations(&fixture.services, &cx(), topic_id)
+    let error = McpService::list_tools(&fixture.services, topic_id)
         .await
         .expect_err("a closed adapter must reject listings");
-    assert!(matches!(error, CoreError::ResourcesClosed), "{error}");
+    assert!(error.contains("closed"), "{error}");
 }
 
 #[tokio::test]
@@ -1163,7 +1167,7 @@ async fn a_failed_topic_does_not_block_other_topics() {
         tools.iter().any(|tool| is_from(tool, "mod_beta_tools"))
     })
     .await;
-    let beta_context = target(find_tool(&tools, "mod_beta_tools", "context")).clone();
+    let beta_context = find_tool(&tools, "mod_beta_tools", "context");
     wait_mark(&fixture.services, &beta_context, "beta-v1").await;
 
     fs::remove_dir_all(fixture.dirs.mod_version("alpha", 1))

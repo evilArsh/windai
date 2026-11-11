@@ -12,3 +12,6 @@ strum = { workspace = true }
 schemars = { workspace = true }
 thiserror = { workspace = true }
 dirs = { workspace = true }
+async-trait = { workspace = true }
+tokio-util = { workspace = true }
+tokio = { workspace = true }
