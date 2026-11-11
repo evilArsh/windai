@@ -15,28 +15,6 @@ pub mod vendors;
 
 pub use models::*;
 
-// pub(crate) struct TableName;
-// impl TableName {
-//     pub const TURN: &'static str = "turn";
-//     pub const MESSAGE: &'static str = "message";
-//     pub const BLOCK: &'static str = "block";
-//     pub const AGENT_INSTANCES: &'static str = "agent_instances";
-//     pub const AGENT_PENDING: &'static str = "agent_pending";
-//     pub const SPAWN_CALLS: &'static str = "spawn_calls";
-//     pub const EXTERNAL_WAITS: &'static str = "external_waits";
-//     pub const TOPICS: &'static str = "topics";
-//     pub const PROVIDERS: &'static str = "providers";
-//     pub const CREDENTIALS: &'static str = "credentials";
-//     pub const MODELS: &'static str = "models";
-//     pub const JSON_RULE: &'static str = "json_rule";
-//     #[allow(dead_code)]
-//     pub const MCP_SERVERS: &'static str = "mcp_servers";
-//     pub const MODS: &'static str = "mods";
-//     pub const TOPIC_MODS: &'static str = "topic_mods";
-//     pub const MOD_STATE: &'static str = "mod_state";
-//     pub const EVENT_LOG: &'static str = "event_log";
-// }
-
 #[derive(Clone)]
 pub struct Storage {
     executor: StorageExecutor,

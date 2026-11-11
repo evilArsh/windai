@@ -11,13 +11,13 @@ use wind_event::{
     Pending, Scope, Source, SubmitError, Subscription,
 };
 use wind_mod::Compiler;
-use wind_mod::dirs::AppDirs;
 use wind_mod::error::ModError;
 use wind_mod::events;
 use wind_mod::installer::Installer;
 use wind_mod::resources::Resources;
 use wind_mod::roster::Roster;
 use wind_storage::Storage;
+use wind_wire::AppDirs;
 use wind_wire::CompiledScripts;
 
 struct RecordingCaller {

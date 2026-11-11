@@ -1,19 +1,7 @@
 use crate::error::{ModError, Result};
 use crate::manifest::Manifest;
 use std::path::PathBuf;
-
-pub const MCP_DIR: &str = "mcp";
-pub const SKILLS_DIR: &str = "skills";
-pub const MANIFEST_FILE: &str = "mod.json";
-
-pub const SCRIPT_DIR: &str = "scripts";
-pub const SCRIPT_ENTRY: &str = "scripts/index.js";
-pub const SCRIPT_EXT: &str = "js";
-
-pub const PROMPTS_DIR: &str = "prompts";
-pub const PROMPT_EXTS: [&str; 3] = ["md", "txt", "html"];
-
-pub const UI_ENTRY: &str = "ui/index.js";
+use wind_wire::{MOD_MANIFEST, MOD_MCP_DIR, MOD_PROMPTS_DIR, MOD_SKILLS_DIR, MOD_UI_ENTRY};
 
 /// 一个位于版本目录中的 mod 包
 #[derive(Debug, Clone)]
@@ -29,7 +17,7 @@ pub struct Package {
 impl Package {
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
-        let manifest_path = root.join(MANIFEST_FILE);
+        let manifest_path = root.join(MOD_MANIFEST);
         let manifest_raw =
             std::fs::read_to_string(&manifest_path).map_err(|source| ModError::ManifestIo {
                 path: manifest_path.clone(),
@@ -65,18 +53,18 @@ impl Package {
     }
 
     pub fn ui_entry(&self) -> PathBuf {
-        self.root.join(UI_ENTRY)
+        self.root.join(MOD_UI_ENTRY)
     }
 
     pub fn skills_dir(&self) -> PathBuf {
-        self.root.join(SKILLS_DIR)
+        self.root.join(MOD_SKILLS_DIR)
     }
 
     pub fn mcp_dir(&self) -> PathBuf {
-        self.root.join(MCP_DIR)
+        self.root.join(MOD_MCP_DIR)
     }
 
     pub fn prompts_dir(&self) -> PathBuf {
-        self.root.join(PROMPTS_DIR)
+        self.root.join(MOD_PROMPTS_DIR)
     }
 }

@@ -10,7 +10,6 @@ wind-wire = { path = "../wire" }
 wind-event = { path = "../event" }
 wind-storage = { path = "../storage" }
 async-trait = { workspace = true }
-dirs = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 schemars = { workspace = true }

@@ -1,13 +1,12 @@
 use crate::{
     Compiler,
-    dirs::AppDirs,
     error::{ModError, Result},
     events::{
         CORE_MOD_DELETED, CORE_MOD_INSTALLED, CORE_MOD_UPDATED, ModDeleted, ModInstalled,
         ModUpdated,
     },
     manifest::{DEFAULT_SUB_TIMEOUT_MS, Manifest},
-    package::{Package, UI_ENTRY},
+    package::Package,
     roster::Roster,
 };
 use serde_json::Value;
@@ -15,7 +14,7 @@ use std::{collections::HashSet, path::Path, sync::Arc};
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use wind_event::{DispatchCx, Dispatcher, Subscription};
 use wind_storage::{Mod, Storage, StorageTx, error::StorageError};
-use wind_wire::CompiledScripts;
+use wind_wire::{AppDirs, CompiledScripts, MOD_UI_ENTRY};
 
 pub(crate) const FIRST_VERSION: u32 = 1;
 
@@ -528,7 +527,7 @@ fn ui_entry_of(package: &Package) -> Option<String> {
     }
     Some(format!(
         "windai://mods/{}/{}/{}",
-        package.manifest.name, package.manifest.version, UI_ENTRY
+        package.manifest.name, package.manifest.version, MOD_UI_ENTRY
     ))
 }
 

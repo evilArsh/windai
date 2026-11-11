@@ -3,7 +3,6 @@ use std::path::Path;
 
 use wind_wire::CompiledScripts;
 
-pub mod dirs;
 pub mod error;
 pub mod events;
 pub mod installer;

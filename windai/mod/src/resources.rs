@@ -1,14 +1,15 @@
-use crate::dirs::AppDirs;
 use crate::error::{ModError, Result};
 use crate::manifest::Manifest;
-use crate::package::{PROMPT_EXTS, PROMPTS_DIR, SKILLS_DIR, UI_ENTRY};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use wind_storage::Storage;
-use wind_wire::{McpConfig, McpDefinition};
+use wind_wire::{
+    AppDirs, MOD_PROMPT_EXTS, MOD_PROMPTS_DIR, MOD_SKILLS_DIR, MOD_UI_ENTRY, McpConfig,
+    McpDefinition,
+};
 
 /// 一个已发布版本对外提供的资源
 #[derive(Debug, Clone)]
@@ -86,8 +87,8 @@ impl Resources {
         let manifest = Manifest::parse(&manifest_raw)
             .map_err(|error| resource_error(&name, version, &canonical_root, error))?;
         let prompts = read_prompts(&canonical_root, &name, version)?;
-        let skills = optional_dir(&canonical_root, SKILLS_DIR, &name, version)?;
-        let ui = optional_file(&canonical_root, UI_ENTRY, &name, version)?;
+        let skills = optional_dir(&canonical_root, MOD_SKILLS_DIR, &name, version)?;
+        let ui = optional_file(&canonical_root, MOD_UI_ENTRY, &name, version)?;
         let mcp = mcp_definitions(&manifest, &canonical_root, &name, version)?;
         let requires_scripts = manifest.requires_scripts();
         Ok(ModResources {
@@ -105,7 +106,7 @@ impl Resources {
 }
 
 fn read_prompts(root: &Path, name: &str, version: u32) -> Result<Vec<String>> {
-    let dir = root.join(PROMPTS_DIR);
+    let dir = root.join(MOD_PROMPTS_DIR);
     let entries = match fs::read_dir(&dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
@@ -122,7 +123,7 @@ fn read_prompts(root: &Path, name: &str, version: u32) -> Result<Vec<String>> {
         }
         let extension = path.extension().and_then(OsStr::to_str);
         let is_prompt = extension.is_some_and(|extension| {
-            PROMPT_EXTS
+            MOD_PROMPT_EXTS
                 .iter()
                 .any(|allowed| allowed.eq_ignore_ascii_case(extension))
         });

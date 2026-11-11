@@ -16,11 +16,11 @@ use wind_event::{
     Pending, Scope, Source, SubmitError, Subscription,
 };
 use wind_mcp::{McpOptions, RegistryHandle};
-use wind_mod::dirs::AppDirs;
 use wind_mod::installer::Installer;
 use wind_mod::resources::Resources;
 use wind_mod::roster::Roster;
 use wind_storage::Storage;
+use wind_wire::AppDirs;
 
 struct Fixture {
     dir: TempDir,

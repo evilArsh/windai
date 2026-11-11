@@ -6,11 +6,11 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 use wind_event::{Directory, EventMeta, Shape};
 use wind_mod::Resources;
-use wind_mod::dirs::AppDirs;
 use wind_mod::error::ModError;
 use wind_mod::manifest::Manifest;
 use wind_mod::package::Package;
 use wind_storage::Storage;
+use wind_wire::AppDirs;
 use wind_wire::McpConfig;
 
 fn validator() -> Validator {
