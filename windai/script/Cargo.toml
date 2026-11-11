@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+wind-wire = { path = "../wire" }
 async-trait = { workspace = true }
 log = { workspace = true }
 rquickjs = { version = "0.14", features = ["loader"] }

@@ -7,11 +7,12 @@ use async_trait::async_trait;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{CaughtError, Context, Ctx, Function, Module, Runtime, Value as JsValue};
 use serde_json::Value;
+use wind_wire::MOD_SCRIPT_ENTRY;
 
 use crate::circuit::Breaker;
 use crate::error::ScriptsError;
 use crate::facade::{FacadeCall, build_ctx, new_failure, outcome_of};
-use crate::loader::{ENTRY, ModLoader, ModResolver};
+use crate::loader::{ModLoader, ModResolver};
 use crate::service::{ScriptCall, ScriptHost, ScriptScope, ScriptService};
 use crate::threads::{ThreadPool, ThreadPoolError};
 
@@ -90,7 +91,7 @@ pub fn quickjs(config: Config) -> Result<Arc<dyn ScriptService>, ScriptsError> {
 #[async_trait]
 impl ScriptService for QuickJsEngine {
     fn compile(&self, root: &Path, _handlers: &HashSet<String>) -> Result<(), ScriptsError> {
-        let path = root.join("scripts/index.js");
+        let path = root.join(MOD_SCRIPT_ENTRY);
         let source = std::fs::read_to_string(&path).map_err(|error| {
             ScriptsError::Compile(format!("{} is not readable: {error}", path.display()))
         })?;
@@ -100,7 +101,7 @@ impl ScriptService for QuickJsEngine {
         let context =
             Context::full(&runtime).map_err(|error| ScriptsError::Internal(error.to_string()))?;
         context.with(|ctx| {
-            Module::declare(ctx, ENTRY, source)
+            Module::declare(ctx, MOD_SCRIPT_ENTRY, source)
                 .map(|_| ())
                 .map_err(|error| ScriptsError::Compile(error.to_string()))
         })
@@ -169,7 +170,7 @@ fn run_job(job: Job, memory_limit: usize) -> Result<Option<Value>, ScriptsError>
     })));
     let loader = ModLoader::new(&job.root);
     let source = loader
-        .source(ENTRY)
+        .source(MOD_SCRIPT_ENTRY)
         .map_err(|error| ScriptsError::Handler(error.to_string()))?;
     runtime.set_loader(ModResolver, loader);
     let context =
@@ -179,7 +180,7 @@ fn run_job(job: Job, memory_limit: usize) -> Result<Option<Value>, ScriptsError>
 
 /// 在已建立的上下文里解析模块并调用 handler
 fn run_in(ctx: &Ctx<'_>, job: &Job, source: String) -> Result<Option<Value>, ScriptsError> {
-    let module = Module::declare(ctx.clone(), ENTRY, source)
+    let module = Module::declare(ctx.clone(), MOD_SCRIPT_ENTRY, source)
         .map_err(|error| js_error(ctx, error, job.deadline))?;
     let (module, promise) = module
         .eval()

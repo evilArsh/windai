@@ -3586,6 +3586,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
+ "wind-wire",
 ]
 
 [[package]]

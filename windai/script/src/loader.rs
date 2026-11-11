@@ -1,11 +1,7 @@
-use std::path::{Component, Path, PathBuf};
-
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{Ctx, Module};
-
-/// 入口相对 mod 根目录的位置
-pub(crate) const ENTRY: &str = "scripts/index.js";
-const SCRIPT_DIR: &str = "scripts";
+use std::path::{Component, Path, PathBuf};
+use wind_wire::MOD_SCRIPT_DIR;
 
 /// 模块名或文件不合法
 #[derive(Debug, thiserror::Error)]
@@ -53,7 +49,7 @@ fn normalize_specifier(base: &str, specifier: &str) -> Result<String, LoadError>
             Component::RootDir | Component::Prefix(_) => return Err(LoadError::NotRelative),
         }
     }
-    if parts.first().map(String::as_str) != Some(SCRIPT_DIR) {
+    if parts.first().map(String::as_str) != Some(MOD_SCRIPT_DIR) {
         return Err(LoadError::NotHostSide);
     }
     let name = parts.join("/");
@@ -89,7 +85,7 @@ impl ModLoader {
     pub(crate) fn new(root: &Path) -> Self {
         let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         Self {
-            scripts: root.join(SCRIPT_DIR),
+            scripts: root.join(MOD_SCRIPT_DIR),
             root,
         }
     }
