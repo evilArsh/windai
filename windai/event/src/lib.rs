@@ -8,7 +8,7 @@ pub use events::{
 };
 pub use guard::{Guards, Limits, OverLimit};
 pub use mod_call::{CallCx, CallError, CallMode};
-pub use mod_emit::{EmitChannel, EmitError, ModEmitter, ModIdentity};
+pub use mod_emit::{EmitChannel, EmitError, ModEmitter, ModIdentity, PayloadValidator};
 pub use outlet::{EventOutlet, GroupKey, Pending, Retention, SubmitError};
 pub use pool::{Job, ObservePool};
 pub use subscription::{EnabledSet, Subscription, SubscriptionIndex};

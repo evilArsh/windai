@@ -215,6 +215,7 @@ impl Bus {
         let directory = wind_event::directory()
             .merge(wind_core::agent::events::directory())
             .merge(wind_core::llm::events::directory())
+            .merge(wind_core::script::directory())
             .merge(wind_mod::events::directory())
             .merge(wind_mcp::events::directory());
         let dispatcher = Arc::new(Dispatcher::new(

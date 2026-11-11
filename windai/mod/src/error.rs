@@ -32,9 +32,6 @@ pub enum ModError {
     #[error("mod {name} version {version} is not published")]
     VersionNotPublished { name: String, version: u32 },
 
-    #[error("mod {name} version {version} needs a script engine")]
-    ScriptsUnavailable { name: String, version: u32 },
-
     #[error("the operation on {name} conflicts with the current state: {reason}")]
     Conflict { name: String, reason: String },
 
@@ -51,9 +48,6 @@ pub enum ModError {
         path: PathBuf,
         reason: String,
     },
-
-    #[error("the package at {path} was refused: {reason}")]
-    Rejected { path: String, reason: String },
 
     #[error("event bus error: {0}")]
     Bus(String),

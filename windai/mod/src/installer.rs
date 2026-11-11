@@ -9,11 +9,12 @@ use crate::{
     roster::Roster,
 };
 use serde_json::Value;
-use std::{collections::HashSet, path::Path, sync::Arc};
+use std::{path::Path, sync::Arc};
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use wind_event::{DispatchCx, Dispatcher, Subscription};
+use wind_script::ScriptService;
 use wind_storage::{Mod, Storage, StorageTx, error::StorageError};
-use wind_wire::{AppDirs, CompiledScripts, MOD_UI_ENTRY, ScriptService};
+use wind_wire::{AppDirs, MOD_UI_ENTRY};
 
 pub(crate) const FIRST_VERSION: u32 = 1;
 
@@ -23,14 +24,6 @@ pub struct ModChange {
     pub affected_topics: Vec<i64>,
 }
 
-/// 因为缺少脚本引擎而没有装载的 mod
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UnavailableMod {
-    pub name: String,
-    pub version: u32,
-    pub reason: String,
-}
-
 /// mod 安装器
 #[derive(Clone)]
 pub struct Installer {
@@ -38,7 +31,7 @@ pub struct Installer {
     bus: Arc<Dispatcher>,
     dirs: AppDirs,
     roster: Arc<Roster>,
-    compiler: Option<Arc<dyn ScriptService>>,
+    scripts: Option<Arc<dyn ScriptService>>,
     write: Arc<Mutex<()>>,
 }
 
@@ -48,14 +41,14 @@ impl Installer {
         bus: Arc<Dispatcher>,
         roster: Arc<Roster>,
         dirs: AppDirs,
-        compiler: Option<Arc<dyn ScriptService>>,
+        scripts: Option<Arc<dyn ScriptService>>,
     ) -> Self {
         Self {
             storage,
             bus,
             dirs,
             roster,
-            compiler,
+            scripts,
             write: Arc::new(Mutex::new(())),
         }
     }
@@ -70,14 +63,11 @@ impl Installer {
             });
         }
         self.validate(&package)?;
-        let compiled = self.compile(&package)?;
 
         let gate = Arc::clone(&self.write).lock_owned().await;
         let tx = self.storage.begin().await?;
         let storage = tx.storage();
-        let prepared = self
-            .prepare_install(&storage, &package, compiled.as_ref())
-            .await;
+        let prepared = self.prepare_install(&storage, &package).await;
         let (id, snapshot) = match prepared {
             Ok(value) => value,
             Err(error) => {
@@ -95,14 +85,11 @@ impl Installer {
         let package = Package::open(package)?;
         self.check_location(&package)?;
         self.validate(&package)?;
-        let compiled = self.compile(&package)?;
 
         let gate = Arc::clone(&self.write).lock_owned().await;
         let tx = self.storage.begin().await?;
         let storage = tx.storage();
-        let prepared = self
-            .prepare_update(&storage, &package, compiled.as_ref())
-            .await;
+        let prepared = self.prepare_update(&storage, &package).await;
         let (change, completion, snapshot) = match prepared {
             Ok(value) => value,
             Err(error) => {
@@ -165,12 +152,12 @@ impl Installer {
     }
 
     /// 从数据库恢复内存中的启用集合与订阅
-    pub async fn restore(&self) -> Result<Vec<UnavailableMod>> {
+    pub async fn restore(&self) -> Result<()> {
         let gate = Arc::clone(&self.write).lock_owned().await;
         let snapshot = self.snapshot(&self.storage).await?;
         self.publish_memory(snapshot.subscriptions, snapshot.roster_rows);
         drop(gate);
-        Ok(snapshot.unavailable)
+        Ok(())
     }
 
     pub async fn get(&self, name: &str) -> Result<Option<Mod>> {
@@ -181,23 +168,20 @@ impl Installer {
         Ok(self.storage.list_mods().await?)
     }
 
-    async fn prepare_install(
-        &self,
-        tx: &Storage,
-        package: &Package,
-        compiled: Option<&CompiledScripts>,
-    ) -> Result<(i64, Snapshot)> {
+    async fn prepare_install(&self, tx: &Storage, package: &Package) -> Result<(i64, Snapshot)> {
         let name = &package.manifest.name;
         if tx.mod_by_name(name).await?.is_some() {
             return Err(ModError::AlreadyInstalled { name: name.clone() });
         }
-        let id = tx
-            .install_mod(name, &package.manifest_raw, compiled)
-            .await
-            .map_err(|error| match error {
-                StorageError::Conflict { .. } => ModError::AlreadyInstalled { name: name.clone() },
-                other => other.into(),
-            })?;
+        let id =
+            tx.install_mod(name, &package.manifest_raw)
+                .await
+                .map_err(|error| match error {
+                    StorageError::Conflict { .. } => {
+                        ModError::AlreadyInstalled { name: name.clone() }
+                    }
+                    other => other.into(),
+                })?;
         let snapshot = self.snapshot(tx).await?;
         Ok((id, snapshot))
     }
@@ -206,7 +190,6 @@ impl Installer {
         &self,
         tx: &Storage,
         package: &Package,
-        compiled: Option<&CompiledScripts>,
     ) -> Result<(ModChange, Completion, Snapshot)> {
         let manifest = &package.manifest;
         let row = tx
@@ -224,21 +207,15 @@ impl Installer {
                 ),
             });
         }
-        tx.update_mod(
-            row.id,
-            row.version,
-            manifest.version,
-            &package.manifest_raw,
-            compiled,
-        )
-        .await
-        .map_err(|error| match error {
-            StorageError::Conflict { .. } => ModError::Conflict {
-                name: manifest.name.clone(),
-                reason: "the current version changed".to_string(),
-            },
-            other => other.into(),
-        })?;
+        tx.update_mod(row.id, row.version, manifest.version, &package.manifest_raw)
+            .await
+            .map_err(|error| match error {
+                StorageError::Conflict { .. } => ModError::Conflict {
+                    name: manifest.name.clone(),
+                    reason: "the current version changed".to_string(),
+                },
+                other => other.into(),
+            })?;
         let topics = tx.topics_with_mod(row.id).await?;
         let snapshot = self.snapshot(tx).await?;
         let completion = Completion::updated(package, row.version);
@@ -289,13 +266,6 @@ impl Installer {
             .ok_or_else(|| ModError::NotInstalled {
                 name: name.to_string(),
             })?;
-        let manifest = Manifest::parse(&row.manifest)?;
-        if manifest.requires_scripts() && self.compiler.is_none() {
-            return Err(ModError::ScriptsUnavailable {
-                name: name.to_string(),
-                version: row.version,
-            });
-        }
         tx.enable_mod(topic_id, row.id).await?;
         let snapshot = self.snapshot(tx).await?;
         Ok((
@@ -332,16 +302,13 @@ impl Installer {
     async fn snapshot(&self, tx: &Storage) -> Result<Snapshot> {
         let modules = tx.list_mods().await?;
         let mut subscriptions = Vec::new();
-        let mut unavailable = Vec::new();
         for module in modules {
             let manifest = Manifest::parse(&module.manifest)?;
-            if manifest.requires_scripts() && self.compiler.is_none() {
-                unavailable.push(UnavailableMod {
-                    name: manifest.name.clone(),
-                    version: manifest.version,
-                    reason: "a script engine is not available".to_string(),
-                });
-                continue;
+            if manifest.requires_scripts() && self.scripts.is_none() {
+                log::warn!(
+                    "[mod] {} declares scripts but no script service is available",
+                    manifest.name
+                );
             }
             subscriptions
                 .extend(manifest.subscriptions(self.bus.directory(), DEFAULT_SUB_TIMEOUT_MS)?);
@@ -350,7 +317,6 @@ impl Installer {
         Ok(Snapshot {
             subscriptions,
             roster_rows,
-            unavailable,
         })
     }
 
@@ -364,34 +330,6 @@ impl Installer {
             .manifest
             .subscriptions(self.bus.directory(), DEFAULT_SUB_TIMEOUT_MS)?;
         Ok(())
-    }
-
-    fn compile(&self, package: &Package) -> Result<Option<CompiledScripts>> {
-        let requires_scripts = package.manifest.requires_scripts();
-        let Some(compiler) = &self.compiler else {
-            return if requires_scripts {
-                Err(ModError::ScriptsUnavailable {
-                    name: package.name().to_string(),
-                    version: package.version(),
-                })
-            } else {
-                Ok(None)
-            };
-        };
-        // TODO: wind-script 实现验证
-        let compiled = compiler
-            .compile(&package.root, &handlers_of(&package.manifest))
-            .map_err(|reason| ModError::Rejected {
-                path: package.root.display().to_string(),
-                reason,
-            })?;
-        if requires_scripts && compiled.is_none() {
-            return Err(ModError::ScriptsUnavailable {
-                name: package.name().to_string(),
-                version: package.version(),
-            });
-        }
-        Ok(compiled)
     }
 
     fn check_location(&self, package: &Package) -> Result<()> {
@@ -439,7 +377,6 @@ impl Installer {
 struct Snapshot {
     subscriptions: Vec<Subscription>,
     roster_rows: Vec<(i64, String)>,
-    unavailable: Vec<UnavailableMod>,
 }
 
 enum Completion {
@@ -528,15 +465,4 @@ fn ui_entry_of(package: &Package) -> Option<String> {
         "windai://mods/{}/{}/{}",
         package.manifest.name, package.manifest.version, MOD_UI_ENTRY
     ))
-}
-
-fn handlers_of(manifest: &Manifest) -> HashSet<String> {
-    let mut handlers = HashSet::new();
-    for request in manifest.requests.values() {
-        handlers.insert(request.handler.clone());
-    }
-    for sub in manifest.events.on.values() {
-        handlers.insert(sub.handler.clone());
-    }
-    handlers
 }

@@ -6,11 +6,9 @@ use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 use sqlx::types::Json;
 use sqlx::{FromRow, Row};
-use std::collections::HashMap;
 use wind_wire::event::{Origin, Scope, Shape, Source};
 use wind_wire::{
-    AdapterType, AgentMode, AgentRole, Block as WireBlock, Body, CompiledScripts, Content,
-    PendingKind, Role,
+    AdapterType, AgentMode, AgentRole, Block as WireBlock, Body, Content, PendingKind, Role,
 };
 
 /// 话题
@@ -441,42 +439,17 @@ pub struct Mod {
     pub name: String,
     pub version: u32,
     pub manifest: String,
-    pub compiled: Option<CompiledScripts>,
     pub created_at: i64,
     pub updated_at: i64,
 }
 
 impl<'r> FromRow<'r, DbRow> for Mod {
     fn from_row(row: &'r DbRow) -> sqlx::Result<Self> {
-        let compiled: Option<String> = row.try_get("compiled")?;
-        let fingerprint: Option<String> = row.try_get("engine_fingerprint")?;
-        let compiled = match (compiled, fingerprint) {
-            (None, None) => None,
-            (Some(text), Some(fingerprint)) => {
-                let modules: HashMap<String, Vec<u8>> =
-                    serde_json::from_str(&text).map_err(|error| column_error("compiled", error))?;
-                Some(CompiledScripts {
-                    modules,
-                    fingerprint,
-                })
-            }
-            _ => {
-                return Err(column_error(
-                    "compiled",
-                    StorageError::MalformedColumn {
-                        column: "compiled".into(),
-                        detail: "compiled and engine_fingerprint must both be set or both be empty"
-                            .into(),
-                    },
-                ));
-            }
-        };
         Ok(Self {
             id: row.try_get("id")?,
             name: row.try_get("name")?,
             version: version_of(row, "version")?,
             manifest: row.try_get("manifest")?,
-            compiled,
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,
         })

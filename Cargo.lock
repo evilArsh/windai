@@ -3558,6 +3558,7 @@ dependencies = [
  "tokio",
  "url",
  "wind-event",
+ "wind-script",
  "wind-storage",
  "wind-wire",
 ]
@@ -3578,18 +3579,13 @@ name = "wind-script"
 version = "0.2.0"
 dependencies = [
  "async-trait",
- "futures",
  "log",
- "reqwest",
  "rquickjs",
- "schemars",
- "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "tokio-util",
- "wind-event",
- "wind-wire",
 ]
 
 [[package]]

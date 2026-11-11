@@ -2,7 +2,6 @@ use crate::error::{Result, StorageError};
 use crate::utils::{conflict, is_unique_violation, not_found, now_ms};
 use crate::{Mod, Storage};
 use serde::Deserialize;
-use wind_wire::CompiledScripts;
 
 /// 清单中与存储记录比对的字段
 #[derive(Deserialize)]
@@ -37,8 +36,7 @@ impl Storage {
             .executor
             .fetch_optional(
                 sqlx::query_as::<_, Mod>(
-                    "SELECT id, name, version, manifest, compiled, engine_fingerprint,
-                            created_at, updated_at
+                    "SELECT id, name, version, manifest, created_at, updated_at
                        FROM mods
                       WHERE name = ?",
                 )
@@ -53,8 +51,7 @@ impl Storage {
         let modules = self
             .executor
             .fetch_all(sqlx::query_as::<_, Mod>(
-                "SELECT id, name, version, manifest, compiled, engine_fingerprint,
-                        created_at, updated_at
+                "SELECT id, name, version, manifest, created_at, updated_at
                    FROM mods
                   ORDER BY name",
             ))
@@ -63,12 +60,7 @@ impl Storage {
     }
 
     /// 建立 mod 并写入版本 1，返回新 id
-    pub async fn install_mod(
-        &self,
-        name: &str,
-        manifest: &str,
-        compiled: Option<&CompiledScripts>,
-    ) -> Result<i64> {
+    pub async fn install_mod(&self, name: &str, manifest: &str) -> Result<i64> {
         let (manifest_name, manifest_version) = manifest_identity(manifest)?;
         if manifest_name != name || manifest_version != 1 {
             return Err(conflict(
@@ -77,27 +69,20 @@ impl Storage {
                 "the initial manifest must name the mod and declare version 1",
             ));
         }
-        let compiled_json = compiled
-            .map(|scripts| serde_json::to_string(&scripts.modules))
-            .transpose()?;
-        let fingerprint = compiled.map(|scripts| scripts.fingerprint.as_str());
         let now = now_ms();
         let inserted = self
             .executor
             .fetch_one_scalar(
                 sqlx::query_scalar::<_, i64>(
                     "INSERT INTO mods
-                        (name, version, created_at, updated_at, manifest, compiled,
-                         engine_fingerprint)
-                     VALUES (?, 1, ?, ?, ?, ?, ?)
+                        (name, version, created_at, updated_at, manifest)
+                     VALUES (?, 1, ?, ?, ?)
                      RETURNING id",
                 )
                 .bind(name)
                 .bind(now)
                 .bind(now)
-                .bind(manifest)
-                .bind(compiled_json)
-                .bind(fingerprint),
+                .bind(manifest),
             )
             .await;
         match inserted {
@@ -116,12 +101,7 @@ impl Storage {
         expected_version: u32,
         version: u32,
         manifest: &str,
-        compiled: Option<&CompiledScripts>,
     ) -> Result<()> {
-        let compiled_json = compiled
-            .map(|scripts| serde_json::to_string(&scripts.modules))
-            .transpose()?;
-        let fingerprint = compiled.map(|scripts| scripts.fingerprint.as_str());
         self.with_tx(async move |storage| {
             let current = storage
                 .executor
@@ -176,14 +156,11 @@ impl Storage {
                 .execute(
                     sqlx::query(
                         "UPDATE mods
-                            SET version = ?, manifest = ?, compiled = ?,
-                                engine_fingerprint = ?, updated_at = ?
+                            SET version = ?, manifest = ?, updated_at = ?
                           WHERE id = ? AND version = ?",
                     )
                     .bind(i64::from(version))
                     .bind(manifest)
-                    .bind(compiled_json)
-                    .bind(fingerprint)
                     .bind(now_ms())
                     .bind(mod_id)
                     .bind(i64::from(expected_version)),
@@ -207,8 +184,8 @@ impl Storage {
             .executor
             .fetch_all(
                 sqlx::query_as::<_, Mod>(
-                    "SELECT m.id, m.name, m.version, m.manifest, m.compiled,
-                            m.engine_fingerprint, m.created_at, m.updated_at
+                    "SELECT m.id, m.name, m.version, m.manifest,
+                            m.created_at, m.updated_at
                        FROM topic_mods tm
                        JOIN mods m ON m.id = tm.mod_id
                       WHERE tm.topic_id = ?

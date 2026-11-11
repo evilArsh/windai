@@ -1,6 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -15,10 +16,9 @@ use wind_mod::events;
 use wind_mod::installer::Installer;
 use wind_mod::resources::Resources;
 use wind_mod::roster::Roster;
+use wind_script::{ScriptCall, ScriptService, ScriptsError};
 use wind_storage::Storage;
 use wind_wire::AppDirs;
-use wind_wire::CompiledScripts;
-use wind_wire::ScriptService;
 
 struct RecordingCaller {
     calls: Mutex<Vec<String>>,
@@ -99,56 +99,25 @@ impl EventOutlet for ClosedOutlet {
 }
 
 #[derive(Default)]
-struct TestCompiler {
-    handlers: Mutex<Vec<HashSet<String>>>,
-    fail: bool,
+struct TestService {
+    compiles: AtomicUsize,
 }
 
-impl TestCompiler {
-    fn failing() -> Self {
-        Self {
-            fail: true,
-            ..Self::default()
-        }
-    }
-
-    fn handlers(&self) -> Vec<HashSet<String>> {
-        self.handlers.lock().expect("handler log").clone()
+impl TestService {
+    fn compiles(&self) -> usize {
+        self.compiles.load(Ordering::SeqCst)
     }
 }
 
 #[async_trait::async_trait]
-impl ScriptService for TestCompiler {
-    fn compile(
-        &self,
-        _root: &Path,
-        handlers: &HashSet<String>,
-    ) -> Result<Option<CompiledScripts>, String> {
-        self.handlers
-            .lock()
-            .expect("handler log")
-            .push(handlers.clone());
-        if self.fail {
-            return Err("the script does not compile".to_string());
-        }
-        Ok(Some(scripts()))
+impl ScriptService for TestService {
+    fn compile(&self, _root: &Path, _handlers: &HashSet<String>) -> Result<(), ScriptsError> {
+        self.compiles.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 
-    async fn call(
-        &self,
-        _mod_name: &str,
-        _version: i64,
-        _request: &str,
-        _input: Value,
-    ) -> Result<Value, String> {
-        todo!()
-    }
-}
-
-fn scripts() -> CompiledScripts {
-    CompiledScripts {
-        modules: HashMap::from([("main".to_string(), vec![1, 2, 3])]),
-        fingerprint: "test-engine".to_string(),
+    async fn call(&self, _call: ScriptCall) -> Result<Option<Value>, ScriptsError> {
+        Ok(None)
     }
 }
 
@@ -250,7 +219,7 @@ fn resource_manifest(name: &str, version: u32) -> Value {
     })
 }
 
-fn resource_files<'a>(prompt: &'a str) -> Vec<(&'a str, &'a str)> {
+fn resource_files(prompt: &str) -> Vec<(&str, &str)> {
     vec![
         ("prompts/01.md", prompt),
         ("bin/tool", ""),
@@ -357,8 +326,7 @@ async fn resource_mod_lifecycle_and_restart_recovery() {
         harness.dirs.clone(),
         None,
     );
-    let unavailable = restored.restore().await.expect("restore");
-    assert!(unavailable.is_empty());
+    restored.restore().await.expect("restore");
     assert!(roster.enabled(&topic_scope(topic_id)).contains("math"));
     let restored_resources = Resources::new(reopened, harness.dirs.clone());
     let listed = restored_resources
@@ -387,113 +355,64 @@ async fn resource_mod_lifecycle_and_restart_recovery() {
 }
 
 #[tokio::test]
-async fn missing_compiler_rejects_script_publish() {
+async fn script_mods_install_and_enable_without_a_service() {
     let harness = Harness::new().await;
+    let topic_id = harness.topic("topic").await;
     let installer = harness.installer(None);
     let manifest = json!({
         "name": "scripted",
         "version": 1,
-        "requests": {"run": {"handler": "run"}}
+        "requests": {"run": {"handler": "run"}},
+        "events": {"on": {"core/mod.installed": {"handler": "run"}}}
     });
     let root = write_package(&harness.dirs, &manifest, &[]);
-    let error = installer
-        .install(&harness.cx(), &root)
-        .await
-        .expect_err("scripts need a compiler");
-    assert!(matches!(error, ModError::ScriptsUnavailable { .. }));
-    assert!(
-        harness
-            .storage
-            .mod_by_name("scripted")
-            .await
-            .expect("query")
-            .is_none()
-    );
-
-    let resource = json!({"name": "resource", "version": 1});
-    let root = write_package(&harness.dirs, &resource, &[]);
     installer
         .install(&harness.cx(), &root)
         .await
-        .expect("a resource-only mod installs without a compiler");
+        .expect("a missing script service does not block the install");
+    installer
+        .enable(&harness.cx(), topic_id, "scripted")
+        .await
+        .expect("a missing script service does not block enablement");
+    assert!(
+        harness
+            .roster
+            .enabled(&topic_scope(topic_id))
+            .contains("scripted")
+    );
+    installer.restore().await.expect("restore publishes");
 }
 
 #[tokio::test]
-async fn compiler_receives_deduplicated_handlers_and_failures_do_not_commit() {
+async fn install_and_update_do_not_compile() {
     let harness = Harness::new().await;
-    let compiler = Arc::new(TestCompiler::default());
-    let installer = harness.installer(Some(compiler.clone()));
-    let manifest = json!({
-        "name": "math",
+    let service = Arc::new(TestService::default());
+    let installer = harness.installer(Some(service.clone()));
+    let first = json!({
+        "name": "scripted",
         "version": 1,
-        "requests": {
-            "one": {"handler": "run"},
-            "two": {"handler": "run"}
-        }
+        "requests": {"run": {"handler": "run"}}
     });
-    let root = write_package(&harness.dirs, &manifest, &[]);
+    let root = write_package(&harness.dirs, &first, &[]);
     installer
         .install(&harness.cx(), &root)
         .await
         .expect("install");
-    assert_eq!(
-        compiler.handlers(),
-        vec![HashSet::from(["run".to_string()])],
-        "handlers are passed once per install"
-    );
-
-    let failing = Arc::new(TestCompiler::failing());
-    let installer = harness.installer(Some(failing));
-    let manifest = json!({
-        "name": "bad",
-        "version": 1,
+    let second = json!({
+        "name": "scripted",
+        "version": 2,
         "requests": {"run": {"handler": "run"}}
     });
-    let root = write_package(&harness.dirs, &manifest, &[]);
-    let error = installer
-        .install(&harness.cx(), &root)
+    let root = write_package(&harness.dirs, &second, &[]);
+    installer
+        .update(&harness.cx(), &root)
         .await
-        .expect_err("the compiler refuses");
-    assert!(matches!(error, ModError::Rejected { .. }));
-    assert!(
-        harness
-            .storage
-            .mod_by_name("bad")
-            .await
-            .expect("query")
-            .is_none()
-    );
+        .expect("update");
+    assert_eq!(service.compiles(), 0, "install and update never compile");
 }
 
 #[tokio::test]
-async fn invalid_event_rejects_publish() {
-    let harness = Harness::new().await;
-    let compiler = Arc::new(TestCompiler::default());
-    let installer = harness.installer(Some(compiler.clone()));
-    let manifest = json!({
-        "name": "bad",
-        "version": 1,
-        "events": {"on": {"core/missing": {"handler": "run"}}}
-    });
-    let root = write_package(&harness.dirs, &manifest, &[]);
-    let error = installer
-        .install(&harness.cx(), &root)
-        .await
-        .expect_err("the event is not in the directory");
-    assert!(matches!(error, ModError::ManifestUnknownEvent { .. }));
-    assert!(compiler.handlers().is_empty(), "nothing is compiled");
-    assert!(
-        harness
-            .storage
-            .mod_by_name("bad")
-            .await
-            .expect("query")
-            .is_none()
-    );
-}
-
-#[tokio::test]
-async fn restore_reports_unavailable_scripts() {
+async fn restore_publishes_script_subscriptions_without_a_service() {
     let harness = Harness::new().await;
     let manifest = json!({
         "name": "scripted",
@@ -502,7 +421,7 @@ async fn restore_reports_unavailable_scripts() {
     });
     let id = harness
         .storage
-        .install_mod("scripted", &manifest.to_string(), Some(&scripts()))
+        .install_mod("scripted", &manifest.to_string())
         .await
         .expect("seed a script mod");
     let topic_id = harness.topic("topic").await;
@@ -513,17 +432,7 @@ async fn restore_reports_unavailable_scripts() {
         .expect("enable");
 
     let installer = harness.installer(None);
-    let unavailable = installer.restore().await.expect("restore");
-    assert_eq!(unavailable.len(), 1);
-    assert_eq!(unavailable[0].name, "scripted");
-    assert_eq!(unavailable[0].version, 1);
-    assert!(!unavailable[0].reason.is_empty());
-    assert!(
-        harness
-            .roster
-            .enabled(&topic_scope(topic_id))
-            .contains("scripted")
-    );
+    installer.restore().await.expect("restore publishes");
 
     let envelope = wind_wire::event::Envelope::new(
         events::CORE_MOD_INSTALLED.name,
@@ -540,17 +449,44 @@ async fn restore_reports_unavailable_scripts() {
     };
     wind_event::Observer::on_event(&*harness.bus, &feed);
     tokio::time::sleep(Duration::from_millis(30)).await;
+    assert_eq!(
+        *harness.caller.calls.lock().expect("call log"),
+        vec!["scripted".to_string()],
+        "a script mod without a service is subscribed"
+    );
+}
+
+#[tokio::test]
+async fn invalid_event_rejects_publish() {
+    let harness = Harness::new().await;
+    let service = Arc::new(TestService::default());
+    let installer = harness.installer(Some(service.clone()));
+    let manifest = json!({
+        "name": "bad",
+        "version": 1,
+        "events": {"on": {"core/missing": {"handler": "run"}}}
+    });
+    let root = write_package(&harness.dirs, &manifest, &[]);
+    let error = installer
+        .install(&harness.cx(), &root)
+        .await
+        .expect_err("the event is not in the directory");
+    assert!(matches!(error, ModError::ManifestUnknownEvent { .. }));
+    assert_eq!(service.compiles(), 0, "nothing is compiled");
     assert!(
-        harness.caller.calls.lock().expect("call log").is_empty(),
-        "an unavailable script mod is not subscribed"
+        harness
+            .storage
+            .mod_by_name("bad")
+            .await
+            .expect("query")
+            .is_none()
     );
 }
 
 #[tokio::test]
 async fn failed_prepare_preserves_roster() {
     let harness = Harness::new().await;
-    let compiler = Arc::new(TestCompiler::default());
-    let installer = harness.installer(Some(compiler));
+    let installer = harness.installer(Some(Arc::new(TestService::default())));
     let topic_id = harness.topic("topic").await;
     let resources = Resources::new(harness.storage.clone(), harness.dirs.clone());
 
@@ -572,7 +508,7 @@ async fn failed_prepare_preserves_roster() {
     });
     harness
         .storage
-        .install_mod("broken", &broken.to_string(), Some(&scripts()))
+        .install_mod("broken", &broken.to_string())
         .await
         .expect("seed a broken mod");
 

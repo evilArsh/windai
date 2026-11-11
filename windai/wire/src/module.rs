@@ -1,33 +1,7 @@
 use crate::{FunctionCallOutput, Tools};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
-use std::path::Path;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct CompiledScripts {
-    pub modules: HashMap<String, Vec<u8>>,
-    pub fingerprint: String,
-}
-
-#[async_trait::async_trait]
-pub trait ScriptService: Send + Sync {
-    fn compile(
-        &self,
-        root: &Path,
-        handlers: &HashSet<String>,
-    ) -> Result<Option<CompiledScripts>, String>;
-
-    /// TODO: 参数简化?
-    async fn call(
-        &self,
-        mod_name: &str,
-        version: i64,
-        request: &str,
-        input: Value,
-    ) -> Result<Value, String>;
-}
 
 #[async_trait::async_trait]
 pub trait ModService: Send + Sync {

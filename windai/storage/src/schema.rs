@@ -151,9 +151,7 @@ CREATE TABLE IF NOT EXISTS mods (
     version             INTEGER NOT NULL,
     created_at          INTEGER NOT NULL,
     updated_at          INTEGER NOT NULL,
-    manifest            TEXT    NOT NULL,
-    compiled            TEXT,
-    engine_fingerprint  TEXT
+    manifest            TEXT    NOT NULL
 );
 CREATE TABLE IF NOT EXISTS topic_mods (
     topic_id INTEGER NOT NULL,

@@ -3,8 +3,8 @@
 mod 是对宿主能力的扩展包。一个 mod 由一个版本目录、一份 `mod.json` 与若干资源目录组成；
 宿主安装它、在话题上启用它，并按启用关系加载提示词、技能、MCP 服务与前端组件。
 
-本文描述包布局、清单字段、安装与启用生命周期、资源读取与订阅装配。脚本运行时
-`wind-scripts` 尚未实现；本文把它作为边界说明，不描述其内部。事件派发语义见「事件」；
+本文描述包布局、清单字段、安装与启用生命周期、资源读取与订阅装配。脚本服务
+`wind-script` 已实现；本文只描述宿主如何使用它，不描述其内部。事件派发语义见「事件」；
 MCP 服务连接见「MCP」；数据库表见「存储」。
 
 ## 包布局
@@ -12,7 +12,7 @@ MCP 服务连接见「MCP」；数据库表见「存储」。
 ```text
 <root>/mods/<name>/<version>/         版本目录
     mod.json                          清单
-    scripts/index.js                  脚本入口（供 wind-scripts 使用）
+    scripts/index.js                  脚本入口（由 wind-script 加载）
     prompts/                          提示词文件
         *.md
         *.txt
@@ -159,10 +159,9 @@ pub struct EmitDecl {
 - `retention = journal` 时 `eventKey` 必填，且同一 mod 内不得重复。
 - `retention = live` 时 `eventKey` 可选。
 
-频道名是 `events.emit` 的键；完整事件名是 `m_<mod_name>/<channel>`。`eventKey` 是持久化事件
-的键，当前只参与清单校验，宿主侧没有读取它。`Manifest::event_name(local)` 返回
-`m_<mod_name>/<local>`。当前宿主没有构造 `ModEmitter`，因此 `events.emit` 只做清单校验，
-不会产生事件。
+频道名是 `events.emit` 的键。`eventKey` 是持久化事件名中的键：`retention = journal` 时事件名
+为 `m_<mod_name>/<eventKey>`，`retention = live` 时为 `m_<mod_name>/<channel>`。宿主在调用
+脚本时按清单构造 `ModEmitter`，频道、事件名与保留策略都由宿主固定。
 
 ### `defs`
 
@@ -184,15 +183,9 @@ pub struct Installer { /* ... */ }
 pub struct ModChange {
     pub affected_topics: Vec<i64>,
 }
-
-pub struct UnavailableMod {
-    pub name: String,
-    pub version: u32,
-    pub reason: String,
-}
 ```
 
-`Installer` 持有数据库、`Dispatcher`、`Roster`、`AppDirs`、可选的 `Compiler` 与一把写互斥。
+`Installer` 持有数据库、`Dispatcher`、`Roster`、`AppDirs`、可选的 `ScriptService` 与一把写互斥。
 所有变更在数据库事务中准备，提交与内存发布在派生任务里完成；调用方取消只放弃等待，操作
 继续走完。
 
@@ -203,10 +196,9 @@ Package::open(root)               读 mod.json，校验路径与清单
 check_location(root)              必须等于 dirs.mod_version(name, version)
 version == 1                      首次安装只接受版本 1
 validate()                        校验 events.on 能找到目录项
-compile()                         有编译器则编译；无编译器且需要脚本则拒绝
 写事务:
   mod_by_name 不存在                否则 AlreadyInstalled
-  install_mod(name, manifest_raw, compiled)
+  install_mod(name, manifest_raw)
   snapshot()                      读全部 mod，生成订阅与启用集合
 提交
 rebuild_index(subscriptions)
@@ -214,17 +206,16 @@ roster.publish(roster_rows)
 notify core/mod.installed
 ```
 
-`install_mod` 还要求清单中的名称等于参数、版本等于 1。`compiled` 与
-`engine_fingerprint` 同时写入或同时为空。
+`install_mod` 还要求清单中的名称等于参数、版本等于 1。安装不解析脚本。
 
 ### 更新
 
 ```text
-Package::open / check_location / validate / compile
+Package::open / check_location / validate
 写事务:
   mod_by_name 必须存在
   新区版本必须大于当前版本
-  update_mod(id, expected_version = 当前版本, new_version, manifest, compiled)
+  update_mod(id, expected_version = 当前版本, new_version, manifest)
   topics_with_mod(id)
   snapshot()
 提交
@@ -256,7 +247,6 @@ notify core/mod.deleted
 ```text
 enable(topic_id, name):
   mod_by_name 必须存在
-  requires_scripts && compiler.is_none() → ScriptsUnavailable
   enable_mod(topic_id, mod_id)      写 topic_mods
   snapshot / 提交 / 发布
   返回 affected_topics = [topic_id]
@@ -273,9 +263,8 @@ disable(topic_id, name):
 
 ### 恢复
 
-`Installer::restore` 读取全部 mod，重建订阅索引与 `Roster`。它返回
-`Vec<UnavailableMod>`：声明了 `requests` 或 `events.on` 但没有编译器的 mod 不产生订阅，
-被列为不可用。
+`Installer::restore` 读取全部 mod，重建订阅索引与 `Roster`。订阅只由清单生成，不依赖脚本
+服务是否存在。
 
 ### 发布
 
@@ -364,8 +353,8 @@ publish(topic_id):
 ### 工具
 
 `ResourceServices::agent_tools` 当前返回空表。`ToolOrigin::ModRequest` 的命名规则
-`m_<mod_name>__<request>` 只存在于工具目录类型中；没有脚本运行时，mod request 不会出现在
-模型可见的工具清单里。
+`m_<mod_name>__<request>` 只存在于工具目录类型中；mod request 尚未接入工具目录，不会出现
+在模型可见的工具清单里。
 
 `ResourceServices::call` 对 mod request 返回 `Denied`，即使目录中出现该类工具。
 
@@ -392,8 +381,8 @@ windai://mods/<name>/<version>/ui/index.js
 `Installer::snapshot` 遍历全部 mod（不限于已启用），为每个 mod 生成订阅：
 
 - 无脚本要求的 mod：没有 `events.on`，订阅为空。
-- 有脚本要求且没有编译器：列入 `UnavailableMod`，不生成订阅。
-- 有编译器：用清单的 `events.on` 生成订阅，事件名必须在目录中。
+- 有脚本要求：用清单的 `events.on` 生成订阅，事件名必须在目录中。没有脚本服务时只记录
+  警告，订阅照常生成，调用时返回运行时错误。
 
 生成的订阅写入 `Dispatcher` 的索引。是否真正调用由 `Roster` 按话题过滤；未启用 mod 的
 订阅留在索引里，但永远不会命中。
@@ -420,51 +409,43 @@ windai://mods/<name>/<version>/ui/index.js
 
 ## 脚本边界
 
-`wind-scripts` 尚未实现。宿主通过 `Option<Arc<dyn Compiler>>` 接入脚本编译：
+`wind-script` 已实现。宿主通过 `Option<Arc<dyn ScriptService>>` 接入：
 
 ```rust
-pub trait Compiler: Send + Sync {
-    fn compile(
-        &self,
-        root: &Path,
-        handlers: &HashSet<String>,
-    ) -> Result<Option<CompiledScripts>, String>;
+#[async_trait]
+pub trait ScriptService: Send + Sync {
+    fn compile(&self, root: &Path, handlers: &HashSet<String>) -> Result<(), ScriptsError>;
+
+    async fn call(&self, call: ScriptCall) -> Result<Option<Value>, ScriptsError>;
 }
 ```
 
-`CompiledScripts`：
+`Installer` 只在构造时保存该服务，不调用 `compile`。安装与更新只校验清单，不读取
+`scripts/`；`compile` 的调用由持有服务的启动流程决定。宿主还必须把
+`wind_core::script::directory()` 并入事件目录，否则 mod 无法订阅 `core/mod.notify`。
 
-```rust
-pub struct CompiledScripts {
-    pub modules: HashMap<String, Vec<u8>>,
-    pub fingerprint: String,
-}
-```
-
-`handlers` 是清单中全部 `requests.*.handler` 与 `events.on.*.handler` 的集合，供编译器在
-加载期校验导出是否存在。当前没有实现者，`Installer` 的 `compiler` 只能为 `None`。
-
-没有编译器时：
+没有脚本服务时：
 
 | 场景 | 结果 |
 | --- | --- |
-| 安装仅含资源（`mcpServers`、`prompts`、`skills`、`ui`）的 mod | 成功 |
-| 安装含 `requests` 或 `events.on` 的 mod | `ScriptsUnavailable` |
-| 启用含脚本要求的已装 mod | `ScriptsUnavailable` |
-| 恢复全部 mod | 脚本型 mod 列入 `UnavailableMod`，不生成订阅 |
+| 安装仅含资源的 mod | 成功 |
+| 安装含 `requests` 或 `events.on` 的 mod | 成功，记录警告 |
+| 启用含脚本要求的已装 mod | 成功 |
+| 恢复全部 mod | 订阅照常生成 |
+| 调用脚本处理函数 | `CallError::Internal`，仓储层报告没有脚本服务 |
 
 ## 当前边界
 
 | 项 | 现状 |
 | --- | --- |
-| `wind-scripts` | 未实现；没有 `Compiler` 与 `ModCaller` 实现 |
-| `scripts/` | 只有路径常量 `scripts/index.js`，没有加载器 |
+| `wind-script` | 已实现 `ScriptService`；`ModCaller` 由 `wind-core::script::ScriptRuntime` 提供 |
+| `scripts/` | 由 `wind-script` 的加载器读取，入口固定为 `scripts/index.js` |
 | `mcp/` | 只有路径常量，没有资源加载器；MCP 服务只来自清单 `mcpServers` |
-| `events.emit` | 清单校验完整，但没有 `ModEmitter` 生产者；`retention` 字段未参与投递 |
+| `events.emit` | 清单校验完整；`ModEmitter` 由 `wind-core::script` 按清单构造，`retention` 参与投递 |
 | `requests` | 不会出现在模型工具目录；调用入口返回 `Denied` |
 | `callableBy` | 已解析，未在任何调用边界强制 |
 | `inputSchema` / `outputSchema` | 只做清单期校验，运行期不强制 |
 | `state` / `storage` 能力 | 没有宿主实现，也没有数据库表 |
-| 脚本处理函数校验 | `Compiler` 接口预留了 `handlers`，当前没有实现者 |
+| 脚本处理函数校验 | `compile` 接收 `handlers`，实现只校验入口语法 |
 | `ui` | 只识别 `ui/index.js` 并给出 `ui_entry`；资源服务由前端底座负责 |
 | 版本目录清理 | 删除 mod 不删除磁盘上的版本目录与 `data/` |

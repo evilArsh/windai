@@ -16,7 +16,7 @@ use wind_event::DispatchCx;
 use wind_mcp::builtin::skills::{SkillRoot, SkillRoots};
 use wind_mcp::builtin::{self, BuiltinResources, BuiltinScope};
 use wind_mcp::{BoundTool, CallOutcome, RegistryHandle};
-use wind_mod::installer::{Installer, UnavailableMod};
+use wind_mod::installer::Installer;
 use wind_mod::resources::{ModResources, Resources};
 use wind_storage::Storage;
 use wind_wire::tool::{FunctionTool, Tools};
@@ -64,7 +64,7 @@ impl ResourceService {
     }
 
     /// 从数据库恢复启用集合与订阅
-    pub async fn restore(&self) -> Result<Vec<UnavailableMod>> {
+    pub async fn restore(&self) -> Result<()> {
         self.mutate(move |this| async move {
             let _gate = this.gate.lock().await;
             this.ensure_open()?;

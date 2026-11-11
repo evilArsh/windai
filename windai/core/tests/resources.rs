@@ -82,7 +82,8 @@ impl Fixture {
         let bus = Arc::new(Dispatcher::new(
             wind_event::directory()
                 .merge(wind_mod::events::directory())
-                .merge(wind_mcp::events::directory()),
+                .merge(wind_mcp::events::directory())
+                .merge(wind_core::script::directory()),
             Arc::clone(&roster) as Arc<dyn ModRoster>,
             Arc::new(NoCaller),
             Arc::new(RecordingOutlet),
@@ -1181,4 +1182,10 @@ async fn a_failed_topic_does_not_block_other_topics() {
     wait_mark(&fixture.services, &beta_context, "beta-v2").await;
 
     fixture.services.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn restore_works_without_a_script_service() {
+    let fixture = Fixture::new().await;
+    fixture.services.restore().await.expect("restore");
 }

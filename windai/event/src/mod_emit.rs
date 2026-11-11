@@ -35,18 +35,28 @@ pub struct ModIdentity {
     pub version: u32,
 }
 
-type Validator = dyn Fn(&Value) -> Result<(), String> + Send + Sync;
+/// 载荷检查函数
+pub type PayloadValidator = Arc<dyn Fn(&Value) -> Result<(), String> + Send + Sync>;
 
 /// 一个允许 mod 发出的频道
 pub struct EmitChannel {
     name: String,
-    validate: Arc<Validator>,
+    event: String,
+    retention: Retention,
+    validate: PayloadValidator,
 }
 
 impl EmitChannel {
-    pub fn new(name: impl Into<String>, validate: Arc<Validator>) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        event: impl Into<String>,
+        retention: Retention,
+        validate: PayloadValidator,
+    ) -> Self {
         Self {
             name: name.into(),
+            event: event.into(),
+            retention,
             validate,
         }
     }
@@ -69,7 +79,7 @@ pub enum EmitError {
 /// 名称和保留策略由宿主固定，脚本只能提供声明过的频道与载荷
 pub struct ModEmitter {
     identity: ModIdentity,
-    channels: HashMap<String, Arc<Validator>>,
+    channels: HashMap<String, Arc<EmitChannel>>,
     outlet: Arc<dyn EventOutlet>,
     guards: Arc<Guards>,
 }
@@ -85,7 +95,7 @@ impl ModEmitter {
             identity,
             channels: channels
                 .into_iter()
-                .map(|channel| (channel.name, channel.validate))
+                .map(|channel| (channel.name.clone(), Arc::new(channel)))
                 .collect(),
             outlet,
             guards,
@@ -93,18 +103,17 @@ impl ModEmitter {
     }
 
     pub fn emit(&self, cx: &DispatchCx, channel: &str, payload: Value) -> Result<(), EmitError> {
-        let Some(validate) = self.channels.get(channel) else {
+        let Some(channel) = self.channels.get(channel) else {
             return Err(EmitError::UnknownChannel);
         };
-        validate(&payload).map_err(EmitError::InvalidPayload)?;
+        (channel.validate)(&payload).map_err(EmitError::InvalidPayload)?;
         self.guards.admit(cx).map_err(EmitError::OverLimit)?;
         self.guards
             .admit_mod_emit(&self.identity.name)
             .map_err(EmitError::OverLimit)?;
 
-        let name = format!("m_{}/{}", self.identity.name, channel);
         let envelope = Envelope::new(
-            name,
+            channel.event.clone(),
             cx.scope.clone(),
             cx.origin,
             Source::module(self.identity.name.clone(), self.identity.version),
@@ -114,8 +123,8 @@ impl ModEmitter {
         self.outlet
             .submit(Pending {
                 envelope,
-                retention: Retention::Journal,
-                target: Target::module(self.identity.name.clone(), channel),
+                retention: channel.retention.clone(),
+                target: Target::module(self.identity.name.clone(), channel.name.clone()),
             })
             .map_err(|SubmitError::Closed| EmitError::Closed)
     }

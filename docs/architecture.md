@@ -20,8 +20,6 @@ windai 是一个单进程的 agent harness 库。宿主应用装配本仓库的 
 - 流式块内容只在内存中累加。助手消息的块行在消息完成时一次写入；用户消息与工具结果的块行在消息创建时写入。写入数据库的块与流式增量不是同一份数据。
 - HTTP/SSE、WebSocket 与前端底座不在本仓库内。宿主通过 `FeedHandle::subscribe` 取得实时流，
   自行提供端点；数据库中的领域表与 `event_log` 由宿主自行查询。
-- `wind-scripts` 是唯一尚未实现的 crate。它要提供 `wind_mod::Compiler` 与
-  `wind_event::ModCaller` 的实现；当前仓库以 `None` 编译器运行，只接受不声明脚本的资源型 mod。
 
 ## crate 与依赖
 
@@ -32,9 +30,10 @@ windai 是一个单进程的 agent harness 库。宿主应用装配本仓库的 
 | `wind-storage` | wire | SQLite schema、事务封装、行模型、按领域划分的语句集 |
 | `wind-ai` | wire | 提供商适配器、请求构造、SSE 解析、HTTP 发送 |
 | `wind-rule` | 无 | 面向请求体的 JSON 规则引擎 |
-| `wind-mod` | wire, event, storage | 清单、包、安装器、资源读取、启用集合、清单 schema |
+| `wind-mod` | wire, event, storage, script | 清单、包、安装器、资源读取、启用集合、清单 schema |
 | `wind-mcp` | wire, event | MCP 注册表、连接、启动规划、内建 `fs` 与 `skills` 服务 |
-| `wind-core` | wire, event, storage, ai, rule, mod, mcp | agent 树、LLM 回合、feed、资源适配 |
+| `wind-script` | 无 | 脚本引擎、加载器、宿主 facade、超时与连续超时熔断 |
+| `wind-core` | wire, event, storage, ai, rule, mod, mcp, script | agent 树、LLM 回合、feed、资源适配、脚本接线 |
 
 依赖方向：
 
@@ -61,7 +60,8 @@ windai 是一个单进程的 agent harness 库。宿主应用装配本仓库的 
             └──────────────────────────┘      └─────────┘
 ```
 
-`wind-core` 是唯一同时依赖全部内部 crate 的 crate。`wind-core::feed` 是 feed 的实现位置，
+`wind-core` 是唯一同时依赖全部内部 crate 的 crate。`wind-script` 不依赖任何内部 crate；
+`wind-mod` 与 `wind-core` 依赖它。`wind-core::feed` 是 feed 的实现位置，
 不存在独立的 `wind-feed` crate；块类型在 `wind-wire`，不存在独立的 `wind-stream` crate；
 组合根与 HTTP 端点在宿主应用，不存在 `wind-runtime` crate。
 
@@ -173,9 +173,9 @@ LlmRunner / Installer / Agent / MCP
 | --- | --- | --- |
 | `wind_event::EventOutlet` | `wind_core::feed::FeedHandle` | 事件离开派发层的唯一出口；实现只把 `Pending` 入队 |
 | `wind_event::Observer` | `wind_event::Dispatcher` | 接收已提交或即时事件；`Journal` 在提交后、其余在投递时调用 |
-| `wind_event::ModCaller` | 仓库内无实现 | 调用 mod 处理函数；`wind-scripts` 的目标实现位 |
+| `wind_event::ModCaller` | `wind_core::script::ScriptRuntime` | 调用 mod 处理函数 |
 | `wind_event::ModRoster` | `wind_mod::roster::Roster` | 按作用域给出启用的 mod 名集合 |
-| `wind_mod::Compiler` | 仓库内无实现 | 安装期把 `scripts/` 编译成 `CompiledScripts`；`wind-scripts` 的目标实现位 |
+| `wind_script::ScriptService` | `wind_script::quickjs()` | 校验入口语法并调用导出函数 |
 | `wind_core::llm::ModService` | `wind_core::resources::ResourceServices` | 提供提示词片段、mod 工具、mod 版本与 request 调用 |
 | `wind_core::llm::McpService` | `wind_core::resources::ResourceServices` | 列出并调用 MCP 工具 |
 | `wind_core::agent::Runner<D>` | `wind_core::llm::LlmRunner` | 执行一次节点运行 |
@@ -192,11 +192,11 @@ LlmRunner / Installer / Agent / MCP
 | --- | --- |
 | 1 | `Storage::open(path)` 打开数据库并建表 |
 | 2 | `feed::open(storage.clone(), FeedOptions)` 得到 `FeedHandle` 与 `FeedRuntime` |
-| 3 | 合并各子系统的事件目录：`wind_event::directory()`、`agent::events::directory()`、`llm::events::directory()`、`wind_mod::events::directory()`、`wind_mcp::events::directory()` |
+| 3 | 合并各子系统的事件目录：`wind_event::directory()`、`agent::events::directory()`、`llm::events::directory()`、`wind_mod::events::directory()`、`wind_mcp::events::directory()`、`wind_core::script::directory()` |
 | 4 | `Roster::load(&storage)` 读取启用关系 |
 | 5 | `Dispatcher::new(directory, roster, mod_caller, outlet, Limits::default())`；`outlet` 是步骤 2 的 `FeedHandle` |
 | 6 | `wind_mcp::init(McpOptions, dispatcher)` 启动注册表 |
-| 7 | `Installer::new(storage, dispatcher, roster, dirs, compiler)`；没有脚本引擎时 `compiler` 为 `None` |
+| 7 | `Installer::new(storage, dispatcher, roster, dirs, scripts)`；`scripts` 是可选的 `Arc<dyn ScriptService>` |
 | 8 | `Resources::new(storage, dirs)` 与 `ResourceServices::new(installer, resources, storage, registry, topics_root)` |
 | 9 | `services.restore()` 从数据库恢复订阅与启用集合；`installer.restore()` 会重建 `Dispatcher` 的订阅索引与 `Roster` |
 | 10 | `tokio::spawn(runtime.run(vec![Arc::downgrade(&dispatcher)]))` 启动 feed；观察者必须在 `run` 之前挂上 |
@@ -218,8 +218,9 @@ LlmRunner / Installer / Agent / MCP
 - 审批答复的入口。`external_waits` 行由 `LlmRunner` 在 `suspend` 时创建，宿主负责展示与
   回填 `WaitAnswer`。
 - 事件历史的查询与分页。`wind-storage` 只写 `event_log`。
-- `wind-scripts`。没有它时，`Installer` 拒绝声明 `requests` 或 `events.on` 的 mod，
-  `ResourceServices::agent_tools` 返回空表，`ResourceServices::call` 返回 `Denied`。
+- 脚本服务的装配。`wind-script::quickjs()` 提供引擎；宿主在启动时构造 `ScriptService`，传给
+  `Installer` 与 `wind_core::script::ScriptRuntime`。未装配时脚本 mod 仍可安装与启用，调用
+  返回运行时错误。
 
 ## 数据库
 
@@ -243,7 +244,7 @@ LlmRunner / Installer / Agent / MCP
 
 | 项 | 现状 |
 | --- | --- |
-| `wind-scripts` | 不存在。`Installer` 的 `compiler` 只能为 `None`；`ModCaller` 没有仓库内实现 |
+| `wind-script` | 已实现；`ScriptRuntime` 提供 `ModCaller`。`ResourceServices::agent_tools` 仍返回空表，`ResourceServices::call` 对 mod request 返回 `Denied` |
 | 事件历史读取 | `event_log` 只写不读；`Opening.cut` 只提供拼接口 |
 | 全局作用域的事件订阅 | `Roster::enabled` 只为话题作用域返回 mod 集合；`core/mcp.*` 等全局事件不会命中任何 mod 订阅 |
 | 后台子实例结果 | `PendingKind::BackgroundResult`、`spawn_calls.result_delivered_at` 与 `AgentHandle::deliver` 均无生产者 |

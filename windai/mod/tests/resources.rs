@@ -518,7 +518,7 @@ fn write_version(dirs: &AppDirs, name: &str, manifest: &Value) -> PathBuf {
 async fn install(storage: &Storage, manifest: &Value) -> i64 {
     let name = manifest["name"].as_str().expect("name");
     storage
-        .install_mod(name, &manifest.to_string(), None)
+        .install_mod(name, &manifest.to_string())
         .await
         .expect("install mod")
 }
@@ -571,7 +571,7 @@ async fn topic_resources_use_published_versions() {
 
     fixture
         .storage
-        .update_mod(id, 1, 2, &second.to_string(), None)
+        .update_mod(id, 1, 2, &second.to_string())
         .await
         .expect("update to version two");
     let listed = resources.topic(topic_id).await.expect("topic resources");

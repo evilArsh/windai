@@ -133,7 +133,7 @@ pub enum GroupKey {
   `Journal`，否则用 `Live`。
 - `Dispatcher::notify_host`：调用方直接给出策略。当前调用方使用 `Group`、`Close` 与 `Live`。
 - `Dispatcher::notice`：固定 `Journal`。
-- `ModEmitter::emit`：固定 `Journal`，去向为 `Target::Mod`。
+- `ModEmitter::emit`：使用 `EmitChannel` 携带的保留策略，去向为 `Target::Mod`。
 
 ## 派发层
 
@@ -638,6 +638,7 @@ wind_event::directory()
     .merge(wind_core::llm::events::directory())
     .merge(wind_mod::events::directory())
     .merge(wind_mcp::events::directory())
+    .merge(wind_core::script::directory())
 ```
 
 `wind_event::directory()` 只含派发层自己的两条元事件。事件名不在目录中时，`notify` 与
@@ -696,11 +697,13 @@ wind_event::directory()
 | `core/mod.installed` | observe | 是 | `ModInstalled { name, version, manifest, ui_entry? }` | `Installer` 的安装完成 |
 | `core/mod.updated` | observe | 是 | `ModUpdated { name, from_version, to_version, ui_entry? }` | `Installer` 的更新完成 |
 | `core/mod.deleted` | observe | 是 | `ModDeleted { name, version }` | `Installer` 的删除完成 |
+| `core/mod.notify` | observe | 是 | `CoreModNotify { level, text }` | 脚本的 `ctx.notify`，经 `wind-core::script` 的 `EventSink` |
 
-mod 自己发出的事件不在目录中。`ModEmitter` 生成的事件名是 `m_<mod>/<channel>`，
-`Target::Mod { name, channel }`，保留策略固定 `Journal`。这些事件会写入 `event_log`、
-推给前端订阅者，但 `Dispatcher::on_event` 查不到目录项，因此不会派发给任何 mod。
-当前仓库没有构造 `ModEmitter`，所以没有实际产生者。
+mod 自己发出的事件不在目录中。`ModEmitter` 由 `wind-core::script` 在调用脚本时按清单构造，
+事件名与保留策略来自 `EmitChannel`：`journal` 频道的事件名是 `m_<mod>/<eventKey>`，
+`live` 频道的事件名是 `m_<mod>/<channel>`；去向都是 `Target::Mod { name, channel }`。
+这些事件会写入 `event_log`（`journal`）或只推给订阅者（`live`），但 `Dispatcher::on_event`
+查不到目录项，因此不会派发给任何 mod。
 
 ### MCP
 
@@ -762,6 +765,6 @@ recv()
 | mod 事件互订阅 | `m_<mod>/<channel>` 不在目录中，`Observer` 会丢弃 |
 | observe 取消传播 | 投递池的 `CallCx.cancel` 是新建的空令牌 |
 | 嵌套派发 | `DispatchCx::nested` 没有调用方，深度限制当前不生效 |
-| 速率限制 | `admit_mod_emit` 只被尚未接线的 `ModEmitter` 使用 |
+| 速率限制 | `admit_mod_emit` 由 `ModEmitter` 在每次 emit 时执行 |
 | `FeedError::Lagged` / `FeedError::IdentityConflict` | 在 feed 内无构造点 |
 | 连接回放与历史 | 没有去重或拼接实现，只有 `cut` 与事件身份 |

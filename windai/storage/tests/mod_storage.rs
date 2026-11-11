@@ -1,11 +1,9 @@
-use std::collections::HashMap;
 use std::path::Path;
 
 use sqlx::Connection;
 use tempfile::TempDir;
 use wind_storage::Storage;
 use wind_storage::error::StorageError;
-use wind_wire::CompiledScripts;
 
 async fn database() -> (TempDir, Storage) {
     let dir = TempDir::new().expect("temp dir");
@@ -19,19 +17,9 @@ fn manifest(name: &str, version: u32) -> String {
     serde_json::json!({ "name": name, "version": version }).to_string()
 }
 
-fn compiled(modules: &[(&str, &[u8])], fingerprint: &str) -> CompiledScripts {
-    CompiledScripts {
-        modules: modules
-            .iter()
-            .map(|(name, bytes)| (name.to_string(), bytes.to_vec()))
-            .collect::<HashMap<_, _>>(),
-        fingerprint: fingerprint.to_string(),
-    }
-}
-
-async fn install(storage: &Storage, name: &str, scripts: Option<&CompiledScripts>) -> i64 {
+async fn install(storage: &Storage, name: &str) -> i64 {
     storage
-        .install_mod(name, &manifest(name, 1), scripts)
+        .install_mod(name, &manifest(name, 1))
         .await
         .expect("install mod")
 }
@@ -46,8 +34,7 @@ async fn topic(storage: &Storage, label: &str) -> i64 {
 #[tokio::test]
 async fn install_and_update_round_trip() {
     let (_dir, storage) = database().await;
-    let scripts = compiled(&[("main", &[0, 1, 254, 255])], "engine-1");
-    let id = install(&storage, "math", Some(&scripts)).await;
+    let id = install(&storage, "math").await;
 
     let installed = storage
         .mod_by_name("math")
@@ -57,12 +44,10 @@ async fn install_and_update_round_trip() {
     assert_eq!(installed.id, id);
     assert_eq!(installed.version, 1);
     assert_eq!(installed.manifest, manifest("math", 1));
-    assert_eq!(installed.compiled.as_ref(), Some(&scripts));
     assert_eq!(installed.created_at, installed.updated_at);
 
-    let next = compiled(&[("main", &[7, 8, 9]), ("extra", &[10])], "engine-2");
     storage
-        .update_mod(id, 1, 3, &manifest("math", 3), Some(&next))
+        .update_mod(id, 1, 3, &manifest("math", 3))
         .await
         .expect("update to version 3");
 
@@ -73,7 +58,6 @@ async fn install_and_update_round_trip() {
         .expect("mod exists");
     assert_eq!(installed.version, 3);
     assert_eq!(installed.manifest, manifest("math", 3));
-    assert_eq!(installed.compiled.as_ref(), Some(&next));
     assert!(installed.updated_at >= installed.created_at);
 
     let manifests = storage
@@ -90,20 +74,20 @@ async fn install_and_update_round_trip() {
 async fn install_rejects_inconsistent_or_duplicate_identity() {
     let (_dir, storage) = database().await;
     let error = storage
-        .install_mod("math", &manifest("other", 1), None)
+        .install_mod("math", &manifest("other", 1))
         .await
         .expect_err("name must match");
     assert!(matches!(error, StorageError::Conflict { .. }));
 
     let error = storage
-        .install_mod("math", &manifest("math", 2), None)
+        .install_mod("math", &manifest("math", 2))
         .await
         .expect_err("a first install accepts version 1 only");
     assert!(matches!(error, StorageError::Conflict { .. }));
 
-    install(&storage, "math", None).await;
+    install(&storage, "math").await;
     let error = storage
-        .install_mod("math", &manifest("math", 1), None)
+        .install_mod("math", &manifest("math", 1))
         .await
         .expect_err("duplicate name");
     assert!(matches!(error, StorageError::Conflict { .. }));
@@ -114,11 +98,11 @@ async fn failed_update_rolls_back() {
     let dir = TempDir::new().expect("temp dir");
     let path = dir.path().join("windai.db");
     let storage = Storage::open(&path).await.expect("open database");
-    let id = install(&storage, "math", None).await;
+    let id = install(&storage, "math").await;
 
     let result: Result<(), StorageError> = storage
         .with_tx(|tx| async move {
-            tx.update_mod(id, 1, 2, &manifest("math", 2), None).await?;
+            tx.update_mod(id, 1, 2, &manifest("math", 2)).await?;
             Err(StorageError::Internal("stop after update".into()))
         })
         .await;
@@ -141,13 +125,13 @@ async fn concurrent_update_has_one_winner() {
     let path = dir.path().join("windai.db");
     let first = Storage::open(&path).await.expect("open first");
     let second = Storage::open(&path).await.expect("open second");
-    let id = install(&first, "math", None).await;
+    let id = install(&first, "math").await;
 
     let second_manifest = manifest("math", 2);
     let third_manifest = manifest("math", 3);
     let (left, right) = tokio::join!(
-        first.update_mod(id, 1, 2, &second_manifest, None),
-        second.update_mod(id, 1, 3, &third_manifest, None),
+        first.update_mod(id, 1, 2, &second_manifest),
+        second.update_mod(id, 1, 3, &third_manifest),
     );
     let (winner, loser) = match (left, right) {
         (Ok(()), Err(error)) => (2, error),
@@ -169,21 +153,21 @@ async fn concurrent_update_has_one_winner() {
 #[tokio::test]
 async fn update_rejects_backwards_and_stale_versions() {
     let (_dir, storage) = database().await;
-    let id = install(&storage, "math", None).await;
+    let id = install(&storage, "math").await;
 
     let error = storage
-        .update_mod(id, 1, 1, &manifest("math", 1), None)
+        .update_mod(id, 1, 1, &manifest("math", 1))
         .await
         .expect_err("version must increase");
     assert!(matches!(error, StorageError::Conflict { .. }));
 
     storage
-        .update_mod(id, 1, 2, &manifest("math", 2), None)
+        .update_mod(id, 1, 2, &manifest("math", 2))
         .await
         .expect("update to version 2");
 
     let error = storage
-        .update_mod(id, 1, 3, &manifest("math", 3), None)
+        .update_mod(id, 1, 3, &manifest("math", 3))
         .await
         .expect_err("expected version is stale");
     assert!(matches!(error, StorageError::Conflict { .. }));
@@ -199,8 +183,8 @@ async fn update_rejects_backwards_and_stale_versions() {
 #[tokio::test]
 async fn enablement_is_idempotent_and_topic_local() {
     let (_dir, storage) = database().await;
-    let subject = install(&storage, "math", None).await;
-    let other = install(&storage, "other", None).await;
+    let subject = install(&storage, "math").await;
+    let other = install(&storage, "other").await;
     let first_topic = topic(&storage, "first").await;
     let second_topic = topic(&storage, "second").await;
 
@@ -294,8 +278,8 @@ async fn enablement_is_idempotent_and_topic_local() {
 #[tokio::test]
 async fn delete_cascades_and_returns_topics() {
     let (_dir, storage) = database().await;
-    let doomed = install(&storage, "math", None).await;
-    let kept = install(&storage, "kept", None).await;
+    let doomed = install(&storage, "math").await;
+    let kept = install(&storage, "kept").await;
     let first = topic(&storage, "first").await;
     let second = topic(&storage, "second").await;
     storage
@@ -349,8 +333,8 @@ async fn delete_cascades_and_returns_topics() {
 #[tokio::test]
 async fn ordering_is_stable() {
     let (_dir, storage) = database().await;
-    let zulu = install(&storage, "zulu", None).await;
-    let alpha = install(&storage, "alpha", None).await;
+    let zulu = install(&storage, "zulu").await;
+    let alpha = install(&storage, "alpha").await;
     let topic_id = topic(&storage, "topic").await;
     storage
         .enable_mod(topic_id, zulu)
@@ -393,31 +377,22 @@ async fn invalid_rows_are_not_silently_decoded() {
     let dir = TempDir::new().expect("temp dir");
     let path = dir.path().join("windai.db");
     let storage = Storage::open(&path).await.expect("open database");
-    install(&storage, "math", None).await;
+    install(&storage, "math").await;
 
     let mut connection = raw_connection(&path).await;
     sqlx::query(
-        "INSERT INTO mods
-            (name, version, manifest, compiled, engine_fingerprint, created_at, updated_at)
-         VALUES ('broken-version', 5000000000, '{}', NULL, NULL, 0, 0)",
+        "INSERT INTO mods (name, version, manifest, created_at, updated_at)
+         VALUES ('broken-version', 5000000000, '{}', 0, 0)",
     )
     .execute(&mut connection)
     .await
     .expect("insert out of range version");
-    sqlx::query(
-        "INSERT INTO mods
-            (name, version, manifest, compiled, engine_fingerprint, created_at, updated_at)
-         VALUES ('broken-compiled', 2, '{}', '{\"main\": 7}', 'fp', 0, 0)",
-    )
-    .execute(&mut connection)
-    .await
-    .expect("insert malformed compiled");
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mods")
         .fetch_one(&mut connection)
         .await
         .expect("count rows");
     connection.close().await.expect("close raw");
-    assert_eq!(count, 3);
+    assert_eq!(count, 2);
 
     assert!(
         storage.list_mods().await.is_err(),
@@ -426,10 +401,6 @@ async fn invalid_rows_are_not_silently_decoded() {
     assert!(
         storage.mod_by_name("broken-version").await.is_err(),
         "an out of range version must not decode"
-    );
-    assert!(
-        storage.mod_by_name("broken-compiled").await.is_err(),
-        "malformed compiled bytes must not decode as an empty set"
     );
 }
 
@@ -464,7 +435,7 @@ async fn unknown_mod_queries_are_empty() {
 async fn update_requires_an_installed_mod() {
     let (_dir, storage) = database().await;
     let error = storage
-        .update_mod(999, 1, 2, &manifest("math", 2), None)
+        .update_mod(999, 1, 2, &manifest("math", 2))
         .await
         .expect_err("unknown mod");
     assert!(matches!(error, StorageError::NotFound { .. }));

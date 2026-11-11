@@ -223,9 +223,7 @@ CREATE TABLE IF NOT EXISTS mods (
     version             INTEGER NOT NULL,
     created_at          INTEGER NOT NULL,
     updated_at          INTEGER NOT NULL,
-    manifest            TEXT    NOT NULL,
-    compiled            TEXT,
-    engine_fingerprint  TEXT
+    manifest            TEXT    NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS topic_mods (
@@ -472,17 +470,14 @@ decision_json IS NULL RETURNING id`，因此重复答复不会覆盖第一次的
 
 | 函数 | 语义 |
 | --- | --- |
-| `install_mod(name, manifest, compiled)` | 插入 `mods`，版本固定为 1；清单中的 `name` 与 `version` 必须匹配 |
-| `update_mod(mod_id, expected_version, version, manifest, compiled)` | 校验名称、版本单调与期望版本后更新 |
+| `install_mod(name, manifest)` | 插入 `mods`，版本固定为 1；清单中的 `name` 与 `version` 必须匹配 |
+| `update_mod(mod_id, expected_version, version, manifest)` | 校验名称、版本单调与期望版本后更新 |
 | `mod_by_name(name)` / `list_mods()` | 读取单个或全部 mod，按名称升序 |
 | `enabled_mods(topic_id)` | 话题启用的 mod，按名称升序 |
 | `all_enabled_mods()` | 全部 `(topic_id, mod_name)`，按话题与名称升序 |
 | `topics_with_mod(mod_id)` | 启用该 mod 的话题，按 id 升序 |
 | `enable_mod(topic_id, mod_id)` / `disable_mod(...)` | 写 `topic_mods`；返回关系是否变化；先校验话题与 mod 都存在 |
 | `delete_mod(mod_id)` | 删除 mod；`topic_mods` 级联删除；返回受影响话题 |
-
-`mods.compiled` 存 `CompiledScripts.modules` 的 JSON，`engine_fingerprint` 存指纹。两者必须
-同时为空或同时存在；行模型在只有一边存在时返回 `MalformedColumn`。
 
 `install_mod` 与 `update_mod` 的版本规则：
 
@@ -552,7 +547,7 @@ pub struct Block {
 | `ExternalWait` | `external_waits` | `payload` 与 `decision` 解析为 JSON |
 | `AgentInstance` | `agent_instances` | `role`、`mode` 解析为枚举 |
 | `AgentPending` | `agent_pending` | `payload` 解析为 `Vec<Content>` |
-| `Mod` | `mods` | `compiled` 与 `engine_fingerprint` 联合解析 |
+| `Mod` | `mods` | `version` 转为 `u32` |
 | `LogRecord` | `event_log` | 组合 `Scope`、`Source`、`Shape`、`Origin`；当前无查询入口 |
 
 `LogRecord` 的解析规则：
