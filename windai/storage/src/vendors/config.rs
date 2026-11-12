@@ -117,6 +117,63 @@ impl Storage {
         Ok(topic)
     }
 
+    pub async fn list_topics(&self) -> Result<Vec<Topic>> {
+        let topics = self
+            .executor
+            .fetch_all(sqlx::query_as::<_, Topic>(
+                "SELECT id, parent_id, label, model_id, icon, workspace
+                    FROM topics
+                    ORDER BY id DESC",
+            ))
+            .await?;
+        Ok(topics)
+    }
+
+    pub async fn list_providers(&self) -> Result<Vec<Provider>> {
+        let providers = self
+            .executor
+            .fetch_all(sqlx::query_as::<_, Provider>(
+                "SELECT id, name, alias, description, base_url, doc, active,
+                        created_at, updated_at
+                    FROM providers
+                    ORDER BY id ASC",
+            ))
+            .await?;
+        Ok(providers)
+    }
+
+    pub async fn list_models(&self, provider_id: Option<i64>) -> Result<Vec<Model>> {
+        let models = match provider_id {
+            Some(provider_id) => {
+                self.executor
+                    .fetch_all(
+                        sqlx::query_as::<_, Model>(
+                            "SELECT id, provider_id, name, alias, adapter, modalities,
+                                active, icon, endpoint, config, frequency,
+                                created_at, updated_at
+                            FROM models
+                            WHERE provider_id = ?
+                            ORDER BY id ASC",
+                        )
+                        .bind(provider_id),
+                    )
+                    .await?
+            }
+            None => {
+                self.executor
+                    .fetch_all(sqlx::query_as::<_, Model>(
+                        "SELECT id, provider_id, name, alias, adapter, modalities,
+                                active, icon, endpoint, config, frequency,
+                                created_at, updated_at
+                            FROM models
+                            ORDER BY provider_id ASC, id ASC",
+                    ))
+                    .await?
+            }
+        };
+        Ok(models)
+    }
+
     /// 读取模型、其提供商与启用凭证
     pub async fn get_model_config(&self, model_id: i64) -> Result<Option<ModelConfig>> {
         let config = self

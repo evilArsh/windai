@@ -370,6 +370,7 @@ impl From<Block> for WireBlock {
 pub struct ContextRow {
     pub input_tokens: i32,
     pub output_tokens: i32,
+    pub message_id: i64,
     pub message_created_at: Option<i64>,
     pub block: Block,
 }
@@ -379,6 +380,7 @@ impl<'r> FromRow<'r, DbRow> for ContextRow {
         Ok(Self {
             input_tokens: row.try_get("input_tokens")?,
             output_tokens: row.try_get("output_tokens")?,
+            message_id: row.try_get("message_id")?,
             message_created_at: row.try_get("created_at")?,
             block: Block::from_row(row)?,
         })
