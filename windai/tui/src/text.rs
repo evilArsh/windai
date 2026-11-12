@@ -114,10 +114,9 @@ pub fn summarize(name: &str, payload: &Value) -> String {
     }
 }
 
-fn decode<T: DeserializeOwned>(payload: &Value) -> Option<T> {
+pub(crate) fn decode<T: DeserializeOwned>(payload: &Value) -> Option<T> {
     T::deserialize(payload).ok()
 }
-
 fn body_bytes(body: &Body) -> usize {
     match body {
         Body::Reasoning { content, .. }
@@ -132,7 +131,7 @@ fn body_bytes(body: &Body) -> usize {
     }
 }
 
-fn interrupted_reason(reason: InterruptedReason) -> &'static str {
+pub(crate) fn interrupted_reason(reason: InterruptedReason) -> &'static str {
     match reason {
         InterruptedReason::Failed => "failed",
         InterruptedReason::Cancelled => "cancelled",
@@ -142,6 +141,14 @@ fn interrupted_reason(reason: InterruptedReason) -> &'static str {
 
 fn mod_summary(payload: &Value) -> String {
     let name = payload.get("name").and_then(Value::as_str);
+    let to_version = payload.get("to_version").and_then(Value::as_u64);
+    if let (Some(name), Some(to_version)) = (name, to_version) {
+        let from_version = payload.get("from_version").and_then(Value::as_u64);
+        return match from_version {
+            Some(from_version) => format!("{name} v{from_version} -> v{to_version}"),
+            None => dash(),
+        };
+    }
     let version = payload.get("version").and_then(Value::as_u64);
     match (name, version) {
         (Some(name), Some(version)) => format!("{name} v{version}"),

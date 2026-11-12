@@ -176,7 +176,7 @@ fn summarize_mod_events_use_name_and_version() {
     let deleted = json!({"name": "weather", "version": 2});
     assert_eq!(summarize("core/mod.deleted", &deleted), "weather v2");
     let updated = json!({"name": "weather", "from_version": 1, "to_version": 2});
-    assert_eq!(summarize("core/mod.updated", &updated), "-");
+    assert_eq!(summarize("core/mod.updated", &updated), "weather v1 -> v2");
 }
 
 #[test]
@@ -196,4 +196,11 @@ fn summarize_returns_dash_for_unknown_events_and_bad_payloads() {
         "-"
     );
     assert_eq!(summarize("core/mod.installed", &json!(null)), "-");
+    assert_eq!(
+        summarize(
+            "core/mod.updated",
+            &json!({"name": "weather", "from_version": 1})
+        ),
+        "-"
+    );
 }

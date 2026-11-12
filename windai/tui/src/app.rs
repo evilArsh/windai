@@ -5,7 +5,8 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use crate::config::Selection;
-use crate::fetch;
+use crate::fetch::{self, LoadedSession};
+use crate::reduce;
 use crate::theme;
 use crate::view;
 use crate::view::log::LogRing;
@@ -20,19 +21,23 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use ratatui::text::Text;
 use ratatui_textarea::TextArea;
 use tokio::runtime::Builder;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle as TaskHandle;
 use tokio::time::{MissedTickBehavior, interval};
 use wind_core::feed::{FeedError, Subscription};
 use wind_runtime::{Runtime, RuntimeError, RuntimeOptions};
 use wind_storage::Topic;
-use wind_wire::event::FeedEvent;
-use wind_wire::{AppDirs, Content, Usage};
+use wind_storage::error::StorageError;
+use wind_wire::event::{FeedEvent, Scope};
+use wind_wire::{AppDirs, Body, Content, Role, Usage};
 
 const TICK: Duration = Duration::from_millis(33);
 const EVENT_BUFFER: usize = 128;
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
+const LOAD_BUFFER_CAP: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -53,15 +58,17 @@ pub enum Screen {
 pub struct Session {
     pub topic: Topic,
     pub main: Option<i64>,
+    pub messages: Vec<MessageView>,
     pub log: LogRing,
     pub usage: Usage,
 }
 
 impl Session {
-    fn new(topic: Topic, main: Option<i64>) -> Self {
+    pub fn new(topic: Topic, main: Option<i64>) -> Self {
         Self {
             topic,
             main,
+            messages: Vec::new(),
             log: LogRing::new(),
             usage: Usage {
                 input_tokens: 0,
@@ -69,6 +76,54 @@ impl Session {
             },
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MessageView {
+    pub id: i64,
+    pub role: Role,
+    pub blocks: Vec<BlockView>,
+    pub sealed: Option<String>,
+    pub interrupted: Option<String>,
+}
+
+impl MessageView {
+    pub fn new(id: i64, role: Role) -> Self {
+        Self {
+            id,
+            role,
+            blocks: Vec::new(),
+            sealed: None,
+            interrupted: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlockView {
+    pub seq: i64,
+    pub revision: i64,
+    pub body: Body,
+    pub committed: bool,
+    pub rendered: Option<(i64, Text<'static>)>,
+}
+
+impl BlockView {
+    pub fn new(seq: i64, revision: i64, body: Body) -> Self {
+        Self {
+            seq,
+            revision,
+            body,
+            committed: false,
+            rendered: None,
+        }
+    }
+}
+
+struct LoadState {
+    topic_id: i64,
+    task: TaskHandle<Result<LoadedSession, StorageError>>,
+    buffer: Vec<FeedEvent>,
 }
 
 pub struct App {
@@ -81,6 +136,7 @@ pub struct App {
     notice: Option<String>,
     quit: bool,
     dirty: bool,
+    loading: Option<LoadState>,
 }
 
 impl App {
@@ -106,6 +162,7 @@ impl App {
             notice: startup.notice,
             quit: false,
             dirty: true,
+            loading: None,
         })
     }
 
@@ -158,19 +215,111 @@ impl App {
         }
     }
 
-    fn handle_feed(&mut self, result: Result<Option<Arc<FeedEvent>>, FeedError>) {
+    async fn handle_feed(&mut self, result: Result<Option<Arc<FeedEvent>>, FeedError>) {
         match result {
-            Ok(Some(event)) => {
-                let Screen::Session(session) = &mut self.screen else {
-                    return;
-                };
-                if session.log.record(session.topic.id, &event) {
-                    self.dirty = true;
-                }
-            }
+            Ok(Some(event)) => self.accept_event(event).await,
             Ok(None) => self.push_local("subscription closed"),
             Err(error) => self.push_local(&format!("subscription error: {error}")),
         }
+    }
+
+    async fn accept_event(&mut self, event: Arc<FeedEvent>) {
+        if self.loading.is_some() {
+            self.buffer_event(event);
+            return;
+        }
+        let Screen::Session(session) = &mut self.screen else {
+            return;
+        };
+        let logged = match &event.envelope.scope {
+            Scope::Global => true,
+            Scope::Topic { topic_id, .. } => *topic_id == session.topic.id,
+        };
+        if !logged {
+            return;
+        }
+        reduce::apply(session, &event);
+        self.dirty = true;
+    }
+
+    fn buffer_event(&mut self, event: Arc<FeedEvent>) {
+        let Some(topic_id) = self.loading.as_ref().map(|loading| loading.topic_id) else {
+            return;
+        };
+        match &event.envelope.scope {
+            Scope::Global => {
+                if let Screen::Session(session) = &mut self.screen {
+                    reduce::apply(session, &event);
+                    self.dirty = true;
+                }
+            }
+            Scope::Topic {
+                topic_id: event_topic,
+                ..
+            } if *event_topic == topic_id => {
+                let overflow = match &mut self.loading {
+                    Some(loading) if loading.buffer.len() < LOAD_BUFFER_CAP => {
+                        loading.buffer.push((*event).clone());
+                        false
+                    }
+                    Some(_) => true,
+                    None => false,
+                };
+                if overflow {
+                    if let Screen::Session(session) = &mut self.screen {
+                        session
+                            .log
+                            .push_local("event buffer overflow; reloading the session");
+                    }
+                    self.dirty = true;
+                    self.begin_load(topic_id);
+                    if let Some(loading) = &mut self.loading {
+                        loading.buffer.push((*event).clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn begin_load(&mut self, topic_id: i64) {
+        if let Some(previous) = self.loading.take() {
+            previous.task.abort();
+        }
+        let storage = self.runtime.storage().clone();
+        let task = tokio::spawn(async move { fetch::load_session(&storage, topic_id).await });
+        self.loading = Some(LoadState {
+            topic_id,
+            task,
+            buffer: Vec::new(),
+        });
+    }
+
+    async fn finish_load(&mut self, result: Result<LoadedSession, StorageError>) {
+        let Some(loading) = self.loading.take() else {
+            return;
+        };
+        let Screen::Session(session) = &mut self.screen else {
+            return;
+        };
+        if session.topic.id != loading.topic_id {
+            return;
+        }
+        match result {
+            Ok(loaded) => {
+                session.topic = loaded.topic;
+                session.main = loaded.main.or(session.main);
+                session.messages = loaded.messages;
+                session.usage = loaded.usage;
+                for event in &loading.buffer {
+                    reduce::apply(session, event);
+                }
+            }
+            Err(error) => session
+                .log
+                .push_local(&format!("load session failed: {error}")),
+        }
+        self.dirty = true;
     }
 
     fn push_local(&mut self, message: &str) {
@@ -247,7 +396,21 @@ impl App {
             .map_err(|error| format!("load topic failed: {error}"))?
             .ok_or_else(|| format!("topic {topic_id} is missing"))?;
         self.screen = Screen::Session(Session::new(topic, Some(ack.instance_id)));
+        self.begin_load(topic_id);
+        self.dirty = true;
         Ok(())
+    }
+}
+
+async fn load_result(loading: &mut Option<LoadState>) -> Result<LoadedSession, StorageError> {
+    let Some(state) = loading.as_mut() else {
+        return std::future::pending().await;
+    };
+    match (&mut state.task).await {
+        Ok(result) => result,
+        Err(error) => Err(StorageError::Internal(format!(
+            "session load task failed: {error}"
+        ))),
     }
 }
 
@@ -278,7 +441,8 @@ async fn event_loop(
                 Some(_) => {}
                 None => break,
             },
-            feed = app.subscription.recv() => app.handle_feed(feed),
+            feed = app.subscription.recv() => app.handle_feed(feed).await,
+            loaded = load_result(&mut app.loading) => app.finish_load(loaded).await,
             _ = ticker.tick() => {
                 if app.dirty {
                     terminal.draw(|frame| view::render(frame, app))?;
@@ -407,6 +571,13 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
+    async fn settle_load(app: &mut App) {
+        if app.loading.is_some() {
+            let result = load_result(&mut app.loading).await;
+            app.finish_load(result).await;
+        }
+    }
+
     #[tokio::test]
     async fn ctrl_c_quits() {
         let (dir, mut app) = test_app().await;
@@ -500,7 +671,7 @@ mod tests {
                     panic!("the subscription closed unexpectedly");
                 };
                 let accepted = event.envelope.name == "core/input.accepted";
-                app.handle_feed(Ok(Some(event)));
+                app.handle_feed(Ok(Some(event))).await;
                 if accepted {
                     break;
                 }
@@ -508,6 +679,7 @@ mod tests {
         })
         .await
         .expect("receive the accepted event");
+        settle_load(&mut app).await;
         let Screen::Session(session) = &app.screen else {
             panic!("submit creates a session");
         };
