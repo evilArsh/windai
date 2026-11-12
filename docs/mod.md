@@ -35,6 +35,7 @@ MCP 服务连接见「MCP」；数据库表见「存储」。
 | mod 根 | `<root>/mods` |
 | mod 版本目录 | `<root>/mods/<name>/<version>` |
 | mod 私有目录 | `<root>/mods/<name>/data` |
+| 字节码缓存根 | `<root>/bytecode` |
 
 安装时 `Package::open` 与 `Installer::check_location` 都要求包位于 `mods/<name>/<version>`，
 且清单中的 `name` 与 `version` 与路径一致。`data/` 与版本目录同级，升级时保留，卸载时不自动
@@ -73,6 +74,9 @@ pub struct Manifest {
 
 符号名为 `^[a-zA-Z_][a-zA-Z0-9_-]{0,62}$`。处理函数名为
 `^[a-zA-Z_$][a-zA-Z0-9_$]*$`，即脚本可以导出的名字。
+
+`capabilities` 当前只参与清单校验；运行期不注入任何能力，`ctx` 上也没有对应属性。
+已实现与未实现的 HostApi 清单见「脚本」的「HostApi 实现状态」。
 
 ### `McpServer`
 
@@ -127,7 +131,7 @@ pub struct EventSub {
 
 键必须是 `core/` 开头的事件名，且必须存在于宿主的事件目录中。目录检查由
 `Installer::validate` 与 `Manifest::subscriptions` 完成；单独调用 `Manifest::parse` 不查目录。
-`timeoutMs` 范围为 1 到 60000；缺省取 `DEFAULT_SUB_TIMEOUT_MS = 1000`。
+`timeoutMs` 范围为 1 到 60000；缺省取 `DEFAULT_SUB_TIMEOUT_MS = 20`。
 
 `Manifest::subscriptions(directory, default_timeout_ms)` 把每条声明转换为：
 
@@ -159,9 +163,15 @@ pub struct EmitDecl {
 - `retention = journal` 时 `eventKey` 必填，且同一 mod 内不得重复。
 - `retention = live` 时 `eventKey` 可选。
 
+运行期的载荷校验只检查 schema 的顶层 `type`；清单期的本地引用校验是完整的 Draft 2020-12
+校验。两者的区别见「脚本」的「事件出口」。
+
 频道名是 `events.emit` 的键。`eventKey` 是持久化事件名中的键：`retention = journal` 时事件名
 为 `m_<mod_name>/<eventKey>`，`retention = live` 时为 `m_<mod_name>/<channel>`。宿主在调用
 脚本时按清单构造 `ModEmitter`，频道、事件名与保留策略都由宿主固定。
+
+`Manifest::requires_scripts()` 在 `requests` 非空或 `events.on` 非空时为真。它只用于资源
+展示，不参与安装、启用或订阅发布。
 
 ### `defs`
 
@@ -185,9 +195,14 @@ pub struct ModChange {
 }
 ```
 
-`Installer` 持有数据库、`Dispatcher`、`Roster`、`AppDirs`、可选的 `ScriptService` 与一把写互斥。
-所有变更在数据库事务中准备，提交与内存发布在派生任务里完成；调用方取消只放弃等待，操作
-继续走完。
+`Installer` 持有数据库、`Dispatcher`、`Roster`、`AppDirs` 与一把写互斥：
+
+```rust
+Installer::new(storage, bus, roster, dirs)
+```
+
+它不持有 `ScriptService`。所有变更在数据库事务中准备，提交与内存发布在派生任务里完成；
+调用方取消只放弃等待，操作继续走完。
 
 ### 安装
 
@@ -312,7 +327,7 @@ pub struct ModResources {
 
 ### 发布到话题
 
-`ResourceServices` 把资源翻译成两类 MCP 引用与一组内建服务：
+`ResourceService` 把资源翻译成两类 MCP 引用与一组内建服务：
 
 ```text
 publish(topic_id):
@@ -338,10 +353,10 @@ publish(topic_id):
 | `Global` | `wd_fs` | `wd_skills` |
 | `Topic(id)` | `wd_fs_<id>` | `wd_skills_<id>` |
 
-`ResourceServices` 只为话题作用域发布内建服务。`BuiltinScope::Global` 存在，但当前没有
+`ResourceService` 只为话题作用域发布内建服务。`BuiltinScope::Global` 存在，但当前没有
 调用方。
 
-`ResourceServices::release_topic` 释放该话题的主引用与内建引用；`shutdown` 标记关闭并等待
+`ResourceService::release_topic` 释放该话题的主引用与内建引用；`shutdown` 标记关闭并等待
 注册表停止全部连接。
 
 ### 提示词
@@ -352,11 +367,12 @@ publish(topic_id):
 
 ### 工具
 
-`ResourceServices::agent_tools` 当前返回空表。`ToolOrigin::ModRequest` 的命名规则
-`m_<mod_name>__<request>` 只存在于工具目录类型中；mod request 尚未接入工具目录，不会出现
-在模型可见的工具清单里。
+mod request 尚未接入工具目录。`wind_wire::ModService` 只有 `prompt_fragments` 与
+`version_of`，没有工具目录或调用方法；`wind_core::llm::tools::ToolOrigin` 只有 `Agent`
+与 `Mcp` 两种来源。清单 `requests` 因此不会出现在模型可见的工具清单里。
 
-`ResourceServices::call` 对 mod request 返回 `Denied`，即使目录中出现该类工具。
+当前模型可见的 mod 工具只有清单 `mcpServers` 声明、经 `mod_<mod>_<local>` 服务暴露的 MCP
+工具。
 
 ### 技能
 
@@ -378,11 +394,9 @@ windai://mods/<name>/<version>/ui/index.js
 
 ## 订阅装配
 
-`Installer::snapshot` 遍历全部 mod（不限于已启用），为每个 mod 生成订阅：
-
-- 无脚本要求的 mod：没有 `events.on`，订阅为空。
-- 有脚本要求：用清单的 `events.on` 生成订阅，事件名必须在目录中。没有脚本服务时只记录
-  警告，订阅照常生成，调用时返回运行时错误。
+`Installer::snapshot` 遍历全部 mod（不限于已启用），用每份清单的 `events.on` 生成订阅；
+事件名必须在目录中。是否属于“需要脚本”只影响 `ModResources.requires_scripts` 的展示，
+不影响订阅发布。
 
 生成的订阅写入 `Dispatcher` 的索引。是否真正调用由 `Roster` 按话题过滤；未启用 mod 的
 订阅留在索引里，但永远不会命中。
@@ -403,36 +417,56 @@ windai://mods/<name>/<version>/ui/index.js
 | `core/mod.deleted` | `ModDeleted { name, version }` |
 
 三条事件都是 `observe`，`log = true`，进入 `event_log` 与前端流。作用域与来源来自调用方
-传入的 `DispatchCx`；`ResourceServices` 原样转发。
+传入的 `DispatchCx`；`ResourceService` 原样转发。
 
 安装事件中的 `manifest` 是解析后的规范化 JSON，缺省字段被补齐。
 
 ## 脚本边界
 
-`wind-script` 已实现。宿主通过 `Option<Arc<dyn ScriptService>>` 接入：
+脚本引擎是宿主装配的组件，不是安装门禁。`ScriptRuntime::new` 接收
+`Arc<dyn ScriptService>`；`ScriptRuntime::quickjs` 构造 QuickJS 服务，并将
+`AppDirs::bytecode_root()` 配置为缓存目录。完整的执行模型、HostApi 与未实现清单见「脚本」。
+服务仅提供执行入口：
 
 ```rust
 #[async_trait]
 pub trait ScriptService: Send + Sync {
-    fn compile(&self, root: &Path, handlers: &HashSet<String>) -> Result<(), ScriptsError>;
-
     async fn call(&self, call: ScriptCall) -> Result<Option<Value>, ScriptsError>;
 }
 ```
 
-`Installer` 只在构造时保存该服务，不调用 `compile`。安装与更新只校验清单，不读取
-`scripts/`；`compile` 的调用由持有服务的启动流程决定。宿主还必须把
-`wind_core::script::directory()` 并入事件目录，否则 mod 无法订阅 `core/mod.notify`。
+`Installer` 不持有脚本服务。安装与更新只校验清单，不读取、编译或执行 `scripts/`。
+脚本语法错误与处理函数缺失由首次调用报告为 `ScriptsError::Handler`，不影响安装与启用。
+宿主必须把 `wind_core::script::directory()` 并入事件目录，才能订阅 `core/mod.notify`。
 
-没有脚本服务时：
+字节码是 QuickJS 编译模块产生的二进制表示，不包含跨调用共享的运行状态。首次加载模块时
+读取源码并取得编译产物，每次调用仍然创建独立运行时并执行模块顶层代码。编译不读取导入
+文件；实际执行时由加载器解析真实导入并校验路径。
 
-| 场景 | 结果 |
-| --- | --- |
-| 安装仅含资源的 mod | 成功 |
-| 安装含 `requests` 或 `events.on` 的 mod | 成功，记录警告 |
-| 启用含脚本要求的已装 mod | 成功 |
-| 恢复全部 mod | 订阅照常生成 |
-| 调用脚本处理函数 | `CallError::Internal`，仓储层报告没有脚本服务 |
+缓存文件按 mod 与引擎隔离，路径为：
+
+```text
+<root>/bytecode/<mod_name>/<engine_id>/<key>.bin
+key = sha256(module_name || 0x00 || source_bytes)
+engine_id = rquickjs-sys=<version>;arch=<ARCH>;ptr=<32|64>;endian=<le|be>
+```
+
+文件包含格式标识、完整性摘要与字节码。摘要同时绑定引擎标识、内容键和字节码，用于在
+加载前发现文件损坏；该目录仅用于可信本地编译产物，不接受外部分发的字节码。
+产物仅写文件，不写数据库；文件写入失败时继续使用内存缓存。
+
+内存按 mod 根目录、mod 名与模块名索引。首次加载后，常规调用不读取文件、不计算内容键、
+不重新编译。相同根目录内修改源码不会改变该服务已加载的代码；更新应创建新版本目录，
+或重建脚本服务。新版本首次加载仍需读取源码计算键；源码未变化时复用已有文件而不重写。
+`Config::cache = None` 仅关闭磁盘缓存，内存缓存继续生效。
+
+文件损坏或字节码加载失败时删除对应文件，改用已读取的源码，并在当前服务内停用该产物。
+恢复后的模块继续从内存取得源码。重建服务后可以重新编译生成文件。删除 mod 时，在数据库
+提交成功后尽力删除其缓存目录；清理失败仅记录日志，不撤销删除。
+
+冷调用是需要初始化模块缓存、等待初始化完成或从源码编译模块的调用；其超时不计入连续
+超时次数。连续三次非冷调用超时触发停摆，冷却时间为 30 秒。冷却结束后仅允许一个在途
+探测，成功清除计数，超时则重新进入冷却。探测取消或提前退出时恢复冷却，避免永久停摆。
 
 ## 当前边界
 
@@ -442,10 +476,12 @@ pub trait ScriptService: Send + Sync {
 | `scripts/` | 由 `wind-script` 的加载器读取，入口固定为 `scripts/index.js` |
 | `mcp/` | 只有路径常量，没有资源加载器；MCP 服务只来自清单 `mcpServers` |
 | `events.emit` | 清单校验完整；`ModEmitter` 由 `wind-core::script` 按清单构造，`retention` 参与投递 |
-| `requests` | 不会出现在模型工具目录；调用入口返回 `Denied` |
+| `requests` | 不会出现在模型工具目录；没有调用入口 |
 | `callableBy` | 已解析，未在任何调用边界强制 |
 | `inputSchema` / `outputSchema` | 只做清单期校验，运行期不强制 |
 | `state` / `storage` 能力 | 没有宿主实现，也没有数据库表 |
-| 脚本处理函数校验 | `compile` 接收 `handlers`，实现只校验入口语法 |
+| 脚本处理函数校验 | 首次调用检查语法与导出函数，引擎为必需组件 |
+| 字节码缓存 | 首次加载生成，按 mod、引擎与源码内容隔离；详见「脚本」 |
+| HostApi | `emit`、`notify`、`log` 已实现；`state`、`storage`、`http`、`agent`、`fs` 未实现 |
 | `ui` | 只识别 `ui/index.js` 并给出 `ui_entry`；资源服务由前端底座负责 |
 | 版本目录清理 | 删除 mod 不删除磁盘上的版本目录与 `data/` |

@@ -5,7 +5,8 @@
 订阅者、mod 派发层与事件日志。
 
 本文先定义事件的身份与分类，再说明派发层与 feed 的实现，最后给出事件目录与前端消费规则。
-领域表的写入见「存储」；mod 如何声明订阅见「Mod」。
+领域表的写入见「存储」；mod 如何声明订阅见「Mod」；脚本如何产生 mod 事件与
+`core/mod.notify` 见「脚本」。
 
 ## 概念
 
@@ -21,6 +22,7 @@
 | 展示去向 | `Target::Core` 或 `Target::Mod { name, channel }`，写入 `event_log` 的路由列 |
 | 位置 | 事件的身份 `EventKey`，不是数据库行号 |
 | mod | 宿主安装的扩展包，可订阅事件或提供资源；见「Mod」 |
+| 脚本调用 | 派发层通过 `ModCaller` 调用 mod 处理函数；当前实现是 `ScriptRuntime` |
 
 ### 信封与身份
 
@@ -641,8 +643,9 @@ wind_event::directory()
     .merge(wind_core::script::directory())
 ```
 
-`wind_event::directory()` 只含派发层自己的两条元事件。事件名不在目录中时，`notify` 与
-`decide` 都返回 `NotInDirectory` 并发出 `core/dispatch.failed`。
+`wind_event::directory()` 只含派发层自己的两条元事件。事件名不在目录中时，`notify`
+不提交事件，`decide` 返回原载荷，两者都发出 `core/dispatch.failed`；`notify_host` 返回
+`BusError::NotInDirectory`。
 
 ### 派发层
 
@@ -669,6 +672,8 @@ wind_event::directory()
 
 `core/agent.create`、`terminate`、`cancel` 是给宿主 API 预留的拦截点，当前没有产生者；
 `core/agent.tree` 也没有产生者。`core/agent.persist_failed` 不写数据库，只推给当前订阅者。
+三条观察事件都由 `Agent::notify` 以 `Origin::Internal`、`Source::core("agent")` 发出，
+作用域是 `Scope::Topic { topic_id, instance_id }`，预算 50ms。
 
 ### LLM
 
@@ -703,7 +708,36 @@ mod 自己发出的事件不在目录中。`ModEmitter` 由 `wind-core::script` 
 事件名与保留策略来自 `EmitChannel`：`journal` 频道的事件名是 `m_<mod>/<eventKey>`，
 `live` 频道的事件名是 `m_<mod>/<channel>`；去向都是 `Target::Mod { name, channel }`。
 这些事件会写入 `event_log`（`journal`）或只推给订阅者（`live`），但 `Dispatcher::on_event`
-查不到目录项，因此不会派发给任何 mod。
+查不到目录项，因此不会派发给任何 mod。载荷校验只检查清单 schema 的顶层 `type`；完整
+JSON Schema 尚未接入。
+
+`core/mod.notify` 由 `EventSink::notify` 产生：作用域沿用本次脚本调用的作用域，来源是
+`Source::Mod { name, version }`，载荷是 `{ level, text }`，保留策略固定为 `Journal`，
+去向为 `Target::Core`。它同样受 `Guards::admit` 约束。
+
+### 脚本调用
+
+`Dispatcher` 不直接认识 QuickJS。它通过 `ModCaller` 调用 mod：
+
+```text
+decide / notify_host / ObservePool
+  → ModCaller::call(subscription, payload, CallCx)
+  → ScriptRuntime
+      读当前 Mod 行与清单
+      版本与订阅不一致 → CallError::Internal
+      构造 ModEmitter、DispatchCx、Host
+  → ScriptService::call(ScriptCall)
+  → 解释器线程执行 handler(input, ctx)
+```
+
+`CallCx` 携带截止时间、取消令牌、调用模式与作用域。`ScriptRuntime` 用其中的剩余预算构造
+`DispatchCx`，因此脚本产生的事件预算从本次调用剩余时间起算。`intercept` 的预算取
+`min(订阅 timeout, 调用方剩余预算)`；`observe` 的预算取订阅 timeout，生成时的新
+`DispatchCx` 不随产生方的上下文取消。
+
+脚本的返回值映射：`Ok(None)` 表示不改写；`Ok(Some(value))` 交给 `decide` 解析；
+`Err(CallError::Handler)` 记 `handler_error`，`Err(CallError::Internal)` 记 `call_error`；
+超时记 `dispatch.timeout`。`observe` 忽略返回值。
 
 ### MCP
 
@@ -766,5 +800,7 @@ recv()
 | observe 取消传播 | 投递池的 `CallCx.cancel` 是新建的空令牌 |
 | 嵌套派发 | `DispatchCx::nested` 没有调用方，深度限制当前不生效 |
 | 速率限制 | `admit_mod_emit` 由 `ModEmitter` 在每次 emit 时执行 |
+| 脚本 HostApi | `ScriptHost` 只有 `emit` 与 `notify`；`state`、`storage`、`http`、`agent`、`fs` 未实现 |
+| 脚本能力裁剪 | 清单 `capabilities` 不参与注入；`intercept` 没有 I/O 能力可裁剪 |
 | `FeedError::Lagged` / `FeedError::IdentityConflict` | 在 feed 内无构造点 |
 | 连接回放与历史 | 没有去重或拼接实现，只有 `cut` 与事件身份 |

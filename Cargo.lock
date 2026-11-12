@@ -3558,7 +3558,6 @@ dependencies = [
  "tokio",
  "url",
  "wind-event",
- "wind-script",
  "wind-storage",
  "wind-wire",
 ]
@@ -3582,6 +3581,7 @@ dependencies = [
  "log",
  "rquickjs",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror",
  "tokio",

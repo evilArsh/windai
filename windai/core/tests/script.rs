@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -59,14 +59,6 @@ struct FakeService {
 
 #[async_trait::async_trait]
 impl ScriptService for FakeService {
-    fn compile(
-        &self,
-        _root: &Path,
-        _handlers: &std::collections::HashSet<String>,
-    ) -> Result<(), ScriptsError> {
-        Ok(())
-    }
-
     async fn call(&self, call: ScriptCall) -> Result<Option<Value>, ScriptsError> {
         self.calls.lock().expect("call log").push((
             call.mod_name.clone(),
@@ -186,7 +178,7 @@ async fn emit_and_notify_leave_through_the_runtime_sink() {
         fixture.dirs.clone(),
         Arc::clone(&outlet) as Arc<dyn EventOutlet>,
         Limits::default(),
-        Some(Arc::clone(&service) as Arc<dyn ScriptService>),
+        Arc::clone(&service) as Arc<dyn ScriptService>,
     );
 
     runtime
@@ -226,28 +218,6 @@ async fn emit_and_notify_leave_through_the_runtime_sink() {
 }
 
 #[tokio::test]
-async fn a_missing_service_is_a_runtime_error() {
-    let fixture = Fixture::new().await;
-    fixture
-        .storage
-        .install_mod("demo", &manifest().to_string())
-        .await
-        .expect("install mod");
-    let runtime = ScriptRuntime::new(
-        fixture.storage.clone(),
-        fixture.dirs.clone(),
-        Arc::new(RecordingOutlet::default()) as Arc<dyn EventOutlet>,
-        Limits::default(),
-        None,
-    );
-    let error = runtime
-        .call(&subscription(), json!({}), call_cx(topic_scope(3)))
-        .await
-        .expect_err("no engine is available");
-    assert!(matches!(error, CallError::Internal(_)));
-}
-
-#[tokio::test]
 async fn a_stale_subscription_is_refused() {
     let fixture = Fixture::new().await;
     fixture
@@ -260,7 +230,7 @@ async fn a_stale_subscription_is_refused() {
         fixture.dirs.clone(),
         Arc::new(RecordingOutlet::default()) as Arc<dyn EventOutlet>,
         Limits::default(),
-        Some(Arc::new(FakeService::default()) as Arc<dyn ScriptService>),
+        Arc::new(FakeService::default()) as Arc<dyn ScriptService>,
     );
     let mut stale = subscription();
     stale.mod_version = 2;
@@ -273,7 +243,7 @@ async fn a_stale_subscription_is_refused() {
 }
 
 #[tokio::test]
-async fn install_and_enable_succeed_without_a_script_service() {
+async fn install_and_enable_publish_subscriptions() {
     let fixture = Fixture::new().await;
     let topic_id = fixture.topic().await;
     let outlet = Arc::new(RecordingOutlet::default());
@@ -282,7 +252,7 @@ async fn install_and_enable_succeed_without_a_script_service() {
         fixture.dirs.clone(),
         Arc::clone(&outlet) as Arc<dyn EventOutlet>,
         Limits::default(),
-        None,
+        Arc::new(FakeService::default()),
     ));
     let roster = Arc::new(Roster::load(&fixture.storage).await.expect("roster"));
     let directory = wind_event::directory()
@@ -300,7 +270,6 @@ async fn install_and_enable_succeed_without_a_script_service() {
         Arc::clone(&dispatcher),
         Arc::clone(&roster),
         fixture.dirs.clone(),
-        None,
     );
 
     let scripted = json!({
@@ -321,12 +290,111 @@ async fn install_and_enable_succeed_without_a_script_service() {
         .await
         .expect("enable");
     assert!(roster.enabled(&topic_scope(topic_id)).contains("scripted"));
+}
 
-    let mut sub = subscription();
-    sub.mod_name = "scripted".to_string();
-    let error = runtime
-        .call(&sub, json!({}), call_cx(topic_scope(topic_id)))
-        .await
-        .expect_err("calling without a service fails at runtime");
-    assert!(matches!(error, CallError::Internal(_)));
+#[tokio::test]
+async fn the_default_runtime_caches_only_when_called() {
+    let fixture = Fixture::new().await;
+    let scripted = json!({"name": "demo", "version": 1,
+        "events": {"on": {"core/mod.installed": {"handler": "onEvent"}}}});
+    let root = fixture.write_package(&scripted);
+    fs::create_dir_all(root.join("scripts")).expect("scripts");
+    fs::write(
+        root.join("scripts/index.js"),
+        "export function onEvent() { return 42; }",
+    )
+    .expect("entry");
+    let outlet = Arc::new(RecordingOutlet::default());
+    let runtime = Arc::new(
+        ScriptRuntime::quickjs(
+            fixture.storage.clone(),
+            fixture.dirs.clone(),
+            outlet.clone(),
+            Limits::default(),
+        )
+        .expect("engine"),
+    );
+    let roster = Arc::new(Roster::load(&fixture.storage).await.expect("roster"));
+    let bus = Arc::new(Dispatcher::new(
+        wind_event::directory().merge(wind_mod::events::directory()),
+        roster.clone(),
+        runtime.clone(),
+        outlet,
+        Limits::default(),
+    ));
+    let installer = Installer::new(fixture.storage.clone(), bus, roster, fixture.dirs.clone());
+    let cx = DispatchCx::root(
+        Origin::Internal,
+        Scope::Global,
+        Source::core("test"),
+        Duration::from_secs(5),
+    );
+    installer.install(&cx, &root).await.expect("install");
+    assert!(!fixture.dirs.bytecode_root().exists());
+    assert_eq!(
+        runtime
+            .call(&subscription(), json!({}), call_cx(topic_scope(1)))
+            .await
+            .expect("call"),
+        Some(json!(42))
+    );
+    assert!(fixture.dirs.bytecode_root().join("demo").exists());
+    fs::remove_dir_all(root.join("scripts")).expect("remove source");
+    assert_eq!(
+        runtime
+            .call(&subscription(), json!({}), call_cx(topic_scope(1)))
+            .await
+            .expect("cached call"),
+        Some(json!(42))
+    );
+}
+
+#[tokio::test]
+async fn installation_and_enablement_do_not_validate_or_execute_scripts() {
+    for source in [
+        "export function onEvent( {",
+        "throw new Error('top-level executed');",
+        "export function other() {}",
+    ] {
+        let fixture = Fixture::new().await;
+        let scripted = json!({"name":"demo","version":1,"events":{"on":{"core/mod.installed":{"handler":"onEvent"}}}});
+        let root = fixture.write_package(&scripted);
+        fs::create_dir_all(root.join("scripts")).expect("scripts");
+        fs::write(root.join("scripts/index.js"), source).expect("entry");
+        let outlet = Arc::new(RecordingOutlet::default());
+        let runtime = Arc::new(
+            ScriptRuntime::quickjs(
+                fixture.storage.clone(),
+                fixture.dirs.clone(),
+                outlet.clone(),
+                Limits::default(),
+            )
+            .expect("engine"),
+        );
+        let roster = Arc::new(Roster::load(&fixture.storage).await.expect("roster"));
+        let bus = Arc::new(Dispatcher::new(
+            wind_event::directory().merge(wind_mod::events::directory()),
+            roster.clone(),
+            runtime.clone(),
+            outlet,
+            Limits::default(),
+        ));
+        let installer = Installer::new(fixture.storage.clone(), bus, roster, fixture.dirs.clone());
+        let cx = DispatchCx::root(
+            Origin::Internal,
+            Scope::Global,
+            Source::core("test"),
+            Duration::from_secs(5),
+        );
+        installer.install(&cx, &root).await.expect("install");
+        let topic = fixture.topic().await;
+        installer.enable(&cx, topic, "demo").await.expect("enable");
+        assert!(!fixture.dirs.bytecode_root().exists());
+        assert!(matches!(
+            runtime
+                .call(&subscription(), json!({}), call_cx(topic_scope(topic)))
+                .await,
+            Err(CallError::Handler(_))
+        ));
+    }
 }

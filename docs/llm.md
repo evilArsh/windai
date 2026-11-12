@@ -149,12 +149,11 @@ provider                                      必须存在
 rules = compile_rules(list_rules(provider.id, adapter))
 fragments = mod_service.prompt_fragments(topic.id)
 prompt = decide(core/prompt.collect, fragments).fragments.join("\n\n")
-from_mods = mod_service.agent_tools(topic.id)
-from_mcp  = mcp_service.declarations(cx, topic.id)
-catalog = ToolCatalog::assemble(from_mods, from_mcp)
+from_mcp  = mcp_service.list_tools(topic.id)
+catalog = ToolCatalog::assemble(from_mcp)
 ```
 
-`prompt` 的来源是话题启用的 mod 的 `prompts/` 文件。`ResourceServices` 按 mod 名升序返回
+`prompt` 的来源是话题启用的 mod 的 `prompts/` 文件。`ResourceService` 按 mod 名升序返回
 片段，`Resources` 在单个 mod 内按文件名升序读取 `.md`、`.txt`、`.html`。
 
 `Prepared` 保存适配器、模型、提供商、目标地址与凭据、规则集、提示词与工具目录。`rounds`
@@ -321,9 +320,8 @@ UPDATE message SET finish_reason, input_tokens, output_tokens
 
 ```rust
 pub enum ToolOrigin {
-    Agent { name: String },
-    Mcp { target: McpTarget },
-    ModRequest { mod_name: String, request: String },
+    Agent,
+    Mcp,
 }
 ```
 
@@ -333,9 +331,11 @@ pub enum ToolOrigin {
 | --- | --- |
 | Agent | `wind_spawn_agent` |
 | MCP | `<server>0m0<tool>` |
-| Mod request | `m_<mod_name>__<request>` |
 
-`ToolCatalog::assemble` 先放入 mod 提供的工具，再放入 MCP 工具；出现重名即返回
+没有 `ModRequest` 来源。清单 `requests` 只做结构校验，当前不会出现在工具目录中，也没有
+调用入口。
+
+`ToolCatalog::assemble(from_mcp)` 先放入 MCP 工具；同名工具出现两次即返回
 `CoreError::ToolNameConflict`。最后追加内置的 `wind_spawn_agent`；若同名已存在，则保留已存在
 的那一项。
 
@@ -358,27 +358,32 @@ pub struct SpawnAgentSchema {
 - 同一索引上的 `call_id` 与 `name` 必须都相同，才采用改写后的调用。
 - 其余情况保留原始调用。
 
-因此 mod 可以改写参数，不能借这个事件增删调用或改变顺序。
+因此 mod 可以改写参数，不能借这个事件增删调用或改变顺序。`suspend = true` 时本批调用整体
+不执行；等待项保存的是改写前的调用。
 
 ### 执行
 
 ```text
-execute_plan(calls, catalog, cx, mcp_service, mod_service)
+execute_plan(calls, catalog, cx, mcp_service)
   Agent 调用        → 收集，稍后解析为 SpawnAgentAction
-  MCP 调用          → 参数必须是 JSON 对象；调用 McpService，失败转成 error 结果
-  ModRequest 调用   → 读取 mod 版本，参数解析后调用 ModService；失败转成 denied 结果
+  MCP 调用          → 参数必须是 JSON 对象；加入同一批
   未知工具          → { "error": "unknown tool <name>" }
+  MCP 批            → mcp_service.tool_calls(deadline, cancel, params)
 ```
 
-`ModRequest` 的版本读取失败或参数解析失败会作为 `CoreError` 向上传播，结束本次运行；
-mod 调用本身失败只产生一个被拒绝的工具结果。`McpService::call` 的失败同样转成工具结果。
+一批 MCP 调用只发一次 `McpService::tool_calls`。返回的 `FunctionCallOutput` 按 `call_id` 回填；
+某个调用没有对应输出时写入 `{ "error": "the call produced no result" }`。整批失败时记录警告，
+每个调用都得到 error 结果，本轮运行继续。参数不是 JSON 对象、工具名无法拆出服务名的调用
+不进入批次，直接得到 error 结果。
 
-当前 `ResourceServices`：
+`ResourceService` 是 `McpService` 的实现：
 
-- `agent_tools` 返回空表，因此 `m_<mod>__<request>` 工具不会出现在目录中。
-- `call` 对任何 mod request 返回 `Denied`，即使目录中出现该类工具。
-- `declarations` 返回话题主引用下的 MCP 工具与内建 `wd_fs_<topic>`、`wd_skills_<topic>`
-  工具，按 `(server, tool)` 去重。
+- `list_tools(topic_id)` 首次调用时发布话题服务，然后读取主引用与内建 `wd_fs_<topic>`、
+  `wd_skills_<topic>` 引用下的工具，按 `(server, tool)` 去重。
+- `tool_call` 与 `tool_calls` 按服务名、工具名查找当前 `Running` 的连接，并传
+  `cx.deadline()` 与 `cx.cancel()`。
+- `ModService::prompt_fragments` 返回话题启用 mod 的提示词片段；`version_of` 返回当前版本。
+  `ModService` 没有工具目录或调用方法。
 
 ### 工具结果
 
@@ -430,8 +435,9 @@ prepare（模型、规则、提示词、工具目录）
 否则 contexts::assemble，进入 rounds（复用已准备的材料）
 ```
 
-未表态的调用默认放行。等待项保存的是改写前的调用，因此 mod 在 `core/llm.toolcall` 中
-改写过的参数不会进入审批载荷。
+未表态的调用默认放行。拒绝结果的内容是
+`{ "refused": true, "reason": "the user did not allow this call" }`。等待项保存的是改写前的
+调用，因此 mod 在 `core/llm.toolcall` 中改写过的参数不会进入审批载荷。
 
 ## 事件与保留策略
 
@@ -455,7 +461,8 @@ prepare（模型、规则、提示词、工具目录）
 
 | 项 | 现状 |
 | --- | --- |
-| Mod request 工具 | `ResourceServices::agent_tools` 返回空，`call` 返回 `Denied`；需要 `wind-scripts` |
+| Mod request 工具 | 没有 `ToolOrigin::ModRequest`；`requests` 不进入工具目录，也没有调用入口 |
+| 脚本 HostApi | 只有 `emit`、`notify` 与本地 `log`；`state`、`storage`、`http`、`agent`、`fs` 未实现 |
 | 审批载荷 | 保存的是改写前的调用；mod 改写后的参数不会出现在等待项里 |
 | `fork` | 已解析，未使用 |
 | 后台结果 | 后台子实例完成后不向父实例投递结果 |

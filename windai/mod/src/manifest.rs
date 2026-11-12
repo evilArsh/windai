@@ -19,7 +19,7 @@ const MAX_REQUEST_TIMEOUT_MS: u64 = 300_000;
 /// 单条订阅时间预算的上限，毫秒
 const MAX_SUB_TIMEOUT_MS: u64 = 60_000;
 /// mod 调用默认超时时间，毫秒
-pub const DEFAULT_SUB_TIMEOUT_MS: u64 = 1_000;
+pub const DEFAULT_SUB_TIMEOUT_MS: u64 = 20;
 const MIN_URL_LEN: usize = 8;
 const MAX_DESCRIPTION_LEN: usize = 500;
 
@@ -492,4 +492,32 @@ fn handler_ok(value: &str) -> bool {
     value
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events;
+    use serde_json::json;
+
+    #[test]
+    fn default_budget_is_twenty_milliseconds_and_explicit_budgets_are_preserved() {
+        for (declaration, expected) in [
+            (json!({"handler":"run"}), 20),
+            (json!({"handler":"run", "timeoutMs":60000}), 60000),
+        ] {
+            let manifest = Manifest::parse(
+                &json!({
+                    "name":"demo", "version":1,
+                    "events":{"on":{"core/mod.installed":declaration}}
+                })
+                .to_string(),
+            )
+            .expect("manifest");
+            let subs = manifest
+                .subscriptions(&events::directory(), DEFAULT_SUB_TIMEOUT_MS)
+                .expect("subscriptions");
+            assert_eq!(subs[0].timeout_ms, expected);
+        }
+    }
 }

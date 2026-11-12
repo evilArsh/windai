@@ -1,0 +1,66 @@
+{
+  "name": "demo",
+  "version": 1,
+  "description": "真实 agent 流程测试：提示词片段、两个 MCP 服务、一个技能与脚本订阅",
+  "mcpServers": {
+    "time": {
+      "command": "uvx",
+      "args": [
+        "mcp-server-time"
+      ],
+      "description": "MCP 时间服务"
+    },
+    "server-everything": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-everything"
+      ],
+      "description": "MCP 全功能测试服务"
+    }
+  },
+  "events": {
+    "on": {
+      "core/agent.status": {
+        "handler": "onStatus",
+        "timeoutMs": 30000
+      },
+      "core/llm.request": {
+        "handler": "onRequest",
+        "timeoutMs": 30000
+      },
+      "core/llm.toolcall": {
+        "handler": "onToolCall",
+        "timeoutMs": 30000
+      },
+      "core/prompt.collect": {
+        "handler": "onPrompt",
+        "timeoutMs": 30000
+      }
+    },
+    "emit": {
+      "activity": {
+        "retention": "journal",
+        "eventKey": "activity",
+        "payload": {
+          "type": "object"
+        },
+        "description": "相位批次的汇总"
+      },
+      "toolcall": {
+        "retention": "live",
+        "payload": {
+          "type": "object"
+        },
+        "description": "本批工具调用的摘要"
+      },
+      "verify": {
+        "retention": "live",
+        "payload": {
+          "type": "object"
+        },
+        "description": "追加的提示词是否进入请求"
+      }
+    }
+  }
+}

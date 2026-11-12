@@ -113,8 +113,8 @@ url  = Url::parse(base + path)
 | `Content-Type` | `application/json; charset=utf-8` |
 | `Accept` | `text/event-stream` |
 
-`api_key` 非空时追加 `Authorization: Bearer <key>`。即使是一次性请求也发送
-`Accept: text/event-stream`；实际的响应处理由调用的函数决定。
+`api_key` 为 `Some` 时追加 `Authorization: Bearer <key>`，空字符串也会发送一个空凭据。
+即使是一次性请求也发送 `Accept: text/event-stream`；实际的响应处理由调用的函数决定。
 
 HTTP 客户端是进程内复用的一份 `reqwest::Client`，只设置 120 秒的读取空闲上限，不限制整段
 生成的时长。
@@ -194,7 +194,8 @@ UTF-8 解码是增量的：多字节字符被切在两个字节块之间时会�
 
 响应解析：
 
-- 非流式：取 `choices[0].message`，用量取 `usage.prompt_tokens` / `usage.completion_tokens`。
+- 非流式：取 `choices[0].message`，用量取 `usage.prompt_tokens` / `usage.completion_tokens`；
+  没有 `choices` 时返回 `Message::default()`（空助手消息，用量 0）。
 - 流式：每次取 `choices[0].delta`；没有 `choices` 时返回一条只带用量与角色的空消息。
 - `finish_reason` 不进入 `Message`；结束原因由 `exchange` 依据 `Chunk::Done` 或错误决定。
 - `audio.transcript` 在文本为空时作为文本内容；`audio.data` 转为音频内容。
@@ -221,10 +222,12 @@ UTF-8 解码是增量的：多字节字符被切在两个字节块之间时会�
 响应解析：
 
 - 非流式：遍历 `output`，把 `message` 内容转为文本/媒体，把 `reasoning` 转为推理文本与
-  `reasoning_item_id`，把 `function_call` 转为 `FunctionCall`。
+  `reasoning_item_id`，把 `function_call` 转为 `FunctionCall`。`ResponseOutputMessage` 只取
+  第一个内容项，没有内容项时报 `Transfer` 错误；遇到其他输出项时停止遍历。
 - 流式：按事件类型处理 `response.output_text.delta`、`response.reasoning_text.delta`、
-  `response.function_call_arguments.delta` 等增量；`item_id` 写入 `FunctionCall.item_id`
-  或 `reasoning_item_id`，用于跨增量配对。
+  `response.function_call_arguments.delta`、`response.output_item.added`、
+  `response.audio.delta` 与 `response.image_generation_call.partial_image`。`item_id` 写入
+  `FunctionCall.item_id` 或 `reasoning_item_id`，用于跨增量配对。
 
 ## 错误
 
@@ -257,4 +260,5 @@ pub enum ProviderError {
 | 代理 | 未设置；使用 `reqwest` 的默认环境行为 |
 | `finish_reason` | 适配器不返回；由 `exchange` 在流结束时设为 `"stop"` 或错误文本 |
 | 响应类型 | `ChatAdapter` 只覆盖文本/工具调用；没有独立的媒体响应接口 |
+| 非流式响应为空 | OpenAI Completion 返回 `Message::default()`；OpenAI Responses 在未知输出项处停止 |
 | 流式取消 | `stream_body` 产生的流不持有取消令牌；取消由调用方在 `exchange` 外层处理 |

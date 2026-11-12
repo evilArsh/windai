@@ -225,8 +225,10 @@ Launch(Idle(specs))
 
 ### `reenter_parent_if_ready`
 
-父节点必须处于 `WaitingChildren`，且全部非 detached 子节点都已是终态。满足时给父节点
-分配新 job、转 `Running`，发出 `Persist`、`PhaseChanged(Running)` 与 `Launch(Children)`。
+父节点必须处于 `WaitingChildren`，且至少有一个非 detached 子节点，并且这些子节点都已
+是终态。满足时给父节点分配新 job、转 `Running`，发出 `Persist`、
+`PhaseChanged(Running)` 与 `Launch(Children)`。屏障为空时不唤醒；`Spawned` 在没有屏障
+子节点时直接以 `Children` 启动。
 
 `Children` 输入让 `LlmRunner` 以 `reentry = true` 重新进入：它会先回补子实例的结果，再决定
 是否继续模型回合。

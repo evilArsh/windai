@@ -40,6 +40,7 @@
 - `docs/rule.md`
 - `docs/mod.md`
 - `docs/mcp.md`
+- `docs/script.md`
 
 门面契约参考：
 

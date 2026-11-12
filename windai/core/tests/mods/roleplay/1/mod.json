@@ -1,0 +1,66 @@
+{
+  "name": "roleplay",
+  "version": 1,
+  "description": "角色扮演测试 mod：四段提示词、两个 MCP 服务、两个技能与脚本订阅，用于验证提示词拼接、MCP 工具目录、技能扫描与事件拦截",
+  "mcpServers": {
+    "time": {
+      "command": "uvx",
+      "args": [
+        "mcp-server-time"
+      ],
+      "description": "角色扮演时间服务：提供故事内时间的现实锚点"
+    },
+    "everything": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-everything"
+      ],
+      "description": "角色扮演冒烟测试服务：回声、采样与工具列举"
+    }
+  },
+  "events": {
+    "on": {
+      "core/agent.sealed": {
+        "handler": "onSealed",
+        "timeoutMs": 30000
+      },
+      "core/llm.request": {
+        "handler": "onRequest",
+        "timeoutMs": 30000
+      },
+      "core/message.seal": {
+        "handler": "onSeal",
+        "timeoutMs": 30000
+      },
+      "core/prompt.collect": {
+        "handler": "onPrompt",
+        "timeoutMs": 30000
+      }
+    },
+    "emit": {
+      "report": {
+        "retention": "journal",
+        "eventKey": "report",
+        "payload": {
+          "type": "object"
+        },
+        "description": "整棵树静止时的报告"
+      },
+      "seal": {
+        "retention": "live",
+        "payload": {
+          "type": "object"
+        },
+        "description": "单次模型往返的结束摘要"
+      },
+      "verify": {
+        "retention": "live",
+        "payload": {
+          "type": "object"
+        },
+        "description": "追加的提示词是否进入请求"
+      }
+    }
+  }
+}

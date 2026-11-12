@@ -95,7 +95,6 @@ impl Fixture {
             Arc::clone(&bus),
             Arc::clone(&roster),
             dirs.clone(),
-            None,
         );
         let resources = Resources::new(storage.clone(), dirs.clone());
         let services = ResourceService::new(

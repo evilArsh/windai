@@ -9,10 +9,13 @@ use crate::{
     roster::Roster,
 };
 use serde_json::Value;
-use std::{path::Path, sync::Arc};
+use std::{
+    io,
+    path::{Component, Path},
+    sync::Arc,
+};
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use wind_event::{DispatchCx, Dispatcher, Subscription};
-use wind_script::ScriptService;
 use wind_storage::{Mod, Storage, StorageTx, error::StorageError};
 use wind_wire::{AppDirs, MOD_UI_ENTRY};
 
@@ -31,24 +34,16 @@ pub struct Installer {
     bus: Arc<Dispatcher>,
     dirs: AppDirs,
     roster: Arc<Roster>,
-    scripts: Option<Arc<dyn ScriptService>>,
     write: Arc<Mutex<()>>,
 }
 
 impl Installer {
-    pub fn new(
-        storage: Storage,
-        bus: Arc<Dispatcher>,
-        roster: Arc<Roster>,
-        dirs: AppDirs,
-        scripts: Option<Arc<dyn ScriptService>>,
-    ) -> Self {
+    pub fn new(storage: Storage, bus: Arc<Dispatcher>, roster: Arc<Roster>, dirs: AppDirs) -> Self {
         Self {
             storage,
             bus,
             dirs,
             roster,
-            scripts,
             write: Arc::new(Mutex::new(())),
         }
     }
@@ -304,12 +299,6 @@ impl Installer {
         let mut subscriptions = Vec::new();
         for module in modules {
             let manifest = Manifest::parse(&module.manifest)?;
-            if manifest.requires_scripts() && self.scripts.is_none() {
-                log::warn!(
-                    "[mod] {} declares scripts but no script service is available",
-                    manifest.name
-                );
-            }
             subscriptions
                 .extend(manifest.subscriptions(self.bus.directory(), DEFAULT_SUB_TIMEOUT_MS)?);
         }
@@ -353,12 +342,28 @@ impl Installer {
     ) -> Result<()> {
         let bus = Arc::clone(&self.bus);
         let roster = Arc::clone(&self.roster);
+        let bytecode = self.dirs.bytecode_root();
         let task: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
             let _gate = gate;
             tx.commit().await?;
             bus.rebuild_index(snapshot.subscriptions);
             roster.publish(snapshot.roster_rows);
             if let Some((cx, completion)) = completion {
+                if let Completion::Deleted { name, .. } = &completion {
+                    let mut components = Path::new(name).components();
+                    if matches!(components.next(), Some(Component::Normal(_)))
+                        && components.next().is_none()
+                        && !name.ends_with(['.', ' '])
+                        && !name.contains(['/', '\\', ':'])
+                    {
+                        let path = bytecode.join(name);
+                        if let Err(error) = std::fs::remove_dir_all(&path)
+                            && error.kind() != io::ErrorKind::NotFound
+                        {
+                            log::warn!("[mod] cannot remove {}: {error}", path.display());
+                        }
+                    }
+                }
                 completion.notify(&bus, &cx);
             }
             Ok(())

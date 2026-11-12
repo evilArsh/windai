@@ -296,7 +296,7 @@ INSERT INTO feed_meta (singleton, epoch) VALUES (1, 0)
 | `external_waits` | 一次挂起等待 | `answered_at` 与 `decision_json` 同时为空表示未答复 |
 | `event_log` | 一条已写入数据库的事件 | `(epoch, seq)` 唯一；`id` 只是行号 |
 | `feed_meta` | 单例，记录当前 epoch | `singleton` 必须为 1 |
-| `mods` | 一个已安装 mod 的当前版本 | `name` 唯一；清单原文与编译产物同表 |
+| `mods` | 一个已安装 mod 的当前版本 | `name` 唯一；只存清单原文，不存编译产物 |
 | `topic_mods` | 话题与 mod 的启用关系 | 两个外键均 `ON DELETE CASCADE` |
 
 没有外键的表：`models`、`credentials`、`json_rule`、`turn`、`message`、`block`、
@@ -414,7 +414,8 @@ ORDER BY b.id
 ```
 
 配对只按 `call_id`，不限定消息或实例。`UnpairedToolCall` 把 `call_name` 与
-`call_arguments`（解析为 JSON，失败时为 `null`）组合成 `data`。
+`call_arguments`（解析为 JSON，失败时为 `null`）组合成
+`data = { "name": call_name, "arguments": arguments }`。
 
 ### 子实例与派生配对
 
@@ -588,6 +589,7 @@ pub enum StorageError {
 | 领域表外键 | 只有 `topic_mods` 带外键；删除话题或 mod 不清理 turn/message/block/agent_* |
 | 后台子实例结果 | `spawn_calls.result_delivered_at`、`PendingKind::BackgroundResult` 没有读写点 |
 | Mod 状态 | 没有 `mod_state` 表；`Capability::State` 与 `Capability::Storage` 没有存储实现 |
+| 脚本字节码 | 只写文件 `<root>/bytecode/<mod>/<engine_id>/`，不写数据库 |
 | `StorageError::Bus` / `Denied` | 在存储语句集中没有构造点 |
 | 主实例行 | `create_agent_instance` 可用于任何角色，但库内没有自动创建主实例的入口 |
 | `block` 的流式中间态 | 不存在列；流式内容只在内存，定稿时一次写入 |

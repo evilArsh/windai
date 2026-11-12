@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -24,46 +23,6 @@ fn write_entry(root: &Path, source: &str) -> PathBuf {
 #[test]
 fn factory_returns_the_script_service_trait() {
     let _: Arc<dyn ScriptService> = service();
-}
-
-#[test]
-fn compile_accepts_a_valid_entry() {
-    let dir = TempDir::new().expect("temp dir");
-    let root = write_entry(dir.path(), "export function onEvent() {}");
-    service()
-        .compile(&root, &HashSet::from(["onEvent".to_string()]))
-        .expect("the entry must compile");
-}
-
-#[test]
-fn compile_rejects_a_syntax_error() {
-    let dir = TempDir::new().expect("temp dir");
-    let root = write_entry(dir.path(), "export function onEvent( {");
-    let error = service()
-        .compile(&root, &HashSet::from(["onEvent".to_string()]))
-        .expect_err("the entry must not compile");
-    assert!(matches!(error, ScriptsError::Compile(_)));
-}
-
-#[test]
-fn compile_does_not_resolve_imports() {
-    let dir = TempDir::new().expect("temp dir");
-    let root = write_entry(
-        dir.path(),
-        "import './missing.js';\nexport function onEvent() {}",
-    );
-    service()
-        .compile(&root, &HashSet::from(["onEvent".to_string()]))
-        .expect("only the entry syntax is checked");
-}
-
-#[test]
-fn compile_rejects_a_missing_entry() {
-    let dir = TempDir::new().expect("temp dir");
-    let error = service()
-        .compile(dir.path(), &HashSet::new())
-        .expect_err("the entry must exist");
-    assert!(matches!(error, ScriptsError::Compile(_)));
 }
 
 struct NoHost;
@@ -531,7 +490,7 @@ async fn a_busy_pool_returns_busy() {
     let root = write_entry(dir.path(), "export function onEvent() { while (true) {} }");
     let service = quickjs(Config {
         threads: 1,
-        memory_limit: 64 * 1024 * 1024,
+        ..Config::default()
     })
     .expect("single-threaded engine");
     let mut first = call(root.clone(), "onEvent", json!({}));
@@ -556,7 +515,7 @@ async fn three_consecutive_timeouts_suspend_the_mod() {
     let dir = TempDir::new().expect("temp dir");
     let root = write_entry(dir.path(), "export function onEvent() { while (true) {} }");
     let service = service();
-    for _ in 0..3 {
+    for _ in 0..4 {
         let mut request = call(root.clone(), "onEvent", json!({}));
         request.deadline = Instant::now() + Duration::from_millis(50);
         let error = service
@@ -608,4 +567,231 @@ async fn a_handler_error_resets_the_timeout_streak() {
         .call(call(fast, "onEvent", json!({})))
         .await
         .expect("the streak was reset");
+}
+
+fn artifacts(root: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(root.join("demo").join(wind_script::engine_id()))
+        .expect("artifact dir")
+        .map(|entry| entry.expect("entry").path())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_second_call_does_not_recompile() {
+    let disk = TempDir::new().expect("temp dir");
+    let dir = TempDir::new().expect("temp dir");
+    let root = write_entry(dir.path(), "export function onEvent() { return 1; }");
+    let service = quickjs(Config {
+        cache: Some(disk.path().into()),
+        ..Config::default()
+    })
+    .expect("engine");
+    assert_eq!(
+        service
+            .call(call(root.clone(), "onEvent", json!({})))
+            .await
+            .expect("first"),
+        Some(json!(1))
+    );
+    assert_eq!(artifacts(disk.path()).len(), 1);
+    std::fs::remove_dir_all(root.join("scripts")).expect("remove source");
+    assert_eq!(
+        service
+            .call(call(root, "onEvent", json!({})))
+            .await
+            .expect("second"),
+        Some(json!(1))
+    );
+}
+
+#[tokio::test]
+async fn damaged_images_fall_back_to_source() {
+    for damage in [vec![], vec![1, 2, 3], b"not bytecode".to_vec()] {
+        let disk = TempDir::new().expect("temp dir");
+        let dir = TempDir::new().expect("temp dir");
+        let root = write_entry(dir.path(), "export function onEvent() { return 7; }");
+        let config = Config {
+            cache: Some(disk.path().into()),
+            ..Config::default()
+        };
+        quickjs(config.clone())
+            .expect("engine")
+            .call(call(root.clone(), "onEvent", json!({})))
+            .await
+            .expect("first");
+        let artifact = artifacts(disk.path()).pop().expect("artifact");
+        std::fs::write(&artifact, damage).expect("damage");
+        let service = quickjs(config).expect("restart");
+        assert_eq!(
+            service
+                .call(call(root.clone(), "onEvent", json!({})))
+                .await
+                .expect("fallback"),
+            Some(json!(7))
+        );
+        assert!(!artifact.exists());
+        std::fs::remove_file(root.join("scripts/index.js")).expect("remove source");
+        assert_eq!(
+            service
+                .call(call(root, "onEvent", json!({})))
+                .await
+                .expect("memory source"),
+            Some(json!(7))
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_unwritable_cache_dir_still_serves_the_call() {
+    let dir = TempDir::new().expect("temp dir");
+    let root = write_entry(dir.path(), "export function onEvent() { return 1; }");
+    let service = quickjs(Config {
+        cache: Some(root.join("scripts/index.js")),
+        ..Config::default()
+    })
+    .expect("engine");
+    assert_eq!(
+        service
+            .call(call(root, "onEvent", json!({})))
+            .await
+            .expect("call"),
+        Some(json!(1))
+    );
+}
+
+#[tokio::test]
+async fn editing_the_source_does_not_change_behavior_until_restart() {
+    let dir = TempDir::new().expect("temp dir");
+    let root = write_entry(dir.path(), "export function onEvent() { return 1; }");
+    let service = service();
+    assert_eq!(
+        service
+            .call(call(root.clone(), "onEvent", json!({})))
+            .await
+            .expect("first"),
+        Some(json!(1))
+    );
+    write_entry(&root, "export function onEvent() { return 2; }");
+    assert_eq!(
+        service
+            .call(call(root.clone(), "onEvent", json!({})))
+            .await
+            .expect("cached"),
+        Some(json!(1))
+    );
+    assert_eq!(
+        quickjs(Config::default())
+            .expect("restart")
+            .call(call(root, "onEvent", json!({})))
+            .await
+            .expect("new"),
+        Some(json!(2))
+    );
+}
+
+#[tokio::test]
+async fn a_new_version_root_picks_up_the_new_source() {
+    let dir = TempDir::new().expect("temp dir");
+    let service = service();
+    for version in [1, 2] {
+        let root = write_entry(
+            &dir.path().join(version.to_string()),
+            &format!("export function onEvent() {{ return {version}; }}"),
+        );
+        assert_eq!(
+            service
+                .call(call(root, "onEvent", json!({})))
+                .await
+                .expect("version"),
+            Some(json!(version))
+        );
+    }
+}
+
+#[tokio::test]
+async fn changing_one_module_does_not_recompile_the_others() {
+    let dir = TempDir::new().expect("temp dir");
+    let disk = TempDir::new().expect("temp dir");
+    let config = Config {
+        cache: Some(disk.path().into()),
+        ..Config::default()
+    };
+    let service = quickjs(config.clone()).expect("engine");
+    let source = "import { value } from './lib.js'; export function onEvent() { return value; }";
+    let first = write_entry(&dir.path().join("1"), source);
+    std::fs::write(first.join("scripts/lib.js"), "export const value = 1;").expect("lib");
+    assert_eq!(
+        service
+            .call(call(first, "onEvent", json!({})))
+            .await
+            .expect("first"),
+        Some(json!(1))
+    );
+    let before: Vec<_> = artifacts(disk.path())
+        .into_iter()
+        .map(|p| {
+            let time = std::fs::metadata(&p)
+                .expect("meta")
+                .modified()
+                .expect("mtime");
+            (p, time)
+        })
+        .collect();
+    assert_eq!(before.len(), 2);
+    let second = write_entry(&dir.path().join("2"), source);
+    std::fs::write(second.join("scripts/lib.js"), "export const value = 2;").expect("lib");
+    assert_eq!(
+        service
+            .call(call(second.clone(), "onEvent", json!({})))
+            .await
+            .expect("second"),
+        Some(json!(2))
+    );
+    assert_eq!(artifacts(disk.path()).len(), 3);
+    for (path, time) in before {
+        assert_eq!(
+            std::fs::metadata(path)
+                .expect("meta")
+                .modified()
+                .expect("mtime"),
+            time
+        );
+    }
+    assert_eq!(
+        quickjs(config)
+            .expect("restart")
+            .call(call(second, "onEvent", json!({})))
+            .await
+            .expect("disk imports"),
+        Some(json!(2))
+    );
+}
+
+#[tokio::test]
+async fn an_entry_syntax_error_is_a_handler_error() {
+    let dir = TempDir::new().expect("temp dir");
+    let root = write_entry(dir.path(), "export function onEvent( {");
+    assert!(matches!(
+        service().call(call(root, "onEvent", json!({}))).await,
+        Err(ScriptsError::Handler(_))
+    ));
+}
+
+#[tokio::test]
+async fn a_cold_call_does_not_count_toward_the_breaker() {
+    let dir = TempDir::new().expect("temp dir");
+    let root = write_entry(dir.path(), "export function onEvent() { while (true) {} }");
+    let service = service();
+    for _ in 0..4 {
+        let mut request = call(root.clone(), "onEvent", json!({}));
+        request.deadline = Instant::now() + Duration::from_millis(100);
+        assert!(matches!(
+            service.call(request).await,
+            Err(ScriptsError::Timeout)
+        ));
+    }
+    assert!(matches!(
+        service.call(call(root, "onEvent", json!({}))).await,
+        Err(ScriptsError::Suspended)
+    ));
 }

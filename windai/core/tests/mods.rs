@@ -1,12 +1,14 @@
 //! 把 `.windai_test/mods` 下的 mod 挂到话题上，按 `TASK` 驱动一轮对话
 //!
 //! ```bash
-//! RUST_LOG=debug,sqlx=warn cargo test -p wind-core --test mods -- --nocapture
+//! RUST_LOG=debug,sqlx=warn cargo test -p wind-core --test mods -- --include-ignored --nocapture
 //! ```
 //!
-//! mod 包放在 `~/.windai_test/mods/<name>/<version>/`，数据库每次重建；
+//! mod 包随仓库放在 `windai/core/tests/mods`，测试开始前覆盖到
+//! `~/.windai_test/mods/<name>/<version>/`；数据库每次重建，
 //! 任务写在 `TASK`，改完直接重跑；`{workspace}` 会替换成话题工作区。
-//! 全部事件按 debug 打印
+//! 目标机器上不需要预置 mod 包，测试自己补齐；总线带真实的脚本引擎，
+//! 清单里的 `events.on` 会执行；全部事件按 debug 打印
 
 #[path = "common/lib.rs"]
 mod common;
@@ -15,29 +17,40 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
+use wind_core::feed;
 use wind_core::resources::ResourceService;
 use wind_event::{DispatchCx, Origin, Scope, Source};
 use wind_wire::McpService;
+use wind_wire::event::FeedEvent;
 use wind_wire::tool::Tools;
 
 /// 用户任务，改完直接重跑
 const TASK: &str = "先列出你当前可用的全部工具，标出其中哪些来自 mod（工具名带 mod 段）。\n\n\
      挑一个 mod 提供的工具实际调用一次，把返回结果原样贴出来。\n\n\
+     如果系统提示里出现以 [script: 开头的行，把每一行原样抄到回答末尾。\n\n\
      最后用一句话总结：这次调用里哪些能力由 mod 提供，哪些是内建的。\n\n\
      需要引用工作区路径时使用 {workspace}。";
 
 /// 等待 mod 服务握手的上限
 const SERVER_DEADLINE: Duration = Duration::from_secs(60);
 
+/// 整棵树静止后等待脚本投递的上限
+const DRAIN_DEADLINE: Duration = Duration::from_secs(15);
+
+/// 脚本发出的标记，写在各自 `scripts/lib` 里
+const DEMO_MARKER: &str = "[script:demo]";
+const ROLEPLAY_MARKER: &str = "[script:roleplay]";
+
 #[ignore = "need .env"]
 #[tokio::test]
 async fn the_mounted_mods_answer_the_configured_task() {
     common::init_log();
     let fixture = common::Fixture::shared_mods().await;
+    common::sync_fixture_mods(&fixture.dirs);
     let model = common::seed_provider(&fixture).await;
     let root = common::seed_topic(&fixture, "mods", model).await;
 
-    let mut bus = common::Bus::open(&fixture).await;
+    let mut bus = common::Bus::open_with_scripts(&fixture).await;
     let servers = mount(&fixture, &bus.services, root.topic).await;
     wait_servers(&bus.services, root.topic, &servers).await;
 
@@ -47,22 +60,201 @@ async fn the_mounted_mods_answer_the_configured_task() {
 
     let mut phase = None;
     let mut sealed = false;
+    let mut effects = Effects::default();
     while !sealed {
         let event = common::next_event(&mut bus.events, log::Level::Debug).await;
         if let Some(current) = common::terminal_phase(&event, root.instance) {
             phase = Some(current);
         }
+        effects.absorb(&event);
         sealed = common::is_sealed(&event, root.instance);
     }
+    drain(&mut bus.events, &mut effects).await;
 
+    let calls = common::tool_calls(&fixture.storage, root.instance).await;
     handle.shutdown();
     handle.wait_stopped().await;
     bus.close().await;
 
     let reply = common::assistant_reply(&fixture.storage, root.instance).await;
     log::info!("reply: {reply}");
-    assert_eq!(phase.as_deref(), Some("done"), "这一轮必须跑完");
-    assert!(!reply.trim().is_empty(), "模型必须给出回答");
+    log::info!("script effects: {effects:#?}");
+
+    assert_eq!(phase.as_deref(), Some("done"), "the run must finish");
+    assert!(!reply.trim().is_empty(), "the model must answer");
+    assert!(
+        effects.failures.is_empty(),
+        "script delivery failed: {:#?}",
+        effects.failures
+    );
+
+    assert!(
+        effects.notified("demo", "demo: prompt rewritten"),
+        "demo did not intercept core/prompt.collect"
+    );
+    assert!(
+        effects.notified("demo", "demo: done"),
+        "demo did not report the terminal phase"
+    );
+    assert!(
+        effects
+            .activities
+            .iter()
+            .any(|activity| activity["terminal"] == "done"),
+        "demo did not observe the done phase: {:#?}",
+        effects.activities
+    );
+    assert!(
+        seen(&effects.demo_checks, DEMO_MARKER),
+        "demo did not find its fragment in core/llm.request: {:#?}",
+        effects.demo_checks
+    );
+    if !calls.is_empty() {
+        assert!(
+            effects.toolcalls.iter().any(|summary| summary["names"]
+                .as_array()
+                .is_some_and(|names| !names.is_empty())),
+            "demo did not summarise the tool calls {calls:?}: {:#?}",
+            effects.toolcalls
+        );
+    }
+
+    assert!(
+        effects.notified("roleplay", "roleplay: prompt rewritten"),
+        "roleplay did not intercept core/prompt.collect"
+    );
+    assert!(
+        effects.notified("roleplay", "roleplay: sealed"),
+        "roleplay did not observe core/agent.sealed"
+    );
+    assert!(
+        !effects.seals.is_empty(),
+        "roleplay did not observe core/message.seal"
+    );
+    assert!(
+        !effects.reports.is_empty(),
+        "roleplay did not emit its sealed report"
+    );
+    assert!(
+        effects
+            .reports
+            .iter()
+            .any(|report| report["sealed"].as_u64().is_some_and(|count| count >= 1)),
+        "roleplay did not encode the sealed count: {:#?}",
+        effects.reports
+    );
+    assert!(
+        seen(&effects.roleplay_checks, ROLEPLAY_MARKER),
+        "roleplay did not find its fragment in core/llm.request: {:#?}",
+        effects.roleplay_checks
+    );
+}
+
+/// 一条 mod 通知
+#[derive(Debug)]
+struct Notification {
+    module: String,
+    text: String,
+}
+
+/// 这一轮里脚本留下的可观测结果
+#[derive(Debug, Default)]
+struct Effects {
+    notifications: Vec<Notification>,
+    failures: Vec<Value>,
+    activities: Vec<Value>,
+    toolcalls: Vec<Value>,
+    demo_checks: Vec<Value>,
+    seals: Vec<Value>,
+    reports: Vec<Value>,
+    roleplay_checks: Vec<Value>,
+}
+
+impl Effects {
+    fn absorb(&mut self, event: &FeedEvent) {
+        let payload = event.envelope.payload.as_ref();
+        match event.envelope.name.as_str() {
+            "core/mod.notify" => {
+                let text = payload
+                    .and_then(|value| value.get("text"))
+                    .and_then(Value::as_str);
+                if let Some(text) = text {
+                    self.notifications.push(Notification {
+                        module: module_name(&event.envelope.source),
+                        text: text.to_string(),
+                    });
+                }
+            }
+            "core/dispatch.failed" | "core/dispatch.timeout" => {
+                self.failures
+                    .push(event.envelope.payload.clone().unwrap_or(Value::Null));
+            }
+            "m_demo/activity" => push(&mut self.activities, payload),
+            "m_demo/toolcall" => push(&mut self.toolcalls, payload),
+            "m_demo/verify" => push(&mut self.demo_checks, payload),
+            "m_roleplay/seal" => push(&mut self.seals, payload),
+            "m_roleplay/report" => push(&mut self.reports, payload),
+            "m_roleplay/verify" => push(&mut self.roleplay_checks, payload),
+            _ => {}
+        }
+    }
+
+    fn notified(&self, module: &str, text: &str) -> bool {
+        self.notifications
+            .iter()
+            .any(|notification| notification.module == module && notification.text == text)
+    }
+
+    /// 清单声明的脚本效果全部到齐
+    fn settled(&self) -> bool {
+        self.notified("demo", "demo: prompt rewritten")
+            && self.notified("demo", "demo: done")
+            && self.notified("roleplay", "roleplay: prompt rewritten")
+            && self.notified("roleplay", "roleplay: sealed")
+            && seen(&self.demo_checks, DEMO_MARKER)
+            && seen(&self.roleplay_checks, ROLEPLAY_MARKER)
+            && self
+                .activities
+                .iter()
+                .any(|activity| activity["terminal"] == "done")
+            && !self.reports.is_empty()
+    }
+}
+
+/// 静止后继续收事件，直到脚本效果到齐或超时
+async fn drain(events: &mut feed::Subscription, effects: &mut Effects) {
+    let deadline = Instant::now() + DRAIN_DEADLINE;
+    while !effects.settled() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(remaining, events.recv()).await {
+            Ok(Ok(Some(event))) => effects.absorb(&event),
+            _ => break,
+        }
+    }
+}
+
+fn module_name(source: &Source) -> String {
+    match source {
+        Source::Mod { name, .. } => name.clone(),
+        Source::Core { subsystem } => format!("core/{subsystem}"),
+    }
+}
+
+fn push(target: &mut Vec<Value>, payload: Option<&Value>) {
+    if let Some(value) = payload {
+        target.push(value.clone());
+    }
+}
+
+/// 有一条 verify 事件报告看到了该标记
+fn seen(checks: &[Value], marker: &str) -> bool {
+    checks.iter().any(|check| {
+        check.get("marker").and_then(Value::as_str) == Some(marker)
+            && check.get("seen").and_then(Value::as_bool) == Some(true)
+    })
 }
 
 /// 安装并启用 `.windai_test/mods` 下的全部包，返回话题承载的 mod 服务名

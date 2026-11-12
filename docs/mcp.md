@@ -127,7 +127,7 @@ enum State {
 
 `generation` 单调递增；启动与停止的回执带有 generation，过期回执被丢弃。`want` 在停止
 期间记录下一次要启动的定义。启动锁是一张按 `LaunchPlan.startup_key` 索引的全局表；
-同一个包或入口不会并发启动两次。
+Stdio 启动会先取得该锁，同一个包或入口不会并发启动两次。Streamable HTTP 启动不取锁。
 
 ### 获取
 
@@ -138,7 +138,7 @@ enum State {
 | 不存在 | — | 建 `Starting` 条目，发 `core/mcp.starting`，派生启动 |
 | `Running` | 相同 | 只加入引用 |
 | `Starting` | 相同 | 只加入引用 |
-| `Running` | 不同 | 转 `Stopping`，停止旧连接；停止完成后启动新定义 |
+| `Running` | 不同 | 转 `Stopping`，停止旧连接；停止完成后启动新定义；没有连接时直接启动 |
 | `Starting` | 不同 | 更新定义并重新启动 |
 | `Stopping` | 任意 | 更新 `want`，停止完成后启动 |
 | `Failed` | 任意 | 重置为 `Starting` 并启动 |
@@ -227,9 +227,11 @@ struct LaunchPlan {
 | `cwd` 不在 `mods_root` 内 | `InvalidPath` |
 | 带路径分隔符的 `command` 不在 `mods_root` 内 | `InvalidPath` |
 | 裸命令名 | 交给 `Command::new`，从 `PATH` 查找 |
-| `npx <pkg>` / `bunx <pkg>` / `bun x <pkg>` | 改写为 `bun x -y <原参数>`，启动键为包名 |
-| `uvx <pkg>` / `uv tool run <pkg>` | 改写为 `uv tool run <原参数>`，启动键为包名 |
-| `bun` / `node` / `python` / `deno` 且参数含绝对路径入口 | 入口必须在 `mods_root` 内，启动键为入口路径 |
+| `npx <pkg>` / `bunx <pkg>` | 改写为 `bun x -y <原参数>`，启动键为包名 |
+| `bun x <pkg>` | 保留原参数，启动键为包名 |
+| `uvx <pkg>` | 改写为 `uv tool run <原参数>`，启动键为包名 |
+| `uv tool run <pkg>` | 保留原参数，启动键为包名 |
+| `bun` / `node` / `python` / `python3` / `deno` 且参数含绝对路径入口 | 入口必须在 `mods_root` 内，启动键为入口路径 |
 | 其他 | 启动键为 `program + 第一个参数` |
 
 包名的提取规则：
@@ -397,18 +399,23 @@ pub struct SkillsListRequest {
 
 ## 与核心的集成
 
-`wind_core::resources::ResourceServices` 是 MCP 的主要使用方：
+`wind_core::resources::ResourceService` 是 MCP 的主要使用方：
 
 - `publish(topic_id)` 把话题启用的 mod 的 `mcpServers` 转成服务定义，服务名改为
   `mod_<mod_name>_<local>`，挂在 `topic_<topic_id>@<generation>` 引用下。
 - 首次需要某话题的工具时，`ensure_topic` 触发一次发布。
-- `declarations(cx, topic_id)` 读取主引用与内建引用下的工具，按 `(server, tool)` 去重。
-- 工具在模型侧的名字是 `<server>0m0<tool>`，由 `ToolOrigin::Mcp::exposed` 生成。
-- `call(cx, call_id, target, arguments)` 按服务名与工具名查找连接，使用 `cx.cancel()` 与
-  `cx.deadline()` 作为取消与截止时间。
+- `list_tools(topic_id)` 读取主引用与内建 `wd_fs_<topic>`、`wd_skills_<topic>` 引用下的
+  工具，按 `(server, tool)` 去重。
+- 工具在模型侧的名字是 `<server>0m0<tool>`，由 `wind_core::llm::tools::mcp_tool_name`
+  生成。
+- `tool_call` 按服务名与工具名查找连接；`tool_calls` 并发执行一批调用，单个失败转成
+  `{ "error": reason }`。两者都使用调用方给出的截止时间与取消令牌。
 - `release_topic(topic_id)` 释放主引用与内建引用；`shutdown` 关闭注册表。
 
-当前 `ResourceServices` 只为话题作用域发布内建服务；`BuiltinScope::Global` 没有调用方。
+`McpService` 定义在 `wind-wire`，当前有 `list_tools`、`tool_call`、`tool_calls` 三个
+方法。`wind_core::llm::tools::execute_plan` 使用批量方法，一轮只产生一次注册表调用。
+
+当前 `ResourceService` 只为话题作用域发布内建服务；`BuiltinScope::Global` 没有调用方。
 
 ## 事件
 
@@ -441,3 +448,4 @@ pub struct SkillsListRequest {
 | `read_file` 二进制 | 不做二进制检测；内容按 lossy UTF-8 解码 |
 | 环境隔离 | 子进程继承宿主环境；`CommandWrap` 中的 `env_clear` 被注释 |
 | 服务定义校验 | `McpDefinition` 本身没有路径或 URL 校验；校验由 `mod` 与 `runner` 完成 |
+| 启动锁 | 只覆盖 Stdio 启动；Streamable HTTP 不取 `startup_key` 锁 |

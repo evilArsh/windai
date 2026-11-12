@@ -4,7 +4,7 @@
 #![allow(dead_code)]
 
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
@@ -14,8 +14,10 @@ use wind_core::feed::{self, FeedError, FeedHandle, FeedOptions, ShutdownReport};
 use wind_core::llm::LlmRunner;
 use wind_core::llm::domain::{LlmDomain, LlmSpec};
 use wind_core::resources::ResourceService;
+use wind_core::script::ScriptRuntime;
 use wind_event::{
-    CallCx, CallError, Dispatcher, Limits, ModCaller, ModRoster, Observer, Subscription,
+    CallCx, CallError, Dispatcher, EventOutlet, Limits, ModCaller, ModRoster, Observer,
+    Subscription,
 };
 use wind_mcp::McpOptions;
 use wind_mod::installer::Installer;
@@ -54,7 +56,7 @@ impl Fixture {
         Self::with_dirs(AppDirs::under(root)).await
     }
 
-    /// 复用 `.windai_test/mods`：只重建数据库与话题，手改的 mod 包保留
+    /// 复用 `.windai_test/mods`：只重建数据库与话题，未覆盖的 mod 包保留
     pub async fn shared_mods() -> Self {
         let dirs = AppDirs::under(
             dirs::home_dir()
@@ -78,6 +80,38 @@ impl Fixture {
             .await
             .expect("打开测试数据库");
         Self { storage, dirs }
+    }
+}
+
+/// 把仓库内 `tests/mods` 下的包覆盖到 `<root>/mods`
+///
+/// 目标机器上的 `~/.windai_test/mods` 可以是空的；测试开始前从这里补齐
+pub fn sync_fixture_mods(dirs: &AppDirs) {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/mods");
+    let target_root = dirs.mods_root();
+    std::fs::create_dir_all(&target_root).expect("create the mods root");
+    for entry in std::fs::read_dir(&source).expect("read the fixture mods") {
+        let entry = entry.expect("read a fixture mod");
+        let target = target_root.join(entry.file_name());
+        if entry.file_type().expect("stat a fixture mod").is_dir() {
+            let _ = std::fs::remove_dir_all(&target);
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).expect("copy a fixture file");
+        }
+    }
+}
+
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).expect("create a fixture directory");
+    for entry in std::fs::read_dir(from).expect("read a fixture directory") {
+        let entry = entry.expect("read a fixture entry");
+        let target = to.join(entry.file_name());
+        if entry.file_type().expect("stat a fixture entry").is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).expect("copy a fixture file");
+        }
     }
 }
 
@@ -206,10 +240,29 @@ pub struct Bus {
 
 impl Bus {
     pub async fn open(fixture: &Fixture) -> Self {
+        Self::open_with(fixture, |_, _| Arc::new(NoCaller)).await
+    }
+
+    /// 带上真实的脚本引擎，清单 `events.on` 会真正执行
+    pub async fn open_with_scripts(fixture: &Fixture) -> Self {
+        Self::open_with(fixture, |dirs, outlet| {
+            let runtime =
+                ScriptRuntime::quickjs(fixture.storage.clone(), dirs, outlet, Limits::default())
+                    .expect("start the script engine");
+            Arc::new(runtime)
+        })
+        .await
+    }
+
+    async fn open_with<F>(fixture: &Fixture, make_caller: F) -> Self
+    where
+        F: FnOnce(AppDirs, Arc<dyn EventOutlet>) -> Arc<dyn ModCaller>,
+    {
         let dirs = fixture.dirs.clone();
         let (outlet, runtime) = feed::open(fixture.storage.clone(), FeedOptions::default())
             .await
             .expect("打开 feed");
+        let caller = make_caller(dirs.clone(), Arc::new(outlet.clone()));
 
         let roster = Arc::new(Roster::load(&fixture.storage).await.expect("读启用集合"));
         let directory = wind_event::directory()
@@ -221,7 +274,7 @@ impl Bus {
         let dispatcher = Arc::new(Dispatcher::new(
             directory,
             Arc::clone(&roster) as Arc<dyn ModRoster>,
-            Arc::new(NoCaller),
+            caller,
             Arc::new(outlet.clone()),
             Limits::default(),
         ));
@@ -232,7 +285,6 @@ impl Bus {
             Arc::clone(&dispatcher),
             roster,
             dirs.clone(),
-            None,
         );
         let services = Arc::new(ResourceService::new(
             installer,

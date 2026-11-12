@@ -1,16 +1,17 @@
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use wind_event::{
     CallCx, CallError, Directory, DispatchCx, EventDef, EventOutlet, Guards, Limits, ModCaller,
     ModEmitter, ModIdentity, Origin, PayloadValidator, Pending, Retention, Scope, Shape, Source,
     Subscription,
 };
 use wind_mod::manifest::{Manifest, Retention as ManifestRetention};
-use wind_script::{ScriptCall, ScriptHost, ScriptScope, ScriptService, ScriptsError};
+use wind_script::{
+    Config, ScriptCall, ScriptHost, ScriptScope, ScriptService, ScriptsError, quickjs,
+};
 use wind_storage::Storage;
 use wind_wire::AppDirs;
 use wind_wire::event::{Envelope, Target};
@@ -38,19 +39,32 @@ pub fn directory() -> Directory {
 pub struct ScriptRuntime {
     storage: Storage,
     dirs: AppDirs,
-    scripts: Option<Arc<dyn ScriptService>>,
+    scripts: Arc<dyn ScriptService>,
     sink: Arc<EventSink>,
     guards: Arc<Guards>,
     emitters: Mutex<HashMap<(String, u32), Arc<ModEmitter>>>,
 }
 
 impl ScriptRuntime {
+    pub fn quickjs(
+        storage: Storage,
+        dirs: AppDirs,
+        outlet: Arc<dyn EventOutlet>,
+        limits: Limits,
+    ) -> Result<Self, ScriptsError> {
+        let scripts = quickjs(Config {
+            cache: Some(dirs.bytecode_root()),
+            ..Config::default()
+        })?;
+        Ok(Self::new(storage, dirs, outlet, limits, scripts))
+    }
+
     pub fn new(
         storage: Storage,
         dirs: AppDirs,
         outlet: Arc<dyn EventOutlet>,
         limits: Limits,
-        scripts: Option<Arc<dyn ScriptService>>,
+        scripts: Arc<dyn ScriptService>,
     ) -> Self {
         let guards = Arc::new(Guards::new(limits));
         let sink = Arc::new(EventSink::new(outlet, Arc::clone(&guards)));
@@ -149,11 +163,6 @@ impl ModCaller for ScriptRuntime {
             cx,
             source,
         });
-        let Some(scripts) = &self.scripts else {
-            return Err(CallError::Internal(
-                "no script service is available".to_string(),
-            ));
-        };
         let scope = match &call_cx.scope {
             Scope::Global => ScriptScope::Global,
             Scope::Topic {
@@ -175,7 +184,7 @@ impl ModCaller for ScriptRuntime {
             input: payload,
             host,
         };
-        scripts.call(call).await.map_err(map_error)
+        self.scripts.call(call).await.map_err(map_error)
     }
 }
 

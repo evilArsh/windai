@@ -1,7 +1,5 @@
-use std::collections::HashSet;
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -16,7 +14,6 @@ use wind_mod::events;
 use wind_mod::installer::Installer;
 use wind_mod::resources::Resources;
 use wind_mod::roster::Roster;
-use wind_script::{ScriptCall, ScriptService, ScriptsError};
 use wind_storage::Storage;
 use wind_wire::AppDirs;
 
@@ -98,29 +95,6 @@ impl EventOutlet for ClosedOutlet {
     }
 }
 
-#[derive(Default)]
-struct TestService {
-    compiles: AtomicUsize,
-}
-
-impl TestService {
-    fn compiles(&self) -> usize {
-        self.compiles.load(Ordering::SeqCst)
-    }
-}
-
-#[async_trait::async_trait]
-impl ScriptService for TestService {
-    fn compile(&self, _root: &Path, _handlers: &HashSet<String>) -> Result<(), ScriptsError> {
-        self.compiles.fetch_add(1, Ordering::SeqCst);
-        Ok(())
-    }
-
-    async fn call(&self, _call: ScriptCall) -> Result<Option<Value>, ScriptsError> {
-        Ok(None)
-    }
-}
-
 struct Harness {
     _dir: TempDir,
     dirs: AppDirs,
@@ -161,13 +135,12 @@ impl Harness {
         }
     }
 
-    fn installer(&self, compiler: Option<Arc<dyn ScriptService>>) -> Installer {
+    fn installer(&self) -> Installer {
         Installer::new(
             self.storage.clone(),
             Arc::clone(&self.bus),
             Arc::clone(&self.roster),
             self.dirs.clone(),
-            compiler,
         )
     }
 
@@ -232,7 +205,7 @@ async fn resource_mod_lifecycle_and_restart_recovery() {
     let harness = Harness::new().await;
     let topic_id = harness.topic("topic").await;
     let resources = Resources::new(harness.storage.clone(), harness.dirs.clone());
-    let installer = harness.installer(None);
+    let installer = harness.installer();
 
     let first = resource_manifest("math", 1);
     let first_root = write_package(&harness.dirs, &first, &resource_files("one"));
@@ -324,7 +297,6 @@ async fn resource_mod_lifecycle_and_restart_recovery() {
         bus,
         Arc::clone(&roster),
         harness.dirs.clone(),
-        None,
     );
     restored.restore().await.expect("restore");
     assert!(roster.enabled(&topic_scope(topic_id)).contains("math"));
@@ -358,7 +330,7 @@ async fn resource_mod_lifecycle_and_restart_recovery() {
 async fn script_mods_install_and_enable_without_a_service() {
     let harness = Harness::new().await;
     let topic_id = harness.topic("topic").await;
-    let installer = harness.installer(None);
+    let installer = harness.installer();
     let manifest = json!({
         "name": "scripted",
         "version": 1,
@@ -373,7 +345,7 @@ async fn script_mods_install_and_enable_without_a_service() {
     installer
         .enable(&harness.cx(), topic_id, "scripted")
         .await
-        .expect("a missing script service does not block enablement");
+        .expect("script declarations do not block enablement");
     assert!(
         harness
             .roster
@@ -384,35 +356,7 @@ async fn script_mods_install_and_enable_without_a_service() {
 }
 
 #[tokio::test]
-async fn install_and_update_do_not_compile() {
-    let harness = Harness::new().await;
-    let service = Arc::new(TestService::default());
-    let installer = harness.installer(Some(service.clone()));
-    let first = json!({
-        "name": "scripted",
-        "version": 1,
-        "requests": {"run": {"handler": "run"}}
-    });
-    let root = write_package(&harness.dirs, &first, &[]);
-    installer
-        .install(&harness.cx(), &root)
-        .await
-        .expect("install");
-    let second = json!({
-        "name": "scripted",
-        "version": 2,
-        "requests": {"run": {"handler": "run"}}
-    });
-    let root = write_package(&harness.dirs, &second, &[]);
-    installer
-        .update(&harness.cx(), &root)
-        .await
-        .expect("update");
-    assert_eq!(service.compiles(), 0, "install and update never compile");
-}
-
-#[tokio::test]
-async fn restore_publishes_script_subscriptions_without_a_service() {
+async fn restore_publishes_script_subscriptions() {
     let harness = Harness::new().await;
     let manifest = json!({
         "name": "scripted",
@@ -431,7 +375,7 @@ async fn restore_publishes_script_subscriptions_without_a_service() {
         .await
         .expect("enable");
 
-    let installer = harness.installer(None);
+    let installer = harness.installer();
     installer.restore().await.expect("restore publishes");
 
     let envelope = wind_wire::event::Envelope::new(
@@ -452,15 +396,14 @@ async fn restore_publishes_script_subscriptions_without_a_service() {
     assert_eq!(
         *harness.caller.calls.lock().expect("call log"),
         vec!["scripted".to_string()],
-        "a script mod without a service is subscribed"
+        "the script mod is subscribed"
     );
 }
 
 #[tokio::test]
 async fn invalid_event_rejects_publish() {
     let harness = Harness::new().await;
-    let service = Arc::new(TestService::default());
-    let installer = harness.installer(Some(service.clone()));
+    let installer = harness.installer();
     let manifest = json!({
         "name": "bad",
         "version": 1,
@@ -472,7 +415,6 @@ async fn invalid_event_rejects_publish() {
         .await
         .expect_err("the event is not in the directory");
     assert!(matches!(error, ModError::ManifestUnknownEvent { .. }));
-    assert_eq!(service.compiles(), 0, "nothing is compiled");
     assert!(
         harness
             .storage
@@ -486,7 +428,7 @@ async fn invalid_event_rejects_publish() {
 #[tokio::test]
 async fn failed_prepare_preserves_roster() {
     let harness = Harness::new().await;
-    let installer = harness.installer(Some(Arc::new(TestService::default())));
+    let installer = harness.installer();
     let topic_id = harness.topic("topic").await;
     let resources = Resources::new(harness.storage.clone(), harness.dirs.clone());
 
@@ -549,7 +491,7 @@ async fn failed_prepare_preserves_roster() {
 #[tokio::test]
 async fn concurrent_updates_do_not_go_backwards() {
     let harness = Harness::new().await;
-    let installer = harness.installer(None);
+    let installer = harness.installer();
     let topic_id = harness.topic("topic").await;
     let first = resource_manifest("math", 1);
     let root = write_package(&harness.dirs, &first, &resource_files("one"));
@@ -592,7 +534,7 @@ async fn concurrent_updates_do_not_go_backwards() {
 async fn completion_events_follow_commit() {
     let harness = Harness::new().await;
     let topic_id = harness.topic("topic").await;
-    let installer = harness.installer(None);
+    let installer = harness.installer();
 
     let first = resource_manifest("math", 1);
     let root = write_package(&harness.dirs, &first, &resource_files("one"));
@@ -661,7 +603,6 @@ async fn closed_outlet_does_not_revert_the_commit() {
         bus,
         Arc::clone(&roster),
         harness.dirs.clone(),
-        None,
     );
 
     let manifest = resource_manifest("math", 1);
@@ -683,7 +624,7 @@ async fn closed_outlet_does_not_revert_the_commit() {
 #[tokio::test]
 async fn delete_keeps_files_and_other_topics_keep_their_mods() {
     let harness = Harness::new().await;
-    let installer = harness.installer(None);
+    let installer = harness.installer();
     let first_topic = harness.topic("first").await;
     let second_topic = harness.topic("second").await;
     let manifest = resource_manifest("math", 1);
@@ -746,4 +687,57 @@ async fn delete_keeps_files_and_other_topics_keep_their_mods() {
             .enabled(&topic_scope(second_topic))
             .contains("math")
     );
+}
+
+#[tokio::test]
+async fn deleting_a_mod_removes_only_its_bytecode_directory() {
+    let harness = Harness::new().await;
+    let installer = harness.installer();
+    let root = write_package(
+        &harness.dirs,
+        &resource_manifest("math", 1),
+        &resource_files("one"),
+    );
+    installer
+        .install(&harness.cx(), &root)
+        .await
+        .expect("install");
+    let cache = harness.dirs.bytecode_root().join("math");
+    let other = harness.dirs.bytecode_root().join("other");
+    for dir in [&cache, &other] {
+        fs::create_dir_all(dir).expect("cache dir");
+        fs::write(dir.join("stale.bc"), b"x").expect("artifact");
+    }
+    installer
+        .delete(&harness.cx(), "math")
+        .await
+        .expect("delete");
+    assert!(!cache.exists());
+    assert!(other.join("stale.bc").exists());
+}
+
+#[tokio::test]
+async fn cache_cleanup_failure_does_not_undo_deletion() {
+    let harness = Harness::new().await;
+    let installer = harness.installer();
+    let root = write_package(
+        &harness.dirs,
+        &resource_manifest("math", 1),
+        &resource_files("one"),
+    );
+    installer
+        .install(&harness.cx(), &root)
+        .await
+        .expect("install");
+    fs::create_dir_all(harness.dirs.bytecode_root()).expect("cache root");
+    fs::write(
+        harness.dirs.bytecode_root().join("math"),
+        b"not a directory",
+    )
+    .expect("block cleanup");
+    installer
+        .delete(&harness.cx(), "math")
+        .await
+        .expect("delete");
+    assert!(installer.get("math").await.expect("query").is_none());
 }

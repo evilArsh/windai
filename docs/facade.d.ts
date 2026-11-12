@@ -2,28 +2,24 @@
  * windai Mod 门面契约
  * ============================================================================
  *
- * 本文描述 mod 的脚本侧能看到什么。宿主侧的脚本运行时由 `wind-scripts` 提供，该 crate
- * 尚未接入本仓库；因此本文同时标注“已由代码固定”的部分与“目标形状、尚未实现”的部分。
+ * 本文描述 mod 脚本侧当前能看到什么，以及哪些宿主能力已经实现。
  *
- * 已由代码固定：
+ * 实现状态：
  *
- * - 清单的字段、校验与生成 schema：`docs/manifest.schema.json`。
- * - 宿主调用 mod 的入口：`wind_event::ModCaller::call`。
- * - 调用模式、取消、截止时间与订阅记录：`wind_event::{CallMode, CallCx, Subscription}`。
- * - 事件形态、改写链与 observe 合批：`docs/events.md`。
- * - mod 事件出口：`wind_event::ModEmitter`，名称 `m_<mod>/<channel>`，保留策略 `Journal`。
- * - 工具命名：MCP 为 `<server>0m0<tool>`，mod request 为 `m_<mod>__<request>`。
- * - 包布局与生命周期：`docs/mod.md`。
+ * - `wind-script` 已实现：QuickJS 运行时、`scripts/index.js` 加载、导出函数调用、
+ *   `ctx.emit`、`ctx.notify`、`ctx.log`。
+ * - 事件派发已接入：`intercept` 与 `observe` 订阅都会调用脚本处理函数。
+ * - 清单的字段、校验与生成 schema 见 `docs/manifest.schema.json`。
  *
- * 尚未实现：
+ * 未实现（留到后续版本）：
  *
- * - 脚本编译与执行（`wind_mod::Compiler`、`wind_event::ModCaller` 没有实现者）。
  * - `ctx.state`、`ctx.storage`、`ctx.http`、`ctx.agent`、`ctx.fs` 的宿主注入。
- * - `ctx.notify` 与 `ctx.log` 的宿主事件与实现。
- * - mod request 作为模型工具暴露；当前 `ResourceServices::agent_tools` 返回空。
+ * - 清单 `requests` 的调用入口与模型工具暴露。
+ * - `intercept` 形态对 I/O 能力的裁剪（当前没有 I/O 能力可裁剪）。
  * - UI 侧的宿主运行时；本仓库只识别 `ui/index.js` 并给出 `ui_entry`。
  *
- * 文中未标“已实现”的接口都是目标形状，不是当前可调用的 API。
+ * `ctx` 上未实现的属性不存在；读取得到 `undefined`，调用其成员才产生 `TypeError`。
+ * 本文中标为“未实现”的接口是目标形状，不是当前可调用的 API。
  */
 
 /** 宿主与 mod 之间传递的结构化值。 */
@@ -40,11 +36,11 @@ export type ModValue =
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 宿主调用 mod 事件处理函数的唯一入口。
+ * 一次调用的模式。
  *
- * 宿主先读清单的 `events.on.<event>.handler` 得到脚本导出名，再取模块导出并调用。
- * `Subscription` 是订阅索引中的一条记录。request 处理函数经由
- * `wind_core::llm::ModService::call`，当前 `ResourceServices` 对任何 request 返回 `Denied`。
+ * - `intercept`：宿主同步等待处理函数返回改写后的载荷。
+ * - `observe`：事件已经提交，处理函数只观察；返回值被丢弃。
+ * - `request`：已声明，尚未接入脚本调用。
  */
 export type CallMode = "intercept" | "observe" | "request";
 
@@ -72,6 +68,8 @@ export interface Subscription {
  * 拦截处理函数。返回改写后的载荷；返回 `undefined` 或 `null` 表示不修改。
  *
  * 拦截链串行：后一个 mod 看到前一个改写后的载荷。载荷始终是单值，不合批。
+ * 返回的对象无法重新解析为该事件的载荷时，派发层记录 `core/dispatch.failed`，
+ * 并保留前一个载荷。
  */
 export type InterceptHandler<P> = (payload: P, ctx: Ctx) => P | null | undefined | void;
 
@@ -83,26 +81,20 @@ export type InterceptHandler<P> = (payload: P, ctx: Ctx) => P | null | undefined
  */
 export type ObserveHandler<P> = (payload: P | P[], ctx: Ctx) => void;
 
-/** request 处理函数。输入与输出由清单的 `inputSchema` / `outputSchema` 描述。 */
-export type RequestHandler<I, O> = (input: I, ctx: Ctx) => O;
-
 /**
- * 三条总则（适用于宿主侧 `Ctx`）：
+ * request 处理函数。未实现。
  *
- * 1. 全同步。宿主侧方法没有 Promise/await；调用阻塞解释器直至返回。
- * 2. 失败以异常表示。没有 `{ ok: false }` 形态。
- * 3. 能力按声明注入。`ctx` 上未声明的属性不存在，访问产生 `TypeError`。
- *
- * 第 1 条来自“每次处理函数调用新建解释器”的执行模型；该模型属于 `wind-scripts`，尚未
- * 在本仓库落地。
+ * 清单 `requests` 只做结构校验；当前没有工具来源或调用入口。目标形状中的输入与输出由
+ * `inputSchema` / `outputSchema` 描述，完整 JSON Schema 校验留到调用边界实现时接入。
  */
+export type RequestHandler<I, O> = (input: I, ctx: Ctx) => O;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 2. 身份与作用域
 // ═══════════════════════════════════════════════════════════════════════════
 
 export interface ModIdentity {
-  /** mod 名，全局唯一，取值受 `docs/manifest.schema.json` 的 `name` 约束。 */
+  /** mod 名，全局唯一，取值受清单 `name` 约束。 */
   readonly name: string;
   /** 版本号，单调递增。 */
   readonly version: number;
@@ -118,14 +110,14 @@ export type Scope =
   | { readonly kind: "topic"; readonly topic_id: number; readonly instance_id: number };
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 3. Ctx
+// 3. Ctx（当前实现）
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
  * 处理函数的第二个参数。每次调用获得一个新实例；不得在模块级变量中缓存。
  *
- * 跨调用保留的数据只能存入 `ctx.state` 或 `ctx.storage`。这两项当前没有宿主实现，
- * 也没有数据库表；其语义是目标契约。
+ * 当前只有下列成员。清单声明的 `capabilities` 不会增加任何属性；读取
+ * `ctx.state`、`ctx.storage`、`ctx.http`、`ctx.agent`、`ctx.fs` 得到 `undefined`。
  */
 export interface Ctx {
   /** 本 mod 的身份。只读。 */
@@ -135,77 +127,77 @@ export interface Ctx {
   readonly scope: Scope;
 
   /**
-   * 对外状态。需要 `"state"` 能力。
-   *
-   * 目标语义：对订阅方可见的键值存储；写入广播给订阅者，包括前端；agent 可读取。
-   * 当前没有宿主实现。
-   */
-  readonly state: StateApi;
-
-  /**
-   * 私有键值存储。需要 `"storage"` 能力。
-   *
-   * 目标语义：mod 内部持久化；不广播，agent 不可读取。当前没有宿主实现。
-   */
-  readonly storage: StorageApi;
-
-  /**
-   * 出网。需要 `"http"` 能力。
-   *
-   * `intercept` 调用中该属性不存在。当前没有宿主实现。
-   */
-  readonly http: HttpApi;
-
-  /**
-   * 与 agent 系统交互。需要 `"agent"` 能力。
-   *
-   * `intercept` 调用中该属性不存在。当前没有宿主实现。
-   */
-  readonly agent: AgentApi;
-
-  /**
-   * mod 私有目录内的文件读写。需要 `"fs"` 能力。
-   *
-   * 目标范围：`<root>/mods/<name>/data/`，跨版本共享。`intercept` 调用中该属性不存在。
-   * 当前没有宿主实现；mod 若需要文件能力，可通过清单声明的 MCP 服务使用内建 `fs` 工具。
-   */
-  readonly fs: FsApi;
-
-  /**
    * 产生本 mod 的一条自定义事件。
    *
-   * `name` 必须是清单 `events.emit` 中声明的键。宿主把它变成
-   * `m_<mod>/<channel>`，载荷按该声明的 `payload` schema 校验，保留策略固定为
-   * `Journal`，展示去向为 `Target::Mod { name, channel }`。
+   * `channel` 必须是清单 `events.emit` 中声明的键。载荷必须是可 JSON 序列化的值，
+   * 序列化后的 UTF-8 字节数上限为 65536。
    *
-   * 该调用受 `Guards::admit` 与每 mod 速率上限约束：默认 3 秒内 100 条。
+   * 事件名、保留策略与去向由宿主按清单固定：
    *
-   * 清单的 `retention` 字段（`journal` / `live`）当前只参与校验，`ModEmitter` 不读取它。
-   * 因此声明 `live` 的频道在实际投递时仍是 `Journal`。
+   * - `journal` 频道：事件名 `m_<mod>/<eventKey>`，写入 `event_log`。
+   * - `live` 频道：事件名 `m_<mod>/<channel>`，只推给当前订阅者。
+   * - 去向统一为 `Target::Mod { name, channel }`。
+   *
+   * 调用受派发预算与每 mod 速率上限约束（默认 3 秒 100 条）。未知频道、载荷不可
+   * 序列化或超限时抛出 JS 异常；引擎返回 `ScriptsError::Handler`。
    */
-  emit(name: string, payload: ModValue): void;
+  emit(channel: string, payload: ModValue): void;
 
   /**
    * 向用户发出提醒。
    *
-   * 只有 `Prop::Notify` 这一声明存在；宿主没有对应的 `EventDef`、事件名或实现。
-   * 该形状未定稿，调用它不会产生事件。
+   * `text` 必填；`level` 缺省 `info`，允许 `info`、`warn`、`error`。`text` 的 UTF-8
+   * 字节数上限为 65536。宿主产生 `core/mod.notify`，载荷 `{ level, text }`，
+   * 保留策略固定为 `Journal`。
+   *
+   * 缺少 `text`、`level` 非法或超限时抛出 JS 异常。
    */
   notify(opts: NotifyOptions): void;
 
   /**
    * 写入宿主日志。
    *
-   * 只有 `Prop::Log` 这一声明存在；没有宿主实现。该形状未定稿。
+   * `level` 允许 `debug`、`info`、`warn`、`error`。日志目标名为 `mod`，消息前缀为
+   * `<mod>: `。该调用不产生事件。
    */
   log(level: LogLevel, ...args: ModValue[]): void;
 }
 
-// ─── state / storage ──────────────────────────────────────────────────────
+export interface NotifyOptions {
+  text: string;
+  level?: "info" | "warn" | "error";
+}
+
+export type LogLevel = "debug" | "info" | "warn" | "error";
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 4. HostApi（未实现）
+// ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 对外状态。目标语义：内存读取、调用结束时落库、写入广播。
- * 当前没有宿主实现，也没有 `mod_state` 表。
+ * 宿主能力的全集。当前实现只有 `Ctx` 上的 `emit`、`notify`、`log`；下列成员全部未
+ * 注入，留到后续版本。
+ *
+ * 清单的 `capabilities` 取 `state`、`storage`、`http`、`agent`、`fs`。声明只影响清单
+ * 校验，不影响运行期。
+ */
+export interface HostApi {
+  /** 对外状态。未实现。 */
+  readonly state: StateApi;
+  /** 私有键值存储。未实现。 */
+  readonly storage: StorageApi;
+  /** 出网。未实现。 */
+  readonly http: HttpApi;
+  /** 与 agent 系统交互。未实现。 */
+  readonly agent: AgentApi;
+  /** mod 私有目录的文件读写。未实现。 */
+  readonly fs: FsApi;
+}
+
+/**
+ * 对外状态的目标形状。未实现。
+ *
+ * 计划语义：对订阅方可见的键值存储；写入广播给订阅者，包括前端；agent 可读取。
  */
 export interface StateApi {
   get(key: string): ModValue | undefined;
@@ -215,8 +207,9 @@ export interface StateApi {
 }
 
 /**
- * 私有键值存储。目标语义与 `StateApi` 相同，但不广播。
- * 当前没有宿主实现。
+ * 私有键值存储的目标形状。未实现。
+ *
+ * 计划语义：mod 内部持久化；不广播，agent 不可读取。
  */
 export interface StorageApi {
   get(key: string): ModValue | undefined;
@@ -225,9 +218,11 @@ export interface StorageApi {
   keys(): string[];
 }
 
-// ─── http ─────────────────────────────────────────────────────────────────
-
-/** 出网接口的目标形状。当前没有宿主实现。 */
+/**
+ * 出网接口的目标形状。未实现。
+ *
+ * 计划语义：同步调用；`intercept` 形态不注入该能力，因为拦截链的预算在毫秒量级。
+ */
 export interface HttpApi {
   fetchText(url: string, init?: HttpInit): string;
   fetchMany(urls: string[], init?: HttpInit): string[];
@@ -243,12 +238,10 @@ export interface HttpInit {
   onError?: "throw" | "null";
 }
 
-// ─── agent ────────────────────────────────────────────────────────────────
-
 /**
- * 与 agent 系统交互的目标形状。当前没有宿主实现。
+ * agent 交互的目标形状。未实现。
  *
- * 模型侧已有的派生工具是 `wind_spawn_agent`；它由 `LlmRunner` 执行，不经过 `ctx.agent`。
+ * 模型侧现有的派生工具是 `wind_spawn_agent`；它由 `LlmRunner` 执行，不经过 `ctx.agent`。
  */
 export interface AgentApi {
   /** 追加一条用户输入。立即返回，实际处理由宿主排队。 */
@@ -272,12 +265,11 @@ export interface TranscriptEntry {
   readonly text: string;
 }
 
-// ─── fs ───────────────────────────────────────────────────────────────────
-
 /**
- * mod 私有目录的文件接口目标形状。当前没有宿主实现。
+ * mod 私有目录的文件接口目标形状。未实现。
  *
- * 私有目录是 `AppDirs::mod_data(name)`，即 `<root>/mods/<name>/data`。
+ * 计划范围是 `AppDirs::mod_data(name)`，即 `<root>/mods/<name>/data`，跨版本共享。
+ * 当前需要文件能力的 mod 应通过清单 `mcpServers` 使用内建 `fs` 工具。
  */
 export interface FsApi {
   /** 私有目录的绝对路径。 */
@@ -288,57 +280,43 @@ export interface FsApi {
   remove(path: string): void;
 }
 
-// ─── notify / log ─────────────────────────────────────────────────────────
-
-export interface NotifyOptions {
-  text: string;
-  level?: "info" | "warn" | "error";
-}
-
-export type LogLevel = "debug" | "info" | "warn" | "error";
-
 // ═══════════════════════════════════════════════════════════════════════════
-// 4. 能力矩阵
+// 5. 能力矩阵
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * `ctx` 属性在各类调用模式下的可用性。`capabilities` 中声明后属性才存在。
+ * `ctx` 属性的可用性。
  *
  * | `ctx.*`   | 需要 capability | intercept | observe | request |
  * |-----------|------------------|-----------|---------|---------|
- * | `state`   | `"state"`        | 可用       | 可用     | 可用     |
- * | `storage` | `"storage"`      | 可用       | 可用     | 可用     |
- * | `http`    | `"http"`         | 不存在     | 可用     | 可用     |
- * | `agent`   | `"agent"`        | 不存在     | 可用     | 可用     |
- * | `fs`      | `"fs"`           | 不存在     | 可用     | 可用     |
- * | `emit`    | 无需声明          | 可用       | 可用     | 可用     |
- * | `notify`  | 无需声明          | 未实现     | 未实现   | 未实现   |
- * | `log`     | 无需声明          | 未实现     | 未实现   | 未实现   |
+ * | `state`   | `"state"`        | 未实现     | 未实现   | 未实现   |
+ * | `storage` | `"storage"`      | 未实现     | 未实现   | 未实现   |
+ * | `http`    | `"http"`         | 未实现     | 未实现   | 未实现   |
+ * | `agent`   | `"agent"`        | 未实现     | 未实现   | 未实现   |
+ * | `fs`      | `"fs"`           | 未实现     | 未实现   | 未实现   |
+ * | `emit`    | 无需声明          | 可用       | 可用     | 未实现   |
+ * | `notify`  | 无需声明          | 可用       | 可用     | 未实现   |
+ * | `log`     | 无需声明          | 可用       | 可用     | 未实现   |
  *
- * `intercept` 的“不存在”是属性不存在，不是运行时拒绝。该裁剪不受 manifest 声明影响：
- * 即使声明 `"http"`，`intercept` 中 `ctx.http` 也不存在。
+ * `request` 模式没有调用入口，因此上表中的“未实现”表示不会发生调用，而不是运行期拒绝。
  *
- * 依据：`intercept` 阻塞调用方，预算为毫秒量级；使 I/O 能力不存在优于使其超时。
- * 代码中的对应判据是 `CallMode::allows_io`：`Intercept` 返回 false，`Observe` 与
- * `Request` 返回 true。
- *
- * 能力的取值集合以 `docs/manifest.schema.json` 的 `Capability` 为准：`state`、`storage`、
- * `http`、`agent`、`fs`。
+ * 目标判据是 `CallMode::allows_io`：`Intercept` 返回 false，`Observe` 与 `Request`
+ * 返回 true。该裁剪在 HostApi 接入后生效。
  */
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 5. 工具与事件
+// 6. 工具与事件
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * mod 可以出现在模型工具目录中的两类入口：
+ * mod 可以出现在模型工具目录中的入口：
  *
- * - `requests.<name>`：工具名为 `m_<mod>__<request>`。当前 `ResourceServices::agent_tools`
- *   返回空，因此不会出现；`ResourceServices::call` 也会拒绝。
  * - `mcpServers.<local>`：服务名为 `mod_<mod>_<local>`，工具名为
- *   `<服务名>0m0<原始工具名>`。
+ *   `<服务名>0m0<原始工具名>`。这是当前唯一已实现的 mod 工具来源。
+ * - `requests.<name>`：目标工具名为 `m_<mod>__<request>`。未实现；当前工具目录只包含
+ *   MCP 工具与内置 `wind_spawn_agent`。
  *
- * 清单的 `requests.<name>.callableBy` 取 `agent` / `ui`，但当前没有调用边界强制它。
+ * 清单的 `requests.<name>.callableBy` 取 `agent` / `ui`，当前没有调用边界强制它。
  *
  * 事件处理：
  *
@@ -354,7 +332,7 @@ export type LogLevel = "debug" | "info" | "warn" | "error";
  */
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 6. UI 侧
+// 7. UI 侧
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
@@ -376,20 +354,25 @@ export interface UiCtx {
   readonly mod: ModIdentity;
   readonly scope: Scope;
   /** 后端接口集合，由前端底座按 manifest 注入；成员未定。 */
-  readonly host: HostApi;
+  readonly host: UiHostApi;
 }
 
-/** 后端接口集合。成员与传输层一并定稿，当前为空。 */
-export interface HostApi {}
+/** 前端底座的后端接口集合。成员与传输层尚未定稿，当前为空。 */
+export interface UiHostApi {}
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 7. 异常
+// 8. 异常
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 以下异常是目标契约。`wind-scripts` 尚未实现，当前没有宿主侧异常类型。
+ * 当前实现的异常行为：
  *
- * 处理函数不得捕获这些异常后返回“通过”；该做法会把超时或取消转成 mod 自己的结论。
+ * - 门面调用失败以普通 `Error` 抛出，消息是英文短句。
+ * - 宿主记录到 `ScriptsError` 时，引擎优先返回该错误，而不是 JS 异常本身；因此
+ *   `PayloadTooLarge`、`Handler` 等分类在宿主侧可见。
+ * - 处理函数不得捕获异常后返回“通过”；这会把超时、取消或载荷错误转成 mod 自己的结论。
+ *
+ * 以下类型化异常是目标契约，当前没有对应的宿主侧类型：
  */
 export declare class FacadeError extends Error {}
 export declare class CapabilityError extends FacadeError {}
@@ -405,7 +388,7 @@ export declare class HttpError extends FacadeError {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 8. 不包含的能力
+// 9. 不包含的能力
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
@@ -414,7 +397,7 @@ export declare class HttpError extends FacadeError {
  * - 不存在 `ctx.hook(...)`。拦截通过订阅 `intercept` 事件实现。
  * - mod 之间不互相调用，也不能订阅另一个 mod 的 `m_<mod>/` 事件；清单只接受 `core/`
  *   开头的订阅键，目录中也没有动态 mod 事件。
- * - 不存在宿主侧异步接口。目标模型是每次调用新建解释器并同步执行。
+ * - 不存在宿主侧异步接口。每次调用新建解释器并同步执行。
  * - 不存在 `mount`。挂载属于前端底座。
  * - 不存在注册新能力类型的接口。
  * - 不存在长期子进程接口。需要长期进程时，用清单的 `mcpServers` 声明 stdio 服务。

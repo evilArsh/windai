@@ -1,12 +1,9 @@
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-
+use super::error::ScriptsError;
 use async_trait::async_trait;
 use serde_json::Value;
+use std::path::PathBuf;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
-
-use crate::error::ScriptsError;
 
 /// 脚本引擎的配置
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,6 +12,8 @@ pub struct Config {
     pub threads: usize,
     /// 单个运行时的内存上限，字节
     pub memory_limit: usize,
+    pub cache: Option<PathBuf>,
+    pub engine: Option<String>,
 }
 
 impl Default for Config {
@@ -22,6 +21,8 @@ impl Default for Config {
         Self {
             threads: 4,
             memory_limit: 64 * 1024 * 1024,
+            cache: None,
+            engine: None,
         }
     }
 }
@@ -64,12 +65,8 @@ pub trait ScriptHost: Send + Sync {
     fn notify(&self, level: &str, text: &str) -> Result<(), ScriptsError>;
 }
 
-/// 脚本 mod 的编译与调用入口
 #[async_trait]
 pub trait ScriptService: Send + Sync {
-    /// 只校验入口语法，不解析 import
-    fn compile(&self, root: &Path, handlers: &HashSet<String>) -> Result<(), ScriptsError>;
-
     /// 调用一个导出函数，`undefined` 与 `null` 都返回 `None`
     async fn call(&self, call: ScriptCall) -> Result<Option<Value>, ScriptsError>;
 }

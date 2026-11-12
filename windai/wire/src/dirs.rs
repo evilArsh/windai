@@ -18,6 +18,7 @@ pub const PUB_DIR: &str = ".windai";
 pub const PUB_DB_PATH: &str = "windai.db";
 pub const PUB_SKILLS_DIR: &str = "skills";
 pub const PUB_TOPICS_DIR: &str = "topics";
+pub const PUB_BYTECODE_DIR: &str = "bytecode";
 pub const PUB_MODS_DIR: &str = "mods";
 
 #[derive(Debug, Clone)]
@@ -58,6 +59,10 @@ impl AppDirs {
 
     pub fn mods_root(&self) -> PathBuf {
         self.root.join(PUB_MODS_DIR)
+    }
+
+    pub fn bytecode_root(&self) -> PathBuf {
+        self.root.join(PUB_BYTECODE_DIR)
     }
 
     pub fn mod_root(&self, name: &str) -> PathBuf {
