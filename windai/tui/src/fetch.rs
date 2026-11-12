@@ -1,5 +1,6 @@
 use crate::app::{BlockView, MessageView, ModView, NodeView, phase_detail};
 use crate::config::Selection;
+use std::collections::HashSet;
 use wind_core::agent::Phase;
 use wind_core::llm::domain::LlmDomain;
 use wind_storage::error::StorageError;
@@ -143,11 +144,14 @@ fn node_view(instance: AgentInstance) -> NodeView {
 
 fn group_context(rows: Vec<ContextRow>) -> (Vec<MessageView>, Usage) {
     let mut messages: Vec<MessageView> = Vec::new();
+    let mut counted: HashSet<i64> = HashSet::new();
     let mut input_tokens: i64 = 0;
     let mut output_tokens: i64 = 0;
     for row in rows {
-        input_tokens += i64::from(row.input_tokens);
-        output_tokens += i64::from(row.output_tokens);
+        if counted.insert(row.message_id) {
+            input_tokens += i64::from(row.input_tokens);
+            output_tokens += i64::from(row.output_tokens);
+        }
         if messages
             .last()
             .is_none_or(|message| message.id != row.message_id)

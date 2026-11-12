@@ -383,14 +383,24 @@ async fn load_session_groups_blocks_and_sums_usage() {
     storage
         .create_blocks(
             second,
-            &[Block::new(
-                Role::Assistant,
-                0,
-                3,
-                Body::Text {
-                    content: "answer".to_owned(),
-                },
-            )],
+            &[
+                Block::new(
+                    Role::Assistant,
+                    1,
+                    3,
+                    Body::Text {
+                        content: "follow-up".to_owned(),
+                    },
+                ),
+                Block::new(
+                    Role::Assistant,
+                    0,
+                    3,
+                    Body::Text {
+                        content: "answer".to_owned(),
+                    },
+                ),
+            ],
         )
         .await
         .expect("create the second message blocks");
@@ -421,10 +431,18 @@ async fn load_session_groups_blocks_and_sums_usage() {
     assert_eq!(loaded.messages[1].id, second);
     assert_eq!(loaded.messages[1].role, Role::Assistant);
     assert_eq!(
+        loaded.messages[1]
+            .blocks
+            .iter()
+            .map(|block| block.seq)
+            .collect::<Vec<_>>(),
+        [0, 1]
+    );
+    assert_eq!(
         loaded.usage,
         Usage {
-            input_tokens: 14,
-            output_tokens: 4
+            input_tokens: 10,
+            output_tokens: 3
         }
     );
 }
