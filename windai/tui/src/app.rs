@@ -5,11 +5,12 @@ use crate::form::{Form, ModelForm, ProviderForm};
 use crate::reduce;
 use crate::theme;
 use crate::view;
+use crate::view::bar::{self, BarData, BarKind, BarLayout};
 use crate::view::log::LogRing;
 use crossterm::cursor::{Hide, Show};
 use crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -17,6 +18,7 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use ratatui::layout::Rect;
 use ratatui::text::Text;
 use ratatui_textarea::TextArea;
 use std::io::{self, Stdout};
@@ -198,6 +200,10 @@ fn move_selection(selected: &mut usize, len: usize, step: isize) {
     *selected = (current + step).rem_euclid(len as isize) as usize;
 }
 
+fn rect_contains(rect: Rect, x: u16, y: u16) -> bool {
+    x >= rect.x && x < rect.right() && y >= rect.y && y < rect.bottom()
+}
+
 fn completion_prefix(text: &str) -> Option<&str> {
     let rest = text.strip_prefix('/')?;
     if rest.chars().any(char::is_whitespace) {
@@ -239,6 +245,10 @@ pub struct App {
     form: Option<Form>,
     show_side: bool,
     notice: Option<String>,
+    bar: BarLayout,
+    bar_area: Rect,
+    branch: Option<String>,
+    dirs: AppDirs,
     quit: bool,
     dirty: bool,
     loading: Option<LoadState>,
@@ -250,7 +260,8 @@ impl App {
     }
 
     async fn connect(dirs: AppDirs) -> Result<Self, RuntimeError> {
-        let runtime = Runtime::open(RuntimeOptions::new(dirs)).await?;
+        let branch = bar::read_branch();
+        let runtime = Runtime::open(RuntimeOptions::new(dirs.clone())).await?;
         let opening = runtime.subscribe().await?;
         let startup = fetch::load_startup(runtime.storage()).await?;
         let mut input = TextArea::new(vec![String::new()]);
@@ -271,6 +282,10 @@ impl App {
             form: None,
             show_side: true,
             notice: startup.notice,
+            bar: BarLayout::default(),
+            bar_area: Rect::new(0, 0, 0, 0),
+            branch,
+            dirs,
             quit: false,
             dirty: true,
             loading: None,
@@ -323,6 +338,93 @@ impl App {
 
     pub fn notice(&self) -> Option<&str> {
         self.notice.as_deref()
+    }
+
+    pub(crate) fn bar_layout(&self) -> &BarLayout {
+        &self.bar
+    }
+
+    pub(crate) fn set_bar(&mut self, bar: BarLayout) {
+        self.bar = bar;
+    }
+
+    pub(crate) fn set_bar_area(&mut self, area: Rect) {
+        self.bar_area = area;
+    }
+
+    pub(crate) fn bar_data(&self) -> BarData {
+        let (usage, directory, phase, phase_reason) = match &self.screen {
+            Screen::Session(session) => {
+                let directory = session
+                    .topic
+                    .workspace
+                    .clone()
+                    .filter(|workspace| !workspace.is_empty())
+                    .unwrap_or_else(|| self.dirs.root().display().to_string());
+                let node = session
+                    .main
+                    .and_then(|id| session.nodes.iter().find(|node| node.id == id));
+                (
+                    session.usage,
+                    Some(directory),
+                    node.map(|node| node.phase.clone()),
+                    node.and_then(|node| node.reason.clone()),
+                )
+            }
+            Screen::Empty => (
+                Usage {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                },
+                Some(self.dirs.root().display().to_string()),
+                None,
+                None,
+            ),
+        };
+        BarData {
+            provider: self
+                .selection
+                .provider
+                .as_ref()
+                .map(|provider| provider.name.clone()),
+            model: self
+                .selection
+                .model
+                .as_ref()
+                .map(|model| model.name.clone()),
+            thinking: self.selection.reasoning_effort.clone(),
+            directory,
+            branch: self.branch.clone(),
+            usage,
+            phase,
+            phase_reason,
+        }
+    }
+
+    pub async fn handle_mouse(&mut self, mouse: MouseEvent) {
+        if mouse.kind != MouseEventKind::Down(MouseButton::Left)
+            || self.form.is_some()
+            || self.overlay.is_some()
+        {
+            return;
+        }
+        let area = self.bar_area;
+        if area.is_empty() || !rect_contains(area, mouse.column, mouse.row) {
+            return;
+        }
+        let x = mouse.column.saturating_sub(area.x);
+        let y = mouse.row.saturating_sub(area.y);
+        let kind = self
+            .bar
+            .segments
+            .iter()
+            .find(|segment| rect_contains(segment.rect, x, y))
+            .and_then(|segment| segment.kind);
+        match kind {
+            Some(BarKind::Provider) => self.open_providers_overlay().await,
+            Some(BarKind::Model) => self.open_models_overlay().await,
+            None => {}
+        }
     }
 
     pub async fn handle_key(&mut self, key: KeyEvent) {
@@ -1172,6 +1274,7 @@ async fn event_loop(
         tokio::select! {
             event = terminal_events.recv() => match event {
                 Some(Event::Key(key)) => app.handle_key(key).await,
+                Some(Event::Mouse(mouse)) => app.handle_mouse(mouse).await,
                 Some(Event::Paste(text)) => app.handle_paste(&text),
                 Some(Event::Resize(_, _)) => app.dirty = true,
                 Some(_) => {}
@@ -1290,6 +1393,7 @@ impl Drop for TerminalReader {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+    use wind_wire::AdapterType;
 
     async fn test_app() -> (TempDir, App) {
         let dir = TempDir::new().expect("create a temp dir");
@@ -1386,6 +1490,76 @@ mod tests {
         let (dir, mut app) = test_app().await;
         app.handle_paste("first\nsecond");
         assert_eq!(app.input.lines(), ["first", "second"]);
+        close(app).await;
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn clicking_status_segments_opens_overlays_without_changing_focus() {
+        let (dir, mut app) = test_app().await;
+        let storage = app.runtime.storage();
+        let provider_id = storage
+            .create_provider("alpha", "https://alpha.example")
+            .await
+            .expect("create the provider");
+        storage
+            .create_model(
+                provider_id,
+                "alpha-model",
+                AdapterType::OpenAICompletion,
+                None,
+                None,
+            )
+            .await
+            .expect("create the model");
+        app.providers = storage.list_providers().await.expect("list providers");
+        app.models = storage
+            .list_models(Some(provider_id))
+            .await
+            .expect("list models");
+        app.selection = Selection::new(app.providers.first().cloned(), app.models.first().cloned());
+        let bar = bar::compose(&app.bar_data(), 80, 30);
+        let provider = bar
+            .segments
+            .iter()
+            .find(|segment| segment.kind == Some(BarKind::Provider))
+            .expect("the provider segment exists")
+            .rect;
+        let model = bar
+            .segments
+            .iter()
+            .find(|segment| segment.kind == Some(BarKind::Model))
+            .expect("the model segment exists")
+            .rect;
+        let usage = bar
+            .segments
+            .iter()
+            .find(|segment| segment.text.starts_with('◫'))
+            .expect("the usage segment exists")
+            .rect;
+        app.set_bar(bar);
+        app.set_bar_area(Rect::new(0, 5, 80, 1));
+        let click = |column| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        app.handle_mouse(click(provider.x)).await;
+        assert!(matches!(app.overlay, Some(Overlay::Providers { .. })));
+        assert_eq!(app.focus, Focus::Input);
+
+        app.overlay = None;
+        app.handle_mouse(click(model.x)).await;
+        assert!(matches!(app.overlay, Some(Overlay::Models { .. })));
+        assert_eq!(app.focus, Focus::Input);
+
+        app.overlay = None;
+        app.handle_mouse(click(usage.x)).await;
+        assert!(app.overlay.is_none());
+        assert_eq!(app.focus, Focus::Input);
+
         close(app).await;
         drop(dir);
     }

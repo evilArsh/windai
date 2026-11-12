@@ -1,3 +1,4 @@
+pub mod bar;
 pub mod content;
 pub mod form;
 pub mod input;
@@ -25,6 +26,15 @@ pub struct Layout {
     pub side: Option<SideLayout>,
 }
 
+pub fn left_width(area: Rect, show_side: bool) -> u16 {
+    if show_side && area.width >= 60 && area.height >= 20 {
+        let side = (u32::from(area.width) / 3).clamp(28, 48) as u16;
+        area.width - side
+    } else {
+        area.width
+    }
+}
+
 pub fn layout(area: Rect, bar_height: u16, show_side: bool) -> Layout {
     let hidden = Rect::new(area.x, area.y, 0, 0);
     let input_height = ((u32::from(area.height) * 40 / 100).clamp(5, 15) as u16).min(area.height);
@@ -44,12 +54,9 @@ pub fn layout(area: Rect, bar_height: u16, show_side: bool) -> Layout {
     } else {
         bar_height.clamp(1, 2)
     };
-    let side_width = if show_side && area.width >= 60 && area.height >= 20 {
-        Some((u32::from(area.width) / 3).clamp(28, 48) as u16)
-    } else {
-        None
-    };
-    let left_width = side_width.map_or(area.width, |width| area.width - width);
+    let side_visible = show_side && area.width >= 60 && area.height >= 20;
+    let left = left_width(area, show_side);
+    let side_width = side_visible.then(|| area.width - left);
 
     let content_height = area
         .height
@@ -57,12 +64,12 @@ pub fn layout(area: Rect, bar_height: u16, show_side: bool) -> Layout {
         .saturating_sub(bar_height);
     let bar_y = area.y.saturating_add(content_height);
     let input_y = bar_y.saturating_add(bar_height);
-    let content = Rect::new(area.x, area.y, left_width, content_height);
-    let bar = Rect::new(area.x, bar_y, left_width, bar_height);
-    let input = Rect::new(area.x, input_y, left_width, input_height);
+    let content = Rect::new(area.x, area.y, left, content_height);
+    let bar = Rect::new(area.x, bar_y, left, bar_height);
+    let input = Rect::new(area.x, input_y, left, input_height);
 
     let side = side_width.map(|width| {
-        let x = area.x.saturating_add(left_width);
+        let x = area.x.saturating_add(left);
         let mods_height = (u32::from(area.height) / 4).clamp(3, 10) as u16;
         let tree_height = (u32::from(area.height) / 3).clamp(4, 14) as u16;
         let log_height = area
@@ -87,7 +94,14 @@ pub fn layout(area: Rect, bar_height: u16, show_side: bool) -> Layout {
 }
 
 pub fn render(frame: &mut Frame, app: &mut App) {
-    let layout = layout(frame.area(), 1, app.show_side());
+    let area = frame.area();
+    let data = app.bar_data();
+    let width = left_width(area, app.show_side());
+    let bar = bar::compose(&data, width, area.height);
+    let bar_height = bar.lines;
+    app.set_bar(bar);
+    let layout = layout(area, bar_height, app.show_side());
+    app.set_bar_area(layout.bar);
     match app.screen_mut() {
         Screen::Empty => {
             render_panel(
@@ -111,7 +125,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             }
         }
     }
-    render_bar(frame, layout.bar, app.notice());
+    bar::render(frame, layout.bar, app.bar_layout());
+    render_notice(frame, layout.bar, app.notice());
     input::render(
         frame,
         layout.input,
@@ -139,16 +154,13 @@ fn render_panel(frame: &mut Frame, area: Rect, title: &str, message: Option<&str
     }
 }
 
-fn render_bar(frame: &mut Frame, area: Rect, notice: Option<&str>) {
+fn render_notice(frame: &mut Frame, area: Rect, notice: Option<&str>) {
+    let Some(notice) = notice else {
+        return;
+    };
     if area.is_empty() {
         return;
     }
-    frame.render_widget(
-        Paragraph::new("No provider selected").style(theme::BAR),
-        area,
-    );
-    if let Some(notice) = notice {
-        let line = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
-        frame.render_widget(Paragraph::new(notice).style(theme::BAR), line);
-    }
+    let line = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
+    frame.render_widget(Paragraph::new(notice).style(theme::BAR), line);
 }
