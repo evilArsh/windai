@@ -1,13 +1,14 @@
 pub mod content;
 pub mod input;
 pub mod log;
-
-use ratatui::Frame;
-use ratatui::layout::Rect;
-use ratatui::widgets::{Block, Paragraph};
+pub mod mods;
+pub mod tree;
 
 use crate::app::{App, Screen};
 use crate::theme;
+use ratatui::Frame;
+use ratatui::layout::Rect;
+use ratatui::widgets::{Block, Paragraph};
 
 pub struct SideLayout {
     pub mods: Rect,
@@ -94,16 +95,16 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 Some("No active session"),
             );
             if let Some(side) = layout.side {
-                render_panel(frame, side.mods, "Layer 1 mods", None);
-                render_panel(frame, side.tree, "Layer 2 tree", None);
-                render_panel(frame, side.log, "Layer 3 log", None);
+                mods::render(frame, side.mods, &[]);
+                tree::render(frame, side.tree, &[]);
+                log::render(frame, side.log, &log::LogRing::new());
             }
         }
         Screen::Session(session) => {
             content::render(frame, layout.content, session);
             if let Some(side) = layout.side {
-                render_panel(frame, side.mods, "Layer 1 mods", None);
-                render_panel(frame, side.tree, "Layer 2 tree", None);
+                mods::render(frame, side.mods, &session.mods);
+                tree::render(frame, side.tree, &session.nodes);
                 log::render(frame, side.log, &session.log);
             }
         }

@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use wind_storage::{Storage, Topic};
-use wind_tui::app::Session;
+use wind_tui::app::{MessageView, ModView, Session};
 use wind_tui::fetch::load_session;
 use wind_tui::reduce::apply;
 use wind_wire::event::{Envelope, EventKey, FeedEvent, Origin, Scope, Shape, Source, Target};
@@ -448,4 +448,242 @@ async fn load_session_without_a_main_instance_has_no_messages() {
             output_tokens: 0
         }
     );
+}
+
+fn spawn(seq: i64, instance_id: i64, parent_id: Option<i64>) -> FeedEvent {
+    event(
+        seq,
+        "core/agent.spawn",
+        scope(CURRENT_TOPIC),
+        json!({
+            "instance_id": instance_id,
+            "parent_id": parent_id,
+            "detached": false
+        }),
+    )
+}
+
+fn status(seq: i64, instance_id: i64, phase: &str, payload: Option<Value>) -> FeedEvent {
+    event(
+        seq,
+        "core/agent.status",
+        scope(CURRENT_TOPIC),
+        json!({
+            "instance_id": instance_id,
+            "phase": phase,
+            "phase_payload": payload
+        }),
+    )
+}
+
+fn sealed(seq: i64, instance_id: i64) -> FeedEvent {
+    event(
+        seq,
+        "core/agent.sealed",
+        scope(CURRENT_TOPIC),
+        json!({"instance_id": instance_id}),
+    )
+}
+
+fn manifest(name: &str, version: u32) -> String {
+    json!({"name": name, "version": version}).to_string()
+}
+
+#[tokio::test]
+async fn load_session_loads_nodes_and_mods() {
+    let (_dir, storage) = database().await;
+    let topic_id = storage
+        .create_topic(None, "topic", None, None, None)
+        .await
+        .expect("create the topic");
+    let main = storage
+        .create_agent_instance(
+            topic_id,
+            None,
+            AgentRole::Main,
+            Some(AgentMode::Sync),
+            "running",
+            None,
+        )
+        .await
+        .expect("create the main instance");
+    let waiting = storage
+        .create_agent_instance(
+            topic_id,
+            Some(main),
+            AgentRole::Child,
+            None,
+            "suspended",
+            Some(json!({"external_wait_id": 42}).to_string()),
+        )
+        .await
+        .expect("create a suspended instance");
+    let failed = storage
+        .create_agent_instance(
+            topic_id,
+            Some(main),
+            AgentRole::Child,
+            None,
+            "failed",
+            Some(json!({"message_id": null, "error": "boom\nstack"}).to_string()),
+        )
+        .await
+        .expect("create a failed instance");
+    let weather = storage
+        .install_mod("weather", &manifest("weather", 1))
+        .await
+        .expect("install weather");
+    let alerts = storage
+        .install_mod("alerts", &manifest("alerts", 1))
+        .await
+        .expect("install alerts");
+    storage
+        .enable_mod(topic_id, weather)
+        .await
+        .expect("enable weather");
+    storage
+        .enable_mod(topic_id, alerts)
+        .await
+        .expect("enable alerts");
+
+    let loaded = load_session(&storage, topic_id)
+        .await
+        .expect("load the session");
+
+    assert_eq!(loaded.main, Some(main));
+    let ids: Vec<i64> = loaded.nodes.iter().map(|node| node.id).collect();
+    assert_eq!(ids, [main, waiting, failed]);
+    assert_eq!(loaded.nodes[0].role, AgentRole::Main);
+    assert_eq!(loaded.nodes[0].phase, "running");
+    assert_eq!(loaded.nodes[1].parent_id, Some(main));
+    assert_eq!(loaded.nodes[1].phase, "suspended");
+    assert_eq!(loaded.nodes[1].suspended_wait, Some(42));
+    assert!(loaded.nodes[1].reason.is_none());
+    assert_eq!(loaded.nodes[2].phase, "failed");
+    assert_eq!(loaded.nodes[2].reason.as_deref(), Some("boom"));
+    assert_eq!(
+        loaded.mods,
+        [
+            ModView {
+                name: "alerts".to_owned(),
+                version: 1
+            },
+            ModView {
+                name: "weather".to_owned(),
+                version: 1
+            }
+        ]
+    );
+}
+
+#[test]
+fn agent_spawn_inserts_a_child_and_backfills_the_main_role() {
+    let mut session = session(CURRENT_TOPIC, Some(50));
+    assert!(apply(&mut session, &spawn(1, 50, None)));
+    assert_eq!(session.nodes.len(), 1);
+    assert_eq!(session.nodes[0].role, AgentRole::Main);
+    assert_eq!(session.nodes[0].phase, "running");
+    assert!(apply(&mut session, &spawn(2, 60, Some(50))));
+    assert_eq!(session.nodes.len(), 2);
+    assert_eq!(session.nodes[1].role, AgentRole::Child);
+    assert_eq!(session.nodes[1].parent_id, Some(50));
+    assert!(!apply(&mut session, &spawn(3, 60, Some(50))));
+    assert_eq!(session.nodes.len(), 2);
+}
+
+#[test]
+fn agent_spawn_does_not_guess_main() {
+    let mut session = session(CURRENT_TOPIC, None);
+    assert!(apply(&mut session, &spawn(1, 70, None)));
+    assert_eq!(session.main, None);
+    assert_eq!(session.nodes[0].role, AgentRole::Child);
+}
+
+#[test]
+fn agent_status_updates_the_phase_and_syncs_a_terminal_message() {
+    let mut session = session(CURRENT_TOPIC, Some(5));
+    let mut done = MessageView::new(101, Role::Assistant);
+    done.sealed = Some("stop".to_owned());
+    session.messages.push(done);
+    session
+        .messages
+        .push(MessageView::new(102, Role::Assistant));
+    session.messages.push(MessageView::new(103, Role::User));
+    assert!(apply(&mut session, &spawn(1, 5, None)));
+    assert!(apply(
+        &mut session,
+        &status(
+            2,
+            5,
+            "failed",
+            Some(json!({"message_id": null, "error": "boom\nstack"}))
+        )
+    ));
+    let node = &session.nodes[0];
+    assert_eq!(node.phase, "failed");
+    assert_eq!(node.reason.as_deref(), Some("boom"));
+    assert_eq!(session.messages[0].interrupted, None);
+    assert_eq!(session.messages[1].interrupted, None);
+    assert_eq!(session.messages[2].interrupted.as_deref(), Some("failed"));
+}
+
+#[test]
+fn agent_status_inserts_a_missing_node_and_decodes_the_payload() {
+    let mut session = session(CURRENT_TOPIC, Some(9));
+    assert!(apply(
+        &mut session,
+        &status(1, 9, "suspended", Some(json!({"external_wait_id": 77})))
+    ));
+    assert_eq!(session.nodes.len(), 1);
+    assert_eq!(session.nodes[0].id, 9);
+    assert_eq!(session.nodes[0].phase, "suspended");
+    assert_eq!(session.nodes[0].suspended_wait, Some(77));
+}
+
+#[test]
+fn agent_status_keeps_the_phase_on_a_bad_payload() {
+    let mut session = session(CURRENT_TOPIC, Some(5));
+    assert!(apply(&mut session, &spawn(1, 5, None)));
+    let log_before = session.log.entries().count();
+    assert!(!apply(
+        &mut session,
+        &status(2, 5, "suspended", Some(json!({"unexpected": 1})))
+    ));
+    assert_eq!(session.nodes[0].phase, "running");
+    assert_eq!(session.log.entries().count(), log_before + 2);
+}
+
+#[test]
+fn agent_sealed_marks_the_main_node() {
+    let mut session = session(CURRENT_TOPIC, Some(5));
+    assert!(apply(&mut session, &spawn(1, 5, None)));
+    assert!(apply(&mut session, &spawn(2, 6, Some(5))));
+    assert!(apply(&mut session, &sealed(3, 5)));
+    assert!(session.nodes[0].sealed);
+    assert!(!session.nodes[1].sealed);
+    assert!(!apply(&mut session, &sealed(4, 5)));
+    assert!(!apply(&mut session, &sealed(5, 6)));
+}
+
+#[test]
+fn mod_events_request_a_reload() {
+    let mut session = session(CURRENT_TOPIC, None);
+    for (seq, name) in [
+        (1, "core/mod.installed"),
+        (2, "core/mod.updated"),
+        (3, "core/mod.deleted"),
+    ] {
+        let payload = json!({
+            "name": "weather",
+            "version": 1,
+            "from_version": 1,
+            "to_version": 2
+        });
+        assert!(apply(
+            &mut session,
+            &event(seq, name, scope(CURRENT_TOPIC), payload)
+        ));
+        assert!(session.reload_mods);
+        session.reload_mods = false;
+    }
 }

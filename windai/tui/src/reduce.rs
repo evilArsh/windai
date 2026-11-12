@@ -1,10 +1,12 @@
+use crate::app::{BlockView, MessageView, NodeView, Session, phase_detail};
+use crate::text::{decode, interrupted_reason};
 use serde_json::Value;
+use wind_core::agent::Phase;
+use wind_core::agent::events::{AgentSealed, AgentSpawn, AgentStatus};
+use wind_core::llm::domain::LlmDomain;
 use wind_core::llm::events::{BlockCommitted, BlockDelta, MessageInterrupted, MessageSeal};
 use wind_wire::event::{FeedEvent, Scope};
-use wind_wire::{Role, Usage};
-
-use crate::app::{BlockView, MessageView, Session};
-use crate::text::{decode, interrupted_reason};
+use wind_wire::{AgentRole, Role, Usage};
 
 pub fn apply(session: &mut Session, event: &FeedEvent) -> bool {
     match &event.envelope.scope {
@@ -41,6 +43,22 @@ fn reduce_payload(session: &mut Session, name: &str, payload: &Value) -> bool {
             Some(event) => apply_interrupted(session, &event),
             None => decode_failed(session, name),
         },
+        "core/agent.spawn" => match decode::<AgentSpawn>(payload) {
+            Some(event) => apply_spawn(session, &event),
+            None => decode_failed(session, name),
+        },
+        "core/agent.status" => match decode::<AgentStatus>(payload) {
+            Some(event) => apply_status(session, &event),
+            None => decode_failed(session, name),
+        },
+        "core/agent.sealed" => match decode::<AgentSealed>(payload) {
+            Some(event) => apply_sealed(session, &event),
+            None => decode_failed(session, name),
+        },
+        "core/mod.installed" | "core/mod.updated" | "core/mod.deleted" => {
+            session.reload_mods = true;
+            true
+        }
         _ => false,
     }
 }
@@ -153,6 +171,113 @@ fn apply_interrupted(session: &mut Session, event: &MessageInterrupted) -> bool 
         return false;
     }
     message.interrupted = Some(reason.to_owned());
+    true
+}
+
+fn apply_spawn(session: &mut Session, event: &AgentSpawn) -> bool {
+    let role = if session.main == Some(event.instance_id) {
+        AgentRole::Main
+    } else {
+        AgentRole::Child
+    };
+    if let Some(node) = session
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == event.instance_id)
+    {
+        let mut changed = false;
+        if node.role != role {
+            node.role = role;
+            changed = true;
+        }
+        if node.parent_id != event.parent_id {
+            node.parent_id = event.parent_id;
+            changed = true;
+        }
+        return changed;
+    }
+    session.nodes.push(NodeView {
+        id: event.instance_id,
+        parent_id: event.parent_id,
+        role,
+        phase: "running".to_owned(),
+        suspended_wait: None,
+        reason: None,
+        sealed: false,
+    });
+    true
+}
+
+fn apply_status(session: &mut Session, event: &AgentStatus) -> bool {
+    let payload = event.phase_payload.as_ref().map(ToString::to_string);
+    let Ok(phase) = Phase::<LlmDomain>::from_columns(&event.phase, payload.as_deref()) else {
+        session.log.push_local(&format!(
+            "cannot decode agent {} phase {}",
+            event.instance_id, event.phase
+        ));
+        return false;
+    };
+    let (suspended_wait, reason) = phase_detail(&phase);
+    let is_main = session.main == Some(event.instance_id);
+    let phase_changed;
+    let mut changed = false;
+    if let Some(node) = session
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == event.instance_id)
+    {
+        phase_changed = node.phase != event.phase
+            || node.suspended_wait != suspended_wait
+            || node.reason != reason;
+        if phase_changed {
+            node.phase = event.phase.clone();
+            node.suspended_wait = suspended_wait;
+            node.reason = reason;
+            changed = true;
+        }
+    } else {
+        session.nodes.push(NodeView {
+            id: event.instance_id,
+            parent_id: None,
+            role: AgentRole::Child,
+            phase: event.phase.clone(),
+            suspended_wait,
+            reason,
+            sealed: false,
+        });
+        phase_changed = true;
+        changed = true;
+    }
+    if is_main
+        && phase_changed
+        && phase.is_terminal()
+        && let Some(message) = session
+            .messages
+            .iter_mut()
+            .rev()
+            .find(|message| message.sealed.is_none() && message.interrupted.is_none())
+    {
+        message.interrupted = Some(event.phase.clone());
+        changed = true;
+    }
+    changed
+}
+
+fn apply_sealed(session: &mut Session, event: &AgentSealed) -> bool {
+    if session.main != Some(event.instance_id) {
+        return false;
+    }
+    let Some(node) = session
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == event.instance_id)
+    else {
+        return false;
+    };
+    if node.sealed {
+        return false;
+    }
+    node.sealed = true;
     true
 }
 

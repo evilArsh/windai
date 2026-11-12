@@ -1,9 +1,3 @@
-use std::io::{self, Stdout};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::{self, JoinHandle};
-use std::time::Duration;
-
 use crate::config::Selection;
 use crate::fetch::{self, LoadedSession};
 use crate::reduce;
@@ -23,16 +17,23 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::text::Text;
 use ratatui_textarea::TextArea;
+use std::io::{self, Stdout};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 use tokio::runtime::Builder;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle as TaskHandle;
 use tokio::time::{MissedTickBehavior, interval};
+use wind_core::agent::Phase;
 use wind_core::feed::{FeedError, Subscription};
+use wind_core::llm::domain::LlmDomain;
 use wind_runtime::{Runtime, RuntimeError, RuntimeOptions};
 use wind_storage::Topic;
 use wind_storage::error::StorageError;
 use wind_wire::event::{FeedEvent, Scope};
-use wind_wire::{AppDirs, Body, Content, Role, Usage};
+use wind_wire::{AgentRole, AppDirs, Body, Content, Role, Usage};
 
 const TICK: Duration = Duration::from_millis(33);
 const EVENT_BUFFER: usize = 128;
@@ -48,6 +49,7 @@ pub enum Focus {
     Log,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Screen {
     Empty,
@@ -59,8 +61,11 @@ pub struct Session {
     pub topic: Topic,
     pub main: Option<i64>,
     pub messages: Vec<MessageView>,
+    pub mods: Vec<ModView>,
+    pub nodes: Vec<NodeView>,
     pub log: LogRing,
     pub usage: Usage,
+    pub reload_mods: bool,
 }
 
 impl Session {
@@ -69,11 +74,14 @@ impl Session {
             topic,
             main,
             messages: Vec::new(),
+            mods: Vec::new(),
+            nodes: Vec::new(),
             log: LogRing::new(),
             usage: Usage {
                 input_tokens: 0,
                 output_tokens: 0,
             },
+            reload_mods: false,
         }
     }
 }
@@ -119,6 +127,32 @@ impl BlockView {
             rendered: None,
             rendered_width: None,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModView {
+    pub name: String,
+    pub version: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NodeView {
+    pub id: i64,
+    pub parent_id: Option<i64>,
+    pub role: AgentRole,
+    pub phase: String,
+    pub suspended_wait: Option<i64>,
+    pub reason: Option<String>,
+    pub sealed: bool,
+}
+
+pub(crate) fn phase_detail(phase: &Phase<LlmDomain>) -> (Option<i64>, Option<String>) {
+    match phase {
+        Phase::Suspended(suspended) => (Some(suspended.external_wait_id), None),
+        Phase::Failed(error) => (None, error.error.lines().next().map(str::to_owned)),
+        Phase::Cancelled(_) => (None, Some("cancelled".to_owned())),
+        _ => (None, None),
     }
 }
 
@@ -246,6 +280,7 @@ impl App {
         }
         reduce::apply(session, &event);
         self.dirty = true;
+        self.reload_mods_if_needed().await;
     }
 
     fn buffer_event(&mut self, event: Arc<FeedEvent>) {
@@ -317,6 +352,8 @@ impl App {
                 session.main = loaded.main.or(session.main);
                 session.messages = loaded.messages;
                 session.usage = loaded.usage;
+                session.nodes = loaded.nodes;
+                session.mods = loaded.mods;
                 for event in &loading.buffer {
                     reduce::apply(session, event);
                 }
@@ -324,6 +361,31 @@ impl App {
             Err(error) => session
                 .log
                 .push_local(&format!("load session failed: {error}")),
+        }
+        self.dirty = true;
+        self.reload_mods_if_needed().await;
+    }
+
+    async fn reload_mods_if_needed(&mut self) {
+        let (topic_id, needed) = match &mut self.screen {
+            Screen::Session(session) if session.reload_mods => {
+                session.reload_mods = false;
+                (session.topic.id, true)
+            }
+            _ => (0, false),
+        };
+        if !needed {
+            return;
+        }
+        let result = fetch::load_mods(self.runtime.storage(), topic_id).await;
+        let Screen::Session(session) = &mut self.screen else {
+            return;
+        };
+        match result {
+            Ok(mods) => session.mods = mods,
+            Err(error) => session
+                .log
+                .push_local(&format!("load mods failed: {error}")),
         }
         self.dirty = true;
     }

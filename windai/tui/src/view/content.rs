@@ -1,17 +1,15 @@
-use std::borrow::Cow;
-
+use crate::app::{BlockView, MessageView, Session};
+use crate::text::concise;
+use crate::theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Paragraph, Wrap};
 use serde_json::Value;
+use std::borrow::Cow;
 use unicode_width::UnicodeWidthStr;
 use wind_wire::Body;
-
-use crate::app::{BlockView, MessageView, Session};
-use crate::text::concise;
-use crate::theme;
 
 pub fn render(frame: &mut Frame, area: Rect, session: &mut Session) {
     if area.is_empty() {

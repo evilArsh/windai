@@ -1,9 +1,10 @@
-use wind_storage::error::StorageError;
-use wind_storage::{ContextRow, Storage, Topic};
-use wind_wire::{AgentRole, Usage};
-
-use crate::app::{BlockView, MessageView};
+use crate::app::{BlockView, MessageView, ModView, NodeView, phase_detail};
 use crate::config::Selection;
+use wind_core::agent::Phase;
+use wind_core::llm::domain::LlmDomain;
+use wind_storage::error::StorageError;
+use wind_storage::{AgentInstance, ContextRow, Storage, Topic};
+use wind_wire::{AgentRole, Usage};
 
 pub struct Startup {
     pub selection: Selection,
@@ -14,6 +15,8 @@ pub struct LoadedSession {
     pub topic: Topic,
     pub main: Option<i64>,
     pub messages: Vec<MessageView>,
+    pub nodes: Vec<NodeView>,
+    pub mods: Vec<ModView>,
     pub usage: Usage,
 }
 
@@ -64,6 +67,8 @@ pub async fn load_session(storage: &Storage, topic_id: i64) -> Result<LoadedSess
         .iter()
         .find(|instance| instance.role == AgentRole::Main)
         .map(|instance| instance.id);
+    let nodes = instances.into_iter().map(node_view).collect();
+    let mods = load_mods(storage, topic_id).await?;
     let (messages, usage) = match main {
         Some(main_id) => {
             let rows = storage.list_instance_context(main_id).await?;
@@ -81,8 +86,45 @@ pub async fn load_session(storage: &Storage, topic_id: i64) -> Result<LoadedSess
         topic,
         main,
         messages,
+        nodes,
+        mods,
         usage,
     })
+}
+
+pub(crate) async fn load_mods(
+    storage: &Storage,
+    topic_id: i64,
+) -> Result<Vec<ModView>, StorageError> {
+    let mods = storage
+        .enabled_mods(topic_id)
+        .await?
+        .into_iter()
+        .map(|module| ModView {
+            name: module.name,
+            version: module.version,
+        })
+        .collect();
+    Ok(mods)
+}
+
+fn node_view(instance: AgentInstance) -> NodeView {
+    let (suspended_wait, reason) = match Phase::<LlmDomain>::from_columns(
+        &instance.phase,
+        instance.phase_payload.as_deref(),
+    ) {
+        Ok(phase) => phase_detail(&phase),
+        Err(_) => (None, None),
+    };
+    NodeView {
+        id: instance.id,
+        parent_id: instance.parent_id,
+        role: instance.role,
+        phase: instance.phase,
+        suspended_wait,
+        reason,
+        sealed: false,
+    }
 }
 
 fn group_context(rows: Vec<ContextRow>) -> (Vec<MessageView>, Usage) {
