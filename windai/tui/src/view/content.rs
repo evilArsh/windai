@@ -11,12 +11,13 @@ use std::borrow::Cow;
 use unicode_width::UnicodeWidthStr;
 use wind_wire::Body;
 
-pub fn render(frame: &mut Frame, area: Rect, session: &mut Session) {
+pub fn render(frame: &mut Frame, area: Rect, session: &mut Session, focused: bool) {
     if area.is_empty() {
         return;
     }
+    let border = if focused { theme::FOCUS } else { theme::BORDER };
     let block = Block::bordered()
-        .border_style(theme::BORDER)
+        .border_style(border)
         .title("Content Area")
         .title_style(theme::TITLE);
     let inner = block.inner(area);
@@ -34,7 +35,23 @@ pub fn render(frame: &mut Frame, area: Rect, session: &mut Session) {
         lines.push(Line::default());
     }
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-    frame.render_widget(paragraph, inner);
+    let total = u16::try_from(paragraph.line_count(inner.width)).unwrap_or(u16::MAX);
+    session.content_max = max_scroll(total, inner.height);
+    if session.content_max == 0 {
+        session.follow = true;
+    }
+    session.content_scroll =
+        scroll_offset(session.content_scroll, session.follow, total, inner.height);
+    frame.render_widget(paragraph.scroll((session.content_scroll, 0)), inner);
+}
+
+pub fn max_scroll(total: u16, height: u16) -> u16 {
+    total.saturating_sub(height)
+}
+
+pub fn scroll_offset(scroll: u16, follow: bool, total: u16, height: u16) -> u16 {
+    let max = max_scroll(total, height);
+    if follow { max } else { scroll.min(max) }
 }
 
 fn message_title(message: &MessageView) -> Line<'static> {
@@ -397,5 +414,25 @@ mod tests {
                 .iter()
                 .any(|span| span.style.fg == Some(Color::Red))
         );
+    }
+
+    #[test]
+    fn short_content_has_no_scroll() {
+        assert_eq!(max_scroll(5, 10), 0);
+        assert_eq!(scroll_offset(4, false, 5, 10), 0);
+        assert_eq!(scroll_offset(0, true, 5, 10), 0);
+    }
+
+    #[test]
+    fn following_stays_at_the_bottom_after_an_append() {
+        assert_eq!(scroll_offset(0, true, 100, 10), 90);
+        assert_eq!(scroll_offset(0, true, 120, 10), 110);
+    }
+
+    #[test]
+    fn a_stopped_view_keeps_its_offset_and_clamps_on_shrink() {
+        assert_eq!(scroll_offset(40, false, 100, 10), 40);
+        assert_eq!(scroll_offset(40, false, 30, 10), 20);
+        assert_eq!(scroll_offset(40, false, 5, 10), 0);
     }
 }

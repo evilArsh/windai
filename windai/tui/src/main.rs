@@ -1,3 +1,6 @@
-fn main() -> std::io::Result<()> {
-    wind_tui::app::run()
+fn main() {
+    if let Err(error) = wind_tui::app::run() {
+        eprintln!("wind-tui: {error}");
+        std::process::exit(1);
+    }
 }

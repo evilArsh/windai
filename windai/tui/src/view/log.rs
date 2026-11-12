@@ -1,3 +1,4 @@
+use super::pane_offset;
 use crate::text::{concise, format_time, summarize};
 use crate::theme;
 use chrono::Local;
@@ -81,24 +82,40 @@ impl Default for LogRing {
     }
 }
 
-pub fn render(frame: &mut Frame, area: Rect, log: &LogRing) {
+pub fn render(
+    frame: &mut Frame,
+    area: Rect,
+    log: &LogRing,
+    scroll: &mut u16,
+    focused: bool,
+) -> u16 {
     if area.is_empty() {
-        return;
+        return 0;
     }
+    let border = if focused { theme::FOCUS } else { theme::BORDER };
     let block = Block::bordered()
-        .border_style(theme::BORDER)
+        .border_style(border)
         .title("Layer 3 log")
         .title_style(theme::TITLE);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.is_empty() {
-        return;
+        return 0;
     }
-    let capacity = usize::from(inner.height) / 2;
-    let skipped = log.entries.len().saturating_sub(capacity);
+    let total = u16::try_from(log.entries.len().saturating_mul(2)).unwrap_or(u16::MAX);
+    let (offset, max) = pane_offset(total, inner.height, *scroll);
+    if *scroll != u16::MAX {
+        *scroll = offset;
+    }
+    let first_entry = usize::from(offset / 2);
+    let skip_line = usize::from(offset % 2);
     let width = usize::from(inner.width);
-    let mut lines = Vec::with_capacity(capacity * 2);
-    for entry in log.entries.iter().skip(skipped) {
+    let capacity = usize::from(inner.height).saturating_add(skip_line);
+    let mut lines = Vec::with_capacity(capacity);
+    for entry in log.entries.iter().skip(first_entry) {
+        if lines.len() >= capacity {
+            break;
+        }
         let headline = match entry.seq {
             Some(seq) => format!("{} {} #{seq}", entry.time, entry.name),
             None => format!("{} {}", entry.time, entry.name),
@@ -106,7 +123,13 @@ pub fn render(frame: &mut Frame, area: Rect, log: &LogRing) {
         lines.push(Line::from(headline));
         lines.push(Line::from(concise(&entry.summary, width)));
     }
+    let lines: Vec<Line<'static>> = lines
+        .into_iter()
+        .skip(skip_line)
+        .take(usize::from(inner.height))
+        .collect();
     frame.render_widget(Paragraph::new(lines), inner);
+    max
 }
 
 #[cfg(test)]

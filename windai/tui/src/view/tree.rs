@@ -1,3 +1,4 @@
+use super::pane_offset;
 use crate::app::{NodeView, phase_is_terminal};
 use crate::text::concise;
 use crate::theme;
@@ -9,18 +10,25 @@ use ratatui::widgets::{Block, Paragraph};
 use std::collections::HashMap;
 use wind_wire::AgentRole;
 
-pub fn render(frame: &mut Frame, area: Rect, nodes: &[NodeView]) {
+pub fn render(
+    frame: &mut Frame,
+    area: Rect,
+    nodes: &[NodeView],
+    scroll: &mut u16,
+    focused: bool,
+) -> u16 {
     if area.is_empty() {
-        return;
+        return 0;
     }
+    let border = if focused { theme::FOCUS } else { theme::BORDER };
     let block = Block::bordered()
-        .border_style(theme::BORDER)
+        .border_style(border)
         .title("Layer 2 tree")
         .title_style(theme::TITLE);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.is_empty() {
-        return;
+        return 0;
     }
     let width = usize::from(inner.width);
     let lines: Vec<Line<'static>> = ordered(nodes)
@@ -44,7 +52,11 @@ pub fn render(frame: &mut Frame, area: Rect, nodes: &[NodeView]) {
             Line::from(concise(&text, width)).style(style)
         })
         .collect();
-    frame.render_widget(Paragraph::new(lines), inner);
+    let total = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    let (offset, max) = pane_offset(total, inner.height, *scroll);
+    *scroll = offset;
+    frame.render_widget(Paragraph::new(lines).scroll((offset, 0)), inner);
+    max
 }
 
 fn ordered(nodes: &[NodeView]) -> Vec<(usize, &NodeView)> {

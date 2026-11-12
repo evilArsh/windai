@@ -10,7 +10,7 @@ wind-runtime = { path = "../runtime" }
 wind-storage = { path = "../storage" }
 wind-wire = { path = "../wire" }
 wind-core = { path = "../core" }
-ratatui = { version = "0.30", features = ["crossterm"] }
+ratatui = { version = "0.30", features = ["crossterm", "unstable-rendered-line-info"] }
 ratatui-textarea = { version = "0.9" }
 tui-tree-widget = { version = "0.24" }
 tui-markdown = { version = "0.3", default-features = false }

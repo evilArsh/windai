@@ -70,6 +70,15 @@ pub struct Session {
     pub log: LogRing,
     pub usage: Usage,
     pub reload_mods: bool,
+    pub follow: bool,
+    pub content_scroll: u16,
+    pub content_max: u16,
+    pub mods_scroll: u16,
+    pub mods_max: u16,
+    pub tree_scroll: u16,
+    pub tree_max: u16,
+    pub log_scroll: u16,
+    pub log_max: u16,
 }
 
 impl Session {
@@ -86,8 +95,88 @@ impl Session {
                 output_tokens: 0,
             },
             reload_mods: false,
+            follow: true,
+            content_scroll: 0,
+            content_max: 0,
+            mods_scroll: 0,
+            mods_max: 0,
+            tree_scroll: 0,
+            tree_max: 0,
+            log_scroll: u16::MAX,
+            log_max: 0,
         }
     }
+
+    pub fn scroll_content_up(&mut self) {
+        if self.content_max == 0 {
+            self.follow = true;
+            self.content_scroll = 0;
+            return;
+        }
+        let current = if self.follow {
+            self.content_max
+        } else {
+            self.content_scroll.min(self.content_max)
+        };
+        self.content_scroll = current.saturating_sub(1);
+        self.follow = false;
+    }
+
+    pub fn scroll_content_down(&mut self) {
+        let current = if self.follow {
+            self.content_max
+        } else {
+            self.content_scroll.min(self.content_max)
+        };
+        self.content_scroll = current.saturating_add(1).min(self.content_max);
+        self.follow = self.content_scroll >= self.content_max;
+    }
+
+    pub fn scroll_content_end(&mut self) {
+        self.follow = true;
+        self.content_scroll = self.content_max;
+    }
+
+    pub fn scroll_content_home(&mut self) {
+        self.follow = self.content_max == 0;
+        self.content_scroll = 0;
+    }
+
+    pub fn scroll_mods(&mut self, code: KeyCode) {
+        pane_scroll(&mut self.mods_scroll, self.mods_max, code);
+    }
+
+    pub fn scroll_tree(&mut self, code: KeyCode) {
+        pane_scroll(&mut self.tree_scroll, self.tree_max, code);
+    }
+
+    pub fn scroll_log(&mut self, code: KeyCode) {
+        let max = self.log_max;
+        let current = if self.log_scroll == u16::MAX {
+            max
+        } else {
+            self.log_scroll.min(max)
+        };
+        self.log_scroll = match code {
+            KeyCode::Up => current.saturating_sub(1),
+            KeyCode::Down if current >= max => u16::MAX,
+            KeyCode::Down => current.saturating_add(1),
+            KeyCode::Home => 0,
+            KeyCode::End => u16::MAX,
+            _ => return,
+        };
+    }
+}
+
+fn pane_scroll(scroll: &mut u16, max: u16, code: KeyCode) {
+    let current = (*scroll).min(max);
+    *scroll = match code {
+        KeyCode::Up => current.saturating_sub(1),
+        KeyCode::Down => current.saturating_add(1).min(max),
+        KeyCode::Home => 0,
+        KeyCode::End => max,
+        _ => return,
+    };
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -235,7 +324,7 @@ struct LoadState {
 
 pub struct App {
     runtime: Runtime,
-    subscription: Subscription,
+    subscription: Option<Subscription>,
     screen: Screen,
     input: TextArea<'static>,
     focus: Focus,
@@ -247,13 +336,13 @@ pub struct App {
     form: Option<Form>,
     show_side: bool,
     notice: Option<String>,
+    storage_error: Option<String>,
     bar: BarLayout,
     bar_area: Rect,
     branch: Option<String>,
     dirs: AppDirs,
     quit: bool,
     dirty: bool,
-    feed_closed: bool,
     loading: Option<LoadState>,
 }
 
@@ -273,7 +362,7 @@ impl App {
         input.set_cursor_style(theme::CURSOR);
         Ok(Self {
             runtime,
-            subscription: opening.subscription,
+            subscription: Some(opening.subscription),
             screen: Screen::Empty,
             input,
             focus: Focus::Input,
@@ -285,13 +374,13 @@ impl App {
             form: None,
             show_side: true,
             notice: startup.notice,
+            storage_error: None,
             bar: BarLayout::default(),
             bar_area: Rect::new(0, 0, 0, 0),
             branch,
             dirs,
             quit: false,
             dirty: true,
-            feed_closed: false,
             loading: None,
         })
     }
@@ -342,6 +431,10 @@ impl App {
 
     pub fn notice(&self) -> Option<&str> {
         self.notice.as_deref()
+    }
+
+    pub fn storage_error(&self) -> Option<&str> {
+        self.storage_error.as_deref()
     }
 
     pub(crate) fn bar_layout(&self) -> &BarLayout {
@@ -458,7 +551,7 @@ impl App {
         }
         if self.completion.is_some() {
             match key.code {
-                KeyCode::Tab => {
+                KeyCode::Tab if !key.modifiers.contains(KeyModifiers::SHIFT) => {
                     self.apply_completion();
                     return;
                 }
@@ -481,7 +574,15 @@ impl App {
                 }
                 _ => {}
             }
-        } else if key.code == KeyCode::Tab {
+        }
+        if key.code == KeyCode::Tab || key.code == KeyCode::BackTab {
+            let backward =
+                key.code == KeyCode::BackTab || key.modifiers.contains(KeyModifiers::SHIFT);
+            self.cycle_focus(if backward { -1 } else { 1 });
+            return;
+        }
+        if self.focus != Focus::Input {
+            self.handle_focused_key(key);
             return;
         }
         match key.code {
@@ -494,6 +595,50 @@ impl App {
                 }
             }
         }
+    }
+
+    fn cycle_focus(&mut self, step: isize) {
+        const ORDER: [Focus; 5] = [
+            Focus::Input,
+            Focus::Content,
+            Focus::Mods,
+            Focus::Tree,
+            Focus::Log,
+        ];
+        let index = ORDER
+            .iter()
+            .position(|focus| *focus == self.focus)
+            .unwrap_or(0) as isize;
+        let next = (index + step).rem_euclid(ORDER.len() as isize) as usize;
+        self.focus = ORDER[next];
+        self.completion = None;
+        self.dirty = true;
+    }
+
+    fn handle_focused_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Esc {
+            self.focus = Focus::Input;
+            self.dirty = true;
+            return;
+        }
+        let focus = self.focus;
+        let Screen::Session(session) = &mut self.screen else {
+            return;
+        };
+        match focus {
+            Focus::Content => match key.code {
+                KeyCode::Up => session.scroll_content_up(),
+                KeyCode::Down => session.scroll_content_down(),
+                KeyCode::Home => session.scroll_content_home(),
+                KeyCode::End => session.scroll_content_end(),
+                _ => return,
+            },
+            Focus::Mods => session.scroll_mods(key.code),
+            Focus::Tree => session.scroll_tree(key.code),
+            Focus::Log => session.scroll_log(key.code),
+            Focus::Input => return,
+        }
+        self.dirty = true;
     }
 
     fn refresh_completion(&mut self) {
@@ -544,12 +689,28 @@ impl App {
         match result {
             Ok(Some(event)) => self.accept_event(event).await,
             Ok(None) => {
-                if !self.feed_closed {
-                    self.feed_closed = true;
-                    self.push_local("subscription closed");
-                }
+                self.subscription = None;
+                self.push_local("subscription closed; resubscribing");
+                self.resubscribe().await;
             }
             Err(error) => self.push_local(&format!("subscription error: {error}")),
+        }
+    }
+
+    async fn resubscribe(&mut self) {
+        match self.runtime.subscribe().await {
+            Ok(opening) => {
+                self.subscription = Some(opening.subscription);
+                self.dirty = true;
+                if let Screen::Session(session) = &self.screen {
+                    let topic_id = session.topic.id;
+                    self.begin_load(topic_id);
+                }
+            }
+            Err(error) => {
+                self.notice = Some(format!("resubscribe failed: {error}"));
+                self.dirty = true;
+            }
         }
     }
 
@@ -648,9 +809,12 @@ impl App {
                     reduce::apply(session, event);
                 }
             }
-            Err(error) => session
-                .log
-                .push_local(&format!("load session failed: {error}")),
+            Err(error) => {
+                session
+                    .log
+                    .push_local(&format!("load session failed: {error}"));
+                self.storage_error = Some(format!("load session failed: {error}"));
+            }
         }
         self.dirty = true;
         self.reload_mods_if_needed().await;
@@ -673,11 +837,29 @@ impl App {
         };
         match result {
             Ok(mods) => session.mods = mods,
-            Err(error) => session
-                .log
-                .push_local(&format!("load mods failed: {error}")),
+            Err(error) => {
+                session
+                    .log
+                    .push_local(&format!("load mods failed: {error}"));
+                self.storage_error = Some(format!("load mods failed: {error}"));
+            }
         }
         self.dirty = true;
+    }
+
+    fn retry_storage(&mut self) {
+        if self.storage_error.take().is_none() {
+            return;
+        }
+        self.dirty = true;
+        let Screen::Session(session) = &mut self.screen else {
+            return;
+        };
+        session.reload_mods = true;
+        let topic_id = session.topic.id;
+        if self.loading.is_none() {
+            self.begin_load(topic_id);
+        }
     }
 
     fn push_local(&mut self, message: &str) {
@@ -685,6 +867,11 @@ impl App {
             return;
         };
         session.log.push_local(message);
+        self.dirty = true;
+    }
+
+    fn storage_failed(&mut self, message: String) {
+        self.storage_error = Some(message);
         self.dirty = true;
     }
 
@@ -802,7 +989,7 @@ impl App {
         }
         match self.resume_items().await {
             Ok(items) => self.overlay = Some(Overlay::Resume { items, selected: 0 }),
-            Err(error) => self.notice = Some(format!("load topics failed: {error}")),
+            Err(error) => self.storage_failed(format!("load topics failed: {error}")),
         }
     }
 
@@ -859,7 +1046,7 @@ impl App {
                 self.overlay = Some(Overlay::Providers { selected });
                 self.notice = None;
             }
-            Err(error) => self.notice = Some(format!("load providers failed: {error}")),
+            Err(error) => self.storage_failed(format!("load providers failed: {error}")),
         }
         self.dirty = true;
     }
@@ -888,7 +1075,7 @@ impl App {
                     self.notice = None;
                 }
             }
-            Err(error) => self.notice = Some(format!("load models failed: {error}")),
+            Err(error) => self.storage_failed(format!("load models failed: {error}")),
         }
         self.dirty = true;
     }
@@ -975,8 +1162,7 @@ impl App {
         let models = match self.runtime.storage().list_models(Some(provider_id)).await {
             Ok(models) => models,
             Err(error) => {
-                self.notice = Some(format!("load models failed: {error}"));
-                self.dirty = true;
+                self.storage_failed(format!("load models failed: {error}"));
                 return;
             }
         };
@@ -1268,8 +1454,24 @@ pub fn run() -> io::Result<()> {
         .map_err(|error| io::Error::other(format!("cannot open the runtime: {error}")))?;
     let mut guard = TerminalGuard::new()?;
     let (terminal_tx, terminal_events) = mpsc::channel(EVENT_BUFFER);
-    let _reader = TerminalReader::spawn(terminal_tx)?;
-    engine.block_on(event_loop(guard.terminal_mut(), terminal_events, &mut app))
+    let reader = TerminalReader::spawn(terminal_tx)?;
+    let result = engine.block_on(event_loop(guard.terminal_mut(), terminal_events, &mut app));
+    drop(reader);
+    let shutdown = engine.block_on(app.runtime.shutdown());
+    drop(guard);
+    if let Err(error) = shutdown {
+        eprintln!("wind-tui: runtime shutdown failed: {error}");
+    }
+    result
+}
+
+async fn receive(
+    subscription: &mut Option<Subscription>,
+) -> Result<Option<Arc<FeedEvent>>, FeedError> {
+    match subscription {
+        Some(subscription) => subscription.recv().await,
+        None => std::future::pending().await,
+    }
 }
 
 async fn event_loop(
@@ -1289,11 +1491,18 @@ async fn event_loop(
                 Some(_) => {}
                 None => break,
             },
-            feed = app.subscription.recv(), if !app.feed_closed => app.handle_feed(feed).await,
+            feed = receive(&mut app.subscription) => app.handle_feed(feed).await,
             loaded = load_result(&mut app.loading) => app.finish_load(loaded).await,
             _ = ticker.tick() => {
+                app.retry_storage();
+                if app.subscription.is_none() {
+                    app.resubscribe().await;
+                }
                 if app.dirty {
-                    terminal.draw(|frame| view::render(frame, app))?;
+                    if let Err(error) = terminal.draw(|frame| view::render(frame, app)) {
+                        app.quit = true;
+                        return Err(error);
+                    }
                     app.dirty = false;
                 }
             }
@@ -1613,6 +1822,8 @@ mod tests {
             loop {
                 let result = app
                     .subscription
+                    .as_mut()
+                    .expect("the app holds a subscription")
                     .recv()
                     .await
                     .expect("receive a feed result");
@@ -1643,12 +1854,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subscription_closure_is_logged_once() {
+    async fn subscription_closure_resubscribes_and_reloads_the_topic() {
         let (dir, mut app) = test_app().await;
         app.screen = Screen::Session(Session::new(topic(7), None));
         app.handle_feed(Ok(None)).await;
-        app.handle_feed(Ok(None)).await;
-        assert!(app.feed_closed);
+        assert!(app.subscription.is_some());
+        let loading = app.loading.as_ref().expect("the topic reload starts");
+        assert_eq!(loading.topic_id, 7);
         let Screen::Session(session) = &app.screen else {
             panic!("the test installs a session");
         };
@@ -1656,11 +1868,30 @@ mod tests {
             session
                 .log
                 .entries()
-                .filter(|entry| entry.summary == "subscription closed")
+                .filter(|entry| entry.summary == "subscription closed; resubscribing")
                 .count(),
             1
         );
+        if let Some(loading) = app.loading.take() {
+            loading.task.abort();
+        }
         close(app).await;
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn resubscribe_failure_sets_a_notice_and_keeps_retrying() {
+        let (dir, mut app) = test_app().await;
+        app.runtime.shutdown().await.expect("shut down the runtime");
+        app.handle_feed(Ok(None)).await;
+        assert!(app.subscription.is_none());
+        assert!(
+            app.notice
+                .as_deref()
+                .is_some_and(|notice| notice.starts_with("resubscribe failed"))
+        );
+        app.resubscribe().await;
+        assert!(app.subscription.is_none());
         drop(dir);
     }
 
@@ -1693,5 +1924,149 @@ mod tests {
         }
         close(app).await;
         drop(dir);
+    }
+
+    #[tokio::test]
+    async fn tab_cycles_focus_through_all_five_areas() {
+        let (dir, mut app) = test_app().await;
+        assert_eq!(app.focus, Focus::Input);
+        for expected in [Focus::Content, Focus::Mods, Focus::Tree, Focus::Log] {
+            app.handle_key(press(KeyCode::Tab)).await;
+            assert_eq!(app.focus, expected);
+        }
+        app.handle_key(press(KeyCode::Tab)).await;
+        assert_eq!(app.focus, Focus::Input);
+        app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT))
+            .await;
+        assert_eq!(app.focus, Focus::Log);
+        close(app).await;
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn scroll_keys_only_act_on_the_focused_area() {
+        let (dir, mut app) = test_app().await;
+        let mut session = Session::new(topic(7), None);
+        session.content_max = 5;
+        session.content_scroll = 5;
+        app.screen = Screen::Session(session);
+        app.handle_key(press(KeyCode::Up)).await;
+        let Screen::Session(session) = &app.screen else {
+            panic!("the test installs a session");
+        };
+        assert!(session.follow);
+        assert_eq!(session.content_scroll, 5);
+
+        app.focus = Focus::Content;
+        app.handle_key(press(KeyCode::Up)).await;
+        let Screen::Session(session) = &app.screen else {
+            panic!("the test installs a session");
+        };
+        assert!(!session.follow);
+        assert_eq!(session.content_scroll, 4);
+        close(app).await;
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn storage_failure_shows_an_error_and_retries_on_the_next_tick() {
+        let (dir, mut app) = test_app().await;
+        app.screen = Screen::Session(Session::new(topic(7), None));
+        app.begin_load(7);
+        settle_load(&mut app).await;
+        assert!(app.storage_error.is_some());
+        assert!(app.loading.is_none());
+
+        app.retry_storage();
+        assert!(app.storage_error.is_none());
+        let loading = app.loading.as_ref().expect("the retry starts a load");
+        assert_eq!(loading.topic_id, 7);
+        if let Some(loading) = app.loading.take() {
+            loading.task.abort();
+        }
+        close(app).await;
+        drop(dir);
+    }
+
+    #[test]
+    fn scrolling_up_stops_following_the_content_tail() {
+        let mut session = Session::new(topic(1), None);
+        session.content_max = 10;
+        session.content_scroll = 10;
+        assert!(session.follow);
+        session.scroll_content_up();
+        assert!(!session.follow);
+        assert_eq!(session.content_scroll, 9);
+        session.scroll_content_up();
+        assert_eq!(session.content_scroll, 8);
+    }
+
+    #[test]
+    fn end_and_reaching_the_bottom_restore_following() {
+        let mut session = Session::new(topic(1), None);
+        session.content_max = 10;
+        session.content_scroll = 3;
+        session.follow = false;
+        session.scroll_content_end();
+        assert!(session.follow);
+        assert_eq!(session.content_scroll, 10);
+
+        session.follow = false;
+        session.content_scroll = 9;
+        session.scroll_content_down();
+        assert!(session.follow);
+        assert_eq!(session.content_scroll, 10);
+    }
+
+    #[test]
+    fn short_content_keeps_following_at_the_top() {
+        let mut session = Session::new(topic(1), None);
+        session.content_max = 0;
+        session.follow = false;
+        session.content_scroll = 5;
+        session.scroll_content_up();
+        assert!(session.follow);
+        assert_eq!(session.content_scroll, 0);
+        session.follow = false;
+        session.scroll_content_down();
+        assert!(session.follow);
+        assert_eq!(session.content_scroll, 0);
+    }
+
+    #[test]
+    fn side_panes_scroll_between_home_and_end() {
+        let mut session = Session::new(topic(1), None);
+        session.mods_max = 3;
+        session.scroll_mods(KeyCode::End);
+        assert_eq!(session.mods_scroll, 3);
+        session.scroll_mods(KeyCode::Up);
+        assert_eq!(session.mods_scroll, 2);
+        session.scroll_mods(KeyCode::Home);
+        assert_eq!(session.mods_scroll, 0);
+
+        session.tree_max = 4;
+        session.scroll_tree(KeyCode::Down);
+        assert_eq!(session.tree_scroll, 1);
+        session.scroll_tree(KeyCode::End);
+        assert_eq!(session.tree_scroll, 4);
+    }
+
+    #[test]
+    fn the_log_defaults_to_the_tail_and_returns_to_it_with_end() {
+        let mut session = Session::new(topic(1), None);
+        assert_eq!(session.log_scroll, u16::MAX);
+        session.log_max = 8;
+        session.scroll_log(KeyCode::Up);
+        assert_eq!(session.log_scroll, 7);
+        session.scroll_log(KeyCode::Down);
+        assert_eq!(session.log_scroll, 8);
+        session.scroll_log(KeyCode::Down);
+        assert_eq!(session.log_scroll, u16::MAX);
+        session.scroll_log(KeyCode::Home);
+        assert_eq!(session.log_scroll, 0);
+        session.scroll_log(KeyCode::Down);
+        assert_eq!(session.log_scroll, 1);
+        session.scroll_log(KeyCode::End);
+        assert_eq!(session.log_scroll, u16::MAX);
     }
 }
