@@ -97,6 +97,7 @@ pub struct MessageView {
     pub blocks: Vec<BlockView>,
     pub sealed: Option<String>,
     pub interrupted: Option<String>,
+    pub from_history: bool,
 }
 
 impl MessageView {
@@ -107,6 +108,7 @@ impl MessageView {
             blocks: Vec::new(),
             sealed: None,
             interrupted: None,
+            from_history: false,
         }
     }
 }
@@ -251,6 +253,7 @@ pub struct App {
     dirs: AppDirs,
     quit: bool,
     dirty: bool,
+    feed_closed: bool,
     loading: Option<LoadState>,
 }
 
@@ -288,6 +291,7 @@ impl App {
             dirs,
             quit: false,
             dirty: true,
+            feed_closed: false,
             loading: None,
         })
     }
@@ -539,7 +543,12 @@ impl App {
     async fn handle_feed(&mut self, result: Result<Option<Arc<FeedEvent>>, FeedError>) {
         match result {
             Ok(Some(event)) => self.accept_event(event).await,
-            Ok(None) => self.push_local("subscription closed"),
+            Ok(None) => {
+                if !self.feed_closed {
+                    self.feed_closed = true;
+                    self.push_local("subscription closed");
+                }
+            }
             Err(error) => self.push_local(&format!("subscription error: {error}")),
         }
     }
@@ -1280,7 +1289,7 @@ async fn event_loop(
                 Some(_) => {}
                 None => break,
             },
-            feed = app.subscription.recv() => app.handle_feed(feed).await,
+            feed = app.subscription.recv(), if !app.feed_closed => app.handle_feed(feed).await,
             loaded = load_result(&mut app.loading) => app.finish_load(loaded).await,
             _ = ticker.tick() => {
                 if app.dirty {
@@ -1394,6 +1403,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
     use wind_wire::AdapterType;
+    use wind_wire::event::{Envelope, EventKey, Origin, Shape, Source, Target};
 
     async fn test_app() -> (TempDir, App) {
         let dir = TempDir::new().expect("create a temp dir");
@@ -1409,6 +1419,35 @@ mod tests {
 
     fn press(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn topic(id: i64) -> Topic {
+        Topic {
+            id,
+            parent_id: None,
+            label: "topic".to_owned(),
+            model_id: None,
+            icon: None,
+            workspace: None,
+        }
+    }
+
+    fn event(seq: i64, topic_id: i64) -> FeedEvent {
+        FeedEvent {
+            key: EventKey::new(0, seq).expect("build an event key"),
+            envelope: Envelope::new(
+                "core/agent.sealed",
+                Scope::Topic {
+                    topic_id,
+                    instance_id: 1,
+                },
+                Origin::Internal,
+                Source::core("test"),
+                Some(serde_json::json!({"instance_id": 1})),
+                Shape::Observe,
+            ),
+            target: Target::Core,
+        }
     }
 
     async fn settle_load(app: &mut App) {
@@ -1599,6 +1638,59 @@ mod tests {
                 .entries()
                 .any(|entry| entry.name == "core/input.accepted")
         );
+        close(app).await;
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn subscription_closure_is_logged_once() {
+        let (dir, mut app) = test_app().await;
+        app.screen = Screen::Session(Session::new(topic(7), None));
+        app.handle_feed(Ok(None)).await;
+        app.handle_feed(Ok(None)).await;
+        assert!(app.feed_closed);
+        let Screen::Session(session) = &app.screen else {
+            panic!("the test installs a session");
+        };
+        assert_eq!(
+            session
+                .log
+                .entries()
+                .filter(|entry| entry.summary == "subscription closed")
+                .count(),
+            1
+        );
+        close(app).await;
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn load_buffer_overflow_restarts_the_load_with_the_triggering_event() {
+        let (dir, mut app) = test_app().await;
+        app.screen = Screen::Session(Session::new(topic(7), None));
+        app.begin_load(7);
+        let loading = app.loading.as_mut().expect("begin_load starts a load");
+        for seq in 1..=LOAD_BUFFER_CAP as i64 {
+            loading.buffer.push(event(seq, 7));
+        }
+        let trigger = Arc::new(event(LOAD_BUFFER_CAP as i64 + 1, 7));
+        app.buffer_event(Arc::clone(&trigger));
+        let loading = app.loading.as_ref().expect("the load restarted");
+        assert_eq!(loading.topic_id, 7);
+        assert_eq!(loading.buffer.len(), 1);
+        assert_eq!(loading.buffer[0].key, trigger.key);
+        let Screen::Session(session) = &app.screen else {
+            panic!("the test installs a session");
+        };
+        assert!(
+            session
+                .log
+                .entries()
+                .any(|entry| entry.summary == "event buffer overflow; reloading the session")
+        );
+        if let Some(loading) = app.loading.take() {
+            loading.task.abort();
+        }
         close(app).await;
         drop(dir);
     }

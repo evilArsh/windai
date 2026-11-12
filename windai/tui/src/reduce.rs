@@ -78,10 +78,13 @@ fn apply_delta(session: &mut Session, event: &BlockDelta) -> bool {
         .binary_search_by_key(&block.seq, |view| view.seq)
     {
         Ok(index) => {
-            if message.blocks[index].revision >= block.revision {
+            let current = &mut message.blocks[index];
+            if current.revision >= block.revision {
                 return false;
             }
-            message.blocks[index] = BlockView::new(block.seq, block.revision, block.body.clone());
+            let committed = current.committed;
+            *current = BlockView::new(block.seq, block.revision, block.body.clone());
+            current.committed = committed;
             true
         }
         Err(index) => {
@@ -145,13 +148,19 @@ fn apply_committed(session: &mut Session, event: &BlockCommitted) -> bool {
 }
 
 fn apply_seal(session: &mut Session, event: &MessageSeal) -> bool {
-    let mut changed = add_usage(&mut session.usage, event.usage);
-    if let Some(message) = session
+    let Some(message) = session
         .messages
         .iter_mut()
         .find(|message| message.id == event.message_id)
-        && message.sealed.as_deref() != Some(event.finish_reason.as_str())
-    {
+    else {
+        return add_usage(&mut session.usage, event.usage);
+    };
+    let mut changed = if message.from_history {
+        false
+    } else {
+        add_usage(&mut session.usage, event.usage)
+    };
+    if message.sealed.as_deref() != Some(event.finish_reason.as_str()) {
         message.sealed = Some(event.finish_reason.clone());
         changed = true;
     }
@@ -254,11 +263,9 @@ fn apply_status(session: &mut Session, event: &AgentStatus) -> bool {
     if is_main
         && !was_terminal
         && phase.is_terminal()
-        && let Some(message) = session
-            .messages
-            .iter_mut()
-            .rev()
-            .find(|message| message.sealed.is_none() && message.interrupted.is_none())
+        && let Some(message) = session.messages.iter_mut().rev().find(|message| {
+            !message.from_history && message.sealed.is_none() && message.interrupted.is_none()
+        })
     {
         message.interrupted = Some(event.phase.clone());
         changed = true;

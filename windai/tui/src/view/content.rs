@@ -127,10 +127,11 @@ fn plain(content: String, style: Style) -> Text<'static> {
 }
 
 fn tool_call_line(call_name: &str, call_arguments: &str, width: u16) -> String {
+    let width = usize::from(width);
     let first = call_arguments.lines().next().unwrap_or_default();
-    let available = usize::from(width).saturating_sub(call_name.width() + 1);
+    let available = width.saturating_sub(call_name.width() + 1);
     if first.trim().is_empty() || available == 0 {
-        return call_name.to_owned();
+        return concise(call_name, width);
     }
     format!("{call_name} {}", concise(first, available))
 }
@@ -364,6 +365,22 @@ mod tests {
         assert_eq!(text.lines.len(), 1);
         assert!(text.to_string().ends_with('…'));
         assert!(text.width() <= 10);
+    }
+
+    #[test]
+    fn narrow_tool_names_are_truncated() {
+        let text = text(
+            Body::ToolCall {
+                item_id: None,
+                call_id: "call-1".to_owned(),
+                call_name: "a_very_long_tool_name".to_owned(),
+                call_arguments: "{\"path\":\"a\"}".to_owned(),
+            },
+            8,
+        );
+        assert_eq!(text.lines.len(), 1);
+        assert_eq!(text.to_string(), "a_very_…");
+        assert!(text.width() <= 8);
     }
 
     #[test]

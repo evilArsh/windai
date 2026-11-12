@@ -98,6 +98,29 @@ fn delta_replaces_an_older_block_when_the_revision_grows() {
 }
 
 #[test]
+fn delta_replacement_keeps_the_committed_flag() {
+    let mut session = session(CURRENT_TOPIC, None);
+    assert!(apply(&mut session, &delta(30, 0, 1, "first")));
+    let committed = event(
+        2,
+        "core/block.committed",
+        scope(CURRENT_TOPIC),
+        json!({"message_id": 30, "seq": 0, "block_id": 5, "block": null}),
+    );
+    assert!(apply(&mut session, &committed));
+    assert!(session.messages[0].blocks[0].committed);
+    assert!(apply(&mut session, &delta(30, 0, 2, "second")));
+    assert!(session.messages[0].blocks[0].committed);
+    assert_eq!(session.messages[0].blocks[0].revision, 2);
+    assert_eq!(
+        session.messages[0].blocks[0].body,
+        Body::Text {
+            content: "second".to_owned()
+        }
+    );
+}
+
+#[test]
 fn duplicate_delta_does_not_change_state() {
     let mut session = session(CURRENT_TOPIC, None);
     assert!(apply(&mut session, &delta(10, 0, 2, "kept")));
@@ -227,6 +250,33 @@ fn seal_without_a_message_still_sums_usage() {
         Usage {
             input_tokens: 5,
             output_tokens: 7
+        }
+    );
+}
+
+#[test]
+fn seal_of_a_history_message_does_not_add_usage() {
+    let mut session = session(CURRENT_TOPIC, None);
+    let mut history = MessageView::new(20, Role::Assistant);
+    history.from_history = true;
+    session.messages.push(history);
+    let seal = event(
+        2,
+        "core/message.seal",
+        scope(CURRENT_TOPIC),
+        json!({
+            "message_id": 20,
+            "finish_reason": "stop",
+            "usage": {"input_tokens": 11, "output_tokens": 3}
+        }),
+    );
+    assert!(apply(&mut session, &seal));
+    assert_eq!(session.messages[0].sealed.as_deref(), Some("stop"));
+    assert_eq!(
+        session.usage,
+        Usage {
+            input_tokens: 0,
+            output_tokens: 0
         }
     );
 }
@@ -412,6 +462,7 @@ async fn load_session_groups_blocks_and_sums_usage() {
     assert_eq!(loaded.topic.id, topic_id);
     assert_eq!(loaded.main, Some(main));
     assert_eq!(loaded.messages.len(), 2);
+    assert!(loaded.messages.iter().all(|message| message.from_history));
     assert_eq!(loaded.messages[0].id, first);
     assert_eq!(loaded.messages[0].role, Role::User);
     assert_eq!(
@@ -731,4 +782,21 @@ fn a_repeated_terminal_status_does_not_interrupt_another_message() {
         )
     ));
     assert_eq!(session.messages[0].interrupted, None);
+}
+
+#[test]
+fn terminal_status_skips_history_messages() {
+    let mut session = session(CURRENT_TOPIC, Some(5));
+    session
+        .messages
+        .push(MessageView::new(101, Role::Assistant));
+    let mut history = MessageView::new(102, Role::Assistant);
+    history.from_history = true;
+    session.messages.push(history);
+    assert!(apply(
+        &mut session,
+        &status(1, 5, "failed", Some(json!({"error": "boom"})))
+    ));
+    assert_eq!(session.messages[1].interrupted, None);
+    assert_eq!(session.messages[0].interrupted.as_deref(), Some("failed"));
 }

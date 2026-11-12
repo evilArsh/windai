@@ -156,7 +156,9 @@ fn group_context(rows: Vec<ContextRow>) -> (Vec<MessageView>, Usage) {
             .last()
             .is_none_or(|message| message.id != row.message_id)
         {
-            messages.push(MessageView::new(row.message_id, row.block.role));
+            let mut message = MessageView::new(row.message_id, row.block.role);
+            message.from_history = true;
+            messages.push(message);
         }
         if let Some(message) = messages.last_mut() {
             let mut block = BlockView::new(row.block.seq, row.block.revision, row.block.body);

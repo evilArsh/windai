@@ -1,14 +1,12 @@
-use std::collections::VecDeque;
-
+use crate::text::{concise, format_time, summarize};
+use crate::theme;
 use chrono::Local;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Paragraph};
+use std::collections::VecDeque;
 use wind_wire::event::{FeedEvent, Scope};
-
-use crate::text::{concise, format_time, summarize};
-use crate::theme;
 
 const LOG_CAPACITY: usize = 2000;
 
