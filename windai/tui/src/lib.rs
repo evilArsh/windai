@@ -2,6 +2,7 @@ pub mod app;
 pub mod command;
 pub mod config;
 pub mod fetch;
+pub mod form;
 pub mod reduce;
 pub mod text;
 pub mod theme;

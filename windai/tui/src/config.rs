@@ -1,4 +1,6 @@
-use wind_storage::{Model, Provider};
+use crate::form::{ModelFields, ProviderFields};
+use wind_storage::error::StorageError;
+use wind_storage::{Model, Provider, Storage};
 
 const REASONING_VALUES: [&str; 4] = ["low", "medium", "high", "max"];
 
@@ -104,4 +106,54 @@ fn reasoning_effort(model: &Model) -> Option<String> {
         .get("reasoning_effort")?
         .as_str()
         .map(str::to_owned)
+}
+
+pub async fn save_provider(storage: &Storage, fields: ProviderFields) -> Result<i64, StorageError> {
+    storage
+        .with_tx(|tx| async move {
+            let provider_id = tx.create_provider(&fields.name, &fields.base_url).await?;
+            if let Some(api_key) = fields.api_key.as_deref() {
+                tx.create_credential(provider_id, api_key).await?;
+            }
+            Ok(provider_id)
+        })
+        .await
+}
+
+pub async fn save_model(storage: &Storage, fields: ModelFields) -> Result<i64, StorageError> {
+    storage
+        .create_model(
+            fields.provider_id,
+            &fields.name,
+            fields.adapter,
+            fields.endpoint.as_deref(),
+            fields.config.as_ref(),
+        )
+        .await
+}
+
+pub async fn refresh(storage: &Storage, selection: &mut Selection) -> Result<(), StorageError> {
+    let providers = storage.list_providers().await?;
+    let provider = selection
+        .provider
+        .as_ref()
+        .and_then(|current| {
+            providers
+                .iter()
+                .find(|provider| provider.id == current.id)
+                .cloned()
+        })
+        .or_else(|| providers.first().cloned());
+    let Some(provider) = provider else {
+        *selection = Selection::new(None, None);
+        return Ok(());
+    };
+    let models = storage.list_models(Some(provider.id)).await?;
+    let model = selection
+        .model
+        .as_ref()
+        .and_then(|current| models.iter().find(|model| model.id == current.id).cloned())
+        .or_else(|| models.first().cloned());
+    *selection = Selection::new(Some(provider), model);
+    Ok(())
 }

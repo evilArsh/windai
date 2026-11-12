@@ -1,4 +1,5 @@
 pub mod content;
+pub mod form;
 pub mod input;
 pub mod log;
 pub mod mods;

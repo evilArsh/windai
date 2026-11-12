@@ -1,5 +1,7 @@
+use super::form;
 use crate::app::{
-    App, CONFIG_MODEL, CONFIG_PROVIDER, CONFIG_REASONING, CONFIG_ROWS, CONFIG_SIDE_PANEL, Overlay,
+    App, CONFIG_MODEL, CONFIG_NEW_MODEL, CONFIG_NEW_PROVIDER, CONFIG_PROVIDER, CONFIG_REASONING,
+    CONFIG_SIDE_PANEL, Overlay,
 };
 use crate::command::COMMANDS;
 use crate::text::{concise, format_time};
@@ -11,6 +13,10 @@ use ratatui::widgets::{Block, Clear, Paragraph};
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     if area.is_empty() {
+        return;
+    }
+    if let Some(form) = app.form() {
+        form::render(frame, area, form, app.providers());
         return;
     }
     let Some(overlay) = app.overlay() else {
@@ -144,12 +150,11 @@ fn config_rows(app: &App, selected: usize) -> Vec<(String, bool)> {
     ];
     let mut rows: Vec<(String, bool)> = values
         .into_iter()
-        .filter(|(index, _, _)| *index < CONFIG_ROWS)
         .map(|(index, label, value)| (format!("{label:<14} {value}  >"), index == selected))
         .collect();
-    if CONFIG_ROWS > CONFIG_SIDE_PANEL + 1 {
-        rows.push((String::new(), false));
-    }
+    rows.push(("────────────".to_owned(), false));
+    rows.push(("new provider".to_owned(), CONFIG_NEW_PROVIDER == selected));
+    rows.push(("new model".to_owned(), CONFIG_NEW_MODEL == selected));
     rows
 }
 

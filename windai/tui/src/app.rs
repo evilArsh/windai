@@ -1,6 +1,7 @@
 use crate::command::{self, Command, CommandSpec};
-use crate::config::Selection;
+use crate::config::{self, Selection};
 use crate::fetch::{self, LoadedSession};
+use crate::form::{Form, ModelForm, ProviderForm};
 use crate::reduce;
 use crate::theme;
 use crate::view;
@@ -183,7 +184,9 @@ pub(crate) const CONFIG_PROVIDER: usize = 0;
 pub(crate) const CONFIG_MODEL: usize = 1;
 pub(crate) const CONFIG_REASONING: usize = 2;
 pub(crate) const CONFIG_SIDE_PANEL: usize = 3;
-pub(crate) const CONFIG_ROWS: usize = 4;
+pub(crate) const CONFIG_NEW_PROVIDER: usize = 4;
+pub(crate) const CONFIG_NEW_MODEL: usize = 5;
+pub(crate) const CONFIG_ROWS: usize = 6;
 pub(crate) const COMPLETION_ROWS: usize = 6;
 
 fn move_selection(selected: &mut usize, len: usize, step: isize) {
@@ -233,6 +236,7 @@ pub struct App {
     selection: Selection,
     providers: Vec<Provider>,
     models: Vec<Model>,
+    form: Option<Form>,
     show_side: bool,
     notice: Option<String>,
     quit: bool,
@@ -264,6 +268,7 @@ impl App {
             selection: startup.selection,
             providers: startup.providers,
             models: startup.models,
+            form: None,
             show_side: true,
             notice: startup.notice,
             quit: false,
@@ -308,6 +313,10 @@ impl App {
         &self.models
     }
 
+    pub fn form(&self) -> Option<&Form> {
+        self.form.as_ref()
+    }
+
     pub fn show_side(&self) -> bool {
         self.show_side
     }
@@ -324,6 +333,10 @@ impl App {
             && matches!(key.code, KeyCode::Char('c' | 'C'))
         {
             self.quit = true;
+            return;
+        }
+        if self.form.is_some() {
+            self.handle_form_key(key).await;
             return;
         }
         if self.overlay.is_some() {
@@ -651,6 +664,7 @@ impl App {
         self.input.clear();
         self.overlay = None;
         self.completion = None;
+        self.form = None;
         self.notice = None;
         self.focus = Focus::Input;
         self.dirty = true;
@@ -924,10 +938,184 @@ impl App {
                     self.show_side = !self.show_side;
                     self.dirty = true;
                 }
+                CONFIG_NEW_PROVIDER => self.open_provider_form(),
+                CONFIG_NEW_MODEL => self.open_model_form(),
                 _ => {}
             },
             _ => {}
         }
+    }
+
+    fn open_provider_form(&mut self) {
+        self.form = Some(Form::Provider(ProviderForm::default()));
+        self.dirty = true;
+    }
+
+    fn open_model_form(&mut self) {
+        let provider_index = self.current_provider_index();
+        self.form = Some(Form::Model(ModelForm {
+            provider_index,
+            ..ModelForm::default()
+        }));
+        self.dirty = true;
+    }
+
+    async fn handle_form_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.form = None;
+                self.focus = Focus::Input;
+                self.dirty = true;
+            }
+            KeyCode::Enter => self.save_form().await,
+            KeyCode::Tab | KeyCode::Down => {
+                if let Some(form) = self.form.as_mut() {
+                    form.next_field();
+                }
+                self.dirty = true;
+            }
+            KeyCode::Up => {
+                if let Some(form) = self.form.as_mut() {
+                    form.previous_field();
+                }
+                self.dirty = true;
+            }
+            KeyCode::Left => {
+                if let Some(form) = self.form.as_mut() {
+                    form.move_left(&self.providers);
+                }
+                self.dirty = true;
+            }
+            KeyCode::Right => {
+                if let Some(form) = self.form.as_mut() {
+                    form.move_right(&self.providers);
+                }
+                self.dirty = true;
+            }
+            KeyCode::Home => {
+                if let Some(form) = self.form.as_mut() {
+                    form.home();
+                }
+                self.dirty = true;
+            }
+            KeyCode::End => {
+                if let Some(form) = self.form.as_mut() {
+                    form.end();
+                }
+                self.dirty = true;
+            }
+            KeyCode::Backspace => {
+                if let Some(form) = self.form.as_mut() {
+                    form.backspace();
+                }
+                self.dirty = true;
+            }
+            KeyCode::Delete => {
+                if let Some(form) = self.form.as_mut() {
+                    form.delete();
+                }
+                self.dirty = true;
+            }
+            KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(form) = self.form.as_mut() {
+                    form.insert_char(ch);
+                }
+                self.dirty = true;
+            }
+            _ => {}
+        }
+    }
+
+    async fn save_form(&mut self) {
+        let Some(form) = self.form.clone() else {
+            return;
+        };
+        match form {
+            Form::Provider(provider_form) => match provider_form.validate(&self.providers) {
+                Err((field, message)) => self.set_form_error(field, message),
+                Ok(fields) => match config::save_provider(self.runtime.storage(), fields).await {
+                    Ok(provider_id) => self.finish_provider_save(provider_id).await,
+                    Err(error) => self.set_form_error(0, error.to_string()),
+                },
+            },
+            Form::Model(model_form) => {
+                let Some(provider) = self.providers.get(model_form.provider_index).cloned() else {
+                    self.set_form_error(0, "provider is required".to_owned());
+                    return;
+                };
+                let models = match self.runtime.storage().list_models(Some(provider.id)).await {
+                    Ok(models) => models,
+                    Err(error) => {
+                        self.set_form_error(0, error.to_string());
+                        return;
+                    }
+                };
+                match model_form.validate(&self.providers, &models) {
+                    Err((field, message)) => self.set_form_error(field, message),
+                    Ok(fields) => {
+                        let provider_id = fields.provider_id;
+                        match config::save_model(self.runtime.storage(), fields).await {
+                            Ok(model_id) => self.finish_model_save(provider_id, model_id).await,
+                            Err(error) => self.set_form_error(0, error.to_string()),
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    async fn finish_provider_save(&mut self, provider_id: i64) {
+        if let Err(error) = self.reload_lists(Some(provider_id)).await {
+            self.notice = Some(format!("refresh failed: {error}"));
+            self.form = None;
+            self.dirty = true;
+            return;
+        }
+        self.form = None;
+        let notice = self
+            .selection
+            .select_provider(&self.providers, &self.models, provider_id);
+        self.notice = match notice.as_deref() {
+            Some("this provider has no models") => {
+                Some("create a model for this provider".to_owned())
+            }
+            _ => notice,
+        };
+        self.dirty = true;
+    }
+
+    async fn finish_model_save(&mut self, provider_id: i64, model_id: i64) {
+        if let Err(error) = self.reload_lists(Some(provider_id)).await {
+            self.notice = Some(format!("refresh failed: {error}"));
+            self.form = None;
+            self.dirty = true;
+            return;
+        }
+        self.form = None;
+        let _ = self
+            .selection
+            .select_provider(&self.providers, &self.models, provider_id);
+        self.notice = self.selection.select_model(&self.models, model_id);
+        self.dirty = true;
+    }
+
+    async fn reload_lists(&mut self, provider_id: Option<i64>) -> Result<(), StorageError> {
+        let storage = self.runtime.storage();
+        let providers = storage.list_providers().await?;
+        let models = match provider_id {
+            Some(id) => storage.list_models(Some(id)).await?,
+            None => Vec::new(),
+        };
+        self.providers = providers;
+        self.models = models;
+        Ok(())
+    }
+
+    fn set_form_error(&mut self, field: usize, message: String) {
+        if let Some(form) = self.form.as_mut() {
+            form.set_error(field, message);
+        }
+        self.dirty = true;
     }
 
     async fn start_topic(&mut self, topic_id: i64, content: Vec<Content>) -> Result<(), String> {
