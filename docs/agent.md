@@ -79,7 +79,8 @@ pub struct Tree<D: Domain> {
   `delivered = false` 的节点。
 
 `detached` 节点不进入父节点的等待屏障，但它的终态需要一次 `Deliver` 才能让整棵树静止。
-`Deliver` 由宿主在消费完后台结果后发送；核心库没有发送它的地方。
+`Deliver` 由 `wind-runtime` 在后台结果补送处理后发送；重复处理仍发送交付通知，避免树保留
+未完成的交付标记。
 
 ## 相位
 
@@ -267,11 +268,11 @@ phase == Running 且 job == None  → finish_terminal(Aborted)，然后 delivere
 ```
 
 恢复的节点没有在飞任务（`job = None`），因此持久化为 `Running` 的节点必然是上一个进程
-留下的未完成任务，统一转为 `Aborted`。`Suspended` 节点保持挂起，等待宿主用
-`AgentHandle::resume` 恢复。
+留下的未完成任务，统一转为 `Aborted`。`Suspended` 节点保持挂起，等待宿主通过
+`Runtime::resume` 答复。
 
-核心库没有从数据库装载树的函数。宿主需要自己读取 `agent_instances`（并组合
-`spawn_calls` 与 `agent_pending`），构造 `AgentOptions.restored` 的 `NodeSnapshot`。
+`wind-runtime` 按话题读取 `agent_instances` 与 `agent_pending`，构造
+`AgentOptions.restored` 的 `NodeSnapshot`，并扫描 `spawn_calls` 中未交付的后台终态结果。
 
 ## 运行任务
 
@@ -326,7 +327,7 @@ run():
         select! {
             biased;
             取消 → break
-            事件 → apply(event)
+            命令 → apply(event)，完成后确认调用方
             通道关闭 → break
         }
     }
@@ -348,7 +349,10 @@ run():
 | `shutdown()` | 取消整个 `Agent` 的令牌 |
 | `is_stopped()` / `wait_stopped()` | 读/等待同一个令牌 |
 
-发送是异步的，通道满时等待。通道关闭时返回 `CoreError::Closed`。
+`spawn`、`enqueue`、`resume`、`cancel` 和 `deliver` 在通道满时等待，发送后继续等待
+Agent 完成该命令的归约及副作用处理。通道或确认端关闭时返回 `CoreError::Closed`。确认不等于
+模型任务完成；相位写入失败仍按「持久化与事件」处理。`shutdown` 只发出取消信号，
+`wind-runtime` 另行持有并等待 Agent 任务，以保证 feed 在 Agent 退出后关闭。
 
 ## 持久化与事件
 
@@ -389,9 +393,9 @@ UPDATE agent_instances SET phase = ?, phase_payload = ? WHERE id = ?
 
 | 项 | 现状 |
 | --- | --- |
-| 主实例行 | `Agent` 不创建；宿主必须先写 `agent_instances` |
-| 后台结果交付 | `PendingKind::BackgroundResult`、`AgentHandle::deliver` 没有生产者；`detached` 节点终态后整棵树可能一直不静止 |
+| 主实例行 | `wind-runtime` 在首次提交时调用 `Storage::ensure_main` 建立 |
+| 后台结果交付 | `wind-runtime` 通过终态观察者与恢复扫描补送父实例输入，并调用 `AgentHandle::deliver` |
 | `core/agent.create` / `terminate` / `cancel` / `tree` | 目录中已声明，没有产生者 |
-| 树装载 | 核心库没有从数据库构造 `restored` 的函数 |
+| 树装载 | `wind-runtime` 在话题首次使用时从实例行和待消费行构造 `NodeSnapshot`，按需恢复 |
 | 相位持久化失败 | 只记录与发事件；内存中的树继续运行 |
 | 取消传播 | `CancelRequest` 只取消树中已有节点；正在运行的任务通过 `Jobs` 的令牌取消 |

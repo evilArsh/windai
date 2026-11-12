@@ -1,3 +1,4 @@
+use super::handler::Command;
 use super::tree::event::Event;
 use super::tree::{Domain, JobId, NodeId};
 use super::{Ctx, Input, Outcome, Runner};
@@ -17,12 +18,12 @@ pub struct JobRequest<D: Domain> {
 
 pub struct Jobs<D: Domain> {
     runner: Arc<dyn Runner<D>>,
-    sink: mpsc::Sender<Event<D>>,
+    sink: mpsc::Sender<Command<D>>,
     running: Arc<Mutex<HashMap<(NodeId, JobId), CancellationToken>>>,
 }
 
 impl<D: Domain> Jobs<D> {
-    pub fn new(runner: Arc<dyn Runner<D>>, sink: mpsc::Sender<Event<D>>) -> Self {
+    pub fn new(runner: Arc<dyn Runner<D>>, sink: mpsc::Sender<Command<D>>) -> Self {
         Self {
             runner,
             sink,
@@ -67,7 +68,14 @@ impl<D: Domain> Jobs<D> {
                     Event::Aborted { node, job }
                 }
             };
-            if sink.send(event).await.is_err() {
+            if sink
+                .send(Command {
+                    event,
+                    applied: None,
+                })
+                .await
+                .is_err()
+            {
                 log::debug!("[jobs] report dropped because the agent is gone");
             }
         });

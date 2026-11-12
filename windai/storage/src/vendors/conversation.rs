@@ -301,3 +301,51 @@ impl<'r> FromRow<'r, DbRow> for UnpairedToolCall {
         })
     }
 }
+
+impl Storage {
+    pub async fn list_pending_by_topic(&self, topic_id: i64) -> Result<Vec<AgentPending>> {
+        self.executor
+            .fetch_all(
+                sqlx::query_as::<_, AgentPending>(
+                    "SELECT p.id, p.instance_id, p.kind, p.payload_json, p.source_id, p.created_at
+             FROM agent_pending p JOIN agent_instances i ON i.id = p.instance_id
+             WHERE i.topic_id = ? ORDER BY p.id",
+                )
+                .bind(topic_id),
+            )
+            .await
+    }
+
+    pub async fn close_pending(&self, instance_id: i64) -> Result<()> {
+        self.executor
+            .execute(
+                sqlx::query(
+                    "DELETE FROM agent_pending WHERE instance_id IN (
+                WITH RECURSIVE sub(id) AS (
+                    SELECT id FROM agent_instances WHERE id = ?
+                    UNION ALL SELECT i.id FROM agent_instances i JOIN sub ON i.parent_id = sub.id
+                ) SELECT id FROM sub
+             )",
+                )
+                .bind(instance_id),
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn insert_background_result(
+        &self,
+        parent_id: i64,
+        payload: Vec<Content>,
+        source_id: i64,
+    ) -> Result<Option<i64>> {
+        let row: Option<(i64,)> = self.executor.fetch_optional(sqlx::query_as(
+            "INSERT INTO agent_pending (instance_id, kind, payload_json, source_id, created_at)
+             SELECT ?, 'background_result', ?, ?, ? FROM agent_instances
+             WHERE id = ? AND phase IN ('running', 'waiting_children', 'suspended', 'done')
+             ON CONFLICT (instance_id, kind, source_id) WHERE source_id IS NOT NULL DO NOTHING
+             RETURNING id"
+        ).bind(parent_id).bind(serde_json::to_string(&payload)?).bind(source_id).bind(now_ts()).bind(parent_id)).await?;
+        Ok(row.map(|(id,)| id))
+    }
+}

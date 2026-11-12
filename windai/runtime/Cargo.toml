@@ -1,0 +1,23 @@
+[package]
+name = "wind-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+wind-wire = { path = "../wire" }
+wind-event = { path = "../event" }
+wind-storage = { path = "../storage" }
+wind-core = { path = "../core" }
+wind-mod = { path = "../mod" }
+wind-mcp = { path = "../mcp" }
+wind-script = { path = "../script" }
+log = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

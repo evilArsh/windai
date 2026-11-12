@@ -12,7 +12,7 @@ That split is the point of the project: the parts that change often — persona,
 skills, tools, UI panels, approval rules — live in mods, not in the engine. A mod can be
 installed, updated or disabled without rebuilding the host.
 
-> Status: `0.2.0`, library-only, no CLI and no composition root in this repository. The
+> Status: `0.2.0`, library-only, with an in-process runtime and no CLI. The
 > public API is still moving. Names such as `wind-core` and `mod.json` are stable; trait
 > signatures are not.
 
@@ -594,97 +594,69 @@ ends and your own paging begins.
 | `wind-mod` | wire, event, storage | Manifest, package, installer, resources, roster, generated schema |
 | `wind-mcp` | wire, event | MCP registry, connections, launch planning, built-in `fs` and `skills` |
 | `wind-core` | all of the above | Agent tree, LLM rounds, feed, resource adapter, script wiring |
+| `wind-runtime` | wire, event, storage, core, mod, mcp, script | Composition root, topic recovery, input, background delivery and shutdown |
 
-Dependency direction is acyclic and enforced by the crate graph: `wind-core` is the only crate
-that depends on every other internal crate; `wind-script` depends on `wind-wire` only;
+Dependency direction is acyclic: `wind-runtime` assembles the engine above `wind-core`, which
+integrates the lower-level crates. `wind-script` depends on `wind-wire` only;
 `wind-mod` does not depend on `wind-script`, so a mod with broken scripts still installs.
 
 ### Assembly
 
-There is no composition root in the repository. The order below is the one used by the
-integration tests and is the smallest working sequence.
+`wind-runtime` is the composition root: it creates the application directories, opens storage,
+restores mod resources, attaches event observers and starts the feed. Call `Runtime::open`
+once inside a Tokio runtime and use the returned handle for process-local operations.
 
 ```rust
-use std::sync::Arc;
-use wind_core::feed::{self, FeedOptions};
-use wind_core::resources::ResourceService;
-use wind_core::script::ScriptRuntime;
-use wind_event::{Dispatcher, Limits, ModCaller, ModRoster, Observer};
-use wind_mcp::McpOptions;
-use wind_mod::installer::Installer;
-use wind_mod::resources::Resources;
-use wind_mod::roster::Roster;
-use wind_storage::Storage;
-use wind_wire::AppDirs;
+use wind_runtime::{Runtime, RuntimeOptions};
+use wind_wire::{AppDirs, Content};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let dirs = AppDirs::resolve();
-    let storage = Storage::open(&dirs.db_file()).await?;
-    let (outlet, runtime) = feed::open(storage.clone(), FeedOptions::default()).await?;
+    let runtime = Runtime::open(RuntimeOptions::new(AppDirs::resolve())).await?;
+    let topic = runtime.storage()
+        .create_topic(None, "Example", None, None, None)
+        .await?;
+    let mut subscription = runtime.subscribe().await?.subscription;
+    let ack = runtime.submit(topic, vec![Content::new_text("Hello".into())]).await?;
 
-    let caller = Arc::new(ScriptRuntime::quickjs(
-        storage.clone(),
-        dirs.clone(),
-        Arc::new(outlet.clone()),
-        Limits::default(),
-    )?);
-    let roster = Arc::new(Roster::load(&storage).await?);
-
-    let directory = wind_event::directory()
-        .merge(wind_core::agent::events::directory())
-        .merge(wind_core::llm::events::directory())
-        .merge(wind_core::script::directory())
-        .merge(wind_mod::events::directory())
-        .merge(wind_mcp::events::directory());
-
-    let dispatcher = Arc::new(Dispatcher::new(
-        directory,
-        roster.clone() as Arc<dyn ModRoster>,
-        caller as Arc<dyn ModCaller>,
-        Arc::new(outlet.clone()),
-        Limits::default(),
-    ));
-
-    let registry = wind_mcp::init(McpOptions::new(dirs.mods_root()), dispatcher.clone());
-    let services = ResourceService::new(
-        Installer::new(storage.clone(), dispatcher.clone(), roster, dirs.clone()),
-        Resources::new(storage.clone(), dirs.clone()),
-        storage.clone(),
-        registry,
-        dirs.topics_root(),
-    );
-    services.restore().await?;
-
-    let observer: Arc<dyn Observer> = dispatcher.clone();
-    tokio::spawn(runtime.run(vec![Arc::downgrade(&observer)]));
-
-    let opening = outlet.subscribe().await?;
-    let _frames = opening.subscription;   // encode recv() into SSE / WebSocket frames
+    // This topic has no model configured, so the accepted input ends in a failed phase.
+    while let Some(event) = subscription.recv().await? {
+        if event.envelope.name == "core/agent.sealed"
+            && event.envelope.payload.as_ref()
+                .and_then(|payload| payload["instance_id"].as_i64()) == Some(ack.instance_id)
+        {
+            break;
+        }
+    }
+    runtime.shutdown().await?;
     Ok(())
 }
 ```
 
-Notes that save debugging time:
+`submit` returns the topic, instance and pending-input identifiers after the agent applies the
+input command; model execution continues asynchronously. `cancel(instance_id)`
+clears the subtree's pending inputs before cancellation. `resume(WaitAnswer)` validates the
+persisted wait before forwarding the answer. Mod lifecycle methods are `install`, `update`,
+`delete`, `enable` and `disable`; each returns the affected topics.
 
-- `Dispatcher::new` starts the observe pool, so it must run inside a Tokio runtime.
-- Observers must be attached **before** `runtime.run(...)`. `run` takes weak references, so
-  dropping the dispatcher stops mod delivery while events keep flowing.
-- `feed::open` only leases the epoch; nothing is delivered until `run` is polled.
-- `ScriptRuntime::quickjs` is the default script stack. Passing a caller that always returns
-  `CallError::Internal` gives you a script-free build; script mods still install and enable,
-  but their handlers fail at call time.
-- Shut down in this order: `ResourceService::shutdown`, `FeedHandle::shutdown`, then await the
-  feed task.
+Topic sessions are restored lazily on their first input operation. Recovery preserves suspended
+waits, aborts interrupted running instances and consumes eligible pending inputs. Pending inputs
+on failed, cancelled or aborted instances remain stored and are not resumed automatically.
+Undelivered terminal background results are scanned when the session is created; subsequent
+terminal events trigger delivery through the feed observer.
+
+`shutdown` stops resource services, background delivery and topic agents before closing the feed
+and awaiting its task. Concurrent shutdown calls share cleanup; cancelling a caller does not
+cancel cleanup. New operations are rejected once shutdown starts. Hosts must call `shutdown`
+before dropping the runtime. The script implementation is fixed to QuickJS.
 
 ### What the host must supply
 
 | Area | Why it is not in the library |
 | --- | --- |
-| The main `agent_instances` row | Phase persistence assumes the row exists; `Agent` only logs `core/agent.persist_failed` when the update matches nothing |
-| A user-input entry point | Writing an `agent_pending` row and handing `LlmSpec { pending_id }` to `AgentHandle` is an app decision |
-| HTTP/SSE/WebSocket endpoints | `FeedHandle` is an in-process subscription; transport and auth are yours |
-| Approval answers | `external_waits` rows are written by the runner; the UI flow and `AgentHandle::resume` call are yours |
+| Domain configuration | Create topics, providers, models and credentials through `Runtime::storage()` |
+| HTTP/SSE/WebSocket endpoints | `Runtime::subscribe()` supplies an in-process subscription; transport and authentication belong to the host |
+| Approval UI | Present external waits and pass the resulting `WaitAnswer` to `Runtime::resume` |
 | Event history queries | `wind-storage` writes `event_log` but has no read API for it |
 | The front-end shell | UI loading, module format, mounting, `UiCtx` |
 | `AppDirs` root | It decides database, topics, skills, mods and bytecode locations |
@@ -765,8 +737,6 @@ These are code facts, not intentions. Each is a candidate for the next iteration
 | Global events | `core/mcp.*` never reaches mods, because the roster is topic-indexed. |
 | Mod-to-mod events | `events.on` only accepts `core/`; `m_<mod>/…` is not dispatched. |
 | Host intercept points | `core/agent.create`, `.terminate`, `.cancel` and `.tree` have no producer. |
-| `core/input.accepted` | No producer; input arrives through `agent_pending`. |
-| Background children | `PendingKind::BackgroundResult` and `AgentHandle::deliver` have no producer. |
 | `wind_spawn_agent.fork` | Parsed, ignored; children never inherit the parent context. |
 | Event history | `event_log` is write-only; `Opening.cut` is the only stitch point. |
 | Retention window | No capacity limit; it shrinks only on `close` or writer acknowledgement. |

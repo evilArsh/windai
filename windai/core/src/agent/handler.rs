@@ -11,7 +11,7 @@ use crate::agent::Runner;
 use crate::error::{CoreError, Result};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use wind_event::{DispatchCx, Dispatcher, Origin, Scope, Source};
 use wind_storage::Storage;
@@ -35,7 +35,7 @@ pub struct NodeSnapshot<D: Domain> {
 /// Agent 对外 hub 句柄
 #[derive(Clone)]
 pub struct AgentHandle<D: Domain> {
-    tx: mpsc::Sender<Event<D>>,
+    tx: mpsc::Sender<Command<D>>,
     cancel: CancellationToken,
 }
 
@@ -90,8 +90,21 @@ impl<D: Domain> AgentHandle<D> {
     }
 
     async fn send(&self, event: Event<D>) -> Result<()> {
-        self.tx.send(event).await.map_err(|_| CoreError::Closed)
+        let (applied, receipt) = oneshot::channel();
+        self.tx
+            .send(Command {
+                event,
+                applied: Some(applied),
+            })
+            .await
+            .map_err(|_| CoreError::Closed)?;
+        receipt.await.map_err(|_| CoreError::Closed)
     }
+}
+
+pub(super) struct Command<D: Domain> {
+    pub event: Event<D>,
+    pub applied: Option<oneshot::Sender<()>>,
 }
 
 pub struct AgentOptions<D: Domain> {
@@ -109,7 +122,7 @@ pub struct Agent<D: Domain> {
     dispatcher: Arc<Dispatcher>,
     tree: Tree<D>,
     jobs: Jobs<D>,
-    event_rx: mpsc::Receiver<Event<D>>,
+    event_rx: mpsc::Receiver<Command<D>>,
     cancel: CancellationToken,
 }
 
@@ -160,7 +173,12 @@ impl<D: Domain> Agent<D> {
                 biased;
                 () = self.cancel.cancelled() => break,
                 event = self.event_rx.recv() => match event {
-                    Some(event) => self.apply(event).await,
+                    Some(command) => {
+                        self.apply(command.event).await;
+                        if let Some(applied) = command.applied {
+                            let _ = applied.send(());
+                        }
+                    },
                     None => break,
                 },
             }

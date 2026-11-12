@@ -620,3 +620,12 @@ impl<'r> FromRow<'r, DbRow> for LogRecord {
         })
     }
 }
+
+#[derive(Debug, Clone, PartialEq, sqlx::FromRow)]
+pub struct SpawnCall {
+    pub parent_id: i64,
+    pub call_id: String,
+    pub child_id: i64,
+    pub created_at: i64,
+    pub result_delivered_at: Option<i64>,
+}

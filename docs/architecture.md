@@ -1,6 +1,6 @@
 # 架构
 
-windai 是一个单进程的 agent harness 库。宿主应用装配本仓库的 crate，按话题驱动 agent
+windai 是一个单进程的 agent harness 库。宿主应用通过 `wind-runtime` 的组合根（统一建立并管理各子系统的入口）按话题驱动 agent
 实例；模型调用、工具执行、mod 生命周期、脚本执行与事件投递都在同一进程内完成。
 
 本文给出 crate 划分、进程内拓扑、事件与数据库两条写入通路，以及宿主必须接上的位置。
@@ -11,7 +11,7 @@ windai 是一个单进程的 agent harness 库。宿主应用装配本仓库的 
 ## 范围
 
 - 单进程，不做多实例，不做跨进程广播。
-- 宿主按话题建立一个 `Agent<LlmDomain>` 事件循环。同一话题内的树状态变更由该循环串行归约；
+- `wind-runtime` 按话题延迟建立一个 `Agent<LlmDomain>` 事件循环。同一话题内的树状态变更由该循环串行归约；
   不同话题的 `Agent` 互不阻塞。
 - 数据库为 SQLite，连接池最多五个连接，写事务一律 `BEGIN IMMEDIATE`，因此写事务串行；
   读事务走 WAL（write-ahead log）快照，不阻塞写。
@@ -19,7 +19,7 @@ windai 是一个单进程的 agent harness 库。宿主应用装配本仓库的 
   feed 在内存中分配。事件的位置不是 `event_log.id`。
 - 流式块内容只在内存中累加。助手消息的块行在消息完成时一次写入；用户消息与工具结果的块行
   在消息创建时写入。写入数据库的块与流式增量不是同一份数据。
-- HTTP/SSE、WebSocket 与前端底座不在本仓库内。宿主通过 `FeedHandle::subscribe` 取得实时流，
+- HTTP/SSE、WebSocket 与前端底座不在本仓库内。宿主通过 `Runtime::subscribe` 取得实时流，
   自行提供端点；数据库中的领域表与 `event_log` 由宿主自行查询。
 - 脚本每次调用新建 QuickJS `Runtime`，在独立的解释器线程上执行；运行时不跨调用保留。
 
@@ -36,6 +36,7 @@ windai 是一个单进程的 agent harness 库。宿主应用装配本仓库的 
 | `wind-mod` | wire, event, storage | 清单、包、安装器、资源读取、启用集合、清单 schema |
 | `wind-mcp` | wire, event | MCP 注册表、连接、启动规划、内建 `fs` 与 `skills` 服务 |
 | `wind-core` | wire, event, storage, ai, rule, mod, mcp, script | agent 树、LLM 回合、feed、资源适配、脚本接线 |
+| `wind-runtime` | wire, event, storage, core, mod, mcp, script | 组合根、话题恢复、输入、后台结果交付与关停 |
 
 依赖方向：
 
@@ -59,19 +60,25 @@ windai 是一个单进程的 agent harness 库。宿主应用装配本仓库的 
             ▼                  ▼
        ┌──────────────────────────┐      ┌─────────┐
        │         core             │◄─────│  rule   │
-       └──────────────────────────┘      └─────────┘
+       └─────────────┬────────────┘      └─────────┘
+                     ▼
+       ┌──────────────────────────┐
+       │        runtime           │
+       └──────────────────────────┘
 ```
 
-`wind-core` 是唯一同时依赖全部内部 crate 的 crate。`wind-script` 只依赖 `wind-wire` 的
+`wind-runtime` 在 `wind-core` 之上装配引擎，直接依赖的组件见「crate 与依赖」表。
+`wind-core` 负责模型回合与子系统适配。`wind-script` 只依赖 `wind-wire` 的
 路径常量，不依赖 `wind-mod`、`wind-core` 或 `wind-storage`；`wind-mod` 不依赖
 `wind-script`。`wind-core::feed` 是 feed 的实现位置，不存在独立的 `wind-feed` crate；
-块类型在 `wind-wire`，不存在独立的 `wind-stream` crate；组合根与 HTTP 端点在宿主应用，
-不存在 `wind-runtime` crate。
+块类型在 `wind-wire`，不存在独立的 `wind-stream` crate。组合根位于 `wind-runtime`，HTTP
+端点由宿主应用提供。
 
 ## 进程内拓扑
 
 ```text
-宿主应用
+Runtime（宿主持有）
+├─ TopicAgents：会话槽、后台投递队列与工作任务
 ├─ FeedRuntime（任务）
 │  ├─ Hub：命令循环、事件身份、保留窗口、订阅者
 │  └─ Writer（任务）：批量写 event_log
@@ -202,43 +209,38 @@ LlmRunner / Installer / Agent / MCP / ScriptRuntime
 
 ## 宿主装配
 
-仓库内没有组合根。测试的 `Bus::open` 展示了一种可用装配顺序：
+宿主调用 `Runtime::open(RuntimeOptions::new(dirs))` 后，由组合根完成装配。
+`RuntimeOptions` 可配置 feed 缓冲与事件限额，脚本实现固定为 QuickJS。
 
-| 步 | 动作 |
+| 阶段 | 动作 |
 | --- | --- |
-| 1 | `Storage::open(path)` 打开数据库并建表 |
-| 2 | `feed::open(storage.clone(), FeedOptions)` 得到 `FeedHandle` 与 `FeedRuntime` |
-| 3 | 合并各子系统的事件目录：`wind_event::directory()`、`agent::events::directory()`、`llm::events::directory()`、`wind_mod::events::directory()`、`wind_mcp::events::directory()`、`wind_core::script::directory()` |
-| 4 | `Roster::load(&storage)` 读取启用关系 |
-| 5 | 构造 `ScriptRuntime`：`ScriptRuntime::quickjs(storage, dirs, outlet, limits)` 使用默认 QuickJS 引擎，或用 `ScriptRuntime::new(..., scripts)` 注入自定义 `ScriptService` |
-| 6 | `Dispatcher::new(directory, roster, runtime, outlet, Limits::default())`；`runtime` 是步骤 5 的 `ModCaller`，`outlet` 是步骤 2 的 `FeedHandle` |
-| 7 | `wind_mcp::init(McpOptions::new(dirs.mods_root()), dispatcher)` 启动注册表 |
-| 8 | `Installer::new(storage, dispatcher, roster, dirs)` |
-| 9 | `Resources::new(storage, dirs)` 与 `ResourceService::new(installer, resources, storage, registry, dirs.topics_root())` |
-| 10 | `services.restore()` 从数据库恢复订阅与启用集合；它调用 `installer.restore()`，重建 `Dispatcher` 的订阅索引与 `Roster` |
-| 11 | `tokio::spawn(runtime.run(vec![Arc::downgrade(&dispatcher)]))` 启动 feed；观察者必须在 `run` 之前挂上 |
-| 12 | `LlmRunner::new(storage, dispatcher, services.clone(), services.clone())` |
-| 13 | 每个话题 `Agent::start(AgentOptions { topic_id, storage, dispatcher, runner, restored, cancel })` |
-| 14 | 用 `storage.create_agent_instance(...)` 建主实例行，再用 `storage.create_pending(...)` 放入输入，最后 `AgentHandle::spawn` 或 `enqueue` |
-| 15 | `FeedHandle::subscribe()` 取实时流，宿主自行编码为 SSE/WebSocket 并转发给前端 |
-| 16 | 收到 `Outcome::Suspend` 后，宿主保存 `external_wait_id`；用户答复时用 `AgentHandle::resume` 传入 `WaitAnswer` |
-| 17 | 关停时先 `services.shutdown()`，再 `FeedHandle::shutdown()`，最后等待 `FeedRuntime::run` 返回 |
+| 目录与存储 | 创建应用、mod、话题、公共技能和字节码目录；打开 SQLite |
+| feed 出口 | `feed::open` 建立句柄与待运行的 feed |
+| 脚本与目录 | 建立 `ScriptRuntime::quickjs`，加载 `Roster`，合并六组事件目录并构造 `Dispatcher` |
+| 资源 | 建立 MCP 注册表、`Installer`、`Resources` 与 `ResourceService`；恢复订阅和启用集合 |
+| 执行器 | 建立 `LlmRunner`、话题会话管理器与后台投递工作任务 |
+| 观察者与 feed | 保留 `Dispatcher` 和话题会话管理器的强引用，将弱引用交给 feed 后启动任务 |
+| 话题首次使用 | 从数据库装载实例树与可恢复的待消费输入；扫描未交付的后台终态结果 |
 
-宿主必须自行提供的能力：
+`Runtime::submit` 在会话锁内建立主实例、保存输入并派发，返回 `SubmitAck` 中的话题、实例和
+待消费行标识。受理确认在 Agent 应用命令后返回，派发失败时删除本次待消费行。`Runtime::cancel` 清空目标子树的待消费输入后
+发送取消并等待其应用；`Runtime::resume` 校验外部等待及持久化挂起相位后转发答复。后台结果先以事务
+占位并写入父实例的待消费输入，再通知树完成交付；已取消、失败或中止的父实例不会被补送重启。
 
-- 主实例的 `agent_instances` 行。`create_spawn_requests` 只为子实例建行；`Agent` 的相位
-  持久化假设行已存在。行不存在时 `update_instance_phase` 返回 `NoRowsAffected`，`Agent`
-  只记录日志并发出 `core/agent.persist_failed`。
-- 用户输入的入口。`wind-core` 没有“接收用户输入”的函数；宿主写 `agent_pending` 行并把
-  `LlmSpec { pending_id }` 交给 `AgentHandle`。
-- HTTP/SSE 端点与前端底座。`FeedHandle` 只提供进程内订阅。
-- 审批答复的入口。`external_waits` 行由 `LlmRunner` 在 `suspend` 时创建，宿主负责展示与
-  回填 `WaitAnswer`。
-- 事件历史的查询与分页。`wind-storage` 只写 `event_log`。
-- 脚本引擎的装配。标准做法是 `ScriptRuntime::quickjs`；宿主也可以实现自己的
-  `ScriptService` 并用 `ScriptRuntime::new` 注入。完全不使用脚本时，给 `Dispatcher` 传一个
-  返回 `CallError::Internal` 的 `ModCaller`，脚本 mod 仍可安装与启用，调用会失败。
-- `AppDirs` 的根目录。它决定数据库、话题工作区、公共技能根、mod 根与字节码缓存根。
+话题恢复按需进行，不在 `open` 时批量装载。运行中的遗留实例转为 `aborted`，挂起实例继续
+等待答复；`failed`、`cancelled`、`aborted` 实例的遗留待消费输入不自动恢复。
+
+关停由 `Runtime::shutdown` 执行：拒绝新操作，等待已进入的操作，关闭资源服务，停止后台
+投递并等待各 Agent 任务，最后关闭 feed 并等待其任务。关停任务独立于调用方的等待过程，
+重复调用等待同一次清理；宿主应在释放 Runtime 前显式关停。
+
+宿主负责提供以下能力：
+
+- 通过 `Runtime::storage()` 创建话题、提供商、模型与凭证。
+- HTTP/SSE/WebSocket 端点、鉴权与前端底座；通过 `Runtime::subscribe()` 获取进程内订阅。
+- 外部等待的展示与用户交互，将答复交给 `Runtime::resume`。
+- 事件历史查询与分页；`wind-storage` 当前只写 `event_log`。
+- `AppDirs` 根目录，确定数据库、话题工作区、公共技能、mod 与字节码位置。
 
 ## 数据库
 
@@ -266,8 +268,6 @@ LlmRunner / Installer / Agent / MCP / ScriptRuntime
 | mod request | 清单 `requests` 只做校验；没有 `ToolOrigin::ModRequest`，没有工具来源，也没有调用入口 |
 | 事件历史读取 | `event_log` 只写不读；`Opening.cut` 只提供拼接口 |
 | 全局作用域的事件订阅 | `Roster::enabled` 只为话题作用域返回 mod 集合；`core/mcp.*` 等全局事件不会命中任何 mod 订阅 |
-| 后台子实例结果 | `PendingKind::BackgroundResult`、`spawn_calls.result_delivered_at` 与 `AgentHandle::deliver` 均无生产者 |
-| 主实例行 | 由宿主创建；库内没有创建主实例的语句 |
 | `wind_spawn_agent` 的 `fork` | 参数被解析，但 `create_spawn_requests` 不使用它 |
 | mod 状态 | `Capability::State` / `Capability::Storage` 已声明，数据库没有对应表，宿主也没有注入实现 |
 | 脚本能力声明 | `capabilities` 只参与清单校验，不注入、不裁剪 |

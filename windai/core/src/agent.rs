@@ -2,6 +2,7 @@ pub mod events;
 pub mod handler;
 mod jobs;
 pub(crate) mod tree;
+pub use tree::phase::{CancelOrigin, Phase};
 
 use self::tree::{Domain, JobId, NodeId};
 use tokio_util::sync::CancellationToken;

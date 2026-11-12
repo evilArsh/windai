@@ -1,6 +1,6 @@
 use crate::error::Result;
 use crate::utils::{ensure_affected, now_ts};
-use crate::{AgentInstance, ChildStateRow, Storage};
+use crate::{AgentInstance, ChildStateRow, SpawnCall, Storage};
 use sqlx::{QueryBuilder, Sqlite};
 use wind_wire::{AgentMode, AgentRole};
 
@@ -142,5 +142,80 @@ impl Storage {
         query.push(") ORDER BY s.call_id, b.seq");
         let rows = self.executor.fetch_all(query.build_query_as()).await?;
         Ok(rows)
+    }
+}
+
+impl Storage {
+    pub async fn list_instances_by_topic(&self, topic_id: i64) -> Result<Vec<AgentInstance>> {
+        self.executor
+            .fetch_all(
+                sqlx::query_as::<_, AgentInstance>(
+                    "SELECT id, parent_id, topic_id, role, mode, phase, phase_payload, created_at
+             FROM agent_instances WHERE topic_id = ? ORDER BY id",
+                )
+                .bind(topic_id),
+            )
+            .await
+    }
+
+    pub async fn ensure_main(&self, topic_id: i64, mode: AgentMode) -> Result<i64> {
+        self.executor
+            .fetch_one_scalar(
+                sqlx::query_scalar::<_, i64>(
+                    "INSERT INTO agent_instances (topic_id, role, mode, phase, created_at)
+             VALUES (?, 'main', ?, 'running', ?)
+             ON CONFLICT (topic_id) WHERE role = 'main'
+             DO UPDATE SET phase = agent_instances.phase RETURNING id",
+                )
+                .bind(topic_id)
+                .bind(mode.as_ref())
+                .bind(now_ts()),
+            )
+            .await
+    }
+
+    pub async fn spawn_call_of_child(&self, child_id: i64) -> Result<Option<SpawnCall>> {
+        self.executor
+            .fetch_optional(
+                sqlx::query_as::<_, SpawnCall>(
+                    "SELECT parent_id, call_id, child_id, created_at, result_delivered_at
+             FROM spawn_calls WHERE child_id = ?",
+                )
+                .bind(child_id),
+            )
+            .await
+    }
+
+    pub async fn claim_result_delivery(&self, child_id: i64) -> Result<Option<i64>> {
+        let row: Option<(i64,)> = self
+            .executor
+            .fetch_optional(
+                sqlx::query_as(
+                    "UPDATE spawn_calls SET result_delivered_at = ?
+             WHERE child_id = ? AND result_delivered_at IS NULL RETURNING child_id",
+                )
+                .bind(now_ts())
+                .bind(child_id),
+            )
+            .await?;
+        Ok(row.map(|(id,)| id))
+    }
+
+    pub async fn list_undelivered_background(&self, topic_id: i64) -> Result<Vec<i64>> {
+        let rows: Vec<(i64,)> = self
+            .executor
+            .fetch_all(
+                sqlx::query_as(
+                    "SELECT s.child_id FROM spawn_calls s
+             JOIN agent_instances i ON i.id = s.child_id
+             WHERE i.topic_id = ? AND i.mode = 'background'
+               AND s.result_delivered_at IS NULL
+               AND i.phase IN ('done', 'failed', 'cancelled', 'aborted')
+             ORDER BY s.child_id",
+                )
+                .bind(topic_id),
+            )
+            .await?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 }
