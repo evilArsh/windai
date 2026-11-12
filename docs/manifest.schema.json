@@ -7,8 +7,8 @@
     "name": {
       "description": "mod 名，系统唯一",
       "type": "string",
-      "minLength": 2,
-      "maxLength": 63,
+      "minLength": 3,
+      "maxLength": 30,
       "pattern": "^[a-z][a-z0-9_-]{1,62}$"
     },
     "version": {
@@ -16,13 +16,10 @@
       "type": "integer",
       "format": "uint32",
       "minimum": 1,
-      "maximum": 4294967295
+      "maximum": 300
     },
     "description": {
-      "type": [
-        "string",
-        "null"
-      ],
+      "type": ["string", "null"],
       "maxLength": 500
     },
     "capabilities": {
@@ -68,10 +65,7 @@
       "description": "共享 schema 字典",
       "type": "object",
       "additionalProperties": {
-        "type": [
-          "object",
-          "boolean"
-        ]
+        "type": ["object", "boolean"]
       },
       "default": {},
       "propertyNames": {
@@ -80,20 +74,13 @@
     }
   },
   "additionalProperties": false,
-  "required": [
-    "name",
-    "version"
-  ],
+  "required": ["name", "version"],
   "$defs": {
     "Capability": {
       "oneOf": [
         {
           "type": "string",
-          "enum": [
-            "http",
-            "agent",
-            "fs"
-          ]
+          "enum": ["http", "agent", "fs"]
         },
         {
           "description": "对外状态，写入会广播给订阅方",
@@ -132,39 +119,26 @@
           "pattern": "^[a-zA-Z][a-zA-Z0-9+.-]*:"
         },
         "description": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         }
       },
       "additionalProperties": false,
       "oneOf": [
         {
-          "required": [
-            "command"
-          ],
+          "required": ["command"],
           "not": {
-            "required": [
-              "url"
-            ]
+            "required": ["url"]
           }
         },
         {
-          "required": [
-            "url"
-          ],
+          "required": ["url"],
           "not": {
-            "required": [
-              "command"
-            ]
+            "required": ["command"]
           }
         }
       ],
       "if": {
-        "required": [
-          "url"
-        ]
+        "required": ["url"]
       },
       "then": {
         "properties": {
@@ -186,26 +160,15 @@
           "pattern": "^[a-zA-Z_$][a-zA-Z0-9_$]*$"
         },
         "description": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "inputSchema": {
           "description": "输入结构。宿主在调用边界校验",
-          "type": [
-            "object",
-            "boolean",
-            "null"
-          ]
+          "type": ["object", "boolean", "null"]
         },
         "outputSchema": {
           "description": "输出结构。宿主在调用边界校验。",
-          "type": [
-            "object",
-            "boolean",
-            "null"
-          ]
+          "type": ["object", "boolean", "null"]
         },
         "callableBy": {
           "type": "array",
@@ -215,26 +178,18 @@
         },
         "timeoutMs": {
           "description": "本次调用的超时，毫秒",
-          "type": [
-            "integer",
-            "null"
-          ],
+          "type": ["integer", "null"],
           "format": "uint64",
           "minimum": 1,
           "maximum": 300000
         }
       },
       "additionalProperties": false,
-      "required": [
-        "handler"
-      ]
+      "required": ["handler"]
     },
     "CallableBy": {
       "type": "string",
-      "enum": [
-        "agent",
-        "ui"
-      ]
+      "enum": ["agent", "ui"]
     },
     "Events": {
       "type": "object",
@@ -272,19 +227,14 @@
         },
         "timeoutMs": {
           "description": "本订阅的单次时间预算，毫秒",
-          "type": [
-            "integer",
-            "null"
-          ],
+          "type": ["integer", "null"],
           "format": "uint64",
           "minimum": 1,
           "maximum": 60000
         }
       },
       "additionalProperties": false,
-      "required": [
-        "handler"
-      ]
+      "required": ["handler"]
     },
     "EmitDecl": {
       "type": "object",
@@ -294,35 +244,21 @@
         },
         "eventKey": {
           "description": "持久化数据的事件名是完整名字（m_<mod_name>/<event_key>）",
-          "type": [
-            "string",
-            "null"
-          ],
+          "type": ["string", "null"],
           "pattern": "^[a-zA-Z_][a-zA-Z0-9_-]{0,62}$",
           "minLength": 1
         },
         "payload": {
-          "type": [
-            "object",
-            "boolean"
-          ]
+          "type": ["object", "boolean"]
         },
         "description": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         }
       },
       "additionalProperties": false,
-      "required": [
-        "retention",
-        "payload"
-      ],
+      "required": ["retention", "payload"],
       "if": {
-        "required": [
-          "retention"
-        ],
+        "required": ["retention"],
         "properties": {
           "retention": {
             "const": "journal"
@@ -330,9 +266,7 @@
         }
       },
       "then": {
-        "required": [
-          "eventKey"
-        ],
+        "required": ["eventKey"],
         "properties": {
           "eventKey": {
             "type": "string"
