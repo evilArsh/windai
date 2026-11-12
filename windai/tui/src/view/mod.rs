@@ -1,0 +1,124 @@
+pub mod input;
+
+use ratatui::Frame;
+use ratatui::layout::Rect;
+use ratatui::widgets::{Block, Paragraph};
+
+use crate::app::{App, Screen};
+use crate::theme;
+
+pub struct SideLayout {
+    pub mods: Rect,
+    pub tree: Rect,
+    pub log: Rect,
+}
+
+pub struct Layout {
+    pub content: Rect,
+    pub bar: Rect,
+    pub input: Rect,
+    pub side: Option<SideLayout>,
+}
+
+pub fn layout(area: Rect, bar_height: u16) -> Layout {
+    let hidden = Rect::new(area.x, area.y, 0, 0);
+    let input_height = ((u32::from(area.height) * 40 / 100).clamp(5, 15) as u16).min(area.height);
+
+    if area.height < 10 {
+        let y = area.y.saturating_add(area.height - input_height);
+        return Layout {
+            content: hidden,
+            bar: hidden,
+            input: Rect::new(area.x, y, area.width, input_height),
+            side: None,
+        };
+    }
+
+    let bar_height = if area.height < 22 {
+        1
+    } else {
+        bar_height.clamp(1, 2)
+    };
+    let side_width = if area.width >= 60 && area.height >= 20 {
+        Some((u32::from(area.width) / 3).clamp(28, 48) as u16)
+    } else {
+        None
+    };
+    let left_width = side_width.map_or(area.width, |width| area.width - width);
+
+    let content_height = area
+        .height
+        .saturating_sub(input_height)
+        .saturating_sub(bar_height);
+    let bar_y = area.y.saturating_add(content_height);
+    let input_y = bar_y.saturating_add(bar_height);
+    let content = Rect::new(area.x, area.y, left_width, content_height);
+    let bar = Rect::new(area.x, bar_y, left_width, bar_height);
+    let input = Rect::new(area.x, input_y, left_width, input_height);
+
+    let side = side_width.map(|width| {
+        let x = area.x.saturating_add(left_width);
+        let mods_height = (u32::from(area.height) / 4).clamp(3, 10) as u16;
+        let tree_height = (u32::from(area.height) / 3).clamp(4, 14) as u16;
+        let log_height = area
+            .height
+            .saturating_sub(mods_height)
+            .saturating_sub(tree_height);
+        let tree_y = area.y.saturating_add(mods_height);
+        let log_y = tree_y.saturating_add(tree_height);
+        SideLayout {
+            mods: Rect::new(x, area.y, width, mods_height),
+            tree: Rect::new(x, tree_y, width, tree_height),
+            log: Rect::new(x, log_y, width, log_height),
+        }
+    });
+
+    Layout {
+        content,
+        bar,
+        input,
+        side,
+    }
+}
+
+pub fn render(frame: &mut Frame, app: &App) {
+    let layout = layout(frame.area(), 1);
+    let message = match app.screen() {
+        Screen::Empty => "No active session",
+    };
+    render_panel(frame, layout.content, "Content Area", Some(message));
+    render_bar(frame, layout.bar);
+    if let Some(side) = layout.side {
+        render_panel(frame, side.mods, "Layer 1 mods", None);
+        render_panel(frame, side.tree, "Layer 2 tree", None);
+        render_panel(frame, side.log, "Layer 3 log", None);
+    }
+    input::render(frame, layout.input, app.input(), app.focus());
+}
+
+fn render_panel(frame: &mut Frame, area: Rect, title: &str, message: Option<&str>) {
+    if area.is_empty() {
+        return;
+    }
+    let block = Block::bordered()
+        .border_style(theme::BORDER)
+        .title(title)
+        .title_style(theme::TITLE);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if let Some(message) = message
+        && !inner.is_empty()
+    {
+        frame.render_widget(Paragraph::new(message).style(theme::PLACEHOLDER), inner);
+    }
+}
+
+fn render_bar(frame: &mut Frame, area: Rect) {
+    if area.is_empty() {
+        return;
+    }
+    frame.render_widget(
+        Paragraph::new("No provider selected").style(theme::BAR),
+        area,
+    );
+}
