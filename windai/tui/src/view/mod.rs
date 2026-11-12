@@ -1,4 +1,5 @@
 pub mod input;
+pub mod log;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -83,16 +84,30 @@ pub fn layout(area: Rect, bar_height: u16) -> Layout {
 
 pub fn render(frame: &mut Frame, app: &App) {
     let layout = layout(frame.area(), 1);
-    let message = match app.screen() {
-        Screen::Empty => "No active session",
-    };
-    render_panel(frame, layout.content, "Content Area", Some(message));
-    render_bar(frame, layout.bar);
-    if let Some(side) = layout.side {
-        render_panel(frame, side.mods, "Layer 1 mods", None);
-        render_panel(frame, side.tree, "Layer 2 tree", None);
-        render_panel(frame, side.log, "Layer 3 log", None);
+    match app.screen() {
+        Screen::Empty => {
+            render_panel(
+                frame,
+                layout.content,
+                "Content Area",
+                Some("No active session"),
+            );
+            if let Some(side) = layout.side {
+                render_panel(frame, side.mods, "Layer 1 mods", None);
+                render_panel(frame, side.tree, "Layer 2 tree", None);
+                render_panel(frame, side.log, "Layer 3 log", None);
+            }
+        }
+        Screen::Session(session) => {
+            render_panel(frame, layout.content, "Content Area", None);
+            if let Some(side) = layout.side {
+                render_panel(frame, side.mods, "Layer 1 mods", None);
+                render_panel(frame, side.tree, "Layer 2 tree", None);
+                log::render(frame, side.log, &session.log);
+            }
+        }
     }
+    render_bar(frame, layout.bar, app.notice());
     input::render(frame, layout.input, app.input(), app.focus());
 }
 
@@ -113,7 +128,7 @@ fn render_panel(frame: &mut Frame, area: Rect, title: &str, message: Option<&str
     }
 }
 
-fn render_bar(frame: &mut Frame, area: Rect) {
+fn render_bar(frame: &mut Frame, area: Rect, notice: Option<&str>) {
     if area.is_empty() {
         return;
     }
@@ -121,4 +136,8 @@ fn render_bar(frame: &mut Frame, area: Rect) {
         Paragraph::new("No provider selected").style(theme::BAR),
         area,
     );
+    if let Some(notice) = notice {
+        let line = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
+        frame.render_widget(Paragraph::new(notice).style(theme::BAR), line);
+    }
 }
