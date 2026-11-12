@@ -687,3 +687,30 @@ fn mod_events_request_a_reload() {
         session.reload_mods = false;
     }
 }
+
+#[test]
+fn a_repeated_terminal_status_does_not_interrupt_another_message() {
+    let mut session = session(CURRENT_TOPIC, Some(5));
+    session
+        .messages
+        .push(MessageView::new(101, Role::Assistant));
+    session
+        .messages
+        .push(MessageView::new(102, Role::Assistant));
+    assert!(apply(&mut session, &spawn(1, 5, None)));
+    assert!(apply(
+        &mut session,
+        &status(2, 5, "failed", Some(json!({"error": "first"})))
+    ));
+    assert_eq!(session.messages[1].interrupted.as_deref(), Some("failed"));
+    assert!(apply(
+        &mut session,
+        &status(
+            3,
+            5,
+            "failed",
+            Some(json!({"error": "second failure with a new reason"}))
+        )
+    ));
+    assert_eq!(session.messages[0].interrupted, None);
+}

@@ -156,6 +156,10 @@ pub(crate) fn phase_detail(phase: &Phase<LlmDomain>) -> (Option<i64>, Option<Str
     }
 }
 
+pub(crate) fn phase_is_terminal(phase: &str) -> bool {
+    matches!(phase, "done" | "failed" | "cancelled" | "aborted")
+}
+
 struct LoadState {
     topic_id: i64,
     task: TaskHandle<Result<LoadedSession, StorageError>>,

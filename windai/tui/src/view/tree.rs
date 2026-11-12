@@ -1,4 +1,4 @@
-use crate::app::NodeView;
+use crate::app::{NodeView, phase_is_terminal};
 use crate::text::concise;
 use crate::theme;
 use ratatui::Frame;
@@ -36,7 +36,7 @@ pub fn render(frame: &mut Frame, area: Rect, nodes: &[NodeView]) {
             if let Some(wait) = node.suspended_wait {
                 text.push_str(&format!(" wait #{wait}"));
             }
-            let style = if is_terminal(&node.phase) {
+            let style = if phase_is_terminal(&node.phase) {
                 theme::BAR
             } else {
                 Style::default()
@@ -45,10 +45,6 @@ pub fn render(frame: &mut Frame, area: Rect, nodes: &[NodeView]) {
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), inner);
-}
-
-fn is_terminal(phase: &str) -> bool {
-    matches!(phase, "done" | "failed" | "cancelled" | "aborted")
 }
 
 fn ordered(nodes: &[NodeView]) -> Vec<(usize, &NodeView)> {

@@ -1,4 +1,4 @@
-use crate::app::{BlockView, MessageView, NodeView, Session, phase_detail};
+use crate::app::{BlockView, MessageView, NodeView, Session, phase_detail, phase_is_terminal};
 use crate::text::{decode, interrupted_reason};
 use serde_json::Value;
 use wind_core::agent::Phase;
@@ -219,17 +219,21 @@ fn apply_status(session: &mut Session, event: &AgentStatus) -> bool {
     };
     let (suspended_wait, reason) = phase_detail(&phase);
     let is_main = session.main == Some(event.instance_id);
-    let phase_changed;
+    let was_terminal = session
+        .nodes
+        .iter()
+        .find(|node| node.id == event.instance_id)
+        .is_some_and(|node| phase_is_terminal(&node.phase));
     let mut changed = false;
     if let Some(node) = session
         .nodes
         .iter_mut()
         .find(|node| node.id == event.instance_id)
     {
-        phase_changed = node.phase != event.phase
+        if node.phase != event.phase
             || node.suspended_wait != suspended_wait
-            || node.reason != reason;
-        if phase_changed {
+            || node.reason != reason
+        {
             node.phase = event.phase.clone();
             node.suspended_wait = suspended_wait;
             node.reason = reason;
@@ -245,11 +249,10 @@ fn apply_status(session: &mut Session, event: &AgentStatus) -> bool {
             reason,
             sealed: false,
         });
-        phase_changed = true;
         changed = true;
     }
     if is_main
-        && phase_changed
+        && !was_terminal
         && phase.is_terminal()
         && let Some(message) = session
             .messages
