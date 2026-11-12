@@ -2,7 +2,9 @@ use serde_json::json;
 use tempfile::TempDir;
 use wind_storage::error::StorageError;
 use wind_storage::{Model, Provider, Storage};
-use wind_tui::config::{Selection, refresh, save_model, save_provider};
+use wind_tui::config::{
+    Selection, refresh, save_model, save_provider, update_model, update_provider,
+};
 use wind_tui::form::{Form, ModelFields, ModelForm, ProviderFields, ProviderForm};
 use wind_wire::AdapterType;
 
@@ -51,6 +53,64 @@ async fn database() -> (TempDir, Storage) {
         .await
         .expect("open the database");
     (dir, storage)
+}
+
+#[test]
+fn editing_a_provider_keeps_its_own_name_valid() {
+    let providers = [provider(1, "alpha"), provider(2, "beta")];
+    let form = ProviderForm::edit(&providers[0]);
+    assert_eq!(form.editing, Some(1));
+    assert_eq!(form.name, "alpha");
+    assert_eq!(form.base_url, "https://alpha.example");
+    let fields = form.validate(&providers).expect("the form is valid");
+    assert_eq!(fields.name, "alpha");
+
+    let mut renamed = form.clone();
+    renamed.name = "beta".to_owned();
+    let error = renamed.validate(&providers).expect_err("the name is taken");
+    assert_eq!(error.0, 0);
+}
+
+#[test]
+fn editing_a_model_prefills_the_adapter_and_freezes_the_provider() {
+    let providers = [provider(1, "alpha"), provider(2, "beta")];
+    let existing = Model {
+        adapter: AdapterType::OpenAIResponse,
+        endpoint: Some("https://alpha.example/v1".to_owned()),
+        config: Some(json!({"reasoning_effort": "high"})),
+        ..model(1, 1, "alpha-model")
+    };
+    let mut wrapper = Form::Model(ModelForm::edit(&existing, &providers));
+    let form = model_form(&wrapper);
+    assert_eq!(form.editing, Some(1));
+    assert_eq!(form.provider_index, 0);
+    assert_eq!(form.adapter_index, 1);
+    assert_eq!(form.endpoint, "https://alpha.example/v1");
+    assert_eq!(form.config, r#"{"reasoning_effort":"high"}"#);
+
+    wrapper.move_right(&providers);
+    assert_eq!(model_form(&wrapper).provider_index, 0);
+    let Form::Model(form) = &mut wrapper else {
+        panic!("expected a model form")
+    };
+    form.focus = 2;
+    wrapper.move_right(&providers);
+    assert_eq!(model_form(&wrapper).adapter_index, 0);
+
+    let fields = model_form(&wrapper)
+        .validate(&providers, &[existing])
+        .expect("the form is valid");
+    assert_eq!(fields.adapter, AdapterType::OpenAICompletion);
+}
+
+#[test]
+fn forms_insert_pasted_text_at_the_cursor() {
+    let mut form = ProviderForm::default();
+    form.insert_str("ab");
+    form.move_left();
+    form.insert_str("X\nY");
+    assert_eq!(form.name, "aXYb");
+    assert_eq!(form.cursor, 3);
 }
 
 #[test]
@@ -285,6 +345,143 @@ fn tab_moves_between_fields_and_lands_at_the_end_of_text() {
     assert!(model_form(&form).endpoint.is_empty());
     assert_eq!(model_form(&form).name, "m");
     assert_eq!(model_form(&form).config, "c");
+}
+
+#[tokio::test]
+async fn updating_a_provider_replaces_the_key() {
+    let (_dir, storage) = database().await;
+    let provider_id = save_provider(
+        &storage,
+        ProviderFields {
+            name: "alpha".to_owned(),
+            base_url: "https://alpha.example".to_owned(),
+            api_key: Some("sk-alpha".to_owned()),
+        },
+    )
+    .await
+    .expect("save the provider");
+    let model_id = storage
+        .create_model(
+            provider_id,
+            "alpha-model",
+            AdapterType::OpenAICompletion,
+            None,
+            None,
+        )
+        .await
+        .expect("create the model");
+
+    update_provider(
+        &storage,
+        provider_id,
+        ProviderFields {
+            name: "beta".to_owned(),
+            base_url: "https://beta.example".to_owned(),
+            api_key: Some("sk-beta".to_owned()),
+        },
+    )
+    .await
+    .expect("update the provider");
+
+    let providers = storage.list_providers().await.expect("list providers");
+    assert_eq!(providers.len(), 1);
+    assert_eq!(providers[0].name, "beta");
+    assert_eq!(providers[0].base_url, "https://beta.example");
+    let config = storage
+        .get_model_config(model_id)
+        .await
+        .expect("read the model config")
+        .expect("the model config exists");
+    assert_eq!(config.api_key.as_deref(), Some("sk-beta"));
+}
+
+#[tokio::test]
+async fn updating_a_provider_without_a_key_keeps_the_credential() {
+    let (_dir, storage) = database().await;
+    let provider_id = save_provider(
+        &storage,
+        ProviderFields {
+            name: "alpha".to_owned(),
+            base_url: "https://alpha.example".to_owned(),
+            api_key: Some("sk-alpha".to_owned()),
+        },
+    )
+    .await
+    .expect("save the provider");
+    let model_id = storage
+        .create_model(
+            provider_id,
+            "alpha-model",
+            AdapterType::OpenAICompletion,
+            None,
+            None,
+        )
+        .await
+        .expect("create the model");
+
+    update_provider(
+        &storage,
+        provider_id,
+        ProviderFields {
+            name: "alpha".to_owned(),
+            base_url: "https://alpha.example/v2".to_owned(),
+            api_key: None,
+        },
+    )
+    .await
+    .expect("update the provider");
+
+    let config = storage
+        .get_model_config(model_id)
+        .await
+        .expect("read the model config")
+        .expect("the model config exists");
+    assert_eq!(config.api_key.as_deref(), Some("sk-alpha"));
+}
+
+#[tokio::test]
+async fn updating_a_model_switches_the_adapter() {
+    let (_dir, storage) = database().await;
+    let provider_id = storage
+        .create_provider("alpha", "https://alpha.example")
+        .await
+        .expect("create the provider");
+    let model_id = save_model(
+        &storage,
+        ModelFields {
+            provider_id,
+            name: "alpha-model".to_owned(),
+            adapter: AdapterType::OpenAICompletion,
+            endpoint: None,
+            config: None,
+        },
+    )
+    .await
+    .expect("save the model");
+
+    update_model(
+        &storage,
+        model_id,
+        ModelFields {
+            provider_id,
+            name: "alpha-model".to_owned(),
+            adapter: AdapterType::OpenAIResponse,
+            endpoint: Some("https://alpha.example/v1".to_owned()),
+            config: None,
+        },
+    )
+    .await
+    .expect("update the model");
+
+    let models = storage
+        .list_models(Some(provider_id))
+        .await
+        .expect("list models");
+    assert_eq!(models[0].adapter, AdapterType::OpenAIResponse);
+    assert_eq!(
+        models[0].endpoint.as_deref(),
+        Some("https://alpha.example/v1")
+    );
 }
 
 #[tokio::test]

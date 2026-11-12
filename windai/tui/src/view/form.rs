@@ -10,9 +10,9 @@ pub fn render(frame: &mut Frame, area: Rect, form: &Form, providers: &[Provider]
     if area.is_empty() {
         return;
     }
-    let (title, rows) = match form {
-        Form::Provider(form) => ("new provider", provider_rows(form)),
-        Form::Model(form) => ("new model", model_rows(form, providers)),
+    let rows = match form {
+        Form::Provider(form) => provider_rows(form),
+        Form::Model(form) => model_rows(form, providers),
     };
     let popup = popup(area, rows.len());
     if popup.is_empty() {
@@ -21,7 +21,7 @@ pub fn render(frame: &mut Frame, area: Rect, form: &Form, providers: &[Provider]
     frame.render_widget(Clear, popup);
     let block = Block::bordered()
         .border_style(theme::FOCUS)
-        .title(title)
+        .title(form.title())
         .title_style(theme::TITLE);
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
@@ -49,6 +49,9 @@ fn provider_rows(form: &ProviderForm) -> Vec<Line<'static>> {
         text_line("base_url", &form.base_url, form.focus == 1, form.cursor),
         text_line("api_key", &form.api_key, form.focus == 2, form.cursor),
     ];
+    if form.editing.is_some() {
+        push_hint(&mut rows, "blank api_key keeps the current key");
+    }
     push_error(&mut rows, form.error.as_deref());
     rows
 }
@@ -63,14 +66,26 @@ fn model_rows(form: &ModelForm, providers: &[Provider]) -> Vec<Line<'static>> {
         .map(ToString::to_string)
         .unwrap_or_else(|| "-".to_owned());
     let mut rows = vec![
-        enum_line("provider", provider, form.focus == 0),
+        enum_line(
+            "provider",
+            provider,
+            form.focus == 0,
+            form.editing.is_none(),
+        ),
         text_line("name", &form.name, form.focus == 1, form.cursor),
-        enum_line("adapter", &adapter, form.focus == 2),
+        enum_line("adapter", &adapter, form.focus == 2, true),
         text_line("endpoint", &form.endpoint, form.focus == 3, form.cursor),
         text_line("config", &form.config, form.focus == 4, form.cursor),
     ];
     push_error(&mut rows, form.error.as_deref());
     rows
+}
+
+fn push_hint(rows: &mut Vec<Line<'static>>, hint: &str) {
+    rows.push(Line::from(Span::styled(
+        hint.to_owned(),
+        theme::PLACEHOLDER,
+    )));
 }
 
 fn push_error(rows: &mut Vec<Line<'static>>, error: Option<&str>) {
@@ -99,10 +114,13 @@ fn text_line(label: &str, value: &str, active: bool, cursor: usize) -> Line<'sta
     Line::from(spans)
 }
 
-fn enum_line(label: &str, value: &str, active: bool) -> Line<'static> {
-    Line::from(vec![
+fn enum_line(label: &str, value: &str, active: bool, cycle: bool) -> Line<'static> {
+    let mut spans = vec![
         Span::styled(format!("{label:<12} "), label_style(active)),
         Span::raw(value.to_owned()),
-        Span::styled("  >".to_owned(), theme::BAR),
-    ])
+    ];
+    if cycle {
+        spans.push(Span::styled("  >".to_owned(), theme::BAR));
+    }
+    Line::from(spans)
 }

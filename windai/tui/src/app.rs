@@ -43,6 +43,8 @@ const TICK: Duration = Duration::from_millis(33);
 const EVENT_BUFFER: usize = 128;
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const LOAD_BUFFER_CAP: usize = 4096;
+const PAGE_LINES: isize = 10;
+const WHEEL_LINES: isize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -108,6 +110,17 @@ impl Session {
     }
 
     pub fn scroll_content_up(&mut self) {
+        self.scroll_content_by(-1);
+    }
+
+    pub fn scroll_content_down(&mut self) {
+        self.scroll_content_by(1);
+    }
+
+    pub fn scroll_content_by(&mut self, step: isize) {
+        if step == 0 {
+            return;
+        }
         if self.content_max == 0 {
             self.follow = true;
             self.content_scroll = 0;
@@ -117,19 +130,10 @@ impl Session {
             self.content_max
         } else {
             self.content_scroll.min(self.content_max)
-        };
-        self.content_scroll = current.saturating_sub(1);
-        self.follow = false;
-    }
-
-    pub fn scroll_content_down(&mut self) {
-        let current = if self.follow {
-            self.content_max
-        } else {
-            self.content_scroll.min(self.content_max)
-        };
-        self.content_scroll = current.saturating_add(1).min(self.content_max);
-        self.follow = self.content_scroll >= self.content_max;
+        } as isize;
+        let next = (current + step).clamp(0, self.content_max as isize) as u16;
+        self.content_scroll = next;
+        self.follow = next >= self.content_max;
     }
 
     pub fn scroll_content_end(&mut self) {
@@ -143,15 +147,24 @@ impl Session {
     }
 
     pub fn scroll_mods(&mut self, code: KeyCode) {
-        pane_scroll(&mut self.mods_scroll, self.mods_max, code);
+        self.scroll_mods_by(key_step(code, self.mods_max));
+    }
+
+    pub fn scroll_mods_by(&mut self, step: isize) {
+        scroll_pane(&mut self.mods_scroll, self.mods_max, step);
     }
 
     pub fn scroll_tree(&mut self, code: KeyCode) {
-        pane_scroll(&mut self.tree_scroll, self.tree_max, code);
+        self.scroll_tree_by(key_step(code, self.tree_max));
+    }
+
+    pub fn scroll_tree_by(&mut self, step: isize) {
+        scroll_pane(&mut self.tree_scroll, self.tree_max, step);
     }
 
     pub fn scroll_log(&mut self, code: KeyCode) {
         let max = self.log_max;
+        let page = PAGE_LINES as u16;
         let current = if self.log_scroll == u16::MAX {
             max
         } else {
@@ -159,24 +172,44 @@ impl Session {
         };
         self.log_scroll = match code {
             KeyCode::Up => current.saturating_sub(1),
+            KeyCode::PageUp => current.saturating_sub(page),
             KeyCode::Down if current >= max => u16::MAX,
             KeyCode::Down => current.saturating_add(1),
+            KeyCode::PageDown if current >= max => u16::MAX,
+            KeyCode::PageDown => current.saturating_add(page).min(max),
             KeyCode::Home => 0,
             KeyCode::End => u16::MAX,
             _ => return,
         };
     }
+
+    pub fn scroll_log_by(&mut self, step: isize) {
+        let max = self.log_max;
+        let current = if self.log_scroll == u16::MAX {
+            max
+        } else {
+            self.log_scroll.min(max)
+        } as isize;
+        let next = (current + step).clamp(0, max as isize) as u16;
+        self.log_scroll = if next >= max { u16::MAX } else { next };
+    }
 }
 
-fn pane_scroll(scroll: &mut u16, max: u16, code: KeyCode) {
-    let current = (*scroll).min(max);
-    *scroll = match code {
-        KeyCode::Up => current.saturating_sub(1),
-        KeyCode::Down => current.saturating_add(1).min(max),
-        KeyCode::Home => 0,
-        KeyCode::End => max,
-        _ => return,
-    };
+fn key_step(code: KeyCode, max: u16) -> isize {
+    match code {
+        KeyCode::Up => -1,
+        KeyCode::Down => 1,
+        KeyCode::PageUp => -PAGE_LINES,
+        KeyCode::PageDown => PAGE_LINES,
+        KeyCode::Home => -(max as isize),
+        KeyCode::End => max as isize,
+        _ => 0,
+    }
+}
+
+fn scroll_pane(scroll: &mut u16, max: u16, step: isize) {
+    let current = (*scroll).min(max) as isize;
+    *scroll = (current + step).clamp(0, max as isize) as u16;
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -276,10 +309,15 @@ pub struct Completion {
 pub(crate) const CONFIG_PROVIDER: usize = 0;
 pub(crate) const CONFIG_MODEL: usize = 1;
 pub(crate) const CONFIG_REASONING: usize = 2;
-pub(crate) const CONFIG_SIDE_PANEL: usize = 3;
-pub(crate) const CONFIG_NEW_PROVIDER: usize = 4;
-pub(crate) const CONFIG_NEW_MODEL: usize = 5;
-pub(crate) const CONFIG_ROWS: usize = 6;
+pub(crate) const CONFIG_STREAM: usize = 3;
+pub(crate) const CONFIG_SIDE_PANEL: usize = 4;
+pub(crate) const CONFIG_DIVIDER_ACTIONS: usize = 5;
+pub(crate) const CONFIG_EDIT_PROVIDER: usize = 6;
+pub(crate) const CONFIG_EDIT_MODEL: usize = 7;
+pub(crate) const CONFIG_DIVIDER_CREATE: usize = 8;
+pub(crate) const CONFIG_NEW_PROVIDER: usize = 9;
+pub(crate) const CONFIG_NEW_MODEL: usize = 10;
+pub(crate) const CONFIG_ROWS: usize = 11;
 pub(crate) const COMPLETION_ROWS: usize = 6;
 
 fn move_selection(selected: &mut usize, len: usize, step: isize) {
@@ -289,6 +327,18 @@ fn move_selection(selected: &mut usize, len: usize, step: isize) {
     }
     let current = (*selected).min(len - 1) as isize;
     *selected = (current + step).rem_euclid(len as isize) as usize;
+}
+
+fn move_config_selection(selected: &mut usize, step: isize) {
+    const DIVIDERS: [usize; 2] = [CONFIG_DIVIDER_ACTIONS, CONFIG_DIVIDER_CREATE];
+    let mut current = (*selected).min(CONFIG_ROWS - 1) as isize;
+    for _ in 0..CONFIG_ROWS {
+        current = (current + step).rem_euclid(CONFIG_ROWS as isize);
+        if !DIVIDERS.contains(&(current as usize)) {
+            break;
+        }
+    }
+    *selected = current as usize;
 }
 
 fn rect_contains(rect: Rect, x: u16, y: u16) -> bool {
@@ -316,6 +366,15 @@ pub(crate) fn phase_is_terminal(phase: &str) -> bool {
     matches!(phase, "done" | "failed" | "cancelled" | "aborted")
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct Panes {
+    pub content: Rect,
+    pub mods: Rect,
+    pub tree: Rect,
+    pub log: Rect,
+    pub input: Rect,
+}
+
 struct LoadState {
     topic_id: i64,
     task: TaskHandle<Result<LoadedSession, StorageError>>,
@@ -339,6 +398,7 @@ pub struct App {
     storage_error: Option<String>,
     bar: BarLayout,
     bar_area: Rect,
+    panes: Panes,
     branch: Option<String>,
     dirs: AppDirs,
     quit: bool,
@@ -377,6 +437,7 @@ impl App {
             storage_error: None,
             bar: BarLayout::default(),
             bar_area: Rect::new(0, 0, 0, 0),
+            panes: Panes::default(),
             branch,
             dirs,
             quit: false,
@@ -429,6 +490,13 @@ impl App {
         self.show_side
     }
 
+    pub(crate) fn current_topic_id(&self) -> Option<i64> {
+        match &self.screen {
+            Screen::Session(session) => Some(session.topic.id),
+            Screen::Empty => None,
+        }
+    }
+
     pub fn notice(&self) -> Option<&str> {
         self.notice.as_deref()
     }
@@ -447,6 +515,10 @@ impl App {
 
     pub(crate) fn set_bar_area(&mut self, area: Rect) {
         self.bar_area = area;
+    }
+
+    pub(crate) fn set_panes(&mut self, panes: Panes) {
+        self.panes = panes;
     }
 
     pub(crate) fn bar_data(&self) -> BarData {
@@ -499,12 +571,69 @@ impl App {
     }
 
     pub async fn handle_mouse(&mut self, mouse: MouseEvent) {
-        if mouse.kind != MouseEventKind::Down(MouseButton::Left)
-            || self.form.is_some()
-            || self.overlay.is_some()
-        {
+        if self.form.is_some() || self.overlay.is_some() {
             return;
         }
+        match mouse.kind {
+            MouseEventKind::ScrollUp => self.scroll_pane_at(mouse.column, mouse.row, -WHEEL_LINES),
+            MouseEventKind::ScrollDown => self.scroll_pane_at(mouse.column, mouse.row, WHEEL_LINES),
+            MouseEventKind::Down(MouseButton::Left) => self.click(mouse).await,
+            _ => {}
+        }
+    }
+
+    fn scroll_pane_at(&mut self, column: u16, row: u16, step: isize) {
+        let panes = self.panes;
+        let Screen::Session(session) = &mut self.screen else {
+            return;
+        };
+        if rect_contains(panes.content, column, row) {
+            session.scroll_content_by(step);
+        } else if rect_contains(panes.mods, column, row) {
+            session.scroll_mods_by(step);
+        } else if rect_contains(panes.tree, column, row) {
+            session.scroll_tree_by(step);
+        } else if rect_contains(panes.log, column, row) {
+            session.scroll_log_by(step);
+        } else {
+            return;
+        }
+        self.dirty = true;
+    }
+
+    async fn click(&mut self, mouse: MouseEvent) {
+        if self.focus_at(mouse.column, mouse.row) {
+            self.dirty = true;
+            return;
+        }
+        self.click_bar(mouse).await;
+    }
+
+    fn focus_at(&mut self, column: u16, row: u16) -> bool {
+        let panes = self.panes;
+        let focus = if rect_contains(panes.input, column, row) {
+            Focus::Input
+        } else if rect_contains(panes.content, column, row) {
+            Focus::Content
+        } else if rect_contains(panes.mods, column, row) {
+            Focus::Mods
+        } else if rect_contains(panes.tree, column, row) {
+            Focus::Tree
+        } else if rect_contains(panes.log, column, row) {
+            Focus::Log
+        } else {
+            return false;
+        };
+        if self.focus != focus {
+            self.focus = focus;
+            if focus != Focus::Input {
+                self.completion = None;
+            }
+        }
+        true
+    }
+
+    async fn click_bar(&mut self, mouse: MouseEvent) {
         let area = self.bar_area;
         if area.is_empty() || !rect_contains(area, mouse.column, mouse.row) {
             return;
@@ -569,7 +698,16 @@ impl App {
                     return;
                 }
                 KeyCode::Enter => {
-                    self.submit().await;
+                    let text = self.input.lines().join("\n");
+                    let selected = self
+                        .completion
+                        .as_ref()
+                        .and_then(|completion| completion.items.get(completion.selected).copied());
+                    match selected {
+                        Some(spec) if text.trim() == spec.name => self.submit().await,
+                        Some(_) => self.apply_completion(),
+                        None => self.submit().await,
+                    }
                     return;
                 }
                 _ => {}
@@ -629,6 +767,8 @@ impl App {
             Focus::Content => match key.code {
                 KeyCode::Up => session.scroll_content_up(),
                 KeyCode::Down => session.scroll_content_down(),
+                KeyCode::PageUp => session.scroll_content_by(-PAGE_LINES),
+                KeyCode::PageDown => session.scroll_content_by(PAGE_LINES),
                 KeyCode::Home => session.scroll_content_home(),
                 KeyCode::End => session.scroll_content_end(),
                 _ => return,
@@ -678,6 +818,15 @@ impl App {
     }
 
     pub fn handle_paste(&mut self, text: &str) {
+        if let Some(form) = self.form.as_mut() {
+            form.insert_str(text);
+            self.notice = None;
+            self.dirty = true;
+            return;
+        }
+        if self.overlay.is_some() {
+            return;
+        }
         if self.input.insert_str(text) {
             self.notice = None;
             self.refresh_completion();
@@ -983,14 +1132,29 @@ impl App {
     }
 
     async fn open_resume(&mut self) {
-        if matches!(&self.screen, Screen::Empty) {
-            self.notice = Some("enter a topic first".to_owned());
-            return;
-        }
         match self.resume_items().await {
-            Ok(items) => self.overlay = Some(Overlay::Resume { items, selected: 0 }),
+            Ok(items) if items.is_empty() => {
+                self.notice = Some("no topics yet".to_owned());
+                self.dirty = true;
+            }
+            Ok(items) => {
+                let selected = self.current_topic_index(&items);
+                self.overlay = Some(Overlay::Resume { items, selected });
+                self.notice = None;
+                self.dirty = true;
+            }
             Err(error) => self.storage_failed(format!("load topics failed: {error}")),
         }
+    }
+
+    fn current_topic_index(&self, items: &[ResumeItem]) -> usize {
+        let current = match &self.screen {
+            Screen::Session(session) => Some(session.topic.id),
+            Screen::Empty => None,
+        };
+        current
+            .and_then(|id| items.iter().position(|item| item.topic.id == id))
+            .unwrap_or(0)
     }
 
     async fn resume_items(&self) -> Result<Vec<ResumeItem>, StorageError> {
@@ -999,25 +1163,14 @@ impl App {
         let mut items = Vec::new();
         for topic in topics {
             let instances = storage.list_instances_by_topic(topic.id).await?;
-            if instances
+            let instance = instances
                 .iter()
-                .all(|instance| phase_is_terminal(&instance.phase))
-            {
-                continue;
-            }
-            let main = instances
-                .iter()
-                .find(|instance| instance.role == AgentRole::Main);
-            let phase = main
+                .find(|instance| instance.role == AgentRole::Main)
+                .or_else(|| instances.first());
+            let phase = instance
                 .map(|instance| instance.phase.clone())
-                .or_else(|| {
-                    instances
-                        .iter()
-                        .find(|instance| !phase_is_terminal(&instance.phase))
-                        .map(|instance| instance.phase.clone())
-                })
-                .unwrap_or_default();
-            let created_at = main.and_then(|instance| instance.created_at);
+                .unwrap_or_else(|| "-".to_owned());
+            let created_at = instance.and_then(|instance| instance.created_at);
             items.push(ResumeItem {
                 topic,
                 phase,
@@ -1095,7 +1248,7 @@ impl App {
         match self.overlay.as_ref() {
             Some(Overlay::Resume { .. }) => self.handle_resume_key(key).await,
             Some(Overlay::Providers { .. }) => self.handle_providers_key(key).await,
-            Some(Overlay::Models { .. }) => self.handle_models_key(key),
+            Some(Overlay::Models { .. }) => self.handle_models_key(key).await,
             Some(Overlay::Config { .. }) => self.handle_config_key(key).await,
             Some(Overlay::Help) if key.code == KeyCode::Enter => self.close_overlay(),
             Some(Overlay::Help) => {}
@@ -1172,10 +1325,11 @@ impl App {
             .select_provider(&self.providers, &self.models, provider_id);
         self.overlay = None;
         self.focus = Focus::Input;
+        self.sync_topic_model().await;
         self.dirty = true;
     }
 
-    fn handle_models_key(&mut self, key: KeyEvent) {
+    async fn handle_models_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Up | KeyCode::Down => {
                 let step = if key.code == KeyCode::Up { -1 } else { 1 };
@@ -1195,6 +1349,7 @@ impl App {
                     self.notice = self.selection.select_model(&self.models, model_id);
                     self.overlay = None;
                     self.focus = Focus::Input;
+                    self.sync_topic_model().await;
                     self.dirty = true;
                 }
             }
@@ -1210,24 +1365,20 @@ impl App {
         match key.code {
             KeyCode::Up => {
                 if let Some(Overlay::Config { selected }) = self.overlay.as_mut() {
-                    move_selection(selected, CONFIG_ROWS, -1);
+                    move_config_selection(selected, -1);
                 }
                 self.dirty = true;
             }
             KeyCode::Down => {
                 if let Some(Overlay::Config { selected }) = self.overlay.as_mut() {
-                    move_selection(selected, CONFIG_ROWS, 1);
+                    move_config_selection(selected, 1);
                 }
                 self.dirty = true;
             }
-            KeyCode::Left if selected == CONFIG_REASONING => {
-                self.selection.cycle_reasoning_back();
-                self.dirty = true;
-            }
-            KeyCode::Right if selected == CONFIG_REASONING => {
-                self.selection.cycle_reasoning();
-                self.dirty = true;
-            }
+            KeyCode::Left if selected == CONFIG_REASONING => self.step_reasoning(-1).await,
+            KeyCode::Right if selected == CONFIG_REASONING => self.step_reasoning(1).await,
+            KeyCode::Left if selected == CONFIG_STREAM => self.set_stream(false).await,
+            KeyCode::Right if selected == CONFIG_STREAM => self.set_stream(true).await,
             KeyCode::Enter => match selected {
                 CONFIG_PROVIDER => self.open_providers_overlay().await,
                 CONFIG_MODEL => self.open_models_overlay().await,
@@ -1235,6 +1386,12 @@ impl App {
                     self.show_side = !self.show_side;
                     self.dirty = true;
                 }
+                CONFIG_STREAM => {
+                    self.set_stream(!self.selection.stream.unwrap_or(false))
+                        .await
+                }
+                CONFIG_EDIT_PROVIDER => self.open_provider_edit_form(),
+                CONFIG_EDIT_MODEL => self.open_model_edit_form(),
                 CONFIG_NEW_PROVIDER => self.open_provider_form(),
                 CONFIG_NEW_MODEL => self.open_model_form(),
                 _ => {}
@@ -1243,8 +1400,60 @@ impl App {
         }
     }
 
+    async fn step_reasoning(&mut self, step: isize) {
+        if step < 0 {
+            self.selection.cycle_reasoning_back();
+        } else {
+            self.selection.cycle_reasoning();
+        }
+        let Some(model) = self.selection.model.clone() else {
+            self.dirty = true;
+            return;
+        };
+        let Some(level) = self.selection.reasoning_effort.clone() else {
+            self.dirty = true;
+            return;
+        };
+        match config::update_reasoning(self.runtime.storage(), &model, &level).await {
+            Ok(()) => {
+                if let Err(error) = self.reload_config(None, Some(model.id)).await {
+                    self.storage_failed(format!("refresh models failed: {error}"));
+                }
+            }
+            Err(error) => self.notice = Some(format!("save reasoning failed: {error}")),
+        }
+        self.dirty = true;
+    }
+
+    async fn set_stream(&mut self, on: bool) {
+        self.selection.stream = Some(on);
+        let Some(model) = self.selection.model.clone() else {
+            self.dirty = true;
+            return;
+        };
+        match config::update_stream(self.runtime.storage(), &model, on).await {
+            Ok(()) => {
+                if let Err(error) = self.reload_config(None, Some(model.id)).await {
+                    self.storage_failed(format!("refresh models failed: {error}"));
+                }
+            }
+            Err(error) => self.notice = Some(format!("save stream failed: {error}")),
+        }
+        self.dirty = true;
+    }
+
     fn open_provider_form(&mut self) {
         self.form = Some(Form::Provider(ProviderForm::default()));
+        self.dirty = true;
+    }
+
+    fn open_provider_edit_form(&mut self) {
+        let Some(provider) = self.selection.provider.clone() else {
+            self.notice = Some("no provider selected".to_owned());
+            self.dirty = true;
+            return;
+        };
+        self.form = Some(Form::Provider(ProviderForm::edit(&provider)));
         self.dirty = true;
     }
 
@@ -1254,6 +1463,16 @@ impl App {
             provider_index,
             ..ModelForm::default()
         }));
+        self.dirty = true;
+    }
+
+    fn open_model_edit_form(&mut self) {
+        let Some(model) = self.selection.model.clone() else {
+            self.notice = Some("no model selected".to_owned());
+            self.dirty = true;
+            return;
+        };
+        self.form = Some(Form::Model(ModelForm::edit(&model, &self.providers)));
         self.dirty = true;
     }
 
@@ -1330,10 +1549,22 @@ impl App {
         match form {
             Form::Provider(provider_form) => match provider_form.validate(&self.providers) {
                 Err((field, message)) => self.set_form_error(field, message),
-                Ok(fields) => match config::save_provider(self.runtime.storage(), fields).await {
-                    Ok(provider_id) => self.finish_provider_save(provider_id).await,
-                    Err(error) => self.set_form_error(0, error.to_string()),
-                },
+                Ok(fields) => {
+                    let result = match provider_form.editing {
+                        Some(provider_id) => {
+                            config::update_provider(self.runtime.storage(), provider_id, fields)
+                                .await
+                        }
+                        None => config::save_provider(self.runtime.storage(), fields).await,
+                    };
+                    match result {
+                        Ok(provider_id) => {
+                            self.finish_provider_save(provider_id, provider_form.editing.is_some())
+                                .await
+                        }
+                        Err(error) => self.set_form_error(0, error.to_string()),
+                    }
+                }
             },
             Form::Model(model_form) => {
                 let Some(provider) = self.providers.get(model_form.provider_index).cloned() else {
@@ -1351,8 +1582,21 @@ impl App {
                     Err((field, message)) => self.set_form_error(field, message),
                     Ok(fields) => {
                         let provider_id = fields.provider_id;
-                        match config::save_model(self.runtime.storage(), fields).await {
-                            Ok(model_id) => self.finish_model_save(provider_id, model_id).await,
+                        let result = match model_form.editing {
+                            Some(model_id) => {
+                                config::update_model(self.runtime.storage(), model_id, fields).await
+                            }
+                            None => config::save_model(self.runtime.storage(), fields).await,
+                        };
+                        match result {
+                            Ok(model_id) => {
+                                self.finish_model_save(
+                                    provider_id,
+                                    model_id,
+                                    model_form.editing.is_some(),
+                                )
+                                .await
+                            }
                             Err(error) => self.set_form_error(0, error.to_string()),
                         }
                     }
@@ -1361,51 +1605,108 @@ impl App {
         }
     }
 
-    async fn finish_provider_save(&mut self, provider_id: i64) {
-        if let Err(error) = self.reload_lists(Some(provider_id)).await {
+    async fn finish_provider_save(&mut self, provider_id: i64, edited: bool) {
+        let preferred_provider = (!edited).then_some(provider_id);
+        if let Err(error) = self.reload_config(preferred_provider, None).await {
             self.notice = Some(format!("refresh failed: {error}"));
             self.form = None;
             self.dirty = true;
             return;
         }
         self.form = None;
-        let notice = self
-            .selection
-            .select_provider(&self.providers, &self.models, provider_id);
-        self.notice = match notice.as_deref() {
-            Some("this provider has no models") => {
+        self.notice = match (&self.selection.model, edited) {
+            (None, _) if self.selection.provider.is_some() => {
                 Some("create a model for this provider".to_owned())
             }
-            _ => notice,
+            (_, true) => Some("provider updated".to_owned()),
+            _ => None,
         };
+        self.sync_topic_model().await;
         self.dirty = true;
     }
 
-    async fn finish_model_save(&mut self, provider_id: i64, model_id: i64) {
-        if let Err(error) = self.reload_lists(Some(provider_id)).await {
+    async fn finish_model_save(&mut self, provider_id: i64, model_id: i64, edited: bool) {
+        let preferred_provider = (!edited).then_some(provider_id);
+        if let Err(error) = self.reload_config(preferred_provider, Some(model_id)).await {
             self.notice = Some(format!("refresh failed: {error}"));
             self.form = None;
             self.dirty = true;
             return;
         }
         self.form = None;
-        let _ = self
-            .selection
-            .select_provider(&self.providers, &self.models, provider_id);
-        self.notice = self.selection.select_model(&self.models, model_id);
+        self.notice = Some(if edited {
+            "model updated".to_owned()
+        } else {
+            "model created".to_owned()
+        });
+        self.sync_topic_model().await;
         self.dirty = true;
     }
 
-    async fn reload_lists(&mut self, provider_id: Option<i64>) -> Result<(), StorageError> {
+    async fn reload_config(
+        &mut self,
+        preferred_provider: Option<i64>,
+        preferred_model: Option<i64>,
+    ) -> Result<(), StorageError> {
         let storage = self.runtime.storage();
         let providers = storage.list_providers().await?;
+        let exists = |id: i64| providers.iter().any(|provider| provider.id == id);
+        let provider_id = preferred_provider
+            .filter(|id| exists(*id))
+            .or_else(|| {
+                self.selection
+                    .provider
+                    .as_ref()
+                    .map(|provider| provider.id)
+                    .filter(|id| exists(*id))
+            })
+            .or_else(|| providers.first().map(|provider| provider.id));
         let models = match provider_id {
             Some(id) => storage.list_models(Some(id)).await?,
             None => Vec::new(),
         };
         self.providers = providers;
         self.models = models;
+        let Some(provider) = provider_id.and_then(|id| {
+            self.providers
+                .iter()
+                .find(|provider| provider.id == id)
+                .cloned()
+        }) else {
+            self.selection = Selection::new(None, None);
+            return Ok(());
+        };
+        let model_id = preferred_model
+            .filter(|id| self.models.iter().any(|model| model.id == *id))
+            .or_else(|| self.selection.model.as_ref().map(|model| model.id));
+        let model = model_id
+            .and_then(|id| self.models.iter().find(|model| model.id == id).cloned())
+            .or_else(|| self.models.first().cloned());
+        self.selection = Selection::new(Some(provider), model);
         Ok(())
+    }
+
+    async fn sync_topic_model(&mut self) {
+        let Some(model_id) = self.selection.model.as_ref().map(|model| model.id) else {
+            return;
+        };
+        let Screen::Session(session) = &mut self.screen else {
+            return;
+        };
+        if session.topic.model_id == Some(model_id) {
+            return;
+        }
+        let topic_id = session.topic.id;
+        match self
+            .runtime
+            .storage()
+            .update_topic_model(topic_id, Some(model_id))
+            .await
+        {
+            Ok(()) => session.topic.model_id = Some(model_id),
+            Err(error) => self.notice = Some(format!("update topic model failed: {error}")),
+        }
+        self.dirty = true;
     }
 
     fn set_form_error(&mut self, field: usize, message: String) {
@@ -1611,8 +1912,8 @@ impl Drop for TerminalReader {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use wind_wire::AdapterType;
     use wind_wire::event::{Envelope, EventKey, Origin, Shape, Source, Target};
+    use wind_wire::{AdapterType, AgentMode};
 
     async fn test_app() -> (TempDir, App) {
         let dir = TempDir::new().expect("create a temp dir");
@@ -2052,6 +2353,96 @@ mod tests {
     }
 
     #[test]
+    fn content_scroll_by_clamps_and_updates_follow() {
+        let mut session = Session::new(topic(1), None);
+        session.content_max = 10;
+        session.follow = true;
+        session.scroll_content_by(-3);
+        assert!(!session.follow);
+        assert_eq!(session.content_scroll, 7);
+        session.scroll_content_by(3);
+        assert!(session.follow);
+        assert_eq!(session.content_scroll, 10);
+        session.scroll_content_by(100);
+        assert_eq!(session.content_scroll, 10);
+        session.scroll_content_by(-100);
+        assert_eq!(session.content_scroll, 0);
+        assert!(!session.follow);
+    }
+
+    #[tokio::test]
+    async fn the_wheel_scrolls_the_pane_under_the_pointer() {
+        let (dir, mut app) = test_app().await;
+        let mut session = Session::new(topic(7), None);
+        session.content_max = 40;
+        session.content_scroll = 40;
+        session.mods_max = 40;
+        session.mods_scroll = 40;
+        session.tree_max = 40;
+        session.tree_scroll = 40;
+        session.log_max = 40;
+        app.screen = Screen::Session(session);
+        app.panes = Panes {
+            content: Rect::new(0, 0, 60, 20),
+            mods: Rect::new(60, 0, 30, 5),
+            tree: Rect::new(60, 5, 30, 5),
+            log: Rect::new(60, 10, 30, 10),
+            input: Rect::new(0, 35, 60, 10),
+        };
+        let wheel = |column, row| MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        app.handle_mouse(wheel(5, 3)).await;
+        app.handle_mouse(wheel(65, 1)).await;
+        app.handle_mouse(wheel(65, 6)).await;
+        app.handle_mouse(wheel(65, 12)).await;
+
+        let Screen::Session(session) = &app.screen else {
+            panic!("the test installs a session")
+        };
+        assert!(!session.follow);
+        assert_eq!(session.content_scroll, 37);
+        assert_eq!(session.mods_scroll, 37);
+        assert_eq!(session.tree_scroll, 37);
+        assert_eq!(session.log_scroll, 37);
+        close(app).await;
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn page_keys_scroll_the_focused_pane() {
+        let (dir, mut app) = test_app().await;
+        let mut session = Session::new(topic(7), None);
+        session.content_max = 100;
+        session.content_scroll = 100;
+        session.mods_max = 100;
+        session.mods_scroll = 100;
+        session.tree_max = 100;
+        session.tree_scroll = 100;
+        session.log_max = 100;
+        app.screen = Screen::Session(session);
+
+        for focus in [Focus::Content, Focus::Mods, Focus::Tree, Focus::Log] {
+            app.focus = focus;
+            app.handle_key(press(KeyCode::PageUp)).await;
+        }
+
+        let Screen::Session(session) = &app.screen else {
+            panic!("the test installs a session")
+        };
+        assert_eq!(session.content_scroll, 90);
+        assert_eq!(session.mods_scroll, 90);
+        assert_eq!(session.tree_scroll, 90);
+        assert_eq!(session.log_scroll, 90);
+        close(app).await;
+        drop(dir);
+    }
+
+    #[test]
     fn the_log_defaults_to_the_tail_and_returns_to_it_with_end() {
         let mut session = Session::new(topic(1), None);
         assert_eq!(session.log_scroll, u16::MAX);
@@ -2068,5 +2459,333 @@ mod tests {
         assert_eq!(session.log_scroll, 1);
         session.scroll_log(KeyCode::End);
         assert_eq!(session.log_scroll, u16::MAX);
+    }
+
+    #[tokio::test]
+    async fn paste_goes_into_the_open_form_field() {
+        let (dir, mut app) = test_app().await;
+        let form = ProviderForm {
+            focus: 2,
+            ..ProviderForm::default()
+        };
+        app.form = Some(Form::Provider(form));
+
+        app.handle_paste("sk-pasted\nkey");
+
+        let Some(Form::Provider(form)) = app.form() else {
+            panic!("the provider form is open")
+        };
+        assert_eq!(form.api_key, "sk-pastedkey");
+        assert_eq!(app.input().lines(), [""]);
+        close(app).await;
+        drop(dir);
+    }
+
+    #[test]
+    fn config_navigation_skips_the_divider_rows() {
+        let mut selected = CONFIG_PROVIDER;
+        let forward = [
+            CONFIG_MODEL,
+            CONFIG_REASONING,
+            CONFIG_STREAM,
+            CONFIG_SIDE_PANEL,
+            CONFIG_EDIT_PROVIDER,
+            CONFIG_EDIT_MODEL,
+            CONFIG_NEW_PROVIDER,
+            CONFIG_NEW_MODEL,
+            CONFIG_PROVIDER,
+        ];
+        for expected in forward {
+            move_config_selection(&mut selected, 1);
+            assert_eq!(selected, expected);
+        }
+        move_config_selection(&mut selected, -1);
+        assert_eq!(selected, CONFIG_NEW_MODEL);
+    }
+
+    async fn seed_config(app: &mut App) -> (i64, i64) {
+        let storage = app.runtime.storage();
+        let provider_id = storage
+            .create_provider("alpha", "https://alpha.example")
+            .await
+            .expect("create the provider");
+        storage
+            .create_credential(provider_id, "sk-alpha")
+            .await
+            .expect("create the credential");
+        let model_id = storage
+            .create_model(
+                provider_id,
+                "alpha-model",
+                AdapterType::OpenAICompletion,
+                None,
+                None,
+            )
+            .await
+            .expect("create the model");
+        app.providers = storage.list_providers().await.expect("list providers");
+        app.models = storage
+            .list_models(Some(provider_id))
+            .await
+            .expect("list models");
+        app.selection = Selection::new(app.providers.first().cloned(), app.models.first().cloned());
+        (provider_id, model_id)
+    }
+
+    #[tokio::test]
+    async fn editing_a_provider_updates_the_row_and_keeps_the_key() {
+        let (dir, mut app) = test_app().await;
+        let storage = app.runtime.storage().clone();
+        let (_, model_id) = seed_config(&mut app).await;
+        app.open_provider_edit_form();
+
+        let Some(Form::Provider(form)) = app.form.as_mut() else {
+            panic!("the provider form is open")
+        };
+        assert_eq!(form.name, "alpha");
+        assert_eq!(form.editing, app.selection.provider.as_ref().map(|p| p.id));
+        form.name = "beta".to_owned();
+        form.base_url = "https://beta.example".to_owned();
+        app.save_form().await;
+
+        assert!(app.form.is_none());
+        let providers = storage.list_providers().await.expect("list providers");
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].name, "beta");
+        assert_eq!(
+            app.selection.provider.as_ref().map(|p| p.name.as_str()),
+            Some("beta")
+        );
+        let config = storage
+            .get_model_config(model_id)
+            .await
+            .expect("read the model config")
+            .expect("the model config exists");
+        assert_eq!(config.api_key.as_deref(), Some("sk-alpha"));
+        close(app).await;
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn editing_a_model_can_change_the_adapter() {
+        let (dir, mut app) = test_app().await;
+        let storage = app.runtime.storage().clone();
+        let (provider_id, model_id) = seed_config(&mut app).await;
+        app.open_model_edit_form();
+
+        let Some(Form::Model(form)) = app.form.as_mut() else {
+            panic!("the model form is open")
+        };
+        assert_eq!(form.editing, Some(model_id));
+        assert_eq!(form.adapter_index, 0);
+        form.adapter_index = 1;
+        app.save_form().await;
+
+        assert!(app.form.is_none());
+        let models = storage
+            .list_models(Some(provider_id))
+            .await
+            .expect("list models");
+        assert_eq!(models[0].adapter, AdapterType::OpenAIResponse);
+        assert_eq!(
+            app.selection.model.as_ref().map(|m| m.adapter),
+            Some(AdapterType::OpenAIResponse)
+        );
+        close(app).await;
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn clicking_a_pane_moves_the_focus() {
+        let (dir, mut app) = test_app().await;
+        app.screen = Screen::Session(Session::new(topic(7), None));
+        app.panes = Panes {
+            content: Rect::new(0, 0, 80, 20),
+            mods: Rect::new(80, 0, 40, 10),
+            tree: Rect::new(80, 10, 40, 10),
+            log: Rect::new(80, 20, 40, 10),
+            input: Rect::new(0, 30, 80, 6),
+        };
+        let click = |column, row| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        for (column, row, focus) in [
+            (10, 5, Focus::Content),
+            (90, 3, Focus::Mods),
+            (90, 12, Focus::Tree),
+            (90, 25, Focus::Log),
+            (10, 32, Focus::Input),
+        ] {
+            app.handle_mouse(click(column, row)).await;
+            assert_eq!(app.focus, focus, "click at {column},{row}");
+        }
+        close(app).await;
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn enter_fills_the_selected_command_before_submitting() {
+        let (dir, mut app) = test_app().await;
+        app.handle_paste("/qu");
+        assert!(app.completion().is_some());
+        app.handle_key(press(KeyCode::Enter)).await;
+        assert_eq!(app.input().lines(), ["/quit"]);
+        assert!(!app.quit);
+        app.handle_key(press(KeyCode::Enter)).await;
+        assert!(app.quit);
+        close(app).await;
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn enter_on_a_fully_typed_command_submits_at_once() {
+        let (dir, mut app) = test_app().await;
+        app.handle_paste("/help");
+        assert!(app.completion().is_some());
+        app.handle_key(press(KeyCode::Enter)).await;
+        assert!(matches!(app.overlay, Some(Overlay::Help)));
+        close(app).await;
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn resume_lists_finished_and_unstarted_topics() {
+        let (dir, mut app) = test_app().await;
+        let storage = app.runtime.storage().clone();
+        let provider_id = storage
+            .create_provider("alpha", "https://alpha.example")
+            .await
+            .expect("create the provider");
+        let model_id = storage
+            .create_model(
+                provider_id,
+                "alpha-model",
+                AdapterType::OpenAICompletion,
+                None,
+                None,
+            )
+            .await
+            .expect("create the model");
+        let finished = storage
+            .create_topic(None, "finished", Some(model_id), None, None)
+            .await
+            .expect("create the finished topic");
+        storage
+            .create_agent_instance(
+                finished,
+                None,
+                AgentRole::Main,
+                Some(AgentMode::Sync),
+                "done",
+                None,
+            )
+            .await
+            .expect("create the instance");
+        let unstarted = storage
+            .create_topic(None, "never run", Some(model_id), None, None)
+            .await
+            .expect("create the unstarted topic");
+
+        app.open_resume().await;
+
+        let Some(Overlay::Resume { items, .. }) = app.overlay() else {
+            panic!("the resume overlay is open")
+        };
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].topic.id, unstarted);
+        assert_eq!(items[0].phase, "-");
+        assert_eq!(items[1].topic.id, finished);
+        assert_eq!(items[1].phase, "done");
+        close(app).await;
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn toggling_stream_writes_the_model_config() {
+        let (dir, mut app) = test_app().await;
+        let storage = app.runtime.storage().clone();
+        seed_config(&mut app).await;
+        app.overlay = Some(Overlay::Config {
+            selected: CONFIG_STREAM,
+        });
+
+        app.handle_key(press(KeyCode::Right)).await;
+        assert_eq!(app.selection().stream, Some(true));
+        let models = storage.list_models(None).await.expect("list models");
+        assert_eq!(
+            models[0]
+                .config
+                .as_ref()
+                .and_then(|config| config.get("stream")),
+            Some(&serde_json::json!(true))
+        );
+
+        app.handle_key(press(KeyCode::Left)).await;
+        assert_eq!(app.selection().stream, Some(false));
+        let models = storage.list_models(None).await.expect("list models");
+        assert_eq!(
+            models[0]
+                .config
+                .as_ref()
+                .and_then(|config| config.get("stream")),
+            Some(&serde_json::json!(false))
+        );
+        close(app).await;
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn switching_the_model_switches_the_current_topic_model() {
+        let (dir, mut app) = test_app().await;
+        let storage = app.runtime.storage().clone();
+        let (provider_id, first) = seed_config(&mut app).await;
+        let second = storage
+            .create_model(
+                provider_id,
+                "beta-model",
+                AdapterType::OpenAIResponse,
+                None,
+                None,
+            )
+            .await
+            .expect("create the second model");
+        let topic_id = storage
+            .create_topic(None, "topic", Some(first), None, None)
+            .await
+            .expect("create the topic");
+        let stored = storage
+            .get_topic_by_id(topic_id)
+            .await
+            .expect("read the topic")
+            .expect("the topic exists");
+        app.screen = Screen::Session(Session::new(stored, None));
+        app.models = storage
+            .list_models(Some(provider_id))
+            .await
+            .expect("list models");
+        app.selection = Selection::new(app.providers.first().cloned(), app.models.first().cloned());
+        app.overlay = Some(Overlay::Models { selected: 1 });
+
+        app.handle_models_key(press(KeyCode::Enter)).await;
+
+        assert_eq!(
+            app.selection.model.as_ref().map(|model| model.id),
+            Some(second)
+        );
+        let stored = storage
+            .get_topic_by_id(topic_id)
+            .await
+            .expect("read the topic")
+            .expect("the topic exists");
+        assert_eq!(stored.model_id, Some(second));
+        let Screen::Session(session) = &app.screen else {
+            panic!("the session stays open")
+        };
+        assert_eq!(session.topic.model_id, Some(second));
+        close(app).await;
+        drop(dir);
     }
 }

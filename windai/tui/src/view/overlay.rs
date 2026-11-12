@@ -1,7 +1,8 @@
 use super::form;
 use crate::app::{
-    App, CONFIG_MODEL, CONFIG_NEW_MODEL, CONFIG_NEW_PROVIDER, CONFIG_PROVIDER, CONFIG_REASONING,
-    CONFIG_SIDE_PANEL, Overlay,
+    App, CONFIG_DIVIDER_ACTIONS, CONFIG_DIVIDER_CREATE, CONFIG_EDIT_MODEL, CONFIG_EDIT_PROVIDER,
+    CONFIG_MODEL, CONFIG_NEW_MODEL, CONFIG_NEW_PROVIDER, CONFIG_PROVIDER, CONFIG_REASONING,
+    CONFIG_SIDE_PANEL, CONFIG_STREAM, Overlay,
 };
 use crate::command::COMMANDS;
 use crate::text::{concise, format_time};
@@ -23,26 +24,34 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         return;
     };
     let (title, rows) = match overlay {
-        Overlay::Resume { items, selected } => (
-            "resume",
-            items
-                .iter()
-                .enumerate()
-                .map(|(index, item)| {
-                    let time = item
-                        .created_at
-                        .map(format_time)
-                        .unwrap_or_else(|| "-".to_owned());
-                    (
-                        format!(
-                            "#{} {} {} {}",
-                            item.topic.id, item.topic.label, item.phase, time
-                        ),
-                        index == *selected,
-                    )
-                })
-                .collect(),
-        ),
+        Overlay::Resume { items, selected } => {
+            let current = app.current_topic_id();
+            (
+                "resume",
+                items
+                    .iter()
+                    .enumerate()
+                    .map(|(index, item)| {
+                        let time = item
+                            .created_at
+                            .map(format_time)
+                            .unwrap_or_else(|| "-".to_owned());
+                        let marker = if Some(item.topic.id) == current {
+                            "*"
+                        } else {
+                            " "
+                        };
+                        (
+                            format!(
+                                "{marker} #{} {} {} {}",
+                                item.topic.id, item.topic.label, item.phase, time
+                            ),
+                            index == *selected,
+                        )
+                    })
+                    .collect(),
+            )
+        }
         Overlay::Providers { selected } => {
             let current = app
                 .selection()
@@ -141,18 +150,23 @@ fn config_rows(app: &App, selected: usize) -> Vec<(String, bool)> {
         .map(|model| model.name.as_str())
         .unwrap_or("-");
     let reasoning = app.selection().reasoning_effort.as_deref().unwrap_or("-");
+    let stream = app.selection().stream_label();
     let side_panel = if app.show_side() { "on" } else { "off" };
     let values = [
         (CONFIG_PROVIDER, "provider", provider),
         (CONFIG_MODEL, "model", model),
         (CONFIG_REASONING, "reasoning", reasoning),
+        (CONFIG_STREAM, "stream", stream),
         (CONFIG_SIDE_PANEL, "side panel", side_panel),
     ];
     let mut rows: Vec<(String, bool)> = values
         .into_iter()
         .map(|(index, label, value)| (format!("{label:<14} {value}  >"), index == selected))
         .collect();
-    rows.push(("────────────".to_owned(), false));
+    rows.insert(CONFIG_DIVIDER_ACTIONS, ("────────────".to_owned(), false));
+    rows.push(("edit provider".to_owned(), CONFIG_EDIT_PROVIDER == selected));
+    rows.push(("edit model".to_owned(), CONFIG_EDIT_MODEL == selected));
+    rows.insert(CONFIG_DIVIDER_CREATE, ("────────────".to_owned(), false));
     rows.push(("new provider".to_owned(), CONFIG_NEW_PROVIDER == selected));
     rows.push(("new model".to_owned(), CONFIG_NEW_MODEL == selected));
     rows
@@ -165,9 +179,11 @@ fn help_rows() -> Vec<(String, bool)> {
         .collect();
     rows.push((String::new(), false));
     for (key, action) in [
-        ("Tab", "complete the command"),
+        ("Tab", "complete a command / switch focus"),
         ("Enter", "submit"),
         ("Alt+Enter", "insert a newline"),
+        ("PgUp/PgDn", "scroll the focused pane by a page"),
+        ("Wheel", "scroll the pane under the pointer"),
         ("Esc", "close"),
         ("Ctrl+C", "quit"),
     ] {

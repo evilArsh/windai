@@ -14,6 +14,7 @@ pub fn render(
     input: &TextArea<'_>,
     focus: Focus,
     completion: Option<&Completion>,
+    notice: Option<&str>,
 ) {
     if area.is_empty() {
         return;
@@ -23,7 +24,12 @@ pub fn render(
     } else {
         theme::BORDER
     };
-    let block = Block::bordered().border_style(border);
+    let block = match notice {
+        Some(notice) => Block::bordered()
+            .border_style(border)
+            .title(Span::styled(format!(" {notice} "), theme::NOTICE)),
+        None => Block::bordered().border_style(border),
+    };
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if !inner.is_empty() {

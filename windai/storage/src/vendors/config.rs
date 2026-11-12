@@ -299,6 +299,119 @@ impl Storage {
         Ok(id)
     }
 
+    pub async fn update_provider(&self, id: i64, name: &str, base_url: &str) -> Result<()> {
+        let now = now_ts();
+        self.executor
+            .fetch_one_scalar(
+                sqlx::query_scalar::<_, i64>(
+                    "UPDATE providers
+                        SET name = ?, base_url = ?, updated_at = ?
+                      WHERE id = ?
+                  RETURNING id",
+                )
+                .bind(name)
+                .bind(base_url)
+                .bind(now)
+                .bind(id),
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn update_model(
+        &self,
+        id: i64,
+        name: &str,
+        adapter: AdapterType,
+        endpoint: Option<&str>,
+        config: Option<&Value>,
+    ) -> Result<()> {
+        let config = config.map(serde_json::to_string).transpose()?;
+        let now = now_ts();
+        self.executor
+            .fetch_one_scalar(
+                sqlx::query_scalar::<_, i64>(
+                    "UPDATE models
+                        SET name = ?, adapter = ?, endpoint = ?, config = ?, updated_at = ?
+                      WHERE id = ?
+                  RETURNING id",
+                )
+                .bind(name)
+                .bind(adapter.as_ref())
+                .bind(endpoint)
+                .bind(config)
+                .bind(now)
+                .bind(id),
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn update_model_config(&self, id: i64, config: Option<&Value>) -> Result<()> {
+        let config = config.map(serde_json::to_string).transpose()?;
+        self.executor
+            .fetch_one_scalar(
+                sqlx::query_scalar::<_, i64>(
+                    "UPDATE models
+                        SET config = ?, updated_at = ?
+                      WHERE id = ?
+                  RETURNING id",
+                )
+                .bind(config)
+                .bind(now_ts())
+                .bind(id),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// 让新凭据成为该提供商唯一的活动凭据
+    pub async fn replace_credential(&self, provider_id: i64, key: &str) -> Result<i64> {
+        self.with_tx(async move |storage| {
+            let now = now_ts();
+            storage
+                .executor
+                .execute(
+                    sqlx::query(
+                        "UPDATE credentials
+                            SET active = FALSE, updated_at = ?
+                          WHERE provider_id = ? AND active = TRUE",
+                    )
+                    .bind(now)
+                    .bind(provider_id),
+                )
+                .await?;
+            let id = storage
+                .executor
+                .fetch_one_scalar(
+                    sqlx::query_scalar::<_, i64>(
+                        "INSERT INTO credentials
+                            (provider_id, key, active, created_at, updated_at)
+                        VALUES (?, ?, TRUE, ?, ?)
+                        RETURNING id",
+                    )
+                    .bind(provider_id)
+                    .bind(key)
+                    .bind(now)
+                    .bind(now),
+                )
+                .await?;
+            Ok(id)
+        })
+        .await
+    }
+
+    pub async fn update_topic_model(&self, topic_id: i64, model_id: Option<i64>) -> Result<()> {
+        self.executor
+            .execute(
+                sqlx::query("UPDATE topics SET model_id = ? WHERE id = ?")
+                    .bind(model_id)
+                    .bind(topic_id),
+            )
+            .await?;
+        Ok(())
+    }
+
     pub async fn create_rule(
         &self,
         provider_id: i64,

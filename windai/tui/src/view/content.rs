@@ -79,7 +79,10 @@ fn block_text(block: &mut BlockView, width: u16) -> Text<'static> {
             call_name,
             call_arguments,
             ..
-        } => Text::from(tool_call_line(call_name, call_arguments, width)),
+        } => Text::from(Line::from(Span::styled(
+            tool_call_line(call_name, call_arguments, width),
+            theme::TOOL_CALL,
+        ))),
         Body::ToolResult { call_res, .. } => tool_result_text(call_res, width),
         Body::Image { content } => Text::from(placeholder("image", None, content)),
         Body::File { content } => Text::from(placeholder("file", None, content)),
@@ -153,17 +156,111 @@ fn tool_call_line(call_name: &str, call_arguments: &str, width: u16) -> String {
     format!("{call_name} {}", concise(first, available))
 }
 
+/// 结果体最多渲染的行数，超出部分以省略号收尾
+const RESULT_BODY_LINES: usize = 60;
+
 fn tool_result_text(call_res: &Value, width: u16) -> Text<'static> {
-    let style = if tool_result_failed(call_res) {
+    let failed = tool_result_failed(call_res);
+    let header_style = if failed {
         theme::ERROR
     } else {
-        Style::default()
+        theme::TOOL_RESULT
     };
-    let summary = serde_json::to_string(call_res).unwrap_or_else(|_| call_res.to_string());
-    Text::from(vec![
-        Line::from(Span::styled("result".to_owned(), style)),
-        Line::from(Span::styled(concise(&summary, usize::from(width)), style)),
-    ])
+    let mut body = Vec::new();
+    match call_res {
+        Value::Object(map) if !map.is_empty() => {
+            for (key, value) in map {
+                emit_json(
+                    value,
+                    1,
+                    vec![indent(1), key_span(key), punct_span(": ")],
+                    width,
+                    &mut body,
+                );
+            }
+        }
+        value => emit_json(value, 1, vec![indent(1)], width, &mut body),
+    }
+    let clipped = body.len() > RESULT_BODY_LINES;
+    body.truncate(RESULT_BODY_LINES);
+    let mut lines = vec![Line::from(Span::styled("result", header_style))];
+    lines.append(&mut body);
+    if clipped {
+        lines.push(Line::from(Span::styled("…".to_owned(), theme::JSON_PUNCT)));
+    }
+    Text::from(lines)
+}
+
+fn emit_json(
+    value: &Value,
+    depth: usize,
+    mut prefix: Vec<Span<'static>>,
+    width: u16,
+    out: &mut Vec<Line<'static>>,
+) {
+    if out.len() > RESULT_BODY_LINES {
+        return;
+    }
+    if let Some(map) = value.as_object().filter(|map| !map.is_empty()) {
+        prefix.push(punct_span("{"));
+        out.push(Line::from(prefix));
+        for (key, child) in map {
+            emit_json(
+                child,
+                depth + 1,
+                vec![indent(depth + 1), key_span(key), punct_span(": ")],
+                width,
+                out,
+            );
+        }
+        out.push(Line::from(vec![indent(depth), punct_span("}")]));
+        return;
+    }
+    if let Some(items) = value.as_array().filter(|items| !items.is_empty()) {
+        prefix.push(punct_span("["));
+        out.push(Line::from(prefix));
+        for item in items {
+            emit_json(item, depth + 1, vec![indent(depth + 1)], width, out);
+        }
+        out.push(Line::from(vec![indent(depth), punct_span("]")]));
+        return;
+    }
+    let available = usize::from(width).saturating_sub(span_width(&prefix));
+    prefix.push(scalar_span(value, available));
+    out.push(Line::from(prefix));
+}
+
+fn indent(depth: usize) -> Span<'static> {
+    Span::raw("  ".repeat(depth))
+}
+
+fn key_span(key: &str) -> Span<'static> {
+    Span::styled(format!("\"{key}\""), theme::JSON_KEY)
+}
+
+fn punct_span(text: &str) -> Span<'static> {
+    Span::styled(text.to_owned(), theme::JSON_PUNCT)
+}
+
+fn scalar_span(value: &Value, available: usize) -> Span<'static> {
+    match value {
+        Value::String(text) => Span::styled(
+            concise(&format!("\"{text}\""), available),
+            theme::JSON_STRING,
+        ),
+        Value::Number(number) => {
+            Span::styled(concise(&number.to_string(), available), theme::JSON_NUMBER)
+        }
+        Value::Bool(true) => Span::styled("true".to_owned(), theme::JSON_LITERAL),
+        Value::Bool(false) => Span::styled("false".to_owned(), theme::JSON_LITERAL),
+        Value::Null => Span::styled("null".to_owned(), theme::JSON_LITERAL),
+        Value::Object(_) => punct_span("{}"),
+        Value::Array(_) => punct_span("[]"),
+    }
+}
+
+fn span_width(spans: &[Span<'static>]) -> usize {
+    spans.iter().map(|span| span.content.width()).sum()
 }
 
 fn tool_result_failed(call_res: &Value) -> bool {
@@ -279,7 +376,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_result_renders_two_lines_and_marks_errors() {
+    fn tool_result_renders_pretty_json_and_marks_errors() {
         let ok = text(
             Body::ToolResult {
                 call_id: "call-1".to_owned(),
@@ -287,9 +384,7 @@ mod tests {
             },
             80,
         );
-        assert_eq!(ok.lines.len(), 2);
-        assert_eq!(ok.lines[0].to_string(), "result");
-        assert!(ok.to_string().contains("\"ok\":true"));
+        assert_eq!(ok.to_string(), "result\n  \"ok\": true");
         assert_eq!(red_lines(&ok), 0);
 
         let error = text(
@@ -299,7 +394,8 @@ mod tests {
             },
             80,
         );
-        assert_eq!(red_lines(&error), 2);
+        assert_eq!(red_lines(&error), 1);
+        assert_eq!(error.lines[1].to_string(), "  \"error\": \"boom\"");
 
         let refused = text(
             Body::ToolResult {
@@ -308,7 +404,7 @@ mod tests {
             },
             80,
         );
-        assert_eq!(red_lines(&refused), 2);
+        assert_eq!(red_lines(&refused), 1);
 
         let allowed = text(
             Body::ToolResult {
@@ -318,6 +414,86 @@ mod tests {
             80,
         );
         assert_eq!(red_lines(&allowed), 0);
+    }
+
+    #[test]
+    fn nested_tool_results_are_indented() {
+        let nested = text(
+            Body::ToolResult {
+                call_id: "call-1".to_owned(),
+                call_res: json!({"user": {"id": 1, "tags": ["a", null]}, "ok": true}),
+            },
+            80,
+        );
+        assert_eq!(
+            nested.to_string(),
+            concat!(
+                "result\n",
+                "  \"user\": {\n",
+                "    \"id\": 1\n",
+                "    \"tags\": [\n",
+                "      \"a\"\n",
+                "      null\n",
+                "    ]\n",
+                "  }\n",
+                "  \"ok\": true"
+            )
+        );
+    }
+
+    #[test]
+    fn empty_containers_and_scalars_stay_on_one_line() {
+        let scalar = text(
+            Body::ToolResult {
+                call_id: "call-1".to_owned(),
+                call_res: json!("done"),
+            },
+            80,
+        );
+        assert_eq!(scalar.to_string(), "result\n  \"done\"");
+
+        let nested = text(
+            Body::ToolResult {
+                call_id: "call-1".to_owned(),
+                call_res: json!({"empty": {}, "list": []}),
+            },
+            80,
+        );
+        assert_eq!(
+            nested.to_string(),
+            "result\n  \"empty\": {}\n  \"list\": []"
+        );
+    }
+
+    #[test]
+    fn long_tool_results_stop_at_the_line_budget() {
+        let items: Vec<i32> = (0..200).collect();
+        let text = text(
+            Body::ToolResult {
+                call_id: "call-1".to_owned(),
+                call_res: json!({"items": items}),
+            },
+            80,
+        );
+        assert_eq!(text.lines.len(), RESULT_BODY_LINES + 2);
+        assert_eq!(
+            text.lines.last().map(ToString::to_string).as_deref(),
+            Some("…")
+        );
+    }
+
+    #[test]
+    fn long_tool_result_lines_are_truncated() {
+        let text = text(
+            Body::ToolResult {
+                call_id: "call-1".to_owned(),
+                call_res: json!({"path": "a-very-long-value-that-does-not-fit"}),
+            },
+            16,
+        );
+        assert_eq!(text.lines.len(), 2);
+        assert!(text.lines[1].to_string().ends_with('…'));
+        assert!(text.lines[1].width() <= 16);
     }
 
     #[test]
@@ -414,6 +590,42 @@ mod tests {
                 .iter()
                 .any(|span| span.style.fg == Some(Color::Red))
         );
+    }
+
+    fn session_with_lines(count: usize) -> Session {
+        let topic = wind_storage::Topic {
+            id: 1,
+            parent_id: None,
+            label: "topic".to_owned(),
+            model_id: None,
+            icon: None,
+            workspace: None,
+        };
+        let mut session = Session::new(topic, None);
+        let mut message = MessageView::new(1, Role::Assistant);
+        let content = (0..count)
+            .map(|index| format!("line {index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        message
+            .blocks
+            .push(BlockView::new(0, 1, Body::Text { content }));
+        session.messages.push(message);
+        session
+    }
+
+    #[test]
+    fn following_scrolls_to_the_last_line() {
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12))
+            .expect("build a test terminal");
+        let mut session = session_with_lines(100);
+        terminal
+            .draw(|frame| render(frame, frame.area(), &mut session, false))
+            .expect("draw the content");
+        assert!(session.follow);
+        let rendered = terminal.backend().buffer().content().to_vec();
+        let text: String = rendered.iter().map(|cell| cell.symbol()).collect();
+        assert!(text.contains("line 99"), "{text}");
     }
 
     #[test]

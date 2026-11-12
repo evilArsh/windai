@@ -4,12 +4,18 @@ use crate::theme;
 use chrono::Local;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::text::Line;
+use ratatui::style::Style;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use std::collections::VecDeque;
+use unicode_width::UnicodeWidthStr;
 use wind_wire::event::{FeedEvent, Scope};
 
 const LOG_CAPACITY: usize = 2000;
+/// 每条日志占的行数：标题、摘要、一条空白
+const ENTRY_ROWS: usize = 3;
+const SUMMARY_INDENT: &str = "  ";
+const SUMMARY_BRANCH: &str = "└ ";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogEntry {
@@ -102,13 +108,13 @@ pub fn render(
     if inner.is_empty() {
         return 0;
     }
-    let total = u16::try_from(log.entries.len().saturating_mul(2)).unwrap_or(u16::MAX);
+    let total = u16::try_from(log.entries.len().saturating_mul(ENTRY_ROWS)).unwrap_or(u16::MAX);
     let (offset, max) = pane_offset(total, inner.height, *scroll);
     if *scroll != u16::MAX {
         *scroll = offset;
     }
-    let first_entry = usize::from(offset / 2);
-    let skip_line = usize::from(offset % 2);
+    let first_entry = usize::from(offset) / ENTRY_ROWS;
+    let skip_line = usize::from(offset) % ENTRY_ROWS;
     let width = usize::from(inner.width);
     let capacity = usize::from(inner.height).saturating_add(skip_line);
     let mut lines = Vec::with_capacity(capacity);
@@ -116,12 +122,7 @@ pub fn render(
         if lines.len() >= capacity {
             break;
         }
-        let headline = match entry.seq {
-            Some(seq) => format!("{} {} #{seq}", entry.time, entry.name),
-            None => format!("{} {}", entry.time, entry.name),
-        };
-        lines.push(Line::from(headline));
-        lines.push(Line::from(concise(&entry.summary, width)));
+        lines.extend(entry_lines(entry, width));
     }
     let lines: Vec<Line<'static>> = lines
         .into_iter()
@@ -132,11 +133,82 @@ pub fn render(
     max
 }
 
+fn entry_lines(entry: &LogEntry, width: usize) -> [Line<'static>; ENTRY_ROWS] {
+    [
+        headline(entry, width),
+        summary(entry, width),
+        Line::default(),
+    ]
+}
+
+fn headline(entry: &LogEntry, width: usize) -> Line<'static> {
+    let mut spans = Vec::new();
+    if let Some(seq) = entry.seq {
+        spans.push(Span::styled(format!("#{seq}"), theme::LOG_INDEX));
+        spans.push(Span::raw(" "));
+    }
+    let used = span_width(&spans).saturating_add(entry.name.width());
+    spans.push(Span::styled(entry.name.clone(), event_style(&entry.name)));
+    let time_width = entry.time.width();
+    if used + 1 + time_width <= width {
+        spans.push(Span::raw(" ".repeat(width - used - time_width)));
+        spans.push(Span::styled(entry.time.clone(), theme::LOG_INDEX));
+    }
+    Line::from(spans)
+}
+
+fn summary(entry: &LogEntry, width: usize) -> Line<'static> {
+    let indent = SUMMARY_INDENT.width() + SUMMARY_BRANCH.width();
+    let text = concise(&entry.summary, width.saturating_sub(indent));
+    Line::from(vec![
+        Span::raw(SUMMARY_INDENT),
+        Span::styled(SUMMARY_BRANCH.to_owned(), theme::LOG_INDEX),
+        Span::styled(text, theme::LOG_BODY),
+    ])
+}
+
+fn event_style(name: &str) -> Style {
+    let Some((family, event)) = name.split_once('/') else {
+        return theme::LOG_LOCAL;
+    };
+    if family != "core" {
+        return theme::LOG_LOCAL;
+    }
+    if event.starts_with("agent") {
+        theme::LOG_AGENT
+    } else if event.starts_with("mod") {
+        theme::LOG_MOD
+    } else if event.starts_with("mcp") {
+        theme::LOG_MCP
+    } else if event.starts_with("block")
+        || event.starts_with("message")
+        || event.starts_with("input")
+    {
+        theme::LOG_LLM
+    } else {
+        theme::LOG_CORE
+    }
+}
+
+fn span_width(spans: &[Span<'static>]) -> usize {
+    spans.iter().map(|span| span.content.width()).sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::style::Modifier;
     use serde_json::json;
     use wind_wire::event::{Envelope, EventKey, Origin, Shape, Source, Target};
+
+    fn entry(seq: Option<i64>, name: &str, summary: &str) -> LogEntry {
+        LogEntry {
+            time: "12:04:31".to_owned(),
+            name: name.to_owned(),
+            seq,
+            summary: summary.to_owned(),
+        }
+    }
 
     fn event(scope: Scope, seq: i64) -> FeedEvent {
         FeedEvent {
@@ -185,5 +257,68 @@ mod tests {
             log.entries.back().map(|entry| entry.seq),
             Some(Some(LOG_CAPACITY as i64 + 1))
         );
+    }
+
+    #[test]
+    fn headline_puts_the_sequence_and_the_colored_name_first() {
+        let entry = entry(Some(1842), "core/block.delta", "msg 92 seq 1");
+        let line = headline(&entry, 40);
+        let rendered = line.to_string();
+        assert!(rendered.starts_with("#1842 core/block.delta"), "{rendered}");
+        assert!(rendered.ends_with("12:04:31"), "{rendered}");
+        assert_eq!(rendered.width(), 40);
+        assert_eq!(line.spans[0].style, theme::LOG_INDEX);
+        assert_eq!(line.spans[2].style, theme::LOG_LLM);
+    }
+
+    #[test]
+    fn narrow_headlines_leave_out_the_time() {
+        let entry = entry(Some(7), "core/agent.spawn", "agent 3 parent -");
+        let line = headline(&entry, 20);
+        assert_eq!(line.to_string(), "#7 core/agent.spawn");
+    }
+
+    #[test]
+    fn local_entries_have_no_sequence_number() {
+        let entry = entry(None, "wind-tui", "resubscribing");
+        let line = headline(&entry, 40);
+        assert!(line.to_string().starts_with("wind-tui"));
+        assert_eq!(line.spans[0].style, theme::LOG_LOCAL);
+    }
+
+    #[test]
+    fn summaries_are_indented_and_dim() {
+        let entry = entry(Some(7), "core/agent.spawn", "agent 3 parent -");
+        let line = summary(&entry, 40);
+        assert_eq!(line.to_string(), "  └ agent 3 parent -");
+        assert!(line.spans[2].style.add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn summaries_are_truncated_to_the_pane_width() {
+        let entry = entry(Some(7), "core/agent.spawn", "0123456789abcdef");
+        let line = summary(&entry, 10);
+        assert!(line.width() <= 10);
+        assert!(line.to_string().ends_with('…'));
+    }
+
+    #[test]
+    fn event_names_are_colored_by_family() {
+        assert_eq!(event_style("core/agent.spawn"), theme::LOG_AGENT);
+        assert_eq!(event_style("core/mod.installed"), theme::LOG_MOD);
+        assert_eq!(event_style("core/mcp.started"), theme::LOG_MCP);
+        assert_eq!(event_style("core/block.delta"), theme::LOG_LLM);
+        assert_eq!(event_style("core/message.seal"), theme::LOG_LLM);
+        assert_eq!(event_style("core/input.accepted"), theme::LOG_LLM);
+        assert_eq!(event_style("core/other.event"), theme::LOG_CORE);
+        assert_eq!(event_style("wind-tui"), theme::LOG_LOCAL);
+    }
+
+    #[test]
+    fn entries_gain_a_blank_row_between_them() {
+        let first = entry(Some(1), "core/agent.spawn", "agent 1");
+        let lines = entry_lines(&first, 40);
+        assert_eq!(lines.len(), ENTRY_ROWS);
+        assert!(lines[ENTRY_ROWS - 1].to_string().is_empty());
     }
 }

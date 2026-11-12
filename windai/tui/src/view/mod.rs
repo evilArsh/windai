@@ -7,12 +7,23 @@ pub mod mods;
 pub mod overlay;
 pub mod tree;
 
-use crate::app::{App, Focus, Screen};
+use crate::app::{App, Focus, Panes, Screen};
 use crate::theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Paragraph};
+
+/// 右栏宽 = 终端宽度 × 2 / 5，限定在 30 到 64 列
+const SIDE_MIN_WIDTH: u16 = 30;
+const SIDE_MAX_WIDTH: u16 = 64;
+/// 左栏至少 40 列，右栏可见至少 72 列宽、20 行高
+const LEFT_MIN_WIDTH: u16 = 40;
+const SIDE_MIN_AREA_WIDTH: u16 = 72;
+const SIDE_MIN_AREA_HEIGHT: u16 = 20;
+/// 输入框高 = 终端高度 × 20 / 100，限定在 3 到 6 行
+const INPUT_MIN_HEIGHT: u16 = 3;
+const INPUT_MAX_HEIGHT: u16 = 6;
 
 pub struct SideLayout {
     pub mods: Rect,
@@ -28,12 +39,27 @@ pub struct Layout {
 }
 
 pub fn left_width(area: Rect, show_side: bool) -> u16 {
-    if show_side && area.width >= 60 && area.height >= 20 {
-        let side = (u32::from(area.width) / 3).clamp(28, 48) as u16;
-        area.width - side
-    } else {
-        area.width
+    area.width.saturating_sub(side_width(area, show_side))
+}
+
+pub fn side_width(area: Rect, show_side: bool) -> u16 {
+    if !side_visible(area, show_side) {
+        return 0;
     }
+    let cap = area.width.saturating_sub(LEFT_MIN_WIDTH);
+    ((u32::from(area.width) * 2 / 5) as u16)
+        .clamp(SIDE_MIN_WIDTH, SIDE_MAX_WIDTH)
+        .min(cap)
+}
+
+fn side_visible(area: Rect, show_side: bool) -> bool {
+    show_side && area.width >= SIDE_MIN_AREA_WIDTH && area.height >= SIDE_MIN_AREA_HEIGHT
+}
+
+fn input_height(area: Rect) -> u16 {
+    ((u32::from(area.height) * 20 / 100) as u16)
+        .clamp(INPUT_MIN_HEIGHT, INPUT_MAX_HEIGHT)
+        .min(area.height)
 }
 
 pub fn pane_offset(total: u16, height: u16, scroll: u16) -> (u16, u16) {
@@ -43,7 +69,7 @@ pub fn pane_offset(total: u16, height: u16, scroll: u16) -> (u16, u16) {
 
 pub fn layout(area: Rect, bar_height: u16, show_side: bool) -> Layout {
     let hidden = Rect::new(area.x, area.y, 0, 0);
-    let input_height = ((u32::from(area.height) * 40 / 100).clamp(5, 15) as u16).min(area.height);
+    let input_height = input_height(area);
 
     if area.height < 10 {
         let y = area.y.saturating_add(area.height - input_height);
@@ -60,9 +86,9 @@ pub fn layout(area: Rect, bar_height: u16, show_side: bool) -> Layout {
     } else {
         bar_height.clamp(1, 2)
     };
-    let side_visible = show_side && area.width >= 60 && area.height >= 20;
+    let side_visible = side_visible(area, show_side);
     let left = left_width(area, show_side);
-    let side_width = side_visible.then(|| area.width - left);
+    let side_width = side_visible.then(|| side_width(area, show_side));
 
     let content_height = area
         .height
@@ -110,6 +136,25 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     app.set_bar(bar);
     let layout = layout(area, bar_height, show_side);
     app.set_bar_area(layout.bar);
+    app.set_panes(Panes {
+        content: layout.content,
+        mods: layout
+            .side
+            .as_ref()
+            .map(|side| side.mods)
+            .unwrap_or_default(),
+        tree: layout
+            .side
+            .as_ref()
+            .map(|side| side.tree)
+            .unwrap_or_default(),
+        log: layout
+            .side
+            .as_ref()
+            .map(|side| side.log)
+            .unwrap_or_default(),
+        input: layout.input,
+    });
     let focus = app.focus();
     match app.screen_mut() {
         Screen::Empty => {
@@ -185,13 +230,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         }
     }
     bar::render(frame, layout.bar, app.bar_layout());
-    render_notice(frame, layout.bar, app.notice());
     input::render(
         frame,
         layout.input,
         app.input(),
         app.focus(),
         app.completion(),
+        app.notice(),
     );
     overlay::render(frame, frame.area(), app);
 }
@@ -219,17 +264,6 @@ fn render_panel(
     {
         frame.render_widget(Paragraph::new(message).style(style), inner);
     }
-}
-
-fn render_notice(frame: &mut Frame, area: Rect, notice: Option<&str>) {
-    let Some(notice) = notice else {
-        return;
-    };
-    if area.is_empty() {
-        return;
-    }
-    let line = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
-    frame.render_widget(Paragraph::new(notice).style(theme::BAR), line);
 }
 
 #[cfg(test)]

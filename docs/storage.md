@@ -326,6 +326,7 @@ pub async fn create_topic(
 3. `UPDATE topics SET workspace = ? WHERE id = ?`。
 
 读取入口：`get_topic_by_id`、`get_topic_by_instance`（通过 `agent_instances.topic_id`）。
+切换话题使用的模型：`update_topic_model(topic_id, model_id)`，更新 `topics.model_id`。
 
 ### 提供商、模型与规则
 
@@ -335,6 +336,10 @@ pub async fn create_topic(
 | `create_model(provider_id, name, adapter, endpoint, config)` | `models`，`active = TRUE`，`frequency = 0`，`config` 序列化为 JSON 文本 |
 | `create_credential(provider_id, key)` | `credentials`，`active = TRUE` |
 | `create_rule(provider_id, adapter, json_rule)` | `json_rule` |
+| `update_provider(id, name, base_url)` | 更新名称、地址与 `updated_at`；行不存在时报错 |
+| `update_model(id, name, adapter, endpoint, config)` | 更新名称、适配器、端点、配置与 `updated_at` |
+| `update_model_config(id, config)` | 只更新 `config` 与 `updated_at` |
+| `replace_credential(provider_id, key)` | 一笔事务：现有活动凭证置 `active = FALSE`，再插入新凭证 |
 | `list_rules(provider_id, adapter)` | 按 `id` 升序读取规则 |
 | `get_model_config(model_id)` | 读模型、提供商与第一条启用的凭证 |
 

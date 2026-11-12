@@ -15,6 +15,9 @@ const SIZES: &[(u16, u16)] = &[
     (60, 19),
     (59, 20),
     (60, 20),
+    (71, 20),
+    (72, 20),
+    (73, 24),
     (79, 21),
     (80, 22),
     (84, 24),
@@ -30,7 +33,7 @@ const BASE_BAR_HEIGHT: u16 = 1;
 const BAR_HEIGHT_REQUESTS: [u16; 5] = [0, 1, 2, 3, u16::MAX];
 
 fn expected_input_height(height: u16) -> u16 {
-    let clamped = (u32::from(height) * 40 / 100).clamp(5, 15) as u16;
+    let clamped = (u32::from(height) * 20 / 100).clamp(3, 6) as u16;
     clamped.min(height)
 }
 
@@ -45,11 +48,12 @@ fn expected_bar_height(height: u16, requested: u16) -> u16 {
 }
 
 fn expected_side_width(width: u16) -> u16 {
-    (u32::from(width) / 3).clamp(28, 48) as u16
+    let cap = width.saturating_sub(40);
+    ((u32::from(width) * 2 / 5) as u16).clamp(30, 64).min(cap)
 }
 
 fn side_visible(width: u16, height: u16) -> bool {
-    width >= 60 && height >= 20
+    width >= 72 && height >= 20
 }
 
 fn all_rects(layout: &Layout) -> Vec<Rect> {

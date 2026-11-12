@@ -29,15 +29,28 @@ pub struct ProviderForm {
     pub focus: usize,
     pub error: Option<String>,
     pub cursor: usize,
+    pub editing: Option<i64>,
 }
 
 impl ProviderForm {
+    pub fn edit(provider: &Provider) -> Self {
+        Self {
+            name: provider.name.clone(),
+            base_url: provider.base_url.clone(),
+            editing: Some(provider.id),
+            ..Self::default()
+        }
+    }
+
     pub fn validate(&self, providers: &[Provider]) -> Result<ProviderFields, ValidationError> {
         let name = self.name.trim();
         if name.is_empty() {
             return Err((0, "name is required".to_owned()));
         }
-        if providers.iter().any(|provider| provider.name == name) {
+        if providers
+            .iter()
+            .any(|provider| provider.name == name && Some(provider.id) != self.editing)
+        {
             return Err((0, "provider name already exists".to_owned()));
         }
         let base_url = self.base_url.trim();
@@ -122,6 +135,12 @@ impl ProviderForm {
         self.end();
     }
 
+    pub fn insert_str(&mut self, text: &str) {
+        for ch in text.chars() {
+            self.insert_char(ch);
+        }
+    }
+
     fn text(&self) -> Option<&String> {
         match self.focus {
             0 => Some(&self.name),
@@ -151,9 +170,34 @@ pub struct ModelForm {
     pub focus: usize,
     pub error: Option<String>,
     pub cursor: usize,
+    pub editing: Option<i64>,
 }
 
 impl ModelForm {
+    pub fn edit(model: &Model, providers: &[Provider]) -> Self {
+        Self {
+            provider_index: providers
+                .iter()
+                .position(|provider| provider.id == model.provider_id)
+                .unwrap_or(0),
+            name: model.name.clone(),
+            adapter_index: ADAPTERS
+                .iter()
+                .position(|adapter| *adapter == model.adapter)
+                .unwrap_or(0),
+            endpoint: model.endpoint.clone().unwrap_or_default(),
+            config: model
+                .config
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_default(),
+            // 字段顺序：提供商固定，焦点从名称开始
+            focus: 1,
+            editing: Some(model.id),
+            ..Self::default()
+        }
+    }
+
     pub fn validate(
         &self,
         providers: &[Provider],
@@ -166,7 +210,10 @@ impl ModelForm {
         if name.is_empty() {
             return Err((1, "name is required".to_owned()));
         }
-        if models.iter().any(|model| model.name == name) {
+        if models
+            .iter()
+            .any(|model| model.name == name && Some(model.id) != self.editing)
+        {
             return Err((1, "model name already exists".to_owned()));
         }
         let Some(adapter) = ADAPTERS.get(self.adapter_index).copied() else {
@@ -263,8 +310,14 @@ impl ModelForm {
         self.end();
     }
 
+    pub fn insert_str(&mut self, text: &str) {
+        for ch in text.chars() {
+            self.insert_char(ch);
+        }
+    }
+
     pub fn cycle_provider(&mut self, providers: &[Provider], step: isize) {
-        if providers.is_empty() {
+        if self.editing.is_some() || providers.is_empty() {
             return;
         }
         let length = providers.len() as isize;
@@ -302,10 +355,33 @@ pub enum Form {
 }
 
 impl Form {
+    pub fn title(&self) -> &'static str {
+        match self {
+            Form::Provider(form) if form.editing.is_some() => "edit provider",
+            Form::Provider(_) => "new provider",
+            Form::Model(form) if form.editing.is_some() => "edit model",
+            Form::Model(_) => "new model",
+        }
+    }
+
+    pub fn editing(&self) -> Option<i64> {
+        match self {
+            Form::Provider(form) => form.editing,
+            Form::Model(form) => form.editing,
+        }
+    }
+
     pub fn insert_char(&mut self, ch: char) {
         match self {
             Form::Provider(form) => form.insert_char(ch),
             Form::Model(form) => form.insert_char(ch),
+        }
+    }
+
+    pub fn insert_str(&mut self, text: &str) {
+        match self {
+            Form::Provider(form) => form.insert_str(text),
+            Form::Model(form) => form.insert_str(text),
         }
     }
 

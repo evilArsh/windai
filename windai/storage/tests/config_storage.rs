@@ -115,6 +115,102 @@ async fn models_are_filtered_by_provider_and_ordered() {
 }
 
 #[tokio::test]
+async fn providers_and_models_can_be_updated() {
+    let (_dir, storage) = database().await;
+    let provider_id = provider(&storage, "alpha").await;
+    let model_id = model(&storage, provider_id, "alpha-model").await;
+
+    storage
+        .update_provider(provider_id, "beta", "https://beta.example")
+        .await
+        .expect("update the provider");
+    storage
+        .update_model(
+            model_id,
+            "beta-model",
+            AdapterType::OpenAIResponse,
+            Some("https://beta.example/v1"),
+            Some(&serde_json::json!({"stream": true})),
+        )
+        .await
+        .expect("update the model");
+
+    let providers = storage.list_providers().await.expect("list providers");
+    assert_eq!(providers.len(), 1);
+    assert_eq!(providers[0].name, "beta");
+    assert_eq!(providers[0].base_url, "https://beta.example");
+
+    let models = storage
+        .list_models(Some(provider_id))
+        .await
+        .expect("list models");
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0].name, "beta-model");
+    assert_eq!(models[0].adapter, AdapterType::OpenAIResponse);
+    assert_eq!(
+        models[0].endpoint.as_deref(),
+        Some("https://beta.example/v1")
+    );
+    assert_eq!(models[0].config, Some(serde_json::json!({"stream": true})));
+}
+
+#[tokio::test]
+async fn updating_a_missing_row_fails() {
+    let (_dir, storage) = database().await;
+    let provider = storage
+        .update_provider(999, "missing", "https://missing.example")
+        .await;
+    assert!(provider.is_err());
+}
+
+#[tokio::test]
+async fn replacing_a_credential_leaves_only_the_new_key_active() {
+    let (_dir, storage) = database().await;
+    let provider_id = provider(&storage, "alpha").await;
+    let model_id = model(&storage, provider_id, "alpha-model").await;
+    storage
+        .create_credential(provider_id, "sk-old")
+        .await
+        .expect("create the old credential");
+
+    storage
+        .replace_credential(provider_id, "sk-new")
+        .await
+        .expect("replace the credential");
+
+    let config = storage
+        .get_model_config(model_id)
+        .await
+        .expect("read the model config")
+        .expect("the model config exists");
+    assert_eq!(config.api_key.as_deref(), Some("sk-new"));
+}
+
+#[tokio::test]
+async fn updating_the_topic_model_changes_the_stored_model() {
+    let (_dir, storage) = database().await;
+    let provider_id = provider(&storage, "alpha").await;
+    let first = model(&storage, provider_id, "first").await;
+    let second = model(&storage, provider_id, "second").await;
+    let topic_id = storage
+        .create_topic(None, "topic", Some(first), None, None)
+        .await
+        .expect("create the topic");
+
+    storage
+        .update_topic_model(topic_id, Some(second))
+        .await
+        .expect("update the topic model");
+
+    let topic = storage
+        .get_topic_by_id(topic_id)
+        .await
+        .expect("read the topic")
+        .expect("the topic exists");
+    assert_eq!(topic.model_id, Some(second));
+}
+
+#[tokio::test]
 async fn context_rows_carry_the_message_id() {
     let (_dir, storage) = database().await;
     let topic = storage
