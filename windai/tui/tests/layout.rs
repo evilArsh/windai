@@ -27,19 +27,20 @@ const SIZES: &[(u16, u16)] = &[
 ];
 
 const BASE_BAR_HEIGHT: u16 = 1;
+const BAR_HEIGHT_REQUESTS: [u16; 5] = [0, 1, 2, 3, u16::MAX];
 
 fn expected_input_height(height: u16) -> u16 {
     let clamped = (u32::from(height) * 40 / 100).clamp(5, 15) as u16;
     clamped.min(height)
 }
 
-fn expected_bar_height(height: u16) -> u16 {
+fn expected_bar_height(height: u16, requested: u16) -> u16 {
     if height < 10 {
         0
     } else if height < 22 {
         1
     } else {
-        BASE_BAR_HEIGHT
+        requested.clamp(1, 2)
     }
 }
 
@@ -93,14 +94,16 @@ fn assert_no_overlap(rects: &[Rect], context: &str) {
 fn layout_keeps_every_rect_inside_and_disjoint() {
     for &(width, height) in SIZES {
         let area = Rect::new(0, 0, width, height);
-        for bar_height in [1, 2] {
-            let layout = layout(area, bar_height);
-            let context = format!("{width}x{height} bar={bar_height}");
-            let rects = all_rects(&layout);
-            for rect in &rects {
-                assert_inside(area, *rect, &context);
+        for bar_height in BAR_HEIGHT_REQUESTS {
+            for show_side in [true, false] {
+                let layout = layout(area, bar_height, show_side);
+                let context = format!("{width}x{height} bar={bar_height} side={show_side}");
+                let rects = all_rects(&layout);
+                for rect in &rects {
+                    assert_inside(area, *rect, &context);
+                }
+                assert_no_overlap(&rects, &context);
             }
-            assert_no_overlap(&rects, &context);
         }
     }
 }
@@ -108,7 +111,7 @@ fn layout_keeps_every_rect_inside_and_disjoint() {
 #[test]
 fn layout_accounts_for_offset_area() {
     let area = Rect::new(7, 3, 100, 30);
-    let layout = layout(area, BASE_BAR_HEIGHT);
+    let layout = layout(area, BASE_BAR_HEIGHT, true);
     let rects = all_rects(&layout);
     for rect in &rects {
         assert_inside(area, *rect, "offset area");
@@ -124,19 +127,37 @@ fn layout_accounts_for_offset_area() {
 #[test]
 fn hidden_side_thresholds() {
     for &(width, height) in SIZES {
-        let layout = layout(Rect::new(0, 0, width, height), BASE_BAR_HEIGHT);
+        let with_side = layout(Rect::new(0, 0, width, height), BASE_BAR_HEIGHT, true);
         assert_eq!(
-            layout.side.is_some(),
+            with_side.side.is_some(),
             side_visible(width, height),
             "side visibility at {width}x{height}"
         );
+        let without_side = layout(Rect::new(0, 0, width, height), BASE_BAR_HEIGHT, false);
+        assert!(
+            without_side.side.is_none(),
+            "side is hidden when show_side is false at {width}x{height}"
+        );
+    }
+}
+
+#[test]
+fn hiding_the_side_panel_lets_the_left_column_fill_the_width() {
+    for &(width, height) in SIZES.iter().filter(|(_, height)| *height >= 10) {
+        let layout = layout(Rect::new(0, 0, width, height), BASE_BAR_HEIGHT, false);
+        assert_eq!(
+            layout.content.width, width,
+            "content width at {width}x{height}"
+        );
+        assert_eq!(layout.bar.width, width, "bar width at {width}x{height}");
+        assert_eq!(layout.input.width, width, "input width at {width}x{height}");
     }
 }
 
 #[test]
 fn input_height_is_clamped() {
     for &(width, height) in SIZES {
-        let layout = layout(Rect::new(0, 0, width, height), BASE_BAR_HEIGHT);
+        let layout = layout(Rect::new(0, 0, width, height), BASE_BAR_HEIGHT, true);
         assert_eq!(
             layout.input.height,
             expected_input_height(height),
@@ -152,17 +173,13 @@ fn input_height_is_clamped() {
 fn bar_height_follows_breakpoint_and_request() {
     for &(width, height) in SIZES {
         let area = Rect::new(0, 0, width, height);
-        for bar_height in [1, 2] {
-            let layout = layout(area, bar_height);
-            if height < 22 {
-                assert_eq!(
-                    layout.bar.height,
-                    expected_bar_height(height),
-                    "bar height at {width}x{height} requested {bar_height}"
-                );
-            } else {
-                assert_eq!(layout.bar.height, bar_height.clamp(1, 2));
-            }
+        for bar_height in BAR_HEIGHT_REQUESTS {
+            let layout = layout(area, bar_height, true);
+            assert_eq!(
+                layout.bar.height,
+                expected_bar_height(height, bar_height),
+                "bar height at {width}x{height} requested {bar_height}"
+            );
         }
     }
 }
@@ -170,7 +187,7 @@ fn bar_height_follows_breakpoint_and_request() {
 #[test]
 fn tiny_height_draws_only_input() {
     for &(width, height) in SIZES.iter().filter(|(_, height)| *height < 10) {
-        let layout = layout(Rect::new(0, 0, width, height), BASE_BAR_HEIGHT);
+        let layout = layout(Rect::new(0, 0, width, height), BASE_BAR_HEIGHT, true);
         assert!(layout.content.is_empty(), "content at {width}x{height}");
         assert!(layout.bar.is_empty(), "bar at {width}x{height}");
         assert_eq!(layout.input.height, expected_input_height(height));
@@ -182,7 +199,7 @@ fn tiny_height_draws_only_input() {
 #[test]
 fn left_column_fills_height() {
     for &(width, height) in SIZES.iter().filter(|(_, height)| *height >= 10) {
-        let layout = layout(Rect::new(0, 0, width, height), BASE_BAR_HEIGHT);
+        let layout = layout(Rect::new(0, 0, width, height), BASE_BAR_HEIGHT, true);
         assert_eq!(layout.content.y, 0, "content at {width}x{height}");
         assert_eq!(layout.bar.y, layout.content.bottom());
         assert_eq!(layout.input.y, layout.bar.bottom());
@@ -202,7 +219,7 @@ fn left_column_fills_height() {
 fn side_layers_partition_the_side_column() {
     for &(width, height) in SIZES.iter().filter(|(w, h)| side_visible(*w, *h)) {
         let area = Rect::new(0, 0, width, height);
-        let layout = layout(area, BASE_BAR_HEIGHT);
+        let layout = layout(area, BASE_BAR_HEIGHT, true);
         let side = layout.side.as_ref().expect("side layout is visible");
         let side_width = expected_side_width(width);
         assert_eq!(side.mods.x, width - side_width);

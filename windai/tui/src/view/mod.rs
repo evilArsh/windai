@@ -2,6 +2,7 @@ pub mod content;
 pub mod input;
 pub mod log;
 pub mod mods;
+pub mod overlay;
 pub mod tree;
 
 use crate::app::{App, Screen};
@@ -23,7 +24,7 @@ pub struct Layout {
     pub side: Option<SideLayout>,
 }
 
-pub fn layout(area: Rect, bar_height: u16) -> Layout {
+pub fn layout(area: Rect, bar_height: u16, show_side: bool) -> Layout {
     let hidden = Rect::new(area.x, area.y, 0, 0);
     let input_height = ((u32::from(area.height) * 40 / 100).clamp(5, 15) as u16).min(area.height);
 
@@ -42,7 +43,7 @@ pub fn layout(area: Rect, bar_height: u16) -> Layout {
     } else {
         bar_height.clamp(1, 2)
     };
-    let side_width = if area.width >= 60 && area.height >= 20 {
+    let side_width = if show_side && area.width >= 60 && area.height >= 20 {
         Some((u32::from(area.width) / 3).clamp(28, 48) as u16)
     } else {
         None
@@ -85,7 +86,7 @@ pub fn layout(area: Rect, bar_height: u16) -> Layout {
 }
 
 pub fn render(frame: &mut Frame, app: &mut App) {
-    let layout = layout(frame.area(), 1);
+    let layout = layout(frame.area(), 1, app.show_side());
     match app.screen_mut() {
         Screen::Empty => {
             render_panel(
@@ -110,7 +111,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         }
     }
     render_bar(frame, layout.bar, app.notice());
-    input::render(frame, layout.input, app.input(), app.focus());
+    input::render(
+        frame,
+        layout.input,
+        app.input(),
+        app.focus(),
+        app.completion(),
+    );
+    overlay::render(frame, frame.area(), app);
 }
 
 fn render_panel(frame: &mut Frame, area: Rect, title: &str, message: Option<&str>) {

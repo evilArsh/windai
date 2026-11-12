@@ -1,3 +1,4 @@
+use crate::command::{self, Command, CommandSpec};
 use crate::config::Selection;
 use crate::fetch::{self, LoadedSession};
 use crate::reduce;
@@ -30,8 +31,8 @@ use wind_core::agent::Phase;
 use wind_core::feed::{FeedError, Subscription};
 use wind_core::llm::domain::LlmDomain;
 use wind_runtime::{Runtime, RuntimeError, RuntimeOptions};
-use wind_storage::Topic;
 use wind_storage::error::StorageError;
+use wind_storage::{Model, Provider, Topic};
 use wind_wire::event::{FeedEvent, Scope};
 use wind_wire::{AgentRole, AppDirs, Body, Content, Role, Usage};
 
@@ -147,6 +148,61 @@ pub struct NodeView {
     pub sealed: bool,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResumeItem {
+    pub topic: Topic,
+    pub phase: String,
+    pub created_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Overlay {
+    Resume {
+        items: Vec<ResumeItem>,
+        selected: usize,
+    },
+    Providers {
+        selected: usize,
+    },
+    Models {
+        selected: usize,
+    },
+    Config {
+        selected: usize,
+    },
+    Help,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Completion {
+    pub items: Vec<&'static CommandSpec>,
+    pub selected: usize,
+}
+
+pub(crate) const CONFIG_PROVIDER: usize = 0;
+pub(crate) const CONFIG_MODEL: usize = 1;
+pub(crate) const CONFIG_REASONING: usize = 2;
+pub(crate) const CONFIG_SIDE_PANEL: usize = 3;
+pub(crate) const CONFIG_ROWS: usize = 4;
+pub(crate) const COMPLETION_ROWS: usize = 6;
+
+fn move_selection(selected: &mut usize, len: usize, step: isize) {
+    if len == 0 {
+        *selected = 0;
+        return;
+    }
+    let current = (*selected).min(len - 1) as isize;
+    *selected = (current + step).rem_euclid(len as isize) as usize;
+}
+
+fn completion_prefix(text: &str) -> Option<&str> {
+    let rest = text.strip_prefix('/')?;
+    if rest.chars().any(char::is_whitespace) {
+        return None;
+    }
+    Some(rest)
+}
+
 pub(crate) fn phase_detail(phase: &Phase<LlmDomain>) -> (Option<i64>, Option<String>) {
     match phase {
         Phase::Suspended(suspended) => (Some(suspended.external_wait_id), None),
@@ -172,7 +228,12 @@ pub struct App {
     screen: Screen,
     input: TextArea<'static>,
     focus: Focus,
+    overlay: Option<Overlay>,
+    completion: Option<Completion>,
     selection: Selection,
+    providers: Vec<Provider>,
+    models: Vec<Model>,
+    show_side: bool,
     notice: Option<String>,
     quit: bool,
     dirty: bool,
@@ -198,7 +259,12 @@ impl App {
             screen: Screen::Empty,
             input,
             focus: Focus::Input,
+            overlay: None,
+            completion: None,
             selection: startup.selection,
+            providers: startup.providers,
+            models: startup.models,
+            show_side: true,
             notice: startup.notice,
             quit: false,
             dirty: true,
@@ -222,6 +288,30 @@ impl App {
         &mut self.screen
     }
 
+    pub fn overlay(&self) -> Option<&Overlay> {
+        self.overlay.as_ref()
+    }
+
+    pub fn completion(&self) -> Option<&Completion> {
+        self.completion.as_ref()
+    }
+
+    pub fn selection(&self) -> &Selection {
+        &self.selection
+    }
+
+    pub fn providers(&self) -> &[Provider] {
+        &self.providers
+    }
+
+    pub fn models(&self) -> &[Model] {
+        &self.models
+    }
+
+    pub fn show_side(&self) -> bool {
+        self.show_side
+    }
+
     pub fn notice(&self) -> Option<&str> {
         self.notice.as_deref()
     }
@@ -236,25 +326,97 @@ impl App {
             self.quit = true;
             return;
         }
-        match key.code {
-            KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.input.insert_newline();
-                self.notice = None;
-                self.dirty = true;
+        if self.overlay.is_some() {
+            self.handle_overlay_key(key).await;
+            return;
+        }
+        if key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::ALT) {
+            self.input.insert_newline();
+            self.notice = None;
+            self.refresh_completion();
+            self.dirty = true;
+            return;
+        }
+        if self.completion.is_some() {
+            match key.code {
+                KeyCode::Tab => {
+                    self.apply_completion();
+                    return;
+                }
+                KeyCode::Up => {
+                    self.move_completion(-1);
+                    return;
+                }
+                KeyCode::Down => {
+                    self.move_completion(1);
+                    return;
+                }
+                KeyCode::Esc => {
+                    self.completion = None;
+                    self.dirty = true;
+                    return;
+                }
+                KeyCode::Enter => {
+                    self.submit().await;
+                    return;
+                }
+                _ => {}
             }
+        } else if key.code == KeyCode::Tab {
+            return;
+        }
+        match key.code {
             KeyCode::Enter => self.submit().await,
             _ => {
                 if self.input.input(key) {
                     self.notice = None;
+                    self.refresh_completion();
                     self.dirty = true;
                 }
             }
         }
     }
 
+    fn refresh_completion(&mut self) {
+        let text = self.input.lines().join("\n");
+        let items = completion_prefix(&text).map(command::candidates);
+        match items {
+            Some(items) if !items.is_empty() => {
+                let selected = self
+                    .completion
+                    .as_ref()
+                    .map(|completion| completion.selected.min(items.len() - 1))
+                    .unwrap_or(0);
+                self.completion = Some(Completion { items, selected });
+            }
+            _ => self.completion = None,
+        }
+    }
+
+    fn apply_completion(&mut self) {
+        let Some(completion) = self.completion.take() else {
+            return;
+        };
+        let Some(spec) = completion.items.get(completion.selected).copied() else {
+            return;
+        };
+        self.input.clear();
+        self.input.insert_str(spec.name);
+        self.notice = None;
+        self.dirty = true;
+    }
+
+    fn move_completion(&mut self, step: isize) {
+        if let Some(completion) = self.completion.as_mut() {
+            move_selection(&mut completion.selected, completion.items.len(), step);
+            self.dirty = true;
+        }
+    }
+
     pub fn handle_paste(&mut self, text: &str) {
         if self.input.insert_str(text) {
             self.notice = None;
+            self.refresh_completion();
             self.dirty = true;
         }
     }
@@ -409,8 +571,19 @@ impl App {
             return;
         }
         if text.starts_with('/') {
-            self.notice = Some("unknown command".to_owned());
-            self.dirty = true;
+            match command::parse(text) {
+                Ok(command) => {
+                    self.input.clear();
+                    self.completion = None;
+                    self.notice = None;
+                    self.execute(command).await;
+                    self.dirty = true;
+                }
+                Err(message) => {
+                    self.notice = Some(message);
+                    self.dirty = true;
+                }
+            }
             return;
         }
         let content = vec![Content::new_text(text.to_owned())];
@@ -444,6 +617,7 @@ impl App {
         match result {
             Ok(()) => {
                 self.input.clear();
+                self.completion = None;
                 self.notice = None;
                 self.dirty = true;
             }
@@ -451,6 +625,308 @@ impl App {
                 self.notice = Some(message);
                 self.dirty = true;
             }
+        }
+    }
+
+    async fn execute(&mut self, command: Command) {
+        match command {
+            Command::New => self.new_view(),
+            Command::Quit => self.quit = true,
+            Command::Help => self.overlay = Some(Overlay::Help),
+            Command::Cancel => self.cancel_current().await,
+            Command::Resume => self.open_resume().await,
+            Command::Providers => self.open_providers_overlay().await,
+            Command::Models => self.open_models_overlay().await,
+            Command::Config => {
+                self.overlay = Some(Overlay::Config { selected: 0 });
+            }
+        }
+    }
+
+    fn new_view(&mut self) {
+        if let Some(loading) = self.loading.take() {
+            loading.task.abort();
+        }
+        self.screen = Screen::Empty;
+        self.input.clear();
+        self.overlay = None;
+        self.completion = None;
+        self.notice = None;
+        self.focus = Focus::Input;
+        self.dirty = true;
+    }
+
+    async fn cancel_current(&mut self) {
+        let main = match &self.screen {
+            Screen::Session(session) => session.main,
+            Screen::Empty => None,
+        };
+        let Some(main) = main else {
+            self.notice = Some("enter a topic first".to_owned());
+            return;
+        };
+        if let Err(error) = self.runtime.cancel(main).await {
+            self.notice = Some(format!("cancel failed: {error}"));
+        }
+    }
+
+    async fn open_resume(&mut self) {
+        if matches!(&self.screen, Screen::Empty) {
+            self.notice = Some("enter a topic first".to_owned());
+            return;
+        }
+        match self.resume_items().await {
+            Ok(items) => self.overlay = Some(Overlay::Resume { items, selected: 0 }),
+            Err(error) => self.notice = Some(format!("load topics failed: {error}")),
+        }
+    }
+
+    async fn resume_items(&self) -> Result<Vec<ResumeItem>, StorageError> {
+        let storage = self.runtime.storage();
+        let topics = storage.list_topics().await?;
+        let mut items = Vec::new();
+        for topic in topics {
+            let instances = storage.list_instances_by_topic(topic.id).await?;
+            if instances
+                .iter()
+                .all(|instance| phase_is_terminal(&instance.phase))
+            {
+                continue;
+            }
+            let main = instances
+                .iter()
+                .find(|instance| instance.role == AgentRole::Main);
+            let phase = main
+                .map(|instance| instance.phase.clone())
+                .or_else(|| {
+                    instances
+                        .iter()
+                        .find(|instance| !phase_is_terminal(&instance.phase))
+                        .map(|instance| instance.phase.clone())
+                })
+                .unwrap_or_default();
+            let created_at = main.and_then(|instance| instance.created_at);
+            items.push(ResumeItem {
+                topic,
+                phase,
+                created_at,
+            });
+        }
+        Ok(items)
+    }
+
+    fn open_topic(&mut self, topic: Topic) {
+        let topic_id = topic.id;
+        self.screen = Screen::Session(Session::new(topic, None));
+        self.begin_load(topic_id);
+        self.input.clear();
+        self.completion = None;
+        self.notice = None;
+        self.focus = Focus::Input;
+        self.dirty = true;
+    }
+
+    async fn open_providers_overlay(&mut self) {
+        match self.runtime.storage().list_providers().await {
+            Ok(providers) => {
+                self.providers = providers;
+                let selected = self.current_provider_index();
+                self.overlay = Some(Overlay::Providers { selected });
+                self.notice = None;
+            }
+            Err(error) => self.notice = Some(format!("load providers failed: {error}")),
+        }
+        self.dirty = true;
+    }
+
+    fn current_provider_index(&self) -> usize {
+        let provider_id = self.selection.provider.as_ref().map(|provider| provider.id);
+        provider_id
+            .and_then(|id| self.providers.iter().position(|provider| provider.id == id))
+            .unwrap_or(0)
+    }
+
+    async fn open_models_overlay(&mut self) {
+        let Some(provider_id) = self.selection.provider.as_ref().map(|provider| provider.id) else {
+            self.notice = Some("this provider has no models".to_owned());
+            self.dirty = true;
+            return;
+        };
+        match self.runtime.storage().list_models(Some(provider_id)).await {
+            Ok(models) => {
+                self.models = models;
+                if self.models.is_empty() {
+                    self.notice = Some("this provider has no models".to_owned());
+                } else {
+                    let selected = self.current_model_index();
+                    self.overlay = Some(Overlay::Models { selected });
+                    self.notice = None;
+                }
+            }
+            Err(error) => self.notice = Some(format!("load models failed: {error}")),
+        }
+        self.dirty = true;
+    }
+
+    fn current_model_index(&self) -> usize {
+        let model_id = self.selection.model.as_ref().map(|model| model.id);
+        model_id
+            .and_then(|id| self.models.iter().position(|model| model.id == id))
+            .unwrap_or(0)
+    }
+
+    async fn handle_overlay_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Esc {
+            self.close_overlay();
+            return;
+        }
+        match self.overlay.as_ref() {
+            Some(Overlay::Resume { .. }) => self.handle_resume_key(key).await,
+            Some(Overlay::Providers { .. }) => self.handle_providers_key(key).await,
+            Some(Overlay::Models { .. }) => self.handle_models_key(key),
+            Some(Overlay::Config { .. }) => self.handle_config_key(key).await,
+            Some(Overlay::Help) if key.code == KeyCode::Enter => self.close_overlay(),
+            Some(Overlay::Help) => {}
+            None => {}
+        }
+    }
+
+    fn close_overlay(&mut self) {
+        self.overlay = None;
+        self.focus = Focus::Input;
+        self.dirty = true;
+    }
+
+    async fn handle_resume_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Up | KeyCode::Down => {
+                let step = if key.code == KeyCode::Up { -1 } else { 1 };
+                if let Some(Overlay::Resume { items, selected }) = self.overlay.as_mut() {
+                    move_selection(selected, items.len(), step);
+                    self.dirty = true;
+                }
+            }
+            KeyCode::Enter => {
+                let topic = match self.overlay.as_ref() {
+                    Some(Overlay::Resume { items, selected }) => {
+                        items.get(*selected).map(|item| item.topic.clone())
+                    }
+                    _ => None,
+                };
+                if let Some(topic) = topic {
+                    self.close_overlay();
+                    self.open_topic(topic);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    async fn handle_providers_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Up | KeyCode::Down => {
+                let step = if key.code == KeyCode::Up { -1 } else { 1 };
+                if let Some(Overlay::Providers { selected }) = self.overlay.as_mut() {
+                    move_selection(selected, self.providers.len(), step);
+                    self.dirty = true;
+                }
+            }
+            KeyCode::Enter => {
+                let provider_id = match self.overlay.as_ref() {
+                    Some(Overlay::Providers { selected }) => {
+                        self.providers.get(*selected).map(|provider| provider.id)
+                    }
+                    _ => None,
+                };
+                if let Some(provider_id) = provider_id {
+                    self.select_provider_id(provider_id).await;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    async fn select_provider_id(&mut self, provider_id: i64) {
+        let models = match self.runtime.storage().list_models(Some(provider_id)).await {
+            Ok(models) => models,
+            Err(error) => {
+                self.notice = Some(format!("load models failed: {error}"));
+                self.dirty = true;
+                return;
+            }
+        };
+        self.models = models;
+        self.notice = self
+            .selection
+            .select_provider(&self.providers, &self.models, provider_id);
+        self.overlay = None;
+        self.focus = Focus::Input;
+        self.dirty = true;
+    }
+
+    fn handle_models_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Up | KeyCode::Down => {
+                let step = if key.code == KeyCode::Up { -1 } else { 1 };
+                if let Some(Overlay::Models { selected }) = self.overlay.as_mut() {
+                    move_selection(selected, self.models.len(), step);
+                    self.dirty = true;
+                }
+            }
+            KeyCode::Enter => {
+                let model_id = match self.overlay.as_ref() {
+                    Some(Overlay::Models { selected }) => {
+                        self.models.get(*selected).map(|model| model.id)
+                    }
+                    _ => None,
+                };
+                if let Some(model_id) = model_id {
+                    self.notice = self.selection.select_model(&self.models, model_id);
+                    self.overlay = None;
+                    self.focus = Focus::Input;
+                    self.dirty = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    async fn handle_config_key(&mut self, key: KeyEvent) {
+        let selected = match self.overlay.as_ref() {
+            Some(Overlay::Config { selected }) => *selected,
+            _ => return,
+        };
+        match key.code {
+            KeyCode::Up => {
+                if let Some(Overlay::Config { selected }) = self.overlay.as_mut() {
+                    move_selection(selected, CONFIG_ROWS, -1);
+                }
+                self.dirty = true;
+            }
+            KeyCode::Down => {
+                if let Some(Overlay::Config { selected }) = self.overlay.as_mut() {
+                    move_selection(selected, CONFIG_ROWS, 1);
+                }
+                self.dirty = true;
+            }
+            KeyCode::Left if selected == CONFIG_REASONING => {
+                self.selection.cycle_reasoning_back();
+                self.dirty = true;
+            }
+            KeyCode::Right if selected == CONFIG_REASONING => {
+                self.selection.cycle_reasoning();
+                self.dirty = true;
+            }
+            KeyCode::Enter => match selected {
+                CONFIG_PROVIDER => self.open_providers_overlay().await,
+                CONFIG_MODEL => self.open_models_overlay().await,
+                CONFIG_SIDE_PANEL => {
+                    self.show_side = !self.show_side;
+                    self.dirty = true;
+                }
+                _ => {}
+            },
+            _ => {}
         }
     }
 

@@ -9,3 +9,4 @@ pub const ERROR: Style = Style::new().fg(Color::Red);
 pub const BAR: Style = Style::new().fg(Color::DarkGray);
 pub const PLACEHOLDER: Style = Style::new().fg(Color::DarkGray);
 pub const CURSOR: Style = Style::new().add_modifier(Modifier::REVERSED);
+pub const SELECTED: Style = Style::new().add_modifier(Modifier::REVERSED);

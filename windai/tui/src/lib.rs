@@ -1,4 +1,5 @@
 pub mod app;
+pub mod command;
 pub mod config;
 pub mod fetch;
 pub mod reduce;
