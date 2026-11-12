@@ -363,8 +363,12 @@ on_event(event):
 ```
 
 `Observer` 是同步方法，实现方只能入队，不得阻塞。`FeedRuntime::run` 接收
-`Vec<Weak<dyn Observer>>`，在每次通知时尝试升级；升级失败即从观察者列表移除。当前仓库内
-唯一的实现是 `Dispatcher`。
+`Vec<Weak<dyn Observer>>`，在每次通知时尝试升级；升级失败即从观察者列表移除。当前有两个
+实现：
+
+- `Dispatcher`：按事件目录与订阅索引把事件转给 mod。
+- `wind-runtime` 的话题会话管理器（`TopicAgents`）：只处理 `core/agent.status`，把后台
+  子实例的终态推入交付队列，由投递任务写入父实例的待消费输入。
 
 ## feed
 
@@ -687,13 +691,14 @@ wind_event::directory()
 | `core/message.interrupted` | observe | 否 | `MessageInterrupted { message_id, reason }` | `MessageStream::interrupted`、`Drop` |
 | `core/block.delta` | observe | 否 | `BlockDelta { message_id, ...Block }` | `MessageStream::delta` |
 | `core/block.committed` | observe | 否 | `BlockCommitted { message_id, seq, block_id, block? }` | `MessageStream::committed`、`notify_persisted_block` |
-| `core/input.accepted` | observe | 是 | `InputAccepted { topic_id, instance_id, pending_id }` | 无 |
+| `core/input.accepted` | observe | 是 | `InputAccepted { topic_id, instance_id, pending_id }` | `Runtime::submit` |
 
 `core/message.seal`、`core/message.interrupted` 使用 `Close(Message)`；块增量与实时块使用
 `Group(Message)`；`notify_persisted_block` 使用 `Live`。这些事件都不写 `event_log`。
 
-`core/input.accepted` 没有产生者。用户输入经 `agent_pending` 表与 `LlmSpec` 进入，
-不产生事件。
+`core/input.accepted` 由 `Runtime::submit` 在 Agent 应用命令后发出，作用域是
+`Scope::Topic { topic_id, instance_id }`，来源是 `Source::core("runtime")`，预算 50ms，
+`log = true`。用户内容本身经 `agent_pending` 表与 `LlmSpec` 进入；事件只宣告受理。
 
 ### Mod
 

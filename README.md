@@ -12,9 +12,9 @@ That split is the point of the project: the parts that change often — persona,
 skills, tools, UI panels, approval rules — live in mods, not in the engine. A mod can be
 installed, updated or disabled without rebuilding the host.
 
-> Status: `0.2.0`, library-only, with an in-process runtime and no CLI. The
-> public API is still moving. Names such as `wind-core` and `mod.json` are stable; trait
-> signatures are not.
+> Status: `0.2.0`, library-first, with an in-process runtime and a terminal reference host
+> (`wind-tui`). The public API is still moving. Names such as `wind-core` and `mod.json` are
+> stable; trait signatures are not.
 
 ---
 
@@ -47,7 +47,7 @@ Three ideas carry the design:
  ├─ feed runtime            assigns (epoch, seq), keeps a replay window, writes event_log
  ├─ dispatcher              matches events to enabled mods, runs intercept chains
  ├─ resource service        publishes mod prompts, skills, MCP servers and UI entries
- ├─ MCP registry            talks to declared MCP servers and built-in fs/skills services
+ ├─ MCP registry            talks to declared MCP servers and built-in fs/skills/workspace services
  ├─ script runtime          runs mod JavaScript on a fixed pool of QuickJS threads
  ├─ agent tree              one node per instance, one task per running node
  └─ SQLite                  domain rows + event_log, WAL, up to 5 connections
@@ -303,7 +303,7 @@ Phases are `running`, `suspended`, `waiting_children`, `done`, `failed`, `cancel
 | `core/message.interrupted` | observe | no | `message_id`, `reason` | message stream |
 | `core/block.delta` | observe | no | `message_id`, `seq`, `revision`, block fields | message stream |
 | `core/block.committed` | observe | no | `message_id`, `seq`, `block_id`, `block?` | message stream |
-| `core/input.accepted` | observe | yes | `topic_id`, `instance_id`, `pending_id` | reserved, no producer |
+| `core/input.accepted` | observe | yes | `topic_id`, `instance_id`, `pending_id` | runtime submit |
 
 **Mod**
 
@@ -592,9 +592,10 @@ ends and your own paging begins.
 | `wind-rule` | — | JSON rule engine for request bodies |
 | `wind-script` | wire | QuickJS engine, module loader, facade, bytecode cache, interpreter pool, deadlines, breaker |
 | `wind-mod` | wire, event, storage | Manifest, package, installer, resources, roster, generated schema |
-| `wind-mcp` | wire, event | MCP registry, connections, launch planning, built-in `fs` and `skills` |
+| `wind-mcp` | wire, event | MCP registry, connections, launch planning, built-in `fs`, `skills` and `workspace` |
 | `wind-core` | all of the above | Agent tree, LLM rounds, feed, resource adapter, script wiring |
 | `wind-runtime` | wire, event, storage, core, mod, mcp, script | Composition root, topic recovery, input, background delivery and shutdown |
+| `wind-tui` | wire, core, storage, runtime | Terminal reference host: topic loading, event reduction, config editing and status display |
 
 Dependency direction is acyclic: `wind-runtime` assembles the engine above `wind-core`, which
 integrates the lower-level crates. `wind-script` depends on `wind-wire` only;
@@ -721,7 +722,8 @@ each script observed and intercepted what it declared. It is the best end-to-end
 the repository. Fixtures are copied to `~/.windai_test/mods`; the database is rebuilt each run.
 
 To try the engine by hand, set `WIND_ROOT_DIR` to a scratch directory and install a mod whose
-package sits at `<root>/mods/<name>/<version>`.
+package sits at `<root>/mods/<name>/<version>`, or run the terminal reference host with
+`cargo run -p wind-tui`.
 
 ---
 
@@ -762,6 +764,7 @@ overview.
 | [`docs/mcp.md`](docs/mcp.md) | MCP registry, connection planning, built-in services |
 | [`docs/storage.md`](docs/storage.md) | Schema, transactions, per-domain statements |
 | [`docs/rule.md`](docs/rule.md) | Request-body rule engine |
+| [`docs/tui.md`](docs/tui.md) | Terminal reference host: startup, layout, event reduction, interaction |
 | [`docs/facade.d.ts`](docs/facade.d.ts) | What a mod script sees, and what is still missing |
 | [`docs/manifest.schema.json`](docs/manifest.schema.json) | Generated manifest schema |
 

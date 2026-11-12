@@ -6,7 +6,7 @@ windai 是一个单进程的 agent harness 库。宿主应用通过 `wind-runtim
 本文给出 crate 划分、进程内拓扑、事件与数据库两条写入通路，以及宿主必须接上的位置。
 事件的身份、派发与投递细节见「事件」；数据库表与写入路径见「存储」；agent 状态机见
 「Agent 树」；模型回合见「LLM 回合」；mod 打包与生命周期见「Mod」；MCP 连接与内建服务见
-「MCP」；脚本执行与 HostApi 见「脚本」。
+「MCP」；脚本执行与 HostApi 见「脚本」；终端参考宿主见「TUI 参考宿主」。
 
 ## 范围
 
@@ -19,8 +19,10 @@ windai 是一个单进程的 agent harness 库。宿主应用通过 `wind-runtim
   feed 在内存中分配。事件的位置不是 `event_log.id`。
 - 流式块内容只在内存中累加。助手消息的块行在消息完成时一次写入；用户消息与工具结果的块行
   在消息创建时写入。写入数据库的块与流式增量不是同一份数据。
-- HTTP/SSE、WebSocket 与前端底座不在本仓库内。宿主通过 `Runtime::subscribe` 取得实时流，
-  自行提供端点；数据库中的领域表与 `event_log` 由宿主自行查询。
+- HTTP/SSE 与 WebSocket 端点、mod UI 的前端底座不在本仓库内。宿主通过
+  `Runtime::subscribe` 取得实时流，自行提供端点；数据库中的领域表与 `event_log` 由宿主自行
+  查询。`wind-tui` 是仓库内的终端参考宿主，只驱动运行时并展示事件流，不提供 mod UI 的加载
+  与挂载。
 - 脚本每次调用新建 QuickJS `Runtime`，在独立的解释器线程上执行；运行时不跨调用保留。
 
 ## crate 与依赖
@@ -34,9 +36,10 @@ windai 是一个单进程的 agent harness 库。宿主应用通过 `wind-runtim
 | `wind-rule` | 无 | 面向请求体的 JSON 规则引擎 |
 | `wind-script` | wire | QuickJS 引擎、模块加载、门面、字节码缓存、解释器线程池、超时与熔断；只使用 wire 的脚本路径常量 |
 | `wind-mod` | wire, event, storage | 清单、包、安装器、资源读取、启用集合、清单 schema |
-| `wind-mcp` | wire, event | MCP 注册表、连接、启动规划、内建 `fs` 与 `skills` 服务 |
+| `wind-mcp` | wire, event | MCP 注册表、连接、启动规划、内建 `fs`、`skills` 与 `workspace` 服务 |
 | `wind-core` | wire, event, storage, ai, rule, mod, mcp, script | agent 树、LLM 回合、feed、资源适配、脚本接线 |
 | `wind-runtime` | wire, event, storage, core, mod, mcp, script | 组合根、话题恢复、输入、后台结果交付与关停 |
+| `wind-tui` | wire, core, storage, runtime | 终端参考宿主：会话选择、事件归约、配置写入与状态展示 |
 
 依赖方向：
 
@@ -64,6 +67,10 @@ windai 是一个单进程的 agent harness 库。宿主应用通过 `wind-runtim
                      ▼
        ┌──────────────────────────┐
        │        runtime           │
+       └────────────┬─────────────┘
+                    ▼
+       ┌──────────────────────────┐
+       │          tui             │
        └──────────────────────────┘
 ```
 
@@ -72,7 +79,7 @@ windai 是一个单进程的 agent harness 库。宿主应用通过 `wind-runtim
 路径常量，不依赖 `wind-mod`、`wind-core` 或 `wind-storage`；`wind-mod` 不依赖
 `wind-script`。`wind-core::feed` 是 feed 的实现位置，不存在独立的 `wind-feed` crate；
 块类型在 `wind-wire`，不存在独立的 `wind-stream` crate。组合根位于 `wind-runtime`，HTTP
-端点由宿主应用提供。
+端点由宿主应用提供；`wind-tui` 位于组合根之上，是唯一的自带宿主。
 
 ## 进程内拓扑
 
@@ -86,7 +93,7 @@ Runtime（宿主持有）
 │  └─ ObservePool（任务）：observe 事件合批与 mod 调用
 ├─ RegistryHandle（actor 任务）
 │  ├─ Connection × N：外部 MCP 服务
-│  └─ 内建 fs / skills：进程内 duplex 连接
+│  └─ 内建 fs / skills / workspace：进程内 duplex 连接
 ├─ ScriptRuntime（共享）
 │  └─ 解释器线程 × Config::threads：每次调用新建 QuickJS Runtime
 ├─ Agent<LlmDomain>（每话题一个任务）
@@ -108,6 +115,7 @@ Runtime（宿主持有）
 | 解释器线程 | `Config::threads`，默认 4 | 固定线程池，一次调用占用一个名额 | 字节码内存缓存 |
 | `Agent` | 每个话题一个 | 单任务归约 | 树、待消费输入 |
 | `Jobs` | 每个运行中的节点一个任务 | `tokio::spawn`，可取消 | 运行中任务的取消令牌 |
+| `TopicAgents` | 每个进程一个 | 会话槽按话题懒建；后台投递由单任务消费 | 会话槽、后台投递队列 |
 | `ResourceService` | 每个进程一个 | 发布操作在 `gate` 上串行 | 话题引用、已发布的内建资源 |
 | `Storage` | 句柄可克隆 | 连接池并发 | SQLite 数据库 |
 
@@ -222,6 +230,20 @@ LlmRunner / Installer / Agent / MCP / ScriptRuntime
 | 观察者与 feed | 保留 `Dispatcher` 和话题会话管理器的强引用，将弱引用交给 feed 后启动任务 |
 | 话题首次使用 | 从数据库装载实例树与可恢复的待消费输入；扫描未交付的后台终态结果 |
 
+`Runtime` 的公开方法：
+
+| 方法 | 作用 |
+| --- | --- |
+| `open(options)` | 装配各子系统并返回句柄 |
+| `storage()` | 领域表写入与只读查询 |
+| `subscribe()` | 取得内存回放与实时事件流 |
+| `submit(topic_id, content)` | 保存输入并派发到话题主实例 |
+| `cancel(instance_id)` | 清空目标子树的待消费输入并取消 |
+| `resume(answer)` | 校验外部等待与持久化挂起相位后转发答复 |
+| `install` / `update` / `delete` | 安装、更新与删除 mod，返回 `ApplyReport` |
+| `enable` / `disable` | 在话题上启用或停用 mod |
+| `shutdown()` | 关停并等待全部任务 |
+
 `Runtime::submit` 在会话锁内建立主实例、保存输入并派发，返回 `SubmitAck` 中的话题、实例和
 待消费行标识。受理确认在 Agent 应用命令后返回，派发失败时删除本次待消费行。`Runtime::cancel` 清空目标子树的待消费输入后
 发送取消并等待其应用；`Runtime::resume` 校验外部等待及持久化挂起相位后转发答复。后台结果先以事务
@@ -258,9 +280,11 @@ LlmRunner / Installer / Agent / MCP / ScriptRuntime
 `synchronous` 未显式设置，使用 SQLite 对该 journal 模式的默认值。需要改变持久性保证时，
 在 `wind-storage::db::open_pool` 统一设置，不要在各语句集里零散设置。
 
-`wind-storage` 为宿主提供四个只读查询：`list_topics()`（`id` 降序）、`list_providers()`
-（`id` 升序）、`list_models(provider_id)`（可选按提供商过滤）与 `ContextRow.message_id`
-（块按消息归组）。返回形状、排序与过滤规则见「存储」。
+`wind-storage` 提供只读查询供宿主枚举领域行：`list_topics()`（`id` 降序）、
+`list_providers()`（`id` 升序）、`list_models(provider_id)`（可选按提供商过滤）、
+`get_topic_by_id`、`list_instances_by_topic`、`list_instance_context` 与
+`enabled_mods(topic_id)`。`ContextRow.message_id` 让块按消息归组。返回形状、排序与过滤
+规则见「存储」。
 
 ## 当前实现边界
 
@@ -275,4 +299,4 @@ LlmRunner / Installer / Agent / MCP / ScriptRuntime
 | `wind_spawn_agent` 的 `fork` | 参数被解析，但 `create_spawn_requests` 不使用它 |
 | mod 状态 | `Capability::State` / `Capability::Storage` 已声明，数据库没有对应表，宿主也没有注入实现 |
 | 脚本能力声明 | `capabilities` 只参与清单校验，不注入、不裁剪 |
-| UI | 只识别 `ui/index.js` 并在 `core/mod.installed` / `core/mod.updated` 中给出 `ui_entry`；资源的实际服务由前端底座负责 |
+| UI | 只识别 `ui/index.js` 并在 `core/mod.installed` / `core/mod.updated` 中给出 `ui_entry`；资源的实际服务由前端底座负责；参考宿主 `wind-tui` 不加载 mod UI |

@@ -7,8 +7,8 @@
     "name": {
       "description": "mod 名，系统唯一",
       "type": "string",
-      "minLength": 3,
-      "maxLength": 30,
+      "minLength": 2,
+      "maxLength": 63,
       "pattern": "^[a-z][a-z0-9_-]{1,62}$"
     },
     "version": {
@@ -16,7 +16,7 @@
       "type": "integer",
       "format": "uint32",
       "minimum": 1,
-      "maximum": 300
+      "maximum": 4294967295
     },
     "description": {
       "type": ["string", "null"],

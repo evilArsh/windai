@@ -41,6 +41,7 @@
 - `docs/mod.md`
 - `docs/mcp.md`
 - `docs/script.md`
+- `docs/tui.md`
 
 门面契约参考：
 

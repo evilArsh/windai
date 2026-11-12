@@ -113,9 +113,14 @@ INSERT block × N（每块一个 tool_result）
 | 无子实例 | `{ "error": "spawn call <id> has no child" }` |
 | 相位无法解析 | `{ "error": "child <id> has an unreadable phase: ..." }` |
 
-后台子实例（`mode = background`）无论当前相位都返回 `{ "instance_id", "phase": "running" }`。
-后台实例结束后的结果不会再次写入父节点；`PendingKind::BackgroundResult` 与
-`spawn_calls.result_delivered_at` 当前没有生产者。
+后台子实例（`mode = background`）即使在 `report_spawns` 时已进入终态，也只返回
+`{ "instance_id", "phase": "running" }`：父实例不等它的结果。
+后台实例终止后由 `wind-runtime` 的终态观察者把结果写入父实例的待消费输入
+（`kind = background_result`），并在同一事务里写 `spawn_calls.result_delivered_at`；
+话题会话首次建立时还会扫描未交付的后台终态结果。父实例随后以一次普通输入消费该结果。
+
+后台结果的文本：子实例相位为 `done` 且回复非空时取回复文本，其余情况为
+`background child <id> ended with phase <phase>`。
 
 ### 组装上下文
 
@@ -465,8 +470,8 @@ prepare（模型、规则、提示词、工具目录）
 | 脚本 HostApi | 只有 `emit`、`notify` 与本地 `log`；`state`、`storage`、`http`、`agent`、`fs` 未实现 |
 | 审批载荷 | 保存的是改写前的调用；mod 改写后的参数不会出现在等待项里 |
 | `fork` | 已解析，未使用 |
-| 后台结果 | 后台子实例完成后不向父实例投递结果 |
-| `core/input.accepted` | 已声明，没有产生者 |
+| 后台结果 | 父实例经由 `agent_pending` 的 `background_result` 行消费；后台子实例的终态不以 `tool_result` 回写 |
+| `core/input.accepted` | 由 `Runtime::submit` 发出，不携带用户内容 |
 | 非流式响应 | 走一次完整 `Delta`，随后 `core/block.committed` 的 `block` 仍为 `None` |
 | 提供商错误 | 作为助手文本写入，不以 `LlmFailure` 结束 |
 | 取消 | `Runner::run` 与 `MessageStream` 都观察取消令牌；取消产生 `cancelled` 中断事件 |

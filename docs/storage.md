@@ -364,6 +364,7 @@ LEFT JOIN credentials c ON c.id = (
 | `create_message(turn_id, role, model_id)` | 插入 `message`，返回 id |
 | `create_blocks(message_id, blocks)` | 批量插入 `block`，返回与输入顺序一致的 id 列表 |
 | `seal_message(message_id, finish_reason, input_tokens, output_tokens)` | 更新 `message` 的结束原因与用量 |
+| `get_turn_of(message_id)` | 通过 `message.turn_id` 读取消息所属的 `turn` |
 
 `create_blocks` 使用一条 `INSERT ... VALUES (...), (...)`，列由 `BlockColumns::of` 从
 `Body` 展开，末尾 `RETURNING seq, id`。返回结果按 `seq` 升序排序，因此与输入块的顺序一致。
@@ -395,9 +396,14 @@ ORDER BY m.id, b.seq
 | `create_pending(instance_id, kind, payload, source_id)` | 插入 `agent_pending`，`payload` 是 `Vec<Content>` 的 JSON |
 | `get_pending_inputs_by_ids(ids)` | 按 `id` 升序返回 |
 | `delete_pending_by_ids(ids)` | 按 id 删除 |
+| `list_pending_by_topic(topic_id)` | 连接 `agent_instances`，按 `agent_pending.id` 升序返回该话题的全部待消费输入 |
+| `close_pending(instance_id)` | 用递归 CTE 删除该实例及其全部后代的待消费行 |
+| `insert_background_result(parent_id, payload, source_id)` | 只在父实例相位为 `running`、`waiting_children`、`suspended` 或 `done` 时插入一行 `background_result`；同一 `(instance_id, kind, source_id)` 已存在时不插入 |
 
 `PendingKind` 取 `user` 或 `background_result`。`source_id` 在后台结果时指向子实例。
-当前核心只用 `user`；`background_result` 没有生产者。
+`user` 由 `Runtime::submit` 产生，`background_result` 由 `wind-runtime` 的后台交付任务产生；
+重复的后台终态事件不会产生第二行输入。`insert_background_result` 返回新行的 `id`，未插入时
+返回 `None`。
 
 ### 工具调用配对
 
@@ -428,6 +434,9 @@ ORDER BY b.id
 | --- | --- |
 | `create_spawn_call_map(parent_id, call_id, child_id)` | 写一行 `spawn_calls` |
 | `list_child_states(parent_id, call_ids)` | 读子实例的 `mode`、`phase`、`phase_payload` 与回复文本 |
+| `spawn_call_of_child(child_id)` | 按子实例读配对行；`child_id` 唯一 |
+| `claim_result_delivery(child_id)` | 只在 `result_delivered_at` 为空时写入当前时刻，返回是否由本次调用写入 |
+| `list_undelivered_background(topic_id)` | 该话题中 `mode = background`、已终态且未交付的子实例，按 `child_id` 升序 |
 
 `list_child_states` 通过 `spawn_calls` 连接 `agent_instances`，再用
 `json_extract(i.phase_payload, '$.message_id')` 找到子实例当前消息的 `text` 块：
@@ -448,14 +457,18 @@ WHERE s.parent_id = ? AND s.call_id IN (...)
 ORDER BY s.call_id, b.seq
 ```
 
-`spawn_calls.result_delivered_at` 当前没有读写点。
+`spawn_calls.result_delivered_at` 是后台结果的交付标记：`wind-runtime` 在同一事务里插入
+`background_result` 待消费行并写入该列，重复的终态事件不再交付。父实例唤醒时的
+`report_spawns` 不使用该列。
 
 ### Agent 实例
 
 | 函数 | 语义 |
 | --- | --- |
 | `create_agent_instance(topic_id, parent_id, role, mode, phase, phase_payload)` | 插入节点，`created_at` 为当前秒 |
+| `ensure_main(topic_id, mode)` | 插入主实例或返回已有的主实例；冲突时不覆盖已存在的相位 |
 | `get_instance_by_id(instance_id)` | 读取节点 |
+| `list_instances_by_topic(topic_id)` | 按 `id` 升序返回话题的全部节点 |
 | `update_instance_phase(instance_id, phase, phase_payload)` | 更新相位；0 行返回 `NoRowsAffected` |
 
 `role` 取 `main` 或 `child`，`mode` 取 `sync`、`background` 或空。相位列由
@@ -588,17 +601,22 @@ pub enum StorageError {
 
 ## 只读查询
 
-宿主用以下只读查询枚举领域行。查询不改写任何表。
+宿主用以下只读查询枚举领域行。查询不改写任何表；终端参考宿主 `wind-tui` 用它们装载会话、
+配置界面与状态栏。
 
 | 查询 | 返回 | 用途 |
 | --- | --- | --- |
 | `list_topics()` | 全部话题，按 `topics.id` 降序 | 话题枚举 |
+| `get_topic_by_id(topic_id)` | 单个话题，或 `None` | 会话装载与刷新 |
 | `list_providers()` | 全部提供商，按 `providers.id` 升序 | 提供商枚举 |
 | `list_models(provider_id)` | `provider_id` 为 `Some` 时返回该提供商的模型，按 `models.id` 升序；为 `None` 时返回全部模型，按 `models.provider_id`、`models.id` 升序 | 模型枚举与按提供商过滤 |
+| `list_instances_by_topic(topic_id)` | 话题的全部 agent 节点，按 `agent_instances.id` 升序 | 实例树渲染与主实例定位 |
+| `list_instance_context(instance_id)` | 实例的全部历史块，行序为 `message_id`、`block.seq` 升序 | 会话内容装载 |
+| `enabled_mods(topic_id)` | 话题启用的 mod，按名称升序 | mod 列表 |
 | `ContextRow.message_id` | 上下文行携带所属消息的 `message_id` | 把块按消息归组；同一消息的块共享该值 |
 
-`ContextRow` 由 `list_instance_context(instance_id)` 返回，行序为 `message_id`、`block.seq` 升序。
-`message_id` 与 `block` 并列，宿主不需要根据 `seq` 推断消息边界。
+`ContextRow` 由 `list_instance_context(instance_id)` 返回。`message_id` 与 `block` 并列，宿主
+不需要根据 `seq` 推断消息边界。
 
 ## 当前边界
 
@@ -606,9 +624,8 @@ pub enum StorageError {
 | --- | --- |
 | 事件读取 | `event_log` 只有写入语句；`LogRecord` 没有查询函数 |
 | 领域表外键 | 只有 `topic_mods` 带外键；删除话题或 mod 不清理 turn/message/block/agent_* |
-| 后台子实例结果 | `spawn_calls.result_delivered_at`、`PendingKind::BackgroundResult` 没有读写点 |
+| 后台结果 | 只有 `running`、`waiting_children`、`suspended`、`done` 的父实例接受新结果；其余相位静默丢弃 |
 | Mod 状态 | 没有 `mod_state` 表；`Capability::State` 与 `Capability::Storage` 没有存储实现 |
 | 脚本字节码 | 只写文件 `<root>/bytecode/<mod>/<engine_id>/`，不写数据库 |
 | `StorageError::Bus` / `Denied` | 在存储语句集中没有构造点 |
-| 主实例行 | `create_agent_instance` 可用于任何角色，但库内没有自动创建主实例的入口 |
 | `block` 的流式中间态 | 不存在列；流式内容只在内存，定稿时一次写入 |
