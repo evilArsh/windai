@@ -12,6 +12,10 @@ pub fn apply(session: &mut Session, event: &FeedEvent) -> bool {
     match &event.envelope.scope {
         Scope::Global => {
             session.log.record(session.topic.id, event);
+            if is_mod_event(&event.envelope.name) {
+                session.reload_mods = true;
+                return true;
+            }
             false
         }
         Scope::Topic { topic_id, .. } if *topic_id == session.topic.id => {
@@ -55,12 +59,19 @@ fn reduce_payload(session: &mut Session, name: &str, payload: &Value) -> bool {
             Some(event) => apply_sealed(session, &event),
             None => decode_failed(session, name),
         },
-        "core/mod.installed" | "core/mod.updated" | "core/mod.deleted" => {
+        name if is_mod_event(name) => {
             session.reload_mods = true;
             true
         }
         _ => false,
     }
+}
+
+fn is_mod_event(name: &str) -> bool {
+    matches!(
+        name,
+        "core/mod.installed" | "core/mod.updated" | "core/mod.deleted"
+    )
 }
 
 fn decode_failed(session: &mut Session, name: &str) -> bool {

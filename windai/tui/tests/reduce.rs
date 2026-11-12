@@ -315,6 +315,7 @@ fn global_events_only_append_to_the_log() {
     let mut session = session(CURRENT_TOPIC, None);
     let global = event(1, "core/unknown", Scope::Global, json!({"value": 1}));
     assert!(!apply(&mut session, &global));
+    assert!(!session.reload_mods);
     assert_eq!(session.log.entries().count(), 1);
 }
 
@@ -755,6 +756,26 @@ fn mod_events_request_a_reload() {
         assert!(session.reload_mods);
         session.reload_mods = false;
     }
+}
+
+#[test]
+fn a_global_mod_event_requests_a_reload_without_a_payload() {
+    let mut session = session(CURRENT_TOPIC, None);
+    let global = FeedEvent {
+        key: EventKey::new(0, 1).expect("build an event key"),
+        envelope: Envelope::new(
+            "core/mod.deleted",
+            Scope::Global,
+            Origin::Internal,
+            Source::core("test"),
+            None,
+            Shape::Observe,
+        ),
+        target: Target::Core,
+    };
+    assert!(apply(&mut session, &global));
+    assert!(session.reload_mods);
+    assert_eq!(session.log.entries().count(), 1);
 }
 
 #[test]
