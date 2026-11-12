@@ -257,10 +257,6 @@ where
     }
 }
 
-fn structured(value: &Value) -> &Value {
-    &value["structuredContent"]
-}
-
 #[tokio::test]
 async fn enable_publishes_mod_tools_and_call_returns_its_value() {
     let fixture = Fixture::new().await;
@@ -299,7 +295,7 @@ async fn enable_publishes_mod_tools_and_call_returns_its_value() {
     let value = call_tool(&fixture.services, &context, json!({}))
         .await
         .expect("the mod tool must answer");
-    assert_eq!(structured(&value)["mark"], json!("demo"));
+    assert_eq!(value["mark"], json!("demo"));
 
     fixture.services.shutdown().await.expect("shutdown");
 }
@@ -431,7 +427,7 @@ async fn wait_mark(services: &ResourceService, tool: &str, expected: &str) -> Va
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if let Ok(value) = call_tool(services, tool, json!({})).await
-            && structured(&value)["mark"] == expected
+            && value["mark"] == expected
         {
             return value;
         }
@@ -455,7 +451,7 @@ async fn wait_empty(registry: &RegistryHandle, ref_id: &str) {
 }
 
 fn skill_sources(value: &Value) -> Vec<String> {
-    let mut sources: Vec<String> = structured(value)["skills"]
+    let mut sources: Vec<String> = value["skills"]
         .as_array()
         .map(|skills| {
             skills
@@ -579,7 +575,7 @@ async fn update_keeps_unchanged_servers_running() {
     wait_mark(&fixture.services, &beta_context, "beta-v2").await;
 
     let value = wait_mark(&fixture.services, &alpha_context, "alpha").await;
-    assert_eq!(structured(&value)["mark"], json!("alpha"));
+    assert_eq!(value["mark"], json!("alpha"));
     let log = fs::read_to_string(&alpha_log).expect("the alpha start log must exist");
     assert_eq!(
         log.lines().count(),
@@ -647,7 +643,7 @@ async fn duplicate_constructed_names_keep_the_first() {
         .await
         .expect("the kept service must answer");
     assert_eq!(
-        structured(&value)["mark"],
+        value["mark"],
         json!("ab"),
         "the first mod in name order must win"
     );
@@ -709,7 +705,7 @@ async fn a_failed_mod_service_does_not_block_other_tools() {
     let value = call_tool(&fixture.services, &context, json!({}))
         .await
         .expect("the healthy service must answer");
-    assert_eq!(structured(&value)["mark"], json!("good"));
+    assert_eq!(value["mark"], json!("good"));
 
     tokio::time::sleep(Duration::from_millis(300)).await;
     let tools = declarations(&fixture.services, topic_id).await;
@@ -766,11 +762,11 @@ async fn builtin_fs_serves_the_workspace_and_enabled_mod_roots() {
     .await
     .expect("the workspace must be listable");
     assert!(
-        structured(&value)["error"].is_null(),
+        value["error"].is_null(),
         "the workspace listing must succeed: {value}"
     );
     assert!(
-        structured(&value)["entries"]
+        value["entries"]
             .as_array()
             .is_some_and(|entries| entries.iter().any(|entry| entry["name"] == "note.txt")),
         "the listing must include the note: {value}"
@@ -784,7 +780,7 @@ async fn builtin_fs_serves_the_workspace_and_enabled_mod_roots() {
     .await
     .expect("the sandbox must answer with a failure result");
     assert!(
-        structured(&value)["error"].is_string(),
+        value["error"].is_string(),
         "a path outside the workspace must be rejected: {value}"
     );
 
@@ -796,7 +792,7 @@ async fn builtin_fs_serves_the_workspace_and_enabled_mod_roots() {
     .await
     .expect("the enabled mod root must be listable");
     assert!(
-        structured(&value)["error"].is_null(),
+        value["error"].is_null(),
         "the enabled mod root listing must succeed: {value}"
     );
 
@@ -808,7 +804,7 @@ async fn builtin_fs_serves_the_workspace_and_enabled_mod_roots() {
     .await
     .expect("the sandbox must answer with a failure result");
     assert!(
-        structured(&value)["error"].is_string(),
+        value["error"].is_string(),
         "the mods root itself must be rejected: {value}"
     );
 
@@ -822,7 +818,7 @@ async fn builtin_fs_serves_the_workspace_and_enabled_mod_roots() {
     .await
     .expect("the sandbox must answer with a failure result");
     assert!(
-        structured(&value)["error"].is_string(),
+        value["error"].is_string(),
         "another topic's directory must be rejected: {value}"
     );
 
@@ -878,7 +874,7 @@ async fn builtin_workspace_lists_only_the_enabled_mods() {
     let value = call_tool(&fixture.services, &info, json!({}))
         .await
         .expect("the workspace facts must be readable");
-    let facts = structured(&value);
+    let facts = value;
     assert_eq!(facts["workspace"], json!(workspace.to_string_lossy()));
     let mods = facts["mods"].as_array().expect("mods must be an array");
     assert_eq!(mods.len(), 1, "only the enabled mod may be listed: {facts}");
@@ -908,7 +904,7 @@ async fn builtin_workspace_lists_only_the_enabled_mods() {
     .await
     .expect("the sandbox must answer");
     assert!(
-        structured(&value)["error"].is_null(),
+        value["error"].is_null(),
         "the enabled mod root must be listable: {value}"
     );
     let value = call_tool(
@@ -919,7 +915,7 @@ async fn builtin_workspace_lists_only_the_enabled_mods() {
     .await
     .expect("the sandbox must answer");
     assert!(
-        structured(&value)["error"].is_string(),
+        value["error"].is_string(),
         "a disabled mod root must be rejected: {value}"
     );
 
@@ -934,7 +930,7 @@ async fn builtin_workspace_lists_only_the_enabled_mods() {
         .await
         .expect("the workspace facts must be readable");
     assert_eq!(
-        structured(&value)["mods"]
+        value["mods"]
             .as_array()
             .expect("mods must be an array")
             .len(),
@@ -950,7 +946,7 @@ async fn builtin_workspace_lists_only_the_enabled_mods() {
     .await
     .expect("the sandbox must answer");
     assert!(
-        structured(&value)["error"].is_null(),
+        value["error"].is_null(),
         "the newly enabled mod root must be listable: {value}"
     );
 
@@ -965,7 +961,7 @@ async fn builtin_workspace_lists_only_the_enabled_mods() {
         .await
         .expect("the workspace facts must be readable");
     assert_eq!(
-        structured(&value)["mods"]
+        value["mods"]
             .as_array()
             .expect("mods must be an array")
             .len(),
@@ -981,7 +977,7 @@ async fn builtin_workspace_lists_only_the_enabled_mods() {
     .await
     .expect("the sandbox must answer");
     assert!(
-        structured(&value)["error"].is_string(),
+        value["error"].is_string(),
         "the disabled mod root must be rejected: {value}"
     );
 
@@ -1247,7 +1243,7 @@ async fn release_topic_then_declare_republishes_the_tools() {
     let value = call_tool(&fixture.services, &context, json!({}))
         .await
         .expect("a redeclared topic must answer again");
-    assert_eq!(structured(&value)["mark"], json!("demo"));
+    assert_eq!(value["mark"], json!("demo"));
 
     fixture.services.shutdown().await.expect("shutdown");
 }

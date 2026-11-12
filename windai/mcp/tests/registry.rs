@@ -450,8 +450,7 @@ async fn builtin_skills_lists_skills_within_its_roots() {
         .await
         .expect("the builtin skills server must connect");
     let tool = find_tool(&handle, "skills:topic:1", "skills_list").await;
-    let listed =
-        structured(call_tool(&handle, &tool, json!({"dir": root.to_string_lossy()})).await);
+    let listed = payload(call_tool(&handle, &tool, json!({"dir": root.to_string_lossy()})).await);
     assert_eq!(listed["skills"].as_array().map(Vec::len), Some(1));
     assert_eq!(listed["skills"][0]["name"], json!("demo"));
     assert_eq!(listed["skills"][0]["source"], json!("s1"));
@@ -506,7 +505,7 @@ async fn builtin_workspace_reports_its_own_paths() {
         .expect("the second builtin workspace must connect");
 
     let tool = find_tool(&handle, "workspace:topic:1", "workspace_info").await;
-    let facts = structured(call_tool(&handle, &tool, json!({})).await);
+    let facts = payload(call_tool(&handle, &tool, json!({})).await);
     assert_eq!(facts["workspace"], json!(workspace_a.to_string_lossy()));
     assert_eq!(
         facts["mods"][0]["root"],
@@ -531,7 +530,7 @@ async fn builtin_workspace_reports_its_own_paths() {
     );
 
     let tool = find_tool(&handle, "workspace:topic:2", "workspace_info").await;
-    let facts = structured(call_tool(&handle, &tool, json!({})).await);
+    let facts = payload(call_tool(&handle, &tool, json!({})).await);
     assert_eq!(facts["workspace"], json!(workspace_b.to_string_lossy()));
     handle.shutdown().await;
 }
@@ -570,7 +569,7 @@ async fn wait_mark(handle: &RegistryHandle, server: &str, expected: &str) {
     loop {
         let tool = find_tool(handle, server, "context").await;
         if let CallOutcome::Ok(value) = call_tool(handle, &tool, json!({})).await
-            && value["structuredContent"]["mark"] == json!(expected)
+            && value["mark"] == json!(expected)
         {
             return;
         }
@@ -582,15 +581,15 @@ async fn wait_mark(handle: &RegistryHandle, server: &str, expected: &str) {
     }
 }
 
-fn structured(outcome: CallOutcome) -> Value {
+fn payload(outcome: CallOutcome) -> Value {
     match outcome {
-        CallOutcome::Ok(value) => value["structuredContent"].clone(),
+        CallOutcome::Ok(value) => value,
         CallOutcome::Failed(error) => panic!("the tool call must return a result: {error}"),
     }
 }
 
 async fn read_file(handle: &RegistryHandle, tool: &BoundTool, path: &Path) -> Value {
-    structured(call_tool(handle, tool, json!({"path": path.to_string_lossy()})).await)
+    payload(call_tool(handle, tool, json!({"path": path.to_string_lossy()})).await)
 }
 
 fn start_log_lines(path: &str) -> usize {

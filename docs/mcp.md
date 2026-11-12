@@ -435,6 +435,8 @@ pub struct SkillsListRequest {
   生成。
 - `tool_call` 按服务名与工具名查找连接；`tool_calls` 并发执行一批调用，单个失败转成
   `{ "error": reason }`。两者都使用调用方给出的截止时间与取消令牌。
+- `CallOutcome::Ok` 只携带工具载荷：有 `structuredContent` 时取它，否则取 `content`
+  数组。`resultType`、`isError` 与 `_meta` 不进入载荷。
 - `release_topic(topic_id)` 释放主引用与内建引用；`shutdown` 关闭注册表。
 
 `McpService` 定义在 `wind-wire`，当前有 `list_tools`、`tool_call`、`tool_calls` 三个

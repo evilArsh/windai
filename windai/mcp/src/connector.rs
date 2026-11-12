@@ -4,7 +4,7 @@ use crate::runner::LaunchPlan;
 use process_wrap::tokio::CommandWrap;
 #[cfg(unix)]
 use process_wrap::tokio::ProcessGroup;
-use rmcp::model::{CallToolRequestParams, CallToolResponse, ProtocolVersion, Tool};
+use rmcp::model::{CallToolRequestParams, CallToolResponse, CallToolResult, ProtocolVersion, Tool};
 use rmcp::service::{ClientLifecycleMode, ClientServiceExt, DynService, Peer, RunningService};
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransport;
 use rmcp::transport::{IntoTransport, TokioChildProcess};
@@ -27,6 +27,13 @@ use wind_wire::mcp::{McpConfig, McpDefinition};
 use std::time::Duration;
 
 type Client = RunningService<RoleClient, Box<dyn DynService<RoleClient>>>;
+
+fn payload_of(result: CallToolResult) -> std::result::Result<Value, serde_json::Error> {
+    match result.structured_content {
+        Some(value) => Ok(value),
+        None => serde_json::to_value(result.content),
+    }
+}
 
 /// stderr 单行保留的字节数
 const STDERR_LINE_LIMIT: usize = 64 * 1024;
@@ -210,7 +217,7 @@ impl Connection {
             Err(_) => return CallOutcome::Failed("the operation timed out".to_owned()),
         };
         match response {
-            CallToolResponse::Complete(result) => match serde_json::to_value(&result) {
+            CallToolResponse::Complete(result) => match payload_of(result) {
                 Ok(value) => CallOutcome::Ok(value),
                 Err(error) => {
                     CallOutcome::Failed(format!("cannot serialize the tool result: {error}"))
@@ -380,11 +387,11 @@ fn flush(batch: &mut String, log: &Option<LogSink>) {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use rmcp::model::Tool;
+    use rmcp::model::{CallToolResult, ContentBlock, Tool};
     use serde_json::json;
     use tokio::io::AsyncWriteExt;
 
-    use super::{LogSink, STDERR_LINE_LIMIT, ToolDescriptor, drain_reader};
+    use super::{LogSink, STDERR_LINE_LIMIT, ToolDescriptor, drain_reader, payload_of};
 
     #[test]
     fn tool_descriptor_keeps_the_schema() {
@@ -400,6 +407,21 @@ mod tests {
             Some("returns the arguments")
         );
         assert_eq!(descriptor.input_schema, json!({"type": "object"}));
+    }
+
+    #[test]
+    fn a_structured_result_becomes_the_payload() {
+        let result = CallToolResult::structured(json!({"a": 1}));
+        assert_eq!(payload_of(result).unwrap(), json!({"a": 1}));
+    }
+
+    #[test]
+    fn a_text_result_becomes_the_content_blocks() {
+        let result = CallToolResult::success(vec![ContentBlock::text("done")]);
+        assert_eq!(
+            payload_of(result).unwrap(),
+            json!([{"type": "text", "text": "done"}])
+        );
     }
 
     #[tokio::test]
