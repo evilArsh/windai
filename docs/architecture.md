@@ -258,6 +258,10 @@ LlmRunner / Installer / Agent / MCP / ScriptRuntime
 `synchronous` 未显式设置，使用 SQLite 对该 journal 模式的默认值。需要改变持久性保证时，
 在 `wind-storage::db::open_pool` 统一设置，不要在各语句集里零散设置。
 
+`wind-storage` 为宿主提供四个只读查询：`list_topics()`（`id` 降序）、`list_providers()`
+（`id` 升序）、`list_models(provider_id)`（可选按提供商过滤）与 `ContextRow.message_id`
+（块按消息归组）。返回形状、排序与过滤规则见「存储」。
+
 ## 当前实现边界
 
 以下是代码事实，不代表期望行为。子系统文档会给出更细的边界。

@@ -658,7 +658,7 @@ before dropping the runtime. The script implementation is fixed to QuickJS.
 | HTTP/SSE/WebSocket endpoints | `Runtime::subscribe()` supplies an in-process subscription; transport and authentication belong to the host |
 | Approval UI | Present external waits and pass the resulting `WaitAnswer` to `Runtime::resume` |
 | Event history queries | `wind-storage` writes `event_log` but has no read API for it |
-| The front-end shell | UI loading, module format, mounting, `UiCtx` |
+| The front-end shell | UI loading, module format, mounting, `UiCtx`; `windai/tui` is the reference host |
 | `AppDirs` root | It decides database, topics, skills, mods and bytecode locations |
 
 ---

@@ -581,6 +581,20 @@ pub enum StorageError {
 `NotFound`、`Conflict`、`IdentityConflict` 由语句集显式构造；`ensure_affected` 把 0 行转成
 `NoRowsAffected`；`ensure_lte_one` 把多行转成 `TooManyRows`。
 
+## 只读查询
+
+宿主用以下只读查询枚举领域行。查询不改写任何表。
+
+| 查询 | 返回 | 用途 |
+| --- | --- | --- |
+| `list_topics()` | 全部话题，按 `topics.id` 降序 | 话题枚举 |
+| `list_providers()` | 全部提供商，按 `providers.id` 升序 | 提供商枚举 |
+| `list_models(provider_id)` | `provider_id` 为 `Some` 时返回该提供商的模型，按 `models.id` 升序；为 `None` 时返回全部模型，按 `models.provider_id`、`models.id` 升序 | 模型枚举与按提供商过滤 |
+| `ContextRow.message_id` | 上下文行携带所属消息的 `message_id` | 把块按消息归组；同一消息的块共享该值 |
+
+`ContextRow` 由 `list_instance_context(instance_id)` 返回，行序为 `message_id`、`block.seq` 升序。
+`message_id` 与 `block` 并列，宿主不需要根据 `seq` 推断消息边界。
+
 ## 当前边界
 
 | 项 | 现状 |
