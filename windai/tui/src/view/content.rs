@@ -29,10 +29,14 @@ pub fn render(frame: &mut Frame, area: Rect, session: &mut Session, focused: boo
     let mut lines: Vec<Line<'static>> = Vec::new();
     for message in &mut session.messages {
         lines.push(message_title(message));
+        if message.blocks.is_empty() {
+            lines.push(Line::default());
+            continue;
+        }
         for block in &mut message.blocks {
             lines.extend(block_text(block, width).lines);
+            lines.push(Line::default());
         }
-        lines.push(Line::default());
     }
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
     let total = u16::try_from(paragraph.line_count(inner.width)).unwrap_or(u16::MAX);
@@ -74,7 +78,7 @@ fn block_text(block: &mut BlockView, width: u16) -> Text<'static> {
             content,
             width,
         ),
-        Body::Reasoning { content, .. } => plain(format!("reasoning {content}"), theme::REASONING),
+        Body::Reasoning { content, .. } => plain(content.clone(), theme::REASONING),
         Body::ToolCall {
             call_name,
             call_arguments,
@@ -161,11 +165,6 @@ const RESULT_BODY_LINES: usize = 60;
 
 fn tool_result_text(call_res: &Value, width: u16) -> Text<'static> {
     let failed = tool_result_failed(call_res);
-    let header_style = if failed {
-        theme::ERROR
-    } else {
-        theme::TOOL_RESULT
-    };
     let mut body = Vec::new();
     match call_res {
         Value::Object(map) if !map.is_empty() => {
@@ -183,12 +182,18 @@ fn tool_result_text(call_res: &Value, width: u16) -> Text<'static> {
     }
     let clipped = body.len() > RESULT_BODY_LINES;
     body.truncate(RESULT_BODY_LINES);
-    let mut lines = vec![Line::from(Span::styled("result", header_style))];
-    lines.append(&mut body);
     if clipped {
-        lines.push(Line::from(Span::styled("…".to_owned(), theme::JSON_PUNCT)));
+        body.push(Line::from(Span::styled("…".to_owned(), theme::JSON_PUNCT)));
     }
-    Text::from(lines)
+    if failed {
+        for line in &mut body {
+            line.style = theme::ERROR;
+            for span in &mut line.spans {
+                span.style = theme::ERROR;
+            }
+        }
+    }
+    Text::from(body)
 }
 
 fn emit_json(
@@ -334,7 +339,7 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_renders_with_prefix_and_dim_style() {
+    fn reasoning_renders_dim_without_a_title() {
         let text = text(
             Body::Reasoning {
                 item_id: None,
@@ -342,7 +347,7 @@ mod tests {
             },
             40,
         );
-        assert_eq!(text.to_string(), "reasoning thinking it through");
+        assert_eq!(text.to_string(), "thinking it through");
         assert!(text.lines[0].style.add_modifier.contains(Modifier::DIM));
     }
 
@@ -384,7 +389,7 @@ mod tests {
             },
             80,
         );
-        assert_eq!(ok.to_string(), "result\n  \"ok\": true");
+        assert_eq!(ok.to_string(), "  \"ok\": true");
         assert_eq!(red_lines(&ok), 0);
 
         let error = text(
@@ -395,7 +400,7 @@ mod tests {
             80,
         );
         assert_eq!(red_lines(&error), 1);
-        assert_eq!(error.lines[1].to_string(), "  \"error\": \"boom\"");
+        assert_eq!(error.lines[0].to_string(), "  \"error\": \"boom\"");
 
         let refused = text(
             Body::ToolResult {
@@ -404,7 +409,7 @@ mod tests {
             },
             80,
         );
-        assert_eq!(red_lines(&refused), 1);
+        assert_eq!(red_lines(&refused), 2);
 
         let allowed = text(
             Body::ToolResult {
@@ -428,7 +433,6 @@ mod tests {
         assert_eq!(
             nested.to_string(),
             concat!(
-                "result\n",
                 "  \"user\": {\n",
                 "    \"id\": 1\n",
                 "    \"tags\": [\n",
@@ -450,7 +454,7 @@ mod tests {
             },
             80,
         );
-        assert_eq!(scalar.to_string(), "result\n  \"done\"");
+        assert_eq!(scalar.to_string(), "  \"done\"");
 
         let nested = text(
             Body::ToolResult {
@@ -459,10 +463,7 @@ mod tests {
             },
             80,
         );
-        assert_eq!(
-            nested.to_string(),
-            "result\n  \"empty\": {}\n  \"list\": []"
-        );
+        assert_eq!(nested.to_string(), "  \"empty\": {}\n  \"list\": []");
     }
 
     #[test]
@@ -475,7 +476,7 @@ mod tests {
             },
             80,
         );
-        assert_eq!(text.lines.len(), RESULT_BODY_LINES + 2);
+        assert_eq!(text.lines.len(), RESULT_BODY_LINES + 1);
         assert_eq!(
             text.lines.last().map(ToString::to_string).as_deref(),
             Some("…")
@@ -491,9 +492,9 @@ mod tests {
             },
             16,
         );
-        assert_eq!(text.lines.len(), 2);
-        assert!(text.lines[1].to_string().ends_with('…'));
-        assert!(text.lines[1].width() <= 16);
+        assert_eq!(text.lines.len(), 1);
+        assert!(text.lines[0].to_string().ends_with('…'));
+        assert!(text.lines[0].width() <= 16);
     }
 
     #[test]

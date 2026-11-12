@@ -6,7 +6,7 @@ use wind_core::agent::events::{AgentSealed, AgentSpawn, AgentStatus};
 use wind_core::llm::domain::LlmDomain;
 use wind_core::llm::events::{BlockCommitted, BlockDelta, MessageInterrupted, MessageSeal};
 use wind_wire::event::{FeedEvent, Scope};
-use wind_wire::{AgentRole, Role, Usage};
+use wind_wire::{AgentRole, Body, Role, Usage};
 
 pub fn apply(session: &mut Session, event: &FeedEvent) -> bool {
     match &event.envelope.scope {
@@ -90,12 +90,11 @@ fn apply_delta(session: &mut Session, event: &BlockDelta) -> bool {
     {
         Ok(index) => {
             let current = &mut message.blocks[index];
-            if current.revision >= block.revision {
+            if current.committed || current.revision >= block.revision {
                 return false;
             }
-            let committed = current.committed;
-            *current = BlockView::new(block.seq, block.revision, block.body.clone());
-            current.committed = committed;
+            absorb_fragment(&mut current.body, &block.body);
+            current.revision = block.revision;
             true
         }
         Err(index) => {
@@ -104,6 +103,75 @@ fn apply_delta(session: &mut Session, event: &BlockDelta) -> bool {
                 BlockView::new(block.seq, block.revision, block.body.clone()),
             );
             true
+        }
+    }
+}
+
+/// 把增量的片段并入已收到的块；不能追加的类型整体替换
+fn absorb_fragment(target: &mut Body, fragment: &Body) {
+    match (target, fragment) {
+        (Body::Text { content }, Body::Text { content: fragment }) => {
+            content.push_str(fragment);
+        }
+        (
+            Body::Reasoning { item_id, content },
+            Body::Reasoning {
+                item_id: fragment_item,
+                content: fragment_content,
+            },
+        ) => {
+            if item_id.is_none() {
+                *item_id = fragment_item.clone();
+            }
+            content.push_str(fragment_content);
+        }
+        (
+            Body::Audio {
+                item_id,
+                format,
+                content,
+            },
+            Body::Audio {
+                item_id: fragment_item,
+                format: fragment_format,
+                content: fragment_content,
+            },
+        ) => {
+            if item_id.is_none() {
+                *item_id = fragment_item.clone();
+            }
+            if format.is_empty() {
+                *format = fragment_format.clone();
+            }
+            content.push_str(fragment_content);
+        }
+        (
+            Body::ToolCall {
+                item_id,
+                call_id,
+                call_name,
+                call_arguments,
+            },
+            Body::ToolCall {
+                item_id: fragment_item,
+                call_id: fragment_call,
+                call_name: fragment_name,
+                call_arguments: fragment_arguments,
+            },
+        ) => {
+            if item_id.is_none() {
+                *item_id = fragment_item.clone();
+            }
+            if call_id.is_empty() {
+                *call_id = fragment_call.clone();
+            }
+            if call_name.is_empty() {
+                *call_name = fragment_name.clone();
+            }
+            call_arguments.push_str(fragment_arguments);
+        }
+        (target, fragment) => {
+            *target = fragment.clone();
         }
     }
 }

@@ -27,7 +27,6 @@ pub const LOG_CORE: Style = Style::new().fg(Color::Blue);
 pub const LOG_LOCAL: Style = Style::new().fg(Color::DarkGray);
 
 pub const TOOL_CALL: Style = Style::new().fg(Color::Yellow);
-pub const TOOL_RESULT: Style = Style::new().fg(Color::Cyan);
 pub const JSON_KEY: Style = Style::new().fg(Color::Cyan);
 pub const JSON_STRING: Style = Style::new().fg(Color::Green);
 pub const JSON_NUMBER: Style = Style::new().fg(Color::Yellow);

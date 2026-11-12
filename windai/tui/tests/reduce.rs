@@ -83,7 +83,7 @@ fn delta_keeps_the_highest_revision() {
 }
 
 #[test]
-fn delta_replaces_an_older_block_when_the_revision_grows() {
+fn delta_appends_fragments_as_the_revision_grows() {
     let mut session = session(CURRENT_TOPIC, None);
     assert!(apply(&mut session, &delta(10, 0, 1, "first")));
     assert!(apply(&mut session, &delta(10, 0, 2, "second")));
@@ -92,13 +92,73 @@ fn delta_replaces_an_older_block_when_the_revision_grows() {
     assert_eq!(
         session.messages[0].blocks[0].body,
         Body::Text {
-            content: "second".to_owned()
+            content: "firstsecond".to_owned()
         }
     );
 }
 
 #[test]
-fn delta_replacement_keeps_the_committed_flag() {
+fn reasoning_fragments_accumulate() {
+    let mut session = session(CURRENT_TOPIC, None);
+    for (seq, revision, content) in [(1, 1, "think "), (2, 2, "it through")] {
+        let event = event(
+            seq,
+            "core/block.delta",
+            scope(CURRENT_TOPIC),
+            json!({
+                "message_id": 14,
+                "role": "assistant",
+                "seq": 0,
+                "revision": revision,
+                "kind": "reasoning",
+                "content": content
+            }),
+        );
+        assert!(apply(&mut session, &event));
+    }
+    assert_eq!(
+        session.messages[0].blocks[0].body,
+        Body::Reasoning {
+            item_id: None,
+            content: "think it through".to_owned()
+        }
+    );
+}
+
+#[test]
+fn tool_call_arguments_accumulate() {
+    let mut session = session(CURRENT_TOPIC, None);
+    for (seq, revision, arguments) in [(1, 1, "{\"pa"), (2, 2, "th\":\"a\"}")] {
+        let event = event(
+            seq,
+            "core/block.delta",
+            scope(CURRENT_TOPIC),
+            json!({
+                "message_id": 15,
+                "role": "assistant",
+                "seq": 0,
+                "revision": revision,
+                "kind": "tool_call",
+                "call_id": "call-1",
+                "call_name": "read",
+                "call_arguments": arguments
+            }),
+        );
+        assert!(apply(&mut session, &event));
+    }
+    assert_eq!(
+        session.messages[0].blocks[0].body,
+        Body::ToolCall {
+            item_id: None,
+            call_id: "call-1".to_owned(),
+            call_name: "read".to_owned(),
+            call_arguments: "{\"path\":\"a\"}".to_owned(),
+        }
+    );
+}
+
+#[test]
+fn committed_blocks_ignore_late_deltas() {
     let mut session = session(CURRENT_TOPIC, None);
     assert!(apply(&mut session, &delta(30, 0, 1, "first")));
     let committed = event(
@@ -108,14 +168,13 @@ fn delta_replacement_keeps_the_committed_flag() {
         json!({"message_id": 30, "seq": 0, "block_id": 5, "block": null}),
     );
     assert!(apply(&mut session, &committed));
+    assert!(!apply(&mut session, &delta(30, 0, 2, "second")));
     assert!(session.messages[0].blocks[0].committed);
-    assert!(apply(&mut session, &delta(30, 0, 2, "second")));
-    assert!(session.messages[0].blocks[0].committed);
-    assert_eq!(session.messages[0].blocks[0].revision, 2);
+    assert_eq!(session.messages[0].blocks[0].revision, 1);
     assert_eq!(
         session.messages[0].blocks[0].body,
         Body::Text {
-            content: "second".to_owned()
+            content: "first".to_owned()
         }
     );
 }
