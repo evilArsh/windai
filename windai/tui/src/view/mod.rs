@@ -1,3 +1,4 @@
+pub mod content;
 pub mod input;
 pub mod log;
 
@@ -82,9 +83,9 @@ pub fn layout(area: Rect, bar_height: u16) -> Layout {
     }
 }
 
-pub fn render(frame: &mut Frame, app: &App) {
+pub fn render(frame: &mut Frame, app: &mut App) {
     let layout = layout(frame.area(), 1);
-    match app.screen() {
+    match app.screen_mut() {
         Screen::Empty => {
             render_panel(
                 frame,
@@ -99,7 +100,7 @@ pub fn render(frame: &mut Frame, app: &App) {
             }
         }
         Screen::Session(session) => {
-            render_panel(frame, layout.content, "Content Area", None);
+            content::render(frame, layout.content, session);
             if let Some(side) = layout.side {
                 render_panel(frame, side.mods, "Layer 1 mods", None);
                 render_panel(frame, side.tree, "Layer 2 tree", None);

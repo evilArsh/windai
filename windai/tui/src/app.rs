@@ -106,6 +106,7 @@ pub struct BlockView {
     pub body: Body,
     pub committed: bool,
     pub rendered: Option<(i64, Text<'static>)>,
+    pub rendered_width: Option<u16>,
 }
 
 impl BlockView {
@@ -116,6 +117,7 @@ impl BlockView {
             body,
             committed: false,
             rendered: None,
+            rendered_width: None,
         }
     }
 }
@@ -176,6 +178,10 @@ impl App {
 
     pub fn screen(&self) -> &Screen {
         &self.screen
+    }
+
+    pub(crate) fn screen_mut(&mut self) -> &mut Screen {
+        &mut self.screen
     }
 
     pub fn notice(&self) -> Option<&str> {
