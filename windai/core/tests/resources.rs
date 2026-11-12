@@ -722,7 +722,7 @@ async fn a_failed_mod_service_does_not_block_other_tools() {
 }
 
 #[tokio::test]
-async fn builtin_fs_serves_the_workspace_and_shared_roots() {
+async fn builtin_fs_serves_the_workspace_and_enabled_mod_roots() {
     let fixture = Fixture::new().await;
     let workspace = fixture.dir.path().join("workspace");
     fs::create_dir_all(&workspace).expect("the workspace must be created");
@@ -791,13 +791,25 @@ async fn builtin_fs_serves_the_workspace_and_shared_roots() {
     let value = call_tool(
         &fixture.services,
         &list,
+        json!({"path": fixture.dirs.mod_version("demo", 1).to_string_lossy()}),
+    )
+    .await
+    .expect("the enabled mod root must be listable");
+    assert!(
+        structured(&value)["error"].is_null(),
+        "the enabled mod root listing must succeed: {value}"
+    );
+
+    let value = call_tool(
+        &fixture.services,
+        &list,
         json!({"path": fixture.dirs.mods_root().to_string_lossy()}),
     )
     .await
-    .expect("the shared roots must be listable");
+    .expect("the sandbox must answer with a failure result");
     assert!(
-        structured(&value)["error"].is_null(),
-        "the shared mods root listing must succeed: {value}"
+        structured(&value)["error"].is_string(),
+        "the mods root itself must be rejected: {value}"
     );
 
     let sibling = fixture.dirs.topics_root().join("other");
@@ -812,6 +824,165 @@ async fn builtin_fs_serves_the_workspace_and_shared_roots() {
     assert!(
         structured(&value)["error"].is_string(),
         "another topic's directory must be rejected: {value}"
+    );
+
+    fixture.services.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn builtin_workspace_lists_only_the_enabled_mods() {
+    let fixture = Fixture::new().await;
+    let topic_id = fixture.topic().await;
+    let alpha = write_mod(
+        &fixture.dirs,
+        "alpha",
+        1,
+        json!({"name": "alpha", "version": 1}),
+        &[(
+            "skills/alpha/SKILL.md",
+            "---\nname: alpha\ndescription: The alpha skill.\n---\n",
+        )],
+    );
+    let beta = write_mod(
+        &fixture.dirs,
+        "beta",
+        1,
+        json!({"name": "beta", "version": 1}),
+        &[],
+    );
+    for package in [&alpha, &beta] {
+        fixture
+            .services
+            .install(&cx(), package)
+            .await
+            .expect("install the package");
+    }
+    fixture
+        .services
+        .enable(&cx(), topic_id, "alpha")
+        .await
+        .expect("enable alpha");
+
+    let workspace =
+        fs::canonicalize(fixture.dir.path().join("workspace")).expect("the workspace must exist");
+    let alpha = fs::canonicalize(&alpha).expect("the alpha root must exist");
+    let beta = fs::canonicalize(&beta).expect("the beta root must exist");
+    let server = format!("wd_workspace_{topic_id}");
+    let fs_server = format!("wd_fs_{topic_id}");
+
+    let tools = wait_tools(&fixture.services, topic_id, |tools| {
+        tools.iter().any(|tool| is_from(tool, &server))
+    })
+    .await;
+    let info = find_tool(&tools, &server, "workspace_info");
+    let value = call_tool(&fixture.services, &info, json!({}))
+        .await
+        .expect("the workspace facts must be readable");
+    let facts = structured(&value);
+    assert_eq!(facts["workspace"], json!(workspace.to_string_lossy()));
+    let mods = facts["mods"].as_array().expect("mods must be an array");
+    assert_eq!(mods.len(), 1, "only the enabled mod may be listed: {facts}");
+    assert_eq!(mods[0]["name"], json!("alpha"));
+    assert_eq!(mods[0]["root"], json!(alpha.to_string_lossy()));
+    let roots = facts["roots"].as_array().expect("roots must be an array");
+    assert!(roots.contains(&json!(alpha.to_string_lossy())));
+    assert!(!roots.contains(&json!(beta.to_string_lossy())));
+    let skills = facts["skills"].as_array().expect("skills must be an array");
+    assert!(
+        skills
+            .iter()
+            .any(|skill| skill["source"] == json!("public"))
+    );
+    assert!(skills.iter().any(|skill| skill["source"] == json!("alpha")));
+
+    let fs_tools = wait_tools(&fixture.services, topic_id, |tools| {
+        tools.iter().any(|tool| is_from(tool, &fs_server))
+    })
+    .await;
+    let list = find_tool(&fs_tools, &fs_server, "list_dir");
+    let value = call_tool(
+        &fixture.services,
+        &list,
+        json!({"path": alpha.to_string_lossy()}),
+    )
+    .await
+    .expect("the sandbox must answer");
+    assert!(
+        structured(&value)["error"].is_null(),
+        "the enabled mod root must be listable: {value}"
+    );
+    let value = call_tool(
+        &fixture.services,
+        &list,
+        json!({"path": beta.to_string_lossy()}),
+    )
+    .await
+    .expect("the sandbox must answer");
+    assert!(
+        structured(&value)["error"].is_string(),
+        "a disabled mod root must be rejected: {value}"
+    );
+
+    fixture
+        .services
+        .enable(&cx(), topic_id, "beta")
+        .await
+        .expect("enable beta");
+    let tools = declarations(&fixture.services, topic_id).await;
+    let info = find_tool(&tools, &server, "workspace_info");
+    let value = call_tool(&fixture.services, &info, json!({}))
+        .await
+        .expect("the workspace facts must be readable");
+    assert_eq!(
+        structured(&value)["mods"]
+            .as_array()
+            .expect("mods must be an array")
+            .len(),
+        2,
+        "the newly enabled mod must appear: {value}"
+    );
+    let list = find_tool(&tools, &fs_server, "list_dir");
+    let value = call_tool(
+        &fixture.services,
+        &list,
+        json!({"path": beta.to_string_lossy()}),
+    )
+    .await
+    .expect("the sandbox must answer");
+    assert!(
+        structured(&value)["error"].is_null(),
+        "the newly enabled mod root must be listable: {value}"
+    );
+
+    fixture
+        .services
+        .disable(&cx(), topic_id, "beta")
+        .await
+        .expect("disable beta");
+    let tools = declarations(&fixture.services, topic_id).await;
+    let info = find_tool(&tools, &server, "workspace_info");
+    let value = call_tool(&fixture.services, &info, json!({}))
+        .await
+        .expect("the workspace facts must be readable");
+    assert_eq!(
+        structured(&value)["mods"]
+            .as_array()
+            .expect("mods must be an array")
+            .len(),
+        1,
+        "the disabled mod must disappear: {value}"
+    );
+    let list = find_tool(&tools, &fs_server, "list_dir");
+    let value = call_tool(
+        &fixture.services,
+        &list,
+        json!({"path": beta.to_string_lossy()}),
+    )
+    .await
+    .expect("the sandbox must answer");
+    assert!(
+        structured(&value)["error"].is_string(),
+        "the disabled mod root must be rejected: {value}"
     );
 
     fixture.services.shutdown().await.expect("shutdown");

@@ -6,6 +6,7 @@ use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 use wind_mcp::builtin::fs::FsServer;
 use wind_mcp::builtin::skills::{SkillRoot, SkillRoots, SkillsServer};
+use wind_mcp::builtin::workspace::{ModDir, WorkspaceInfo, WorkspaceServer, WorkspaceSnapshot};
 use wind_mcp::{BoundTool, CallOutcome, RegistryHandle, init};
 
 #[path = "support/mod.rs"]
@@ -460,6 +461,78 @@ async fn builtin_skills_lists_skills_within_its_roots() {
         matches!(denied, CallOutcome::Failed(_)),
         "a directory outside the skill roots must be rejected: {denied:?}"
     );
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn builtin_workspace_reports_its_own_paths() {
+    let workspace_a = temporary_directory();
+    let workspace_b = temporary_directory();
+    let snapshot = |workspace: &Path| {
+        WorkspaceSnapshot::new(
+            workspace.to_path_buf(),
+            workspace.join("skills"),
+            Vec::new(),
+            vec![ModDir {
+                name: "demo".to_owned(),
+                version: 1,
+                root: workspace.join("mods/demo/1"),
+                skills: None,
+                ui: None,
+            }],
+        )
+    };
+
+    let handle = init(options(), bus());
+    handle
+        .acquire_builtin(
+            "w1".to_owned(),
+            WorkspaceServer::new(
+                "workspace:topic:1",
+                WorkspaceInfo::new(snapshot(&workspace_a)),
+            ),
+        )
+        .await
+        .expect("the first builtin workspace must connect");
+    handle
+        .acquire_builtin(
+            "w2".to_owned(),
+            WorkspaceServer::new(
+                "workspace:topic:2",
+                WorkspaceInfo::new(snapshot(&workspace_b)),
+            ),
+        )
+        .await
+        .expect("the second builtin workspace must connect");
+
+    let tool = find_tool(&handle, "workspace:topic:1", "workspace_info").await;
+    let facts = structured(call_tool(&handle, &tool, json!({})).await);
+    assert_eq!(facts["workspace"], json!(workspace_a.to_string_lossy()));
+    assert_eq!(
+        facts["mods"][0]["root"],
+        json!(workspace_a.join("mods/demo/1").to_string_lossy())
+    );
+    assert!(
+        facts["roots"]
+            .as_array()
+            .is_some_and(|roots| roots.contains(&json!(workspace_a.to_string_lossy()))),
+        "the workspace must be one of the reported roots: {facts}"
+    );
+    assert!(
+        facts["summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("demo@1")),
+        "the summary must name the enabled mod: {facts}"
+    );
+    let other = workspace_b.to_string_lossy().into_owned();
+    assert!(
+        !facts.to_string().contains(&other),
+        "the first topic must not see the second workspace: {facts}"
+    );
+
+    let tool = find_tool(&handle, "workspace:topic:2", "workspace_info").await;
+    let facts = structured(call_tool(&handle, &tool, json!({})).await);
+    assert_eq!(facts["workspace"], json!(workspace_b.to_string_lossy()));
     handle.shutdown().await;
 }
 

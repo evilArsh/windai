@@ -1,3 +1,4 @@
+use crate::builtin::canonical_path;
 use std::ffi::OsString;
 use std::fs;
 use std::io::ErrorKind;
@@ -79,7 +80,7 @@ impl Snapshot {
         let roots = roots
             .into_iter()
             .filter(|root| !root.as_os_str().is_empty())
-            .map(|root| fs::canonicalize(&root).unwrap_or(root))
+            .map(canonical_path)
             .collect();
         Self { roots }
     }

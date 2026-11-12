@@ -3,8 +3,9 @@
 `wind-mcp` 是 MCP（Model Context Protocol）客户端与内建服务的宿主。它按引用管理服务
 实例，完成握手、工具枚举与工具调用，并把服务生命周期发布为事件。
 
-本文描述配置类型、注册表状态机、启动规划、连接行为、内建 `fs` 与 `skills` 服务，以及它与
-`wind-core` 资源适配的接缝。mod 如何声明 `mcpServers` 见「Mod」；事件派发见「事件」。
+本文描述配置类型、注册表状态机、启动规划、连接行为、内建 `fs`、`skills` 与 `workspace`
+服务，以及它与 `wind-core` 资源适配的接缝。mod 如何声明 `mcpServers` 见「Mod」；事件派发见
+「事件」。
 
 ## 概念
 
@@ -15,7 +16,7 @@
 | 引用 | 一个字符串 `ref_id`。服务被一个或多个引用持有，最后一个引用释放时停止 |
 | 服务名 | `McpDefinition.name`，注册表的主键，也是工具归属名 |
 | 工具目录 | 所有处于 `Running` 状态的服务提供的工具 |
-| 内建服务 | 进程内启动的 `fs` 与 `skills`，通过 duplex 与注册表连接 |
+| 内建服务 | 进程内启动的 `fs`、`skills` 与 `workspace`，通过 duplex 与注册表连接 |
 
 ```rust
 pub enum McpConfig {
@@ -314,16 +315,17 @@ pub enum BuiltinScope {
 }
 ```
 
-| 作用域 | `fs` | `skills` |
-| --- | --- | --- |
-| `Global` | `wd_fs` | `wd_skills` |
-| `Topic(id)` | `wd_fs_<id>` | `wd_skills_<id>` |
+| 作用域 | `fs` | `skills` | `workspace` |
+| --- | --- | --- | --- |
+| `Global` | `wd_fs` | `wd_skills` | `wd_workspace` |
+| `Topic(id)` | `wd_fs_<id>` | `wd_skills_<id>` | `wd_workspace_<id>` |
 
-`builtin::refs(scope)` 返回两个引用名；`builtin::release(scope)` 释放两个引用。
+`builtin::refs(scope)` 返回三个引用名；`builtin::release(scope)` 释放三个引用。
 `builtin::sync` 比较前后资源，只重建发生变化的服务：
 
-- `fs`：首次同步，或 `workspace` / `shared_roots` 变化时重建。
+- `fs`：首次同步，或 `roots()` 变化时重建。启用集合或 mod 版本变化都算。
 - `skills`：只在首次同步时启动；后续通过 `SkillRoots::replace` 原地替换根集合，不重启服务。
+- `workspace`：只在首次同步时启动；后续通过 `WorkspaceInfo::replace` 原地替换载荷，不重启服务。
 
 内建服务通过 `tokio::io::duplex(64 KiB)` 与注册表连接，服务端任务由注册表持有。
 
@@ -332,12 +334,20 @@ pub enum BuiltinScope {
 ```rust
 pub struct BuiltinResources {
     pub workspace: PathBuf,
-    pub shared_roots: Vec<PathBuf>,
+    pub public_skills: PathBuf,
+    /// 仅含本话题启用的 mod
+    pub mods: Vec<ModDir>,
     pub skill_roots: SkillRoots,
+    pub workspace_info: WorkspaceInfo,
+}
+
+impl BuiltinResources {
+    pub fn roots(&self) -> Vec<PathBuf>;
 }
 ```
 
-`fs` 的沙箱根为 `workspace + shared_roots`；`skills` 的根为 `skill_roots`。
+`roots()` 为 `workspace` + 公共技能根 + 每个已启用 mod 的版本根；`fs` 的沙箱根即此列表，
+`workspace` 的 `roots` 字段与它相同。
 
 ### `fs`
 
@@ -397,6 +407,21 @@ pub struct SkillsListRequest {
 
 `skills_list` 只返回元数据，不返回正文。
 
+### `workspace`
+
+工具 `workspace_info`，无参数，只读，返回本话题的运行环境路径：
+
+| 字段 | 含义 |
+| --- | --- |
+| `summary` | 一句陈述：工作空间、公共技能根、已启用 mod 的 `name@version` |
+| `workspace` | 话题工作空间 |
+| `roots` | `fs` 接受的目录根 |
+| `skills` | 技能根，每项 `{ source, path }`，`source` 为 `public` 或 mod 名 |
+| `mods` | 本话题启用的 mod，每项 `{ name, version, root, skills, ui }` |
+
+`mods` 只含本话题启用的版本；未启用的 mod 的版本根不在 `roots` 中，`mods` 根本身也不是
+沙箱根。
+
 ## 与核心的集成
 
 `wind_core::resources::ResourceService` 是 MCP 的主要使用方：
@@ -404,8 +429,8 @@ pub struct SkillsListRequest {
 - `publish(topic_id)` 把话题启用的 mod 的 `mcpServers` 转成服务定义，服务名改为
   `mod_<mod_name>_<local>`，挂在 `topic_<topic_id>@<generation>` 引用下。
 - 首次需要某话题的工具时，`ensure_topic` 触发一次发布。
-- `list_tools(topic_id)` 读取主引用与内建 `wd_fs_<topic>`、`wd_skills_<topic>` 引用下的
-  工具，按 `(server, tool)` 去重。
+- `list_tools(topic_id)` 读取主引用与内建 `wd_fs_<topic>`、`wd_skills_<topic>`、
+  `wd_workspace_<topic>` 引用下的工具，按 `(server, tool)` 去重。
 - 工具在模型侧的名字是 `<server>0m0<tool>`，由 `wind_core::llm::tools::mcp_tool_name`
   生成。
 - `tool_call` 按服务名与工具名查找连接；`tool_calls` 并发执行一批调用，单个失败转成

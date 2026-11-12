@@ -334,8 +334,9 @@ publish(topic_id):
   mods = Resources::topic(topic_id)
   definitions = 每个 mod 的 mcpServers，服务名改为 mod_<mod_name>_<local>
   workspace = topics.workspace 或 <topics_root>/<topic_id>，确保目录存在
-  shared_roots = 公共技能根 + mods 根
   skill_roots = 公共技能根 + 每个 mod 的 skills 目录
+  mod_dirs = 每个 mod 的版本根
+  workspace_info = 工作空间、公共技能根、skill_roots、mod_dirs 的快照
   generation += 1
   main_ref = topic_<topic_id>@<generation>
   在 main_ref 上 acquire 全部 definitions
@@ -348,10 +349,10 @@ publish(topic_id):
 
 内建服务的命名：
 
-| 作用域 | `fs` | `skills` |
-| --- | --- | --- |
-| `Global` | `wd_fs` | `wd_skills` |
-| `Topic(id)` | `wd_fs_<id>` | `wd_skills_<id>` |
+| 作用域 | `fs` | `skills` | `workspace` |
+| --- | --- | --- | --- |
+| `Global` | `wd_fs` | `wd_skills` | `wd_workspace` |
+| `Topic(id)` | `wd_fs_<id>` | `wd_skills_<id>` | `wd_workspace_<id>` |
 
 `ResourceService` 只为话题作用域发布内建服务。`BuiltinScope::Global` 存在，但当前没有
 调用方。

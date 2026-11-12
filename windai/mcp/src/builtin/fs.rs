@@ -213,8 +213,6 @@ pub(super) async fn sync(
     resources: &BuiltinResources,
 ) {
     let name = scope.service_name(SLOT);
-    let mut roots = vec![resources.workspace.clone()];
-    roots.extend(resources.shared_roots.iter().cloned());
-    let server = FsServer::new(name.clone(), roots);
+    let server = FsServer::new(name.clone(), resources.roots());
     replace(registry, name, Some(server)).await;
 }

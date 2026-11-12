@@ -379,7 +379,7 @@ execute_plan(calls, catalog, cx, mcp_service)
 `ResourceService` 是 `McpService` 的实现：
 
 - `list_tools(topic_id)` 首次调用时发布话题服务，然后读取主引用与内建 `wd_fs_<topic>`、
-  `wd_skills_<topic>` 引用下的工具，按 `(server, tool)` 去重。
+  `wd_skills_<topic>`、`wd_workspace_<topic>` 引用下的工具，按 `(server, tool)` 去重。
 - `tool_call` 与 `tool_calls` 按服务名、工具名查找当前 `Running` 的连接，并传
   `cx.deadline()` 与 `cx.cancel()`。
 - `ModService::prompt_fragments` 返回话题启用 mod 的提示词片段；`version_of` 返回当前版本。

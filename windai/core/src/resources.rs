@@ -14,6 +14,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use wind_event::DispatchCx;
 use wind_mcp::builtin::skills::{SkillRoot, SkillRoots};
+use wind_mcp::builtin::workspace::{ModDir, WorkspaceInfo, WorkspaceSnapshot};
 use wind_mcp::builtin::{self, BuiltinResources, BuiltinScope};
 use wind_mcp::{BoundTool, CallOutcome, RegistryHandle};
 use wind_mod::installer::Installer;
@@ -252,7 +253,15 @@ impl ResourceService {
         let mods = self.resources.topic(topic_id).await?;
         let definitions = mod_definitions(&mods);
         let workspace = self.workspace_of(topic_id).await?;
-        let roots = skill_roots(&mods, self.resources.public_skills());
+        let public_skills = self.resources.public_skills();
+        let skills = skill_roots(&mods, public_skills.clone());
+        let mods = mod_dirs(&mods);
+        let snapshot = WorkspaceSnapshot::new(
+            workspace.clone(),
+            public_skills.clone(),
+            skills.clone(),
+            mods.clone(),
+        );
 
         let (new_main, old_main, previous, resources) = {
             let mut topics = self.lock_topics();
@@ -263,15 +272,24 @@ impl ResourceService {
             let previous = refs.resources.clone();
             let skill_roots = match &previous {
                 Some(previous) => {
-                    previous.skill_roots.replace(roots);
+                    previous.skill_roots.replace(skills);
                     previous.skill_roots.clone()
                 }
-                None => SkillRoots::new(roots),
+                None => SkillRoots::new(skills),
+            };
+            let workspace_info = match &previous {
+                Some(previous) => {
+                    previous.workspace_info.replace(snapshot);
+                    previous.workspace_info.clone()
+                }
+                None => WorkspaceInfo::new(snapshot),
             };
             let resources = BuiltinResources {
                 workspace,
-                shared_roots: vec![self.resources.public_skills(), self.resources.mods_root()],
+                public_skills,
+                mods,
                 skill_roots,
+                workspace_info,
             };
             refs.resources = Some(resources.clone());
             (new_main, old_main, previous, resources)
@@ -478,6 +496,18 @@ fn skill_roots(mods: &[ModResources], public: PathBuf) -> Vec<SkillRoot> {
         })
     }));
     roots
+}
+
+fn mod_dirs(mods: &[ModResources]) -> Vec<ModDir> {
+    mods.iter()
+        .map(|module| ModDir {
+            name: module.name.clone(),
+            version: module.version,
+            root: module.root.clone(),
+            skills: module.skills.clone(),
+            ui: module.ui.clone(),
+        })
+        .collect()
 }
 
 fn exported(tool: &BoundTool) -> Tools {
