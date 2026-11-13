@@ -10,14 +10,18 @@ use crate::theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 
-pub fn render(frame: &mut Frame, area: Rect, app: &App) {
+pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     if area.is_empty() {
         return;
     }
     if let Some(form) = app.form() {
         form::render(frame, area, form, app.providers());
+        return;
+    }
+    if matches!(app.overlay(), Some(Overlay::Event { .. })) {
+        render_event(frame, area, app);
         return;
     }
     let Some(overlay) = app.overlay() else {
@@ -93,6 +97,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         }
         Overlay::Config { selected } => ("config", config_rows(app, *selected)),
         Overlay::Help => ("help", help_rows()),
+        Overlay::Event { .. } => return,
     };
     let popup = popup(area, rows.len());
     if popup.is_empty() {
@@ -131,6 +136,45 @@ fn popup(area: Rect, rows: usize) -> Rect {
     let height = ((u32::from(area.height) * 3 / 4) as u16)
         .min(requested)
         .min(area.height);
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    Rect::new(x, y, width, height)
+}
+
+fn render_event(frame: &mut Frame, area: Rect, app: &mut App) {
+    let Some(Overlay::Event {
+        title,
+        body,
+        scroll,
+        max,
+    }) = app.overlay_mut()
+    else {
+        return;
+    };
+    let popup = event_popup(area);
+    if popup.is_empty() {
+        return;
+    }
+    frame.render_widget(Clear, popup);
+    let block = Block::bordered()
+        .border_style(theme::FOCUS)
+        .title(title.as_str())
+        .title_style(theme::TITLE);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    if inner.is_empty() {
+        return;
+    }
+    let paragraph = Paragraph::new(body.clone()).wrap(Wrap { trim: false });
+    let total = u16::try_from(paragraph.line_count(inner.width)).unwrap_or(u16::MAX);
+    *max = total.saturating_sub(inner.height);
+    *scroll = (*scroll).min(*max);
+    frame.render_widget(paragraph.scroll((*scroll, 0)), inner);
+}
+
+fn event_popup(area: Rect) -> Rect {
+    let width = area.width.saturating_sub(4).min(100);
+    let height = area.height.saturating_sub(4);
     let x = area.x + area.width.saturating_sub(width) / 2;
     let y = area.y + area.height.saturating_sub(height) / 2;
     Rect::new(x, y, width, height)

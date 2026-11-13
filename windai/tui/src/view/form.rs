@@ -2,9 +2,20 @@ use crate::form::{ADAPTERS, Form, ModelForm, ProviderForm};
 use crate::theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
+use unicode_width::UnicodeWidthStr;
 use wind_storage::Provider;
+
+/// 字段标签占的列数
+const LABEL_COLUMNS: u16 = 13;
+
+/// 弹窗内容区内的光标格
+struct Cursor {
+    column: u16,
+    row: u16,
+}
 
 pub fn render(frame: &mut Frame, area: Rect, form: &Form, providers: &[Provider]) {
     if area.is_empty() {
@@ -14,7 +25,7 @@ pub fn render(frame: &mut Frame, area: Rect, form: &Form, providers: &[Provider]
         Form::Provider(form) => provider_rows(form),
         Form::Model(form) => model_rows(form, providers),
     };
-    let popup = popup(area, rows.len());
+    let popup = popup(area, rows.lines.len());
     if popup.is_empty() {
         return;
     }
@@ -26,7 +37,18 @@ pub fn render(frame: &mut Frame, area: Rect, form: &Form, providers: &[Provider]
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
     if !inner.is_empty() {
-        frame.render_widget(Paragraph::new(rows), inner);
+        frame.render_widget(Paragraph::new(rows.lines), inner);
+        if let Some(cursor) = rows.cursor {
+            let x = inner
+                .x
+                .saturating_add(cursor.column)
+                .min(inner.right().saturating_sub(1));
+            let y = inner
+                .y
+                .saturating_add(cursor.row)
+                .min(inner.bottom().saturating_sub(1));
+            frame.set_cursor_position((x, y));
+        }
     }
 }
 
@@ -43,20 +65,56 @@ fn popup(area: Rect, rows: usize) -> Rect {
     Rect::new(x, y, width, height)
 }
 
-fn provider_rows(form: &ProviderForm) -> Vec<Line<'static>> {
-    let mut rows = vec![
-        text_line("name", &form.name, form.focus == 0, form.cursor),
-        text_line("base_url", &form.base_url, form.focus == 1, form.cursor),
-        text_line("api_key", &form.api_key, form.focus == 2, form.cursor),
-    ];
-    if form.editing.is_some() {
-        push_hint(&mut rows, "blank api_key keeps the current key");
+#[derive(Default)]
+struct Rows {
+    lines: Vec<Line<'static>>,
+    cursor: Option<Cursor>,
+}
+
+impl Rows {
+    fn text(&mut self, label: &str, value: &str, active: bool, cursor: usize) {
+        if active {
+            let prefix = value.chars().take(cursor).collect::<String>();
+            let column = LABEL_COLUMNS
+                .saturating_add(u16::try_from(prefix.as_str().width()).unwrap_or(u16::MAX));
+            let row = u16::try_from(self.lines.len()).unwrap_or(u16::MAX);
+            self.cursor = Some(Cursor { column, row });
+        }
+        self.lines.push(text_line(label, value, active, cursor));
     }
-    push_error(&mut rows, form.error.as_deref());
+
+    fn choice(&mut self, label: &str, value: &str, active: bool, cycle: bool) {
+        self.lines.push(enum_line(label, value, active, cycle));
+    }
+
+    fn hint(&mut self, hint: &str) {
+        self.lines.push(Line::from(Span::styled(
+            hint.to_owned(),
+            theme::PLACEHOLDER,
+        )));
+    }
+
+    fn error(&mut self, error: Option<&str>) {
+        if let Some(error) = error {
+            self.lines
+                .push(Line::from(Span::styled(error.to_owned(), theme::ERROR)));
+        }
+    }
+}
+
+fn provider_rows(form: &ProviderForm) -> Rows {
+    let mut rows = Rows::default();
+    rows.text("name", &form.name, form.focus == 0, form.cursor);
+    rows.text("base_url", &form.base_url, form.focus == 1, form.cursor);
+    rows.text("api_key", &form.api_key, form.focus == 2, form.cursor);
+    if form.editing.is_some() {
+        rows.hint("blank api_key keeps the current key");
+    }
+    rows.error(form.error.as_deref());
     rows
 }
 
-fn model_rows(form: &ModelForm, providers: &[Provider]) -> Vec<Line<'static>> {
+fn model_rows(form: &ModelForm, providers: &[Provider]) -> Rows {
     let provider = providers
         .get(form.provider_index)
         .map(|provider| provider.name.as_str())
@@ -65,36 +123,22 @@ fn model_rows(form: &ModelForm, providers: &[Provider]) -> Vec<Line<'static>> {
         .get(form.adapter_index)
         .map(ToString::to_string)
         .unwrap_or_else(|| "-".to_owned());
-    let mut rows = vec![
-        enum_line(
-            "provider",
-            provider,
-            form.focus == 0,
-            form.editing.is_none(),
-        ),
-        text_line("name", &form.name, form.focus == 1, form.cursor),
-        enum_line("adapter", &adapter, form.focus == 2, true),
-        text_line("endpoint", &form.endpoint, form.focus == 3, form.cursor),
-        text_line("config", &form.config, form.focus == 4, form.cursor),
-    ];
-    push_error(&mut rows, form.error.as_deref());
+    let mut rows = Rows::default();
+    rows.choice(
+        "provider",
+        provider,
+        form.focus == 0,
+        form.editing.is_none(),
+    );
+    rows.text("name", &form.name, form.focus == 1, form.cursor);
+    rows.choice("adapter", &adapter, form.focus == 2, true);
+    rows.text("endpoint", &form.endpoint, form.focus == 3, form.cursor);
+    rows.text("config", &form.config, form.focus == 4, form.cursor);
+    rows.error(form.error.as_deref());
     rows
 }
 
-fn push_hint(rows: &mut Vec<Line<'static>>, hint: &str) {
-    rows.push(Line::from(Span::styled(
-        hint.to_owned(),
-        theme::PLACEHOLDER,
-    )));
-}
-
-fn push_error(rows: &mut Vec<Line<'static>>, error: Option<&str>) {
-    if let Some(error) = error {
-        rows.push(Line::from(Span::styled(error.to_owned(), theme::ERROR)));
-    }
-}
-
-fn label_style(active: bool) -> ratatui::style::Style {
+fn label_style(active: bool) -> Style {
     if active { theme::FOCUS } else { theme::BORDER }
 }
 

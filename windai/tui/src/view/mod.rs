@@ -1,5 +1,6 @@
 pub mod bar;
 pub mod content;
+pub mod event;
 pub mod form;
 pub mod input;
 pub mod log;
@@ -7,7 +8,10 @@ pub mod mods;
 pub mod overlay;
 pub mod tree;
 
+mod json;
+
 use crate::app::{App, Focus, Panes, Screen};
+use crate::select;
 use crate::theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -156,6 +160,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         input: layout.input,
     });
     let focus = app.focus();
+    let mut log_hits = Vec::new();
     match app.screen_mut() {
         Screen::Empty => {
             match &storage_error {
@@ -186,6 +191,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                     &log::LogRing::new(),
                     &mut scroll,
                     focus == Focus::Log,
+                    &mut log_hits,
                 );
             }
         }
@@ -224,21 +230,31 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                     &session.log,
                     &mut session.log_scroll,
                     focus == Focus::Log,
+                    &mut log_hits,
                 );
                 session.log_max = log_max;
             }
         }
     }
+    app.set_log_hits(log_hits);
     bar::render(frame, layout.bar, app.bar_layout());
+    let modal = app.form().is_some() || app.overlay().is_some();
     input::render(
         frame,
         layout.input,
         app.input(),
-        app.focus(),
+        focus,
+        !modal && focus == Focus::Input,
         app.completion(),
         app.notice(),
     );
     overlay::render(frame, frame.area(), app);
+    if let Some(select) = app.select().copied() {
+        let buffer = frame.buffer_mut();
+        select.paint(buffer);
+        let rows = select::rows(buffer, select.area);
+        app.set_select_rows(rows);
+    }
 }
 
 fn render_panel(

@@ -1,12 +1,14 @@
+use crate::clipboard;
 use crate::command::{self, Command, CommandSpec};
 use crate::config::{self, Selection};
 use crate::fetch::{self, LoadedSession};
 use crate::form::{Form, ModelForm, ProviderForm};
 use crate::reduce;
+use crate::select::{Pos, Row, Select};
 use crate::theme;
 use crate::view;
 use crate::view::bar::{self, BarData, BarKind, BarLayout};
-use crate::view::log::LogRing;
+use crate::view::log::{LogHit, LogRing};
 use crossterm::cursor::{Hide, Show};
 use crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
@@ -18,7 +20,7 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::Rect;
+use ratatui::layout::{Margin, Rect};
 use ratatui::text::Text;
 use ratatui_textarea::TextArea;
 use std::io::{self, Stdout};
@@ -297,6 +299,14 @@ pub enum Overlay {
     Config {
         selected: usize,
     },
+    /// 一条事件的完整 JSON
+    Event {
+        title: String,
+        body: Text<'static>,
+        scroll: u16,
+        /// 最大滚动偏移
+        max: u16,
+    },
     Help,
 }
 
@@ -345,6 +355,16 @@ fn rect_contains(rect: Rect, x: u16, y: u16) -> bool {
     x >= rect.x && x < rect.right() && y >= rect.y && y < rect.bottom()
 }
 
+fn is_typing_key(key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Char(_) => !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT),
+        KeyCode::Backspace | KeyCode::Delete => true,
+        _ => false,
+    }
+}
+
 fn completion_prefix(text: &str) -> Option<&str> {
     let rest = text.strip_prefix('/')?;
     if rest.chars().any(char::is_whitespace) {
@@ -390,6 +410,10 @@ pub struct App {
     overlay: Option<Overlay>,
     completion: Option<Completion>,
     selection: Selection,
+    select: Option<Select>,
+    select_rows: Vec<Row>,
+    log_hits: Vec<LogHit>,
+    pending_copy: Option<String>,
     providers: Vec<Provider>,
     models: Vec<Model>,
     form: Option<Form>,
@@ -429,6 +453,10 @@ impl App {
             overlay: None,
             completion: None,
             selection: startup.selection,
+            select: None,
+            select_rows: Vec::new(),
+            log_hits: Vec::new(),
+            pending_copy: None,
             providers: startup.providers,
             models: startup.models,
             form: None,
@@ -472,6 +500,22 @@ impl App {
 
     pub fn selection(&self) -> &Selection {
         &self.selection
+    }
+
+    pub(crate) fn select(&self) -> Option<&Select> {
+        self.select.as_ref()
+    }
+
+    pub(crate) fn set_select_rows(&mut self, rows: Vec<Row>) {
+        self.select_rows = rows;
+    }
+
+    pub(crate) fn set_log_hits(&mut self, hits: Vec<LogHit>) {
+        self.log_hits = hits;
+    }
+
+    pub(crate) fn overlay_mut(&mut self) -> Option<&mut Overlay> {
+        self.overlay.as_mut()
     }
 
     pub fn providers(&self) -> &[Provider] {
@@ -518,6 +562,10 @@ impl App {
     }
 
     pub(crate) fn set_panes(&mut self, panes: Panes) {
+        if self.panes != panes {
+            self.select = None;
+            self.select_rows.clear();
+        }
         self.panes = panes;
     }
 
@@ -571,15 +619,110 @@ impl App {
     }
 
     pub async fn handle_mouse(&mut self, mouse: MouseEvent) {
-        if self.form.is_some() || self.overlay.is_some() {
+        if self.form.is_some() {
+            return;
+        }
+        if self.overlay.is_some() {
+            self.scroll_overlay(mouse);
             return;
         }
         match mouse.kind {
             MouseEventKind::ScrollUp => self.scroll_pane_at(mouse.column, mouse.row, -WHEEL_LINES),
             MouseEventKind::ScrollDown => self.scroll_pane_at(mouse.column, mouse.row, WHEEL_LINES),
-            MouseEventKind::Down(MouseButton::Left) => self.click(mouse).await,
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.begin_select(mouse.column, mouse.row);
+                self.click(mouse).await;
+            }
+            MouseEventKind::Drag(MouseButton::Left) => self.drag_select(mouse.column, mouse.row),
+            MouseEventKind::Up(MouseButton::Left) => self.finish_select(),
             _ => {}
         }
+    }
+
+    fn begin_select(&mut self, column: u16, row: u16) {
+        self.select_rows.clear();
+        self.select = self
+            .pane_inner_at(column, row)
+            .map(|area| Select::new(area, Pos::new(column, row)));
+        if self.select.is_some() {
+            self.dirty = true;
+        }
+    }
+
+    fn drag_select(&mut self, column: u16, row: u16) {
+        let Some(select) = self.select.as_mut() else {
+            return;
+        };
+        select.drag_to(Pos::new(column, row));
+        self.dirty = true;
+    }
+
+    fn finish_select(&mut self) {
+        let Some(select) = self.select.take() else {
+            return;
+        };
+        self.dirty = true;
+        if !select.is_drag() {
+            self.select_rows.clear();
+            self.open_event_at(select.anchor);
+            return;
+        }
+        let text = select.text(&self.select_rows);
+        self.select_rows.clear();
+        if text.is_empty() {
+            return;
+        }
+        self.notice = Some(format!("copied {} chars", text.chars().count()));
+        self.pending_copy = Some(text);
+    }
+
+    fn open_event_at(&mut self, at: Pos) {
+        let event = self
+            .log_hits
+            .iter()
+            .find(|hit| rect_contains(hit.rect, at.column, at.row))
+            .map(|hit| Arc::clone(&hit.event));
+        let Some(event) = event else {
+            return;
+        };
+        self.overlay = Some(Overlay::Event {
+            title: view::event::title(&event),
+            body: view::event::body(&event),
+            scroll: 0,
+            max: 0,
+        });
+        self.dirty = true;
+    }
+
+    fn scroll_overlay(&mut self, mouse: MouseEvent) {
+        let Some(Overlay::Event { max, scroll, .. }) = self.overlay.as_mut() else {
+            return;
+        };
+        let step = WHEEL_LINES as u16;
+        match mouse.kind {
+            MouseEventKind::ScrollUp => *scroll = scroll.saturating_sub(step),
+            MouseEventKind::ScrollDown => *scroll = scroll.saturating_add(step).min(*max),
+            _ => return,
+        }
+        self.dirty = true;
+    }
+
+    fn flush_copy(&mut self) {
+        let Some(text) = self.pending_copy.take() else {
+            return;
+        };
+        if let Err(error) = clipboard::copy(&text) {
+            self.notice = Some(format!("copy failed: {error}"));
+            self.dirty = true;
+        }
+    }
+
+    fn pane_inner_at(&self, column: u16, row: u16) -> Option<Rect> {
+        let panes = self.panes;
+        [panes.content, panes.mods, panes.tree, panes.log]
+            .into_iter()
+            .map(|area| area.inner(Margin::new(1, 1)))
+            .find(|inner| rect_contains(*inner, column, row))
     }
 
     fn scroll_pane_at(&mut self, column: u16, row: u16, step: isize) {
@@ -720,16 +863,20 @@ impl App {
             return;
         }
         if self.focus != Focus::Input {
-            self.handle_focused_key(key);
-            return;
+            if !is_typing_key(key) {
+                self.handle_focused_key(key);
+                return;
+            }
+            self.focus = Focus::Input;
+            self.dirty = true;
         }
         match key.code {
             KeyCode::Enter => self.submit().await,
             _ => {
+                self.dirty = true;
                 if self.input.input(key) {
                     self.notice = None;
                     self.refresh_completion();
-                    self.dirty = true;
                 }
             }
         }
@@ -827,6 +974,7 @@ impl App {
         if self.overlay.is_some() {
             return;
         }
+        self.focus = Focus::Input;
         if self.input.insert_str(text) {
             self.notice = None;
             self.refresh_completion();
@@ -1250,10 +1398,32 @@ impl App {
             Some(Overlay::Providers { .. }) => self.handle_providers_key(key).await,
             Some(Overlay::Models { .. }) => self.handle_models_key(key).await,
             Some(Overlay::Config { .. }) => self.handle_config_key(key).await,
+            Some(Overlay::Event { .. }) => self.handle_event_key(key),
             Some(Overlay::Help) if key.code == KeyCode::Enter => self.close_overlay(),
             Some(Overlay::Help) => {}
             None => {}
         }
+    }
+
+    fn handle_event_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Enter {
+            self.close_overlay();
+            return;
+        }
+        let Some(Overlay::Event { max, scroll, .. }) = self.overlay.as_mut() else {
+            return;
+        };
+        let page = PAGE_LINES as u16;
+        match key.code {
+            KeyCode::Up => *scroll = scroll.saturating_sub(1),
+            KeyCode::Down => *scroll = scroll.saturating_add(1).min(*max),
+            KeyCode::PageUp => *scroll = scroll.saturating_sub(page),
+            KeyCode::PageDown => *scroll = scroll.saturating_add(page).min(*max),
+            KeyCode::Home => *scroll = 0,
+            KeyCode::End => *scroll = *max,
+            _ => return,
+        }
+        self.dirty = true;
     }
 
     fn close_overlay(&mut self) {
@@ -1799,19 +1969,22 @@ async fn event_loop(
                 if app.subscription.is_none() {
                     app.resubscribe().await;
                 }
-                if app.dirty {
-                    if let Err(error) = terminal.draw(|frame| view::render(frame, app)) {
-                        app.quit = true;
-                        return Err(error);
-                    }
-                    app.dirty = false;
-                }
             }
         }
+        draw(terminal, app)?;
         if app.quit {
             break;
         }
     }
+    Ok(())
+}
+
+fn draw(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::Result<()> {
+    if app.dirty {
+        terminal.draw(|frame| view::render(frame, app))?;
+        app.dirty = false;
+    }
+    app.flush_copy();
     Ok(())
 }
 
@@ -1911,6 +2084,9 @@ impl Drop for TerminalReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Position;
+    use ratatui::style::Modifier;
     use tempfile::TempDir;
     use wind_wire::event::{Envelope, EventKey, Origin, Shape, Source, Target};
     use wind_wire::{AdapterType, AgentMode};
@@ -1929,6 +2105,12 @@ mod tests {
 
     fn press(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn draw_frame(terminal: &mut Terminal<TestBackend>, app: &mut App) {
+        terminal
+            .draw(|frame| view::render(frame, app))
+            .expect("draw the frame");
     }
 
     fn topic(id: i64) -> Topic {
@@ -2622,6 +2804,224 @@ mod tests {
             app.handle_mouse(click(column, row)).await;
             assert_eq!(app.focus, focus, "click at {column},{row}");
         }
+        close(app).await;
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn typing_in_a_pane_moves_the_focus_and_the_text_to_the_input() {
+        let (dir, mut app) = test_app().await;
+        app.screen = Screen::Session(Session::new(topic(7), None));
+        app.focus = Focus::Content;
+        app.handle_key(press(KeyCode::Char('x'))).await;
+        assert_eq!(app.focus, Focus::Input);
+        assert_eq!(app.input().lines(), ["x"]);
+
+        app.focus = Focus::Log;
+        app.handle_key(press(KeyCode::Backspace)).await;
+        assert_eq!(app.focus, Focus::Input);
+        assert_eq!(app.input().lines(), [""]);
+        close(app).await;
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn the_input_keeps_the_hardware_cursor_at_the_caret() {
+        let (dir, mut app) = test_app().await;
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).expect("create a test terminal");
+        draw_frame(&mut terminal, &mut app);
+        assert!(terminal.backend().cursor_visible());
+        assert_eq!(terminal.backend().cursor_position(), Position::new(1, 17));
+
+        app.handle_key(press(KeyCode::Char('a'))).await;
+        app.handle_key(press(KeyCode::Char('b'))).await;
+        draw_frame(&mut terminal, &mut app);
+        assert_eq!(terminal.backend().cursor_position(), Position::new(3, 17));
+
+        app.handle_key(press(KeyCode::Left)).await;
+        draw_frame(&mut terminal, &mut app);
+        assert_eq!(terminal.backend().cursor_position(), Position::new(2, 17));
+
+        app.handle_key(press(KeyCode::Tab)).await;
+        draw_frame(&mut terminal, &mut app);
+        assert!(!terminal.backend().cursor_visible());
+        close(app).await;
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn dragging_over_the_content_copies_the_selected_text() {
+        let (dir, mut app) = test_app().await;
+        let mut session = Session::new(topic(7), None);
+        let mut message = MessageView::new(1, Role::User);
+        message.blocks.push(BlockView::new(
+            0,
+            0,
+            Body::Text {
+                content: "hello".to_owned(),
+            },
+        ));
+        session.messages.push(message);
+        app.screen = Screen::Session(session);
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).expect("create a test terminal");
+        let mouse = |kind, column, row| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        draw_frame(&mut terminal, &mut app);
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 1, 2))
+            .await;
+        draw_frame(&mut terminal, &mut app);
+        app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 6, 2))
+            .await;
+        draw_frame(&mut terminal, &mut app);
+        assert!(
+            terminal.backend().buffer()[(1, 2)]
+                .modifier
+                .contains(Modifier::REVERSED)
+        );
+        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 6, 2))
+            .await;
+        assert_eq!(app.notice(), Some("copied 5 chars"));
+        assert_eq!(app.pending_copy.as_deref(), Some("hello"));
+        assert!(app.select.is_none());
+        close(app).await;
+        drop(dir);
+    }
+
+    async fn event_session(app: &mut App, payload: serde_json::Value) {
+        let mut session = Session::new(topic(7), None);
+        let mut event = event(1, 7);
+        event.envelope.payload = Some(payload);
+        assert!(session.log.record(7, &event));
+        app.screen = Screen::Session(session);
+    }
+
+    fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    fn screen_text(terminal: &Terminal<TestBackend>) -> String {
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|row| {
+                (0..buffer.area.width)
+                    .map(|column| buffer[(column, row)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[tokio::test]
+    async fn clicking_a_log_headline_opens_the_event_detail() {
+        let (dir, mut app) = test_app().await;
+        event_session(&mut app, serde_json::json!({"instance_id": 3})).await;
+        let mut terminal =
+            Terminal::new(TestBackend::new(100, 30)).expect("create a test terminal");
+        draw_frame(&mut terminal, &mut app);
+        let hit = app.log_hits.first().expect("the log row is clickable").rect;
+
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), hit.x, hit.y))
+            .await;
+        draw_frame(&mut terminal, &mut app);
+        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), hit.x, hit.y))
+            .await;
+        draw_frame(&mut terminal, &mut app);
+
+        let Some(Overlay::Event { title, body, .. }) = app.overlay.as_ref() else {
+            panic!("the event overlay is open")
+        };
+        assert!(title.starts_with("#1 core/agent.sealed "), "{title}");
+        assert!(
+            body.lines
+                .iter()
+                .any(|line| line.to_string().contains("\"instance_id\""))
+        );
+        assert!(screen_text(&terminal).contains("\"envelope\""));
+        close(app).await;
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn the_event_detail_scrolls_and_closes() {
+        let (dir, mut app) = test_app().await;
+        let items = (0..80).map(|index| index.to_string()).collect::<Vec<_>>();
+        event_session(&mut app, serde_json::json!({"items": items})).await;
+        let mut terminal =
+            Terminal::new(TestBackend::new(100, 30)).expect("create a test terminal");
+        draw_frame(&mut terminal, &mut app);
+        let hit = app.log_hits.first().expect("the log row is clickable").rect;
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), hit.x, hit.y))
+            .await;
+        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), hit.x, hit.y))
+            .await;
+        draw_frame(&mut terminal, &mut app);
+
+        let max = match app.overlay.as_ref() {
+            Some(Overlay::Event { max, .. }) => *max,
+            _ => panic!("the event overlay is open"),
+        };
+        assert!(max > 0, "the payload is longer than the popup");
+
+        app.handle_key(press(KeyCode::PageDown)).await;
+        let Some(Overlay::Event { scroll, .. }) = app.overlay.as_ref() else {
+            panic!("the event overlay is open")
+        };
+        assert_eq!(*scroll, (PAGE_LINES as u16).min(max));
+
+        app.handle_key(press(KeyCode::End)).await;
+        app.handle_mouse(mouse(MouseEventKind::ScrollDown, 1, 1))
+            .await;
+        let Some(Overlay::Event { scroll, .. }) = app.overlay.as_ref() else {
+            panic!("the event overlay is open")
+        };
+        assert_eq!(*scroll, max);
+
+        app.handle_key(press(KeyCode::Home)).await;
+        let Some(Overlay::Event { scroll, .. }) = app.overlay.as_ref() else {
+            panic!("the event overlay is open")
+        };
+        assert_eq!(*scroll, 0);
+
+        app.handle_key(press(KeyCode::Esc)).await;
+        assert!(app.overlay.is_none());
+        close(app).await;
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn dragging_over_the_log_copies_instead_of_opening_the_event() {
+        let (dir, mut app) = test_app().await;
+        event_session(&mut app, serde_json::json!({"instance_id": 3})).await;
+        let mut terminal =
+            Terminal::new(TestBackend::new(100, 30)).expect("create a test terminal");
+        draw_frame(&mut terminal, &mut app);
+        let hit = app.log_hits.first().expect("the log row is clickable").rect;
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), hit.x, hit.y))
+            .await;
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            hit.x + 5,
+            hit.y,
+        ))
+        .await;
+        draw_frame(&mut terminal, &mut app);
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            hit.x + 5,
+            hit.y,
+        ))
+        .await;
+        assert!(app.overlay.is_none());
+        assert_eq!(app.pending_copy.as_deref(), Some("#1 co"));
         close(app).await;
         drop(dir);
     }

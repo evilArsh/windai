@@ -1,9 +1,11 @@
 pub mod app;
+pub mod clipboard;
 pub mod command;
 pub mod config;
 pub mod fetch;
 pub mod form;
 pub mod reduce;
+pub mod select;
 pub mod text;
 pub mod theme;
 pub mod view;

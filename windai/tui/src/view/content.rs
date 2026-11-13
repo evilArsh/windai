@@ -1,3 +1,4 @@
+use super::json;
 use crate::app::{BlockView, MessageView, Session};
 use crate::text::concise;
 use crate::theme;
@@ -168,17 +169,29 @@ fn tool_result_text(call_res: &Value, width: u16) -> Text<'static> {
     let mut body = Vec::new();
     match call_res {
         Value::Object(map) if !map.is_empty() => {
-            for (key, value) in map {
-                emit_json(
+            for (index, (key, value)) in map.iter().enumerate() {
+                let before = body.len();
+                json::emit(
                     value,
                     1,
-                    vec![indent(1), key_span(key), punct_span(": ")],
+                    vec![json::indent(1), json::key(key), json::punct(": ")],
                     width,
+                    RESULT_BODY_LINES,
                     &mut body,
                 );
+                if body.len() > before && index + 1 < map.len() {
+                    json::append_comma(&mut body);
+                }
             }
         }
-        value => emit_json(value, 1, vec![indent(1)], width, &mut body),
+        value => json::emit(
+            value,
+            1,
+            vec![json::indent(1)],
+            width,
+            RESULT_BODY_LINES,
+            &mut body,
+        ),
     }
     let clipped = body.len() > RESULT_BODY_LINES;
     body.truncate(RESULT_BODY_LINES);
@@ -194,78 +207,6 @@ fn tool_result_text(call_res: &Value, width: u16) -> Text<'static> {
         }
     }
     Text::from(body)
-}
-
-fn emit_json(
-    value: &Value,
-    depth: usize,
-    mut prefix: Vec<Span<'static>>,
-    width: u16,
-    out: &mut Vec<Line<'static>>,
-) {
-    if out.len() > RESULT_BODY_LINES {
-        return;
-    }
-    if let Some(map) = value.as_object().filter(|map| !map.is_empty()) {
-        prefix.push(punct_span("{"));
-        out.push(Line::from(prefix));
-        for (key, child) in map {
-            emit_json(
-                child,
-                depth + 1,
-                vec![indent(depth + 1), key_span(key), punct_span(": ")],
-                width,
-                out,
-            );
-        }
-        out.push(Line::from(vec![indent(depth), punct_span("}")]));
-        return;
-    }
-    if let Some(items) = value.as_array().filter(|items| !items.is_empty()) {
-        prefix.push(punct_span("["));
-        out.push(Line::from(prefix));
-        for item in items {
-            emit_json(item, depth + 1, vec![indent(depth + 1)], width, out);
-        }
-        out.push(Line::from(vec![indent(depth), punct_span("]")]));
-        return;
-    }
-    let available = usize::from(width).saturating_sub(span_width(&prefix));
-    prefix.push(scalar_span(value, available));
-    out.push(Line::from(prefix));
-}
-
-fn indent(depth: usize) -> Span<'static> {
-    Span::raw("  ".repeat(depth))
-}
-
-fn key_span(key: &str) -> Span<'static> {
-    Span::styled(format!("\"{key}\""), theme::JSON_KEY)
-}
-
-fn punct_span(text: &str) -> Span<'static> {
-    Span::styled(text.to_owned(), theme::JSON_PUNCT)
-}
-
-fn scalar_span(value: &Value, available: usize) -> Span<'static> {
-    match value {
-        Value::String(text) => Span::styled(
-            concise(&format!("\"{text}\""), available),
-            theme::JSON_STRING,
-        ),
-        Value::Number(number) => {
-            Span::styled(concise(&number.to_string(), available), theme::JSON_NUMBER)
-        }
-        Value::Bool(true) => Span::styled("true".to_owned(), theme::JSON_LITERAL),
-        Value::Bool(false) => Span::styled("false".to_owned(), theme::JSON_LITERAL),
-        Value::Null => Span::styled("null".to_owned(), theme::JSON_LITERAL),
-        Value::Object(_) => punct_span("{}"),
-        Value::Array(_) => punct_span("[]"),
-    }
-}
-
-fn span_width(spans: &[Span<'static>]) -> usize {
-    spans.iter().map(|span| span.content.width()).sum()
 }
 
 fn tool_result_failed(call_res: &Value) -> bool {
@@ -434,12 +375,12 @@ mod tests {
             nested.to_string(),
             concat!(
                 "  \"user\": {\n",
-                "    \"id\": 1\n",
+                "    \"id\": 1,\n",
                 "    \"tags\": [\n",
-                "      \"a\"\n",
+                "      \"a\",\n",
                 "      null\n",
                 "    ]\n",
-                "  }\n",
+                "  },\n",
                 "  \"ok\": true"
             )
         );
@@ -463,7 +404,7 @@ mod tests {
             },
             80,
         );
-        assert_eq!(nested.to_string(), "  \"empty\": {}\n  \"list\": []");
+        assert_eq!(nested.to_string(), "  \"empty\": {},\n  \"list\": []");
     }
 
     #[test]

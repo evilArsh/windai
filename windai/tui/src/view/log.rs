@@ -8,6 +8,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use std::collections::VecDeque;
+use std::sync::Arc;
 use unicode_width::UnicodeWidthStr;
 use wind_wire::event::{FeedEvent, Scope};
 
@@ -23,6 +24,15 @@ pub struct LogEntry {
     pub name: String,
     pub seq: Option<i64>,
     pub summary: String,
+    /// 事件原文，本地消息为空
+    pub event: Option<Arc<FeedEvent>>,
+}
+
+/// 日志标题行的可点击区域
+#[derive(Debug, Clone, PartialEq)]
+pub struct LogHit {
+    pub rect: Rect,
+    pub event: Arc<FeedEvent>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -61,6 +71,7 @@ impl LogRing {
             name: event.envelope.name.clone(),
             seq: Some(event.key.seq),
             summary,
+            event: Some(Arc::new(event.clone())),
         });
         true
     }
@@ -71,6 +82,7 @@ impl LogRing {
             name: "wind-tui".to_owned(),
             seq: None,
             summary: message.to_owned(),
+            event: None,
         });
     }
 
@@ -94,7 +106,9 @@ pub fn render(
     log: &LogRing,
     scroll: &mut u16,
     focused: bool,
+    hits: &mut Vec<LogHit>,
 ) -> u16 {
+    hits.clear();
     if area.is_empty() {
         return 0;
     }
@@ -117,18 +131,40 @@ pub fn render(
     let skip_line = usize::from(offset) % ENTRY_ROWS;
     let width = usize::from(inner.width);
     let capacity = usize::from(inner.height).saturating_add(skip_line);
-    let mut lines = Vec::with_capacity(capacity);
+    let mut rows: Vec<(Line<'static>, Option<Arc<FeedEvent>>)> = Vec::with_capacity(capacity);
     for entry in log.entries.iter().skip(first_entry) {
-        if lines.len() >= capacity {
+        if rows.len() >= capacity {
             break;
         }
-        lines.extend(entry_lines(entry, width));
+        let [headline, summary, blank] = entry_lines(entry, width);
+        rows.push((headline, entry.event.clone()));
+        rows.push((summary, None));
+        rows.push((blank, None));
     }
-    let lines: Vec<Line<'static>> = lines
+    let visible = rows
         .into_iter()
         .skip(skip_line)
         .take(usize::from(inner.height))
-        .collect();
+        .collect::<Vec<_>>();
+    for (row, (_, event)) in visible.iter().enumerate() {
+        if let Some(event) = event {
+            hits.push(LogHit {
+                rect: Rect::new(
+                    inner.x,
+                    inner
+                        .y
+                        .saturating_add(u16::try_from(row).unwrap_or(u16::MAX)),
+                    inner.width,
+                    1,
+                ),
+                event: Arc::clone(event),
+            });
+        }
+    }
+    let lines = visible
+        .into_iter()
+        .map(|(line, _)| line)
+        .collect::<Vec<_>>();
     frame.render_widget(Paragraph::new(lines), inner);
     max
 }
@@ -197,6 +233,8 @@ fn span_width(spans: &[Span<'static>]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
     use ratatui::style::Modifier;
     use serde_json::json;
     use wind_wire::event::{Envelope, EventKey, Origin, Shape, Source, Target};
@@ -207,6 +245,7 @@ mod tests {
             name: name.to_owned(),
             seq,
             summary: summary.to_owned(),
+            event: None,
         }
     }
 
@@ -320,5 +359,49 @@ mod tests {
         let lines = entry_lines(&first, 40);
         assert_eq!(lines.len(), ENTRY_ROWS);
         assert!(lines[ENTRY_ROWS - 1].to_string().is_empty());
+    }
+
+    #[test]
+    fn rendering_records_a_hit_for_each_headline_with_an_event() {
+        let mut log = LogRing::new();
+        assert!(log.record(7, &event(Scope::Global, 1)));
+        log.push_local("local");
+        assert!(log.record(7, &event(Scope::Global, 2)));
+
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).expect("create a test terminal");
+        let mut scroll = u16::MAX;
+        let mut hits = Vec::new();
+        terminal
+            .draw(|frame| {
+                render(frame, frame.area(), &log, &mut scroll, false, &mut hits);
+            })
+            .expect("draw the frame");
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].rect, Rect::new(1, 1, 38, 1));
+        assert_eq!(hits[1].rect, Rect::new(1, 7, 38, 1));
+        assert_eq!(hits[1].event.key.seq, 2);
+    }
+
+    #[test]
+    fn hits_follow_the_scrolled_rows() {
+        let mut log = LogRing::new();
+        for seq in 1..=4 {
+            assert!(log.record(7, &event(Scope::Global, seq)));
+        }
+
+        let mut terminal = Terminal::new(TestBackend::new(40, 8)).expect("create a test terminal");
+        let mut scroll = 5;
+        let mut hits = Vec::new();
+        terminal
+            .draw(|frame| {
+                render(frame, frame.area(), &log, &mut scroll, false, &mut hits);
+            })
+            .expect("draw the frame");
+        assert_eq!(scroll, 5);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].rect.y, 2);
+        assert_eq!(hits[0].event.key.seq, 3);
+        assert_eq!(hits[1].rect.y, 5);
+        assert_eq!(hits[1].event.key.seq, 4);
     }
 }

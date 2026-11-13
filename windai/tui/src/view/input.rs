@@ -13,6 +13,7 @@ pub fn render(
     area: Rect,
     input: &TextArea<'_>,
     focus: Focus,
+    show_cursor: bool,
     completion: Option<&Completion>,
     notice: Option<&str>,
 ) {
@@ -34,10 +35,29 @@ pub fn render(
     frame.render_widget(block, area);
     if !inner.is_empty() {
         frame.render_widget(input, inner);
+        if show_cursor {
+            render_cursor(frame, inner, input);
+        }
     }
     if let Some(completion) = completion {
         render_completion(frame, area, input, completion);
     }
+}
+
+fn render_cursor(frame: &mut Frame, area: Rect, input: &TextArea<'_>) {
+    let (top_row, top_column) = input.scroll_offset();
+    let screen = input.screen_cursor();
+    let row = screen.row.saturating_sub(usize::from(top_row));
+    let column = screen.col.saturating_sub(usize::from(top_column));
+    let x = area
+        .x
+        .saturating_add(u16::try_from(column).unwrap_or(u16::MAX))
+        .min(area.right().saturating_sub(1));
+    let y = area
+        .y
+        .saturating_add(u16::try_from(row).unwrap_or(u16::MAX))
+        .min(area.bottom().saturating_sub(1));
+    frame.set_cursor_position((x, y));
 }
 
 fn render_completion(
