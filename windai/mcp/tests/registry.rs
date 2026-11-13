@@ -430,12 +430,17 @@ async fn a_duplicate_builtin_is_discarded() {
 }
 
 #[tokio::test]
-async fn builtin_skills_lists_skills_within_its_roots() {
+async fn builtin_skills_lists_every_configured_root() {
     let tmp = TempDir::new().expect("create a temp dir");
-    let root = tmp.path().join("skills");
-    write_skill(&root.join("a"), "demo", "demo skill");
-    let outside = tmp.path().join("outside");
-    fs::create_dir_all(&outside).expect("create the outside directory");
+    let public = tmp.path().join("skills");
+    let module = tmp.path().join("mods/one/skills");
+    write_skill(&public.join("a"), "demo", "demo skill");
+    write_skill(&public.join("a/nested"), "nested", "nested skill");
+    write_skill(&public.join("c"), "second", "second skill");
+    let plain = public.join("plain");
+    fs::create_dir_all(&plain).expect("create the plain directory");
+    fs::write(plain.join("readme.md"), "readme").expect("write the readme");
+    write_skill(&module.join("b"), "mod", "mod skill");
 
     let handle = init(options(), bus());
     handle
@@ -446,10 +451,20 @@ async fn builtin_skills_lists_skills_within_its_roots() {
                 Arc::new(RwLock::new(WorkspaceInfo::new(
                     1,
                     tmp.path().to_path_buf(),
-                    vec![SkillRoot {
-                        source: Some("s1".to_owned()),
-                        root: root.clone(),
-                    }],
+                    vec![
+                        SkillRoot {
+                            source: None,
+                            root: public.clone(),
+                        },
+                        SkillRoot {
+                            source: Some("s1".to_owned()),
+                            root: module,
+                        },
+                        SkillRoot {
+                            source: Some("gone".to_owned()),
+                            root: tmp.path().join("missing"),
+                        },
+                    ],
                     Vec::new(),
                 ))),
             ),
@@ -457,16 +472,31 @@ async fn builtin_skills_lists_skills_within_its_roots() {
         .await
         .expect("the builtin skills server must connect");
     let tool = find_tool(&handle, "skills:topic:1", "skills_list").await;
-    let listed = payload(call_tool(&handle, &tool, json!({"dir": root.to_string_lossy()})).await);
-    assert_eq!(listed["skills"].as_array().map(Vec::len), Some(1));
-    assert_eq!(listed["skills"][0]["name"], json!("demo"));
-    assert_eq!(listed["skills"][0]["source"], json!("s1"));
-
-    let denied = call_tool(&handle, &tool, json!({"dir": outside.to_string_lossy()})).await;
-    assert!(
-        matches!(denied, CallOutcome::Failed(_)),
-        "a directory outside the skill roots must be rejected: {denied:?}"
+    let listed = payload(call_tool(&handle, &tool, json!({})).await);
+    let found: Vec<(String, Option<String>)> = listed["skills"]
+        .as_array()
+        .expect("skills must be an array")
+        .iter()
+        .map(|skill| {
+            (
+                skill["name"]
+                    .as_str()
+                    .expect("every skill has a name")
+                    .to_owned(),
+                skill["source"].as_str().map(str::to_owned),
+            )
+        })
+        .collect();
+    assert_eq!(
+        found,
+        vec![
+            ("demo".to_owned(), None),
+            ("second".to_owned(), None),
+            ("mod".to_owned(), Some("s1".to_owned())),
+        ],
+        "every root must be scanned and a nested SKILL.md must stay a resource: {listed}"
     );
+    assert_eq!(listed["errors"], json!([]));
     handle.shutdown().await;
 }
 
@@ -699,7 +729,8 @@ async fn builtin_services_read_shared_updates_without_restarting() {
             .is_some_and(|text| text.contains("operation not allowed")),
         "{denied}"
     );
-    let listed = payload(call_tool(&handle, &skills, json!({"dir": old_skills})).await);
+    let listed = payload(call_tool(&handle, &skills, json!({})).await);
+    assert_eq!(listed["skills"][0]["name"], json!("old"));
     assert_eq!(listed["skills"][0]["source"], json!("old_mod"));
 
     *info.write().expect("replace workspace info") = WorkspaceInfo::new(
@@ -728,13 +759,14 @@ async fn builtin_services_read_shared_updates_without_restarting() {
             .is_some_and(|text| text.contains("operation not allowed")),
         "{denied}"
     );
-    let listed = payload(call_tool(&handle, &skills, json!({"dir": new_skills})).await);
+    let listed = payload(call_tool(&handle, &skills, json!({})).await);
     assert_eq!(listed["skills"][0]["name"], json!("new"));
     assert_eq!(listed["skills"][0]["source"], Value::Null);
-    assert!(matches!(
-        call_tool(&handle, &skills, json!({"dir": old_skills})).await,
-        CallOutcome::Failed(_)
-    ));
+    assert_eq!(
+        listed["skills"].as_array().map(Vec::len),
+        Some(1),
+        "the replaced roots must drop the old skill: {listed}"
+    );
     let facts = payload(call_tool(&handle, &workspace, json!({})).await);
     assert_eq!(
         facts["workspace"],

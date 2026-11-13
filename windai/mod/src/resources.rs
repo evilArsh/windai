@@ -18,9 +18,8 @@ pub struct ModResources {
     pub version: u32,
     pub root: PathBuf,
     pub manifest: Manifest,
-    /// TODO: 待完善
     pub prompts: Vec<String>,
-    /// TODO: 待完善, 一个mod可能有多个skills
+    /// skills 根路径
     pub skills: Option<PathBuf>,
     pub ui: Option<PathBuf>,
     pub mcp: BTreeMap<String, McpDefinition>,

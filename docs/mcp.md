@@ -390,17 +390,16 @@ impl BuiltinResources {
 
 ```rust
 pub struct SkillsListRequest {
-    pub dir: String,
     pub recursive: Option<bool>,
     pub max_depth: Option<u16>,
 }
 ```
 
-`dir` 必须 canonicalize 后落在某个技能根内。扫描规则：
+扫描全部技能根，每个技能根的扫描规则相同：
 
-- 目录中存在 `SKILL.md` 时解析该文件，并把当前目录作为技能根；不再向下递归。
+- 目录中存在 `SKILL.md` 时解析该文件，并把该目录记为一个技能；不再向下递归，更深的 `SKILL.md` 只作为普通资源。
 - 没有 `SKILL.md` 时，按 `recursive`（默认 true）与 `max_depth`（默认不限）遍历子目录。
-- 每个技能归属到最长匹配的技能根，`source` 为根名。
+- 技能的 `source` 取它所在技能根的 `source`。
 - frontmatter 必须以 `---` 开始、以 `---` 结束；`name` 与 `description` 必填。
 - `name` 截断到 64 字符，`description` 截断到 1024 字符，`compatibility` 截断到 500 字符。
 - 解析失败的技能进入 `errors`，不影响其他技能。

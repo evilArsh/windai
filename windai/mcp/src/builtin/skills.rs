@@ -6,8 +6,6 @@ use rmcp::model::{Implementation, ServerCapabilities, ServerConfig};
 use rmcp::{ErrorData, ServerHandler, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
-use std::fs;
-use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 mod scan;
@@ -17,8 +15,6 @@ pub use scan::{SkillError, SkillsListResult, SkillsMeta};
 /// 列举技能的请求
 #[derive(Deserialize, JsonSchema)]
 struct SkillsListRequest {
-    /// 要扫描的目录绝对路径，必须在某个技能根之内
-    pub dir: String,
     /// 是否递归子目录，默认为 true
     pub recursive: Option<bool>,
     /// 允许递归的子目录层数，默认不限
@@ -66,34 +62,19 @@ impl SkillsServer {
     }
 }
 
-fn resolve_dir(roots: &[SkillRoot], dir: &str) -> Result<PathBuf, ErrorData> {
-    let path = fs::canonicalize(dir).map_err(|error| {
-        ErrorData::internal_error(format!("cannot resolve the directory {dir}: {error}"), None)
-    })?;
-    if roots.iter().any(|root| path.starts_with(&root.root)) {
-        Ok(path)
-    } else {
-        Err(ErrorData::internal_error(
-            format!("the directory {dir} is not inside any skill root"),
-            None,
-        ))
-    }
-}
-
 #[tool_router(router = tool_router)]
 impl SkillsServer {
     #[tool(
         name = "skills_list",
-        description = "Scan a directory and collect metadata for every SKILL.md skill, keeping the source of each skill."
+        description = "Collect metadata for every SKILL.md skill under all skill roots, keeping the source of each skill."
     )]
     async fn skills_list(
         &self,
         Parameters(request): Parameters<SkillsListRequest>,
     ) -> Result<Json<SkillsListResult>, ErrorData> {
         let roots = self.skill_roots()?;
-        let dir = resolve_dir(&roots, &request.dir)?;
         let result = tokio::task::spawn_blocking(move || {
-            scan::scan(&roots, &dir, request.recursive, request.max_depth)
+            scan::scan(&roots, request.recursive, request.max_depth)
         })
         .await
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;

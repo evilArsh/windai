@@ -79,7 +79,6 @@ pub struct SkillsListResult {
 
 pub fn scan(
     roots: &[SkillRoot],
-    dir: &Path,
     recursive: Option<bool>,
     max_depth: Option<u16>,
 ) -> SkillsListResult {
@@ -87,47 +86,29 @@ pub fn scan(
         skills: Vec::new(),
         errors: Vec::new(),
     };
-    if !dir.is_dir() {
-        return result;
-    }
-
-    let source = source_of(roots, dir);
     let recursive = recursive.unwrap_or(true);
     let max_depth = max_depth.unwrap_or(u16::MAX);
-    walk(
-        source.as_deref(),
-        dir,
-        recursive,
-        max_depth,
-        0,
-        &mut result.skills,
-        &mut result.errors,
-    );
+    for root in roots {
+        if !root.root.is_dir() {
+            continue;
+        }
+        walk(root, &root.root, recursive, max_depth, 0, &mut result);
+    }
     result
 }
 
-fn source_of(roots: &[SkillRoot], dir: &Path) -> Option<String> {
-    roots
-        .iter()
-        .filter(|root| dir.starts_with(&root.root))
-        .max_by_key(|root| root.root.components().count())
-        .map(|root| root.source.clone())
-        .unwrap_or_default()
-}
-
 fn walk(
-    source: Option<&str>,
+    root: &SkillRoot,
     dir: &Path,
     recursive: bool,
     max_depth: u16,
     depth: u16,
-    skills: &mut Vec<SkillsMeta>,
-    errors: &mut Vec<SkillError>,
+    result: &mut SkillsListResult,
 ) {
     if dir.join(SKILL_NAME).is_file() {
-        match from_path(dir, source) {
-            Ok(meta) => skills.push(meta),
-            Err(error) => errors.push(SkillError {
+        match from_path(dir, root.source.as_deref()) {
+            Ok(meta) => result.skills.push(meta),
+            Err(error) => result.errors.push(SkillError {
                 path: dir.to_string_lossy().into_owned(),
                 error: error.to_string(),
             }),
@@ -149,15 +130,7 @@ fn walk(
     entries.sort();
 
     for path in entries {
-        walk(
-            source,
-            &path,
-            recursive,
-            max_depth,
-            depth + 1,
-            skills,
-            errors,
-        );
+        walk(root, &path, recursive, max_depth, depth + 1, result);
     }
 }
 

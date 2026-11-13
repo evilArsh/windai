@@ -499,17 +499,12 @@ fn skill_sources(value: &Value) -> Vec<String> {
     sources
 }
 
-async fn wait_skills(
-    services: &ResourceService,
-    tool: &str,
-    dir: &str,
-    expected: &[&str],
-) -> Vec<String> {
+async fn wait_skills(services: &ResourceService, tool: &str, expected: &[&str]) -> Vec<String> {
     let mut expected: Vec<String> = expected.iter().map(|name| name.to_string()).collect();
     expected.sort();
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        if let Ok(value) = call_tool(services, tool, json!({ "dir": dir })).await
+        if let Ok(value) = call_tool(services, tool, json!({})).await
             && skill_sources(&value) == expected
         {
             return expected;
@@ -517,23 +512,6 @@ async fn wait_skills(
         assert!(
             Instant::now() < deadline,
             "the skills must become {expected:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-}
-
-async fn wait_skills_rejected(services: &ResourceService, tool: &str, dir: &str) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if call_tool(services, tool, json!({ "dir": dir }))
-            .await
-            .is_err()
-        {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the directory {dir} must be rejected"
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -616,13 +594,9 @@ async fn update_keeps_unchanged_servers_running() {
     let skills = find_tool(&tools, &format!("wd_skills_{topic_id}"), "skills_list");
     let old_root = fs::canonicalize(&beta_v1).expect("resolve beta v1");
     let new_root = fs::canonicalize(&beta_v2).expect("resolve beta v2");
-    let before = call_tool(
-        &fixture.services,
-        &skills,
-        json!({"dir": old_root.join("skills")}),
-    )
-    .await
-    .expect("list beta v1 skills");
+    let before = call_tool(&fixture.services, &skills, json!({}))
+        .await
+        .expect("list beta v1 skills");
     assert_eq!(before["skills"][0]["name"], json!("beta-v1"));
 
     fixture
@@ -648,23 +622,15 @@ async fn update_keeps_unchanged_servers_running() {
             .expect("list a mod root");
         assert_eq!(listing["error"].is_null(), allowed, "{listing}");
     }
-    assert!(
-        call_tool(
-            &fixture.services,
-            &skills,
-            json!({"dir": old_root.join("skills")})
-        )
+    let after = call_tool(&fixture.services, &skills, json!({}))
         .await
-        .is_err()
-    );
-    let after = call_tool(
-        &fixture.services,
-        &skills,
-        json!({"dir": new_root.join("skills")}),
-    )
-    .await
-    .expect("list beta v2 skills");
+        .expect("list beta v2 skills");
     assert_eq!(after["skills"][0]["name"], json!("beta-v2"));
+    assert_eq!(
+        after["skills"].as_array().map(Vec::len),
+        Some(1),
+        "the replaced root must drop the old skill: {after}"
+    );
 
     let value = wait_mark(&fixture.services, &alpha_context, "alpha").await;
     assert_eq!(value["mark"], json!("alpha"));
@@ -1128,8 +1094,6 @@ async fn builtin_skills_updates_when_mods_change() {
         .expect("enable alpha");
 
     let server = format!("wd_skills_{topic_id}");
-    let alpha_root = fs::canonicalize(fixture.dirs.mod_version("alpha", 1).join("skills"))
-        .expect("the alpha skills root must exist");
     let beta_root = fs::canonicalize(fixture.dirs.mod_version("beta", 1).join("skills"))
         .expect("the beta skills root must exist");
     let tools = wait_tools(&fixture.services, topic_id, |tools| {
@@ -1137,57 +1101,21 @@ async fn builtin_skills_updates_when_mods_change() {
     })
     .await;
     let skill_tool = find_tool(&tools, &server, "skills_list");
-    wait_skills(
-        &fixture.services,
-        &skill_tool,
-        &alpha_root.to_string_lossy(),
-        &["alpha"],
-    )
-    .await;
-    assert!(
-        call_tool(
-            &fixture.services,
-            &skill_tool,
-            json!({"dir": beta_root.to_string_lossy()})
-        )
-        .await
-        .is_err(),
-        "the beta root must be rejected before beta is enabled"
-    );
+    wait_skills(&fixture.services, &skill_tool, &["alpha"]).await;
 
     fixture
         .services
         .enable(&cx(), topic_id, "beta")
         .await
         .expect("enable beta");
-    wait_skills(
-        &fixture.services,
-        &skill_tool,
-        &beta_root.to_string_lossy(),
-        &["beta"],
-    )
-    .await;
-    wait_skills(
-        &fixture.services,
-        &skill_tool,
-        &alpha_root.to_string_lossy(),
-        &["alpha"],
-    )
-    .await;
+    wait_skills(&fixture.services, &skill_tool, &["alpha", "beta"]).await;
 
     fixture
         .services
         .disable(&cx(), topic_id, "beta")
         .await
         .expect("disable beta");
-    wait_skills_rejected(&fixture.services, &skill_tool, &beta_root.to_string_lossy()).await;
-    wait_skills(
-        &fixture.services,
-        &skill_tool,
-        &alpha_root.to_string_lossy(),
-        &["alpha"],
-    )
-    .await;
+    wait_skills(&fixture.services, &skill_tool, &["alpha"]).await;
     assert!(
         beta_root.is_dir(),
         "the beta root must stay on disk after disabling"
