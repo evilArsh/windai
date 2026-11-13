@@ -8,14 +8,13 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::{Mutex as AsyncMutex, oneshot};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use wind_event::DispatchCx;
-use wind_mcp::builtin::skills::{SkillRoot, SkillRoots};
-use wind_mcp::builtin::workspace::{ModDir, WorkspaceInfo, WorkspaceSnapshot};
-use wind_mcp::builtin::{self, BuiltinResources, BuiltinScope};
+use wind_mcp::builtin::workspace::{ModDir, SkillRoot, WorkspaceInfo};
+use wind_mcp::builtin::{self, BuiltinScope};
 use wind_mcp::{BoundTool, CallOutcome, RegistryHandle};
 use wind_mod::installer::Installer;
 use wind_mod::resources::{ModResources, Resources};
@@ -253,46 +252,33 @@ impl ResourceService {
         let mods = self.resources.topic(topic_id).await?;
         let definitions = mod_definitions(&mods);
         let workspace = self.workspace_of(topic_id).await?;
-        let public_skills = self.resources.public_skills();
-        let skills = skill_roots(&mods, public_skills.clone());
-        let mods = mod_dirs(&mods);
-        let snapshot = WorkspaceSnapshot::new(
-            workspace.clone(),
-            public_skills.clone(),
-            skills.clone(),
-            mods.clone(),
+        let info = WorkspaceInfo::new(
+            topic_id,
+            workspace,
+            skill_roots(&mods, self.resources.public_skills()),
+            mod_dirs(&mods),
         );
 
-        let (new_main, old_main, previous, resources) = {
+        let (new_main, old_main, initialize) = {
             let mut topics = self.lock_topics();
             let refs = topics.entry(topic_id).or_default();
             refs.generation += 1;
             let new_main = TopicRefs::new_ref_name(topic_id, refs.generation);
             let old_main = std::mem::replace(&mut refs.main, new_main.clone());
-            let previous = refs.resources.clone();
-            let skill_roots = match &previous {
-                Some(previous) => {
-                    previous.skill_roots.replace(skills);
-                    previous.skill_roots.clone()
+            let initialize = match &refs.info {
+                Some(shared) => {
+                    *shared
+                        .write()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = info;
+                    None
                 }
-                None => SkillRoots::new(skills),
-            };
-            let workspace_info = match &previous {
-                Some(previous) => {
-                    previous.workspace_info.replace(snapshot);
-                    previous.workspace_info.clone()
+                None => {
+                    let shared = Arc::new(RwLock::new(info));
+                    refs.info = Some(shared.clone());
+                    Some(shared)
                 }
-                None => WorkspaceInfo::new(snapshot),
             };
-            let resources = BuiltinResources {
-                workspace,
-                public_skills,
-                mods,
-                skill_roots,
-                workspace_info,
-            };
-            refs.resources = Some(resources.clone());
-            (new_main, old_main, previous, resources)
+            (new_main, old_main, initialize)
         };
 
         for definition in definitions {
@@ -302,13 +288,9 @@ impl ResourceService {
             self.registry.release(old_main);
         }
 
-        builtin::sync(
-            &self.registry,
-            BuiltinScope::Topic(topic_id),
-            previous.as_ref(),
-            &resources,
-        )
-        .await;
+        if let Some(info) = initialize {
+            builtin::init(&self.registry, BuiltinScope::Topic(topic_id), info).await;
+        }
         Ok(())
     }
 
@@ -454,8 +436,7 @@ struct TopicRefs {
     /// topic_{topic_id}@{generation}
     main: String,
     generation: u64,
-    /// 上次同步出去的内建资源
-    resources: Option<BuiltinResources>,
+    info: Option<Arc<RwLock<WorkspaceInfo>>>,
 }
 
 impl TopicRefs {
@@ -486,13 +467,13 @@ fn mod_definitions(mods: &[ModResources]) -> Vec<McpDefinition> {
 
 fn skill_roots(mods: &[ModResources], public: PathBuf) -> Vec<SkillRoot> {
     let mut roots = vec![SkillRoot {
-        source: "public".to_string(),
-        path: public,
+        source: None,
+        root: public,
     }];
     roots.extend(mods.iter().filter_map(|module| {
         module.skills.as_ref().map(|path| SkillRoot {
-            source: module.name.clone(),
-            path: path.clone(),
+            source: Some(module.name.clone()),
+            root: path.clone(),
         })
     }));
     roots
@@ -504,8 +485,6 @@ fn mod_dirs(mods: &[ModResources]) -> Vec<ModDir> {
             name: module.name.clone(),
             version: module.version,
             root: module.root.clone(),
-            skills: module.skills.clone(),
-            ui: module.ui.clone(),
         })
         .collect()
 }

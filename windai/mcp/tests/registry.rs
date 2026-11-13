@@ -1,12 +1,14 @@
 use serde_json::{Value, json};
 use std::fs;
 use std::path::Path;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 use wind_mcp::builtin::fs::FsServer;
-use wind_mcp::builtin::skills::{SkillRoot, SkillRoots, SkillsServer};
-use wind_mcp::builtin::workspace::{ModDir, WorkspaceInfo, WorkspaceServer, WorkspaceSnapshot};
+use wind_mcp::builtin::skills::SkillsServer;
+use wind_mcp::builtin::workspace::{ModDir, SkillRoot, WorkspaceInfo, WorkspaceServer};
+use wind_mcp::builtin::{self, BuiltinScope};
 use wind_mcp::{BoundTool, CallOutcome, RegistryHandle, init};
 
 #[path = "support/mod.rs"]
@@ -350,14 +352,14 @@ async fn builtin_fs_instances_are_isolated_by_workspace() {
     handle
         .acquire_builtin(
             "t1".to_owned(),
-            FsServer::new("fs:topic:1", vec![ws_a.clone()]),
+            FsServer::new("fs:topic:1", workspace_info(&ws_a)),
         )
         .await
         .expect("the first builtin fs must connect");
     handle
         .acquire_builtin(
             "t2".to_owned(),
-            FsServer::new("fs:topic:2", vec![ws_b.clone()]),
+            FsServer::new("fs:topic:2", workspace_info(&ws_b)),
         )
         .await
         .expect("the second builtin fs must connect");
@@ -398,14 +400,14 @@ async fn a_duplicate_builtin_is_discarded() {
     handle
         .acquire_builtin(
             "t1".to_owned(),
-            FsServer::new("fs:topic:1", vec![workspace.clone()]),
+            FsServer::new("fs:topic:1", workspace_info(&workspace)),
         )
         .await
         .expect("the first builtin fs must connect");
     handle
         .acquire_builtin(
             "t2".to_owned(),
-            FsServer::new("fs:topic:1", vec![workspace]),
+            FsServer::new("fs:topic:1", workspace_info(&workspace)),
         )
         .await
         .expect("the second builtin fs must connect");
@@ -441,10 +443,15 @@ async fn builtin_skills_lists_skills_within_its_roots() {
             "t1".to_owned(),
             SkillsServer::new(
                 "skills:topic:1",
-                SkillRoots::new(vec![SkillRoot {
-                    source: "s1".to_owned(),
-                    path: root.clone(),
-                }]),
+                Arc::new(RwLock::new(WorkspaceInfo::new(
+                    1,
+                    tmp.path().to_path_buf(),
+                    vec![SkillRoot {
+                        source: Some("s1".to_owned()),
+                        root: root.clone(),
+                    }],
+                    Vec::new(),
+                ))),
             ),
         )
         .await
@@ -465,41 +472,36 @@ async fn builtin_skills_lists_skills_within_its_roots() {
 
 #[tokio::test]
 async fn builtin_workspace_reports_its_own_paths() {
-    let workspace_a = temporary_directory();
-    let workspace_b = temporary_directory();
+    let workspace_a = fs::canonicalize(temporary_directory()).expect("normalize workspace a");
+    let workspace_b = fs::canonicalize(temporary_directory()).expect("normalize workspace b");
     let snapshot = |workspace: &Path| {
-        WorkspaceSnapshot::new(
+        Arc::new(RwLock::new(WorkspaceInfo::new(
+            0,
             workspace.to_path_buf(),
-            workspace.join("skills"),
-            Vec::new(),
+            vec![SkillRoot {
+                source: None,
+                root: workspace.join("skills"),
+            }],
             vec![ModDir {
                 name: "demo".to_owned(),
                 version: 1,
                 root: workspace.join("mods/demo/1"),
-                skills: None,
-                ui: None,
             }],
-        )
+        )))
     };
 
     let handle = init(options(), bus());
     handle
         .acquire_builtin(
             "w1".to_owned(),
-            WorkspaceServer::new(
-                "workspace:topic:1",
-                WorkspaceInfo::new(snapshot(&workspace_a)),
-            ),
+            WorkspaceServer::new("workspace:topic:1", snapshot(&workspace_a)),
         )
         .await
         .expect("the first builtin workspace must connect");
     handle
         .acquire_builtin(
             "w2".to_owned(),
-            WorkspaceServer::new(
-                "workspace:topic:2",
-                WorkspaceInfo::new(snapshot(&workspace_b)),
-            ),
+            WorkspaceServer::new("workspace:topic:2", snapshot(&workspace_b)),
         )
         .await
         .expect("the second builtin workspace must connect");
@@ -511,18 +513,13 @@ async fn builtin_workspace_reports_its_own_paths() {
         facts["mods"][0]["root"],
         json!(workspace_a.join("mods/demo/1").to_string_lossy())
     );
-    assert!(
-        facts["roots"]
-            .as_array()
-            .is_some_and(|roots| roots.contains(&json!(workspace_a.to_string_lossy()))),
-        "the workspace must be one of the reported roots: {facts}"
+    assert_eq!(facts["topic_id"], json!(0));
+    assert_eq!(facts["skills"][0]["source"], Value::Null);
+    assert_eq!(
+        facts["skills"][0]["root"],
+        json!(workspace_a.join("skills"))
     );
-    assert!(
-        facts["summary"]
-            .as_str()
-            .is_some_and(|summary| summary.contains("demo@1")),
-        "the summary must name the enabled mod: {facts}"
-    );
+    assert_eq!(facts["mods"][0]["version"], json!(1));
     let other = workspace_b.to_string_lossy().into_owned();
     assert!(
         !facts.to_string().contains(&other),
@@ -651,4 +648,100 @@ fn write_skill(dir: &Path, name: &str, description: &str) {
     fs::create_dir_all(dir).expect("create the skill directory");
     let content = format!("---\nname: {name}\ndescription: {description}\n---\n");
     fs::write(dir.join("SKILL.md"), content).expect("write SKILL.md");
+}
+
+fn workspace_info(workspace: &Path) -> Arc<RwLock<WorkspaceInfo>> {
+    Arc::new(RwLock::new(WorkspaceInfo::new(
+        1,
+        workspace.to_path_buf(),
+        Vec::new(),
+        Vec::new(),
+    )))
+}
+
+#[tokio::test]
+async fn builtin_services_read_shared_updates_without_restarting() {
+    let tmp = TempDir::new().expect("create a temp dir");
+    let old_workspace = tmp.path().join("old");
+    let new_workspace = tmp.path().join("new");
+    let old_skills = tmp.path().join("old_skills");
+    let new_skills = tmp.path().join("new_skills");
+    for workspace in [&old_workspace, &new_workspace] {
+        fs::create_dir_all(workspace).expect("create the workspace");
+        fs::write(workspace.join("notes.md"), "notes").expect("write notes");
+    }
+    write_skill(&old_skills.join("demo"), "old", "old skill");
+    write_skill(&new_skills.join("demo"), "new", "new skill");
+    let info = Arc::new(RwLock::new(WorkspaceInfo::new(
+        1,
+        old_workspace.clone(),
+        vec![SkillRoot {
+            source: Some("old_mod".to_owned()),
+            root: old_skills.clone(),
+        }],
+        Vec::new(),
+    )));
+    let bus = RecordingBus::new();
+    let handle = init(options(), bus.dispatcher());
+    builtin::init(&handle, BuiltinScope::Topic(1), info.clone()).await;
+    let read = find_tool(&handle, "wd_fs_1", "read_file").await;
+    let skills = find_tool(&handle, "wd_skills_1", "skills_list").await;
+    let workspace = find_tool(&handle, "wd_workspace_1", "workspace_info").await;
+    assert_eq!(
+        read_file(&handle, &read, &old_workspace.join("notes.md")).await["content"],
+        json!("notes")
+    );
+    let denied = read_file(&handle, &read, &new_workspace.join("notes.md")).await;
+    assert_eq!(denied["bytes"], json!(0));
+    assert!(
+        denied["content"]
+            .as_str()
+            .is_some_and(|text| text.contains("operation not allowed")),
+        "{denied}"
+    );
+    let listed = payload(call_tool(&handle, &skills, json!({"dir": old_skills})).await);
+    assert_eq!(listed["skills"][0]["source"], json!("old_mod"));
+
+    *info.write().expect("replace workspace info") = WorkspaceInfo::new(
+        1,
+        new_workspace.clone(),
+        vec![SkillRoot {
+            source: None,
+            root: new_skills.clone(),
+        }],
+        vec![ModDir {
+            name: "demo".to_owned(),
+            version: 2,
+            root: tmp.path().join("mod_v2"),
+        }],
+    );
+
+    assert_eq!(
+        read_file(&handle, &read, &new_workspace.join("notes.md")).await["content"],
+        json!("notes")
+    );
+    let denied = read_file(&handle, &read, &old_workspace.join("notes.md")).await;
+    assert_eq!(denied["bytes"], json!(0));
+    assert!(
+        denied["content"]
+            .as_str()
+            .is_some_and(|text| text.contains("operation not allowed")),
+        "{denied}"
+    );
+    let listed = payload(call_tool(&handle, &skills, json!({"dir": new_skills})).await);
+    assert_eq!(listed["skills"][0]["name"], json!("new"));
+    assert_eq!(listed["skills"][0]["source"], Value::Null);
+    assert!(matches!(
+        call_tool(&handle, &skills, json!({"dir": old_skills})).await,
+        CallOutcome::Failed(_)
+    ));
+    let facts = payload(call_tool(&handle, &workspace, json!({})).await);
+    assert_eq!(
+        facts["workspace"],
+        json!(fs::canonicalize(new_workspace).expect("normalize the workspace"))
+    );
+    assert_eq!(facts["mods"][0]["version"], json!(2));
+    assert_eq!(bus.payloads("core/mcp.started").len(), 3);
+    assert!(bus.payloads("core/mcp.stopped").is_empty());
+    handle.shutdown().await;
 }

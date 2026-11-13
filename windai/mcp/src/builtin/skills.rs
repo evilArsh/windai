@@ -1,5 +1,5 @@
-use super::{BuiltinScope, replace};
-use crate::RegistryHandle;
+use super::canonical_path;
+use super::workspace::{SkillRoot, WorkspaceInfo};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{Implementation, ServerCapabilities, ServerConfig};
@@ -14,40 +14,9 @@ mod scan;
 
 pub use scan::{SkillError, SkillsListResult, SkillsMeta};
 
-/// 一个技能根及其来源名
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SkillRoot {
-    pub source: String,
-    pub path: PathBuf,
-}
-
-/// 技能根集合：发布方整体替换，服务端按调用读取
-#[derive(Clone)]
-pub struct SkillRoots(Arc<RwLock<Vec<SkillRoot>>>);
-
-impl SkillRoots {
-    pub fn new(roots: Vec<SkillRoot>) -> Self {
-        Self(Arc::new(RwLock::new(roots)))
-    }
-
-    pub fn replace(&self, roots: Vec<SkillRoot>) {
-        *self
-            .0
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = roots;
-    }
-
-    fn snapshot(&self) -> Vec<SkillRoot> {
-        self.0
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-    }
-}
-
 /// 列举技能的请求
 #[derive(Deserialize, JsonSchema)]
-pub struct SkillsListRequest {
+struct SkillsListRequest {
     /// 要扫描的目录绝对路径，必须在某个技能根之内
     pub dir: String,
     /// 是否递归子目录，默认为 true
@@ -59,31 +28,32 @@ pub struct SkillsListRequest {
 /// 技能目录工具
 pub struct SkillsServer {
     name: String,
-    roots: SkillRoots,
+    info: Arc<RwLock<WorkspaceInfo>>,
     tool_router: ToolRouter<Self>,
 }
 
 impl SkillsServer {
-    pub fn new(name: impl Into<String>, roots: SkillRoots) -> Self {
+    pub fn new(name: impl Into<String>, info: Arc<RwLock<WorkspaceInfo>>) -> Self {
         Self {
             name: name.into(),
-            roots,
+            info,
             tool_router: Self::tool_router(),
         }
     }
 
     fn skill_roots(&self) -> Result<Vec<SkillRoot>, ErrorData> {
-        let roots: Vec<SkillRoot> = self
-            .roots
-            .snapshot()
+        let skills = self
+            .info
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .skills
+            .clone();
+        let roots: Vec<SkillRoot> = skills
             .into_iter()
-            .filter(|root| !root.path.as_os_str().is_empty())
-            .map(|root| {
-                let path = fs::canonicalize(&root.path).unwrap_or_else(|_| root.path.clone());
-                SkillRoot {
-                    source: root.source,
-                    path,
-                }
+            .filter(|skill| !skill.root.as_os_str().is_empty())
+            .map(|skill| SkillRoot {
+                source: skill.source,
+                root: canonical_path(skill.root),
             })
             .collect();
         if roots.is_empty() {
@@ -100,7 +70,7 @@ fn resolve_dir(roots: &[SkillRoot], dir: &str) -> Result<PathBuf, ErrorData> {
     let path = fs::canonicalize(dir).map_err(|error| {
         ErrorData::internal_error(format!("cannot resolve the directory {dir}: {error}"), None)
     })?;
-    if roots.iter().any(|root| path.starts_with(&root.path)) {
+    if roots.iter().any(|root| path.starts_with(&root.root)) {
         Ok(path)
     } else {
         Err(ErrorData::internal_error(
@@ -143,9 +113,3 @@ impl ServerHandler for SkillsServer {
 
 /// 服务名里的固定段
 pub(super) const SLOT: &str = "skills";
-
-pub(super) async fn sync(registry: &RegistryHandle, scope: BuiltinScope, roots: SkillRoots) {
-    let name = scope.service_name(SLOT);
-    let server = SkillsServer::new(name.clone(), roots);
-    replace(registry, name, Some(server)).await;
-}

@@ -1,22 +1,88 @@
-use super::{BuiltinScope, replace};
-use crate::RegistryHandle;
+use super::canonical_path;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Json;
 use rmcp::model::{Implementation, ServerCapabilities, ServerConfig};
 use rmcp::{ServerHandler, tool, tool_handler, tool_router};
+use schemars::JsonSchema;
+use serde::Serialize;
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 
-mod snapshot;
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct SkillRoot {
+    /// skill 来源的 mod 名, 公共 skill 为 None
+    pub source: Option<String>,
+    /// skill 根
+    pub root: PathBuf,
+}
 
-pub use snapshot::{ModDir, SkillDir, WorkspaceInfo, WorkspaceSnapshot};
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct ModDir {
+    /// mod 名
+    pub name: String,
+    /// mod 版本
+    pub version: u32,
+    /// mod 根目录
+    pub root: PathBuf,
+}
+
+/// 话题工作区元数据
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct WorkspaceInfo {
+    /// 唯一话题 id
+    pub topic_id: i64,
+    /// 话题工作区
+    pub workspace: PathBuf,
+    /// 公共 skills 和 mod skills 目录
+    pub skills: Vec<SkillRoot>,
+    /// 仅含本话题启用的 mod
+    pub mods: Vec<ModDir>,
+}
+
+impl WorkspaceInfo {
+    pub fn new(
+        topic_id: i64,
+        workspace: PathBuf,
+        skills: Vec<SkillRoot>,
+        mods: Vec<ModDir>,
+    ) -> Self {
+        Self {
+            topic_id,
+            workspace: canonical_path(workspace),
+            skills: skills
+                .into_iter()
+                .map(|mut skill| {
+                    skill.root = canonical_path(skill.root);
+                    skill
+                })
+                .collect(),
+            mods: mods
+                .into_iter()
+                .map(|mut module| {
+                    module.root = canonical_path(module.root);
+                    module
+                })
+                .collect(),
+        }
+    }
+
+    pub fn roots(&self) -> Vec<PathBuf> {
+        let mut roots = Vec::with_capacity(1 + self.skills.len() + self.mods.len());
+        roots.push(self.workspace.clone());
+        roots.extend(self.skills.iter().map(|skill| skill.root.clone()));
+        roots.extend(self.mods.iter().map(|module| module.root.clone()));
+        roots
+    }
+}
 
 pub struct WorkspaceServer {
     name: String,
-    info: WorkspaceInfo,
+    info: Arc<RwLock<WorkspaceInfo>>,
     tool_router: ToolRouter<Self>,
 }
 
 impl WorkspaceServer {
-    pub fn new(name: impl Into<String>, info: WorkspaceInfo) -> Self {
+    pub fn new(name: impl Into<String>, info: Arc<RwLock<WorkspaceInfo>>) -> Self {
         Self {
             name: name.into(),
             info,
@@ -29,10 +95,18 @@ impl WorkspaceServer {
 impl WorkspaceServer {
     #[tool(
         name = "workspace_info",
-        description = "Return this topic's runtime paths. Call it before working with files or processes instead of guessing paths: it reports the topic workspace, the public skills root, and the directories of the mods enabled for this topic."
+        description = "Return this topic's runtime paths.
+        Call it before working with files or processes instead of guessing paths:
+        it reports the topic workspace, the skills root,
+        and the directories of the mods enabled for this topic."
     )]
-    async fn workspace_info(&self) -> Json<WorkspaceSnapshot> {
-        Json(self.info.snapshot())
+    async fn workspace_info(&self) -> Json<WorkspaceInfo> {
+        let info = self
+            .info
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        Json(info)
     }
 }
 
@@ -47,9 +121,3 @@ impl ServerHandler for WorkspaceServer {
 }
 
 pub(super) const SLOT: &str = "workspace";
-
-pub(super) async fn sync(registry: &RegistryHandle, scope: BuiltinScope, info: WorkspaceInfo) {
-    let name = scope.service_name(SLOT);
-    let server = WorkspaceServer::new(name.clone(), info);
-    replace(registry, name, Some(server)).await;
-}

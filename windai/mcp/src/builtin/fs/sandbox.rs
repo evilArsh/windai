@@ -1,4 +1,3 @@
-use crate::builtin::canonical_path;
 use std::ffi::OsString;
 use std::fs;
 use std::io::ErrorKind;
@@ -45,30 +44,6 @@ pub type Result<T> = StdResult<T, FsError>;
 /// 符号链接解析深度上限
 const MAX_SYMLINK_DEPTH: u16 = 40;
 
-#[derive(Clone)]
-pub struct Sandbox {
-    snapshot: Snapshot,
-}
-
-impl Sandbox {
-    pub fn new(roots: Vec<PathBuf>) -> Self {
-        Self {
-            snapshot: Snapshot::new(roots),
-        }
-    }
-
-    pub fn snapshot(&self) -> Result<Snapshot> {
-        if self.snapshot.roots.is_empty() {
-            return Err(not_configured());
-        }
-        Ok(self.snapshot.clone())
-    }
-}
-
-fn not_configured() -> FsError {
-    FsError::NotAllowed("no workspace roots are configured".to_owned())
-}
-
 /// 一次工具调用使用的根集合，构造时已 canonicalize
 #[derive(Debug, Clone)]
 pub struct Snapshot {
@@ -76,13 +51,17 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    pub fn new(roots: Vec<PathBuf>) -> Self {
-        let roots = roots
+    pub fn new(roots: Vec<PathBuf>) -> Result<Self> {
+        let roots: Vec<PathBuf> = roots
             .into_iter()
             .filter(|root| !root.as_os_str().is_empty())
-            .map(canonical_path)
             .collect();
-        Self { roots }
+        if roots.is_empty() {
+            return Err(FsError::NotAllowed(
+                "no workspace roots are configured".to_owned(),
+            ));
+        }
+        Ok(Self { roots })
     }
 
     /// 解析路径为规范化绝对路径，并校验落在某个允许根内
@@ -176,12 +155,11 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{FsError, Sandbox};
+    use super::{FsError, Snapshot};
 
     #[test]
     fn empty_workspace_roots_are_rejected() {
-        let error = Sandbox::new(vec![PathBuf::new()])
-            .snapshot()
+        let error = Snapshot::new(vec![PathBuf::new()])
             .expect_err("an empty workspace root must be rejected");
         assert!(
             matches!(&error, FsError::NotAllowed(_)),
@@ -199,10 +177,9 @@ mod tests {
         let workspace = tmp.path().join("ws");
         std::fs::create_dir_all(&workspace).expect("create the workspace");
 
-        let snapshot = Sandbox::new(vec![PathBuf::new(), workspace.clone()])
-            .snapshot()
-            .expect("the valid root must survive filtering");
         let expected = std::fs::canonicalize(&workspace).expect("canonicalize the workspace");
+        let snapshot = Snapshot::new(vec![PathBuf::new(), expected.clone()])
+            .expect("the valid root must survive filtering");
         assert_eq!(snapshot.roots, vec![expected]);
     }
 }

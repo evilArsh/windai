@@ -1,5 +1,4 @@
-use super::{BuiltinResources, BuiltinScope, replace};
-use crate::RegistryHandle;
+use super::workspace::WorkspaceInfo;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{Implementation, ServerCapabilities, ServerConfig};
@@ -7,6 +6,7 @@ use rmcp::{ErrorData, ServerHandler, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 
 mod ops;
 mod sandbox;
@@ -16,7 +16,7 @@ use ops::{
     write_file,
 };
 pub use sandbox::FsError;
-use sandbox::Sandbox;
+use sandbox::Snapshot;
 
 impl From<FsError> for ErrorData {
     fn from(e: FsError) -> Self {
@@ -70,18 +70,26 @@ pub struct ExecRequest {
 /// 文件与进程能力服务
 pub struct FsServer {
     name: String,
-    sandbox: Sandbox,
+    info: Arc<RwLock<WorkspaceInfo>>,
     tool_router: ToolRouter<Self>,
 }
 
 impl FsServer {
-    /// `workspace` 是允许访问的根目录，空目录会被忽略
-    pub fn new(name: impl Into<String>, workspace: Vec<PathBuf>) -> Self {
+    pub fn new(name: impl Into<String>, info: Arc<RwLock<WorkspaceInfo>>) -> Self {
         Self {
             name: name.into(),
-            sandbox: Sandbox::new(workspace),
+            info,
             tool_router: Self::tool_router(),
         }
+    }
+
+    fn snapshot(&self) -> sandbox::Result<Snapshot> {
+        let roots = self
+            .info
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .roots();
+        Snapshot::new(roots)
     }
 }
 
@@ -94,7 +102,7 @@ impl FsServer {
     )]
     async fn list_dir(&self, Parameters(req): Parameters<ListDirRequest>) -> Json<ListDirResult> {
         let path = PathBuf::from(req.path);
-        let snapshot = match self.sandbox.snapshot() {
+        let snapshot = match self.snapshot() {
             Ok(snapshot) => snapshot,
             Err(error) => return Json(ListDirResult::failure(&path, error.to_string())),
         };
@@ -124,7 +132,7 @@ impl FsServer {
         Parameters(req): Parameters<ReadFileRequest>,
     ) -> Json<ReadFileResult> {
         let path = PathBuf::from(req.path);
-        let snapshot = match self.sandbox.snapshot() {
+        let snapshot = match self.snapshot() {
             Ok(snapshot) => snapshot,
             Err(error) => return Json(ReadFileResult::failure(&path, error.to_string())),
         };
@@ -153,7 +161,7 @@ impl FsServer {
         Parameters(req): Parameters<WriteFileRequest>,
     ) -> Json<WriteFileResult> {
         let path = PathBuf::from(req.path);
-        let snapshot = match self.sandbox.snapshot() {
+        let snapshot = match self.snapshot() {
             Ok(snapshot) => snapshot,
             Err(error) => return Json(WriteFileResult::failure(&path, error.to_string())),
         };
@@ -183,7 +191,7 @@ impl FsServer {
             env,
             timeout,
         } = req;
-        match self.sandbox.snapshot() {
+        match self.snapshot() {
             Ok(snapshot) => Json(exec(&snapshot, command, cwd, args, env, timeout).await),
             Err(error) => {
                 let mut result = ExecResult::empty(command, cwd);
@@ -207,12 +215,73 @@ impl ServerHandler for FsServer {
 /// 服务名里的固定段
 pub(super) const SLOT: &str = "fs";
 
-pub(super) async fn sync(
-    registry: &RegistryHandle,
-    scope: BuiltinScope,
-    resources: &BuiltinResources,
-) {
-    let name = scope.service_name(SLOT);
-    let server = FsServer::new(name.clone(), resources.roots());
-    replace(registry, name, Some(server)).await;
+#[cfg(test)]
+mod tests {
+    use super::{FsServer, WorkspaceInfo};
+    use std::fs;
+    use std::sync::{Arc, RwLock};
+    use tempfile::TempDir;
+
+    #[test]
+    fn acquired_snapshot_survives_workspace_update() {
+        let old = TempDir::new().expect("create the old workspace");
+        let new = TempDir::new().expect("create the new workspace");
+        let info = Arc::new(RwLock::new(WorkspaceInfo::new(
+            1,
+            old.path().to_path_buf(),
+            Vec::new(),
+            Vec::new(),
+        )));
+        let server = FsServer::new("fs", info.clone());
+        let acquired = server.snapshot().expect("acquire the initial snapshot");
+        *info
+            .try_write()
+            .expect("update without waiting for the call") =
+            WorkspaceInfo::new(1, new.path().to_path_buf(), Vec::new(), Vec::new());
+        let next = server.snapshot().expect("acquire the updated snapshot");
+
+        assert!(acquired.resolve(old.path()).is_ok());
+        assert!(acquired.resolve(new.path()).is_err());
+        assert!(next.resolve(old.path()).is_err());
+        assert!(next.resolve(new.path()).is_ok());
+    }
+
+    #[test]
+    fn replacing_published_root_with_symlink_does_not_expand_access() {
+        let tmp = TempDir::new().expect("create a temp dir");
+        let root = tmp.path().join("workspace");
+        let outside = tmp.path().join("outside");
+        fs::create_dir_all(&root).expect("create the workspace");
+        fs::create_dir_all(&outside).expect("create the outside directory");
+        let info = Arc::new(RwLock::new(WorkspaceInfo::new(
+            1,
+            root.clone(),
+            Vec::new(),
+            Vec::new(),
+        )));
+        let server = FsServer::new("fs", info);
+        assert!(
+            server
+                .snapshot()
+                .expect("read the published roots")
+                .resolve(&root)
+                .is_ok()
+        );
+
+        fs::remove_dir(&root).expect("remove the empty workspace");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &root).expect("link the outside directory");
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&outside, &root).expect("link the outside directory");
+
+        let next = server.snapshot().expect("read the published roots again");
+        assert!(
+            next.resolve(&outside).is_err(),
+            "the outside directory must stay denied"
+        );
+        assert!(
+            next.resolve(&root).is_err(),
+            "the replaced root must stay denied"
+        );
+    }
 }

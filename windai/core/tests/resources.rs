@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -30,6 +30,7 @@ struct Fixture {
     server: PathBuf,
     registry: RegistryHandle,
     services: ResourceService,
+    outlet: Arc<RecordingOutlet>,
 }
 
 impl Fixture {
@@ -79,6 +80,7 @@ impl Fixture {
             .await
             .expect("the database must open");
         let roster = Arc::new(Roster::load(&storage).await.expect("the roster must load"));
+        let outlet = Arc::new(RecordingOutlet::default());
         let bus = Arc::new(Dispatcher::new(
             wind_event::directory()
                 .merge(wind_mod::events::directory())
@@ -86,7 +88,7 @@ impl Fixture {
                 .merge(wind_core::script::directory()),
             Arc::clone(&roster) as Arc<dyn ModRoster>,
             Arc::new(NoCaller),
-            Arc::new(RecordingOutlet),
+            outlet.clone(),
             Limits::default(),
         ));
         let registry = wind_mcp::init(McpOptions::new(dirs.mods_root()), Arc::clone(&bus));
@@ -111,14 +113,47 @@ impl Fixture {
             server,
             registry,
             services,
+            outlet,
         }
     }
 }
 
-struct RecordingOutlet;
+#[derive(Default)]
+struct RecordingOutlet {
+    starts: Mutex<Vec<String>>,
+}
+
+impl RecordingOutlet {
+    fn builtin_starts(&self, topic_id: i64) -> usize {
+        let names = [
+            format!("wd_fs_{topic_id}"),
+            format!("wd_skills_{topic_id}"),
+            format!("wd_workspace_{topic_id}"),
+        ];
+        self.starts
+            .lock()
+            .expect("read starts")
+            .iter()
+            .filter(|name| names.contains(name))
+            .count()
+    }
+}
 
 impl EventOutlet for RecordingOutlet {
-    fn submit(&self, _pending: Pending) -> Result<(), SubmitError> {
+    fn submit(&self, pending: Pending) -> Result<(), SubmitError> {
+        if pending.envelope.name == "core/mcp.started" {
+            if let Some(name) = pending
+                .envelope
+                .payload
+                .as_ref()
+                .and_then(|payload| payload["name"].as_str())
+            {
+                self.starts
+                    .lock()
+                    .expect("record a start")
+                    .push(name.to_owned());
+            }
+        }
         Ok(())
     }
 }
@@ -528,14 +563,20 @@ async fn update_keeps_unchanged_servers_running() {
         "beta",
         1,
         fixture.manifest("beta", 1, json!({"WIND_TEST_MARK": "beta-v1"})),
-        &[],
+        &[(
+            "skills/demo/SKILL.md",
+            "---\nname: beta-v1\ndescription: beta v1\n---\n",
+        )],
     );
     let beta_v2 = write_mod(
         &fixture.dirs,
         "beta",
         2,
         fixture.manifest("beta", 2, json!({"WIND_TEST_MARK": "beta-v2"})),
-        &[],
+        &[(
+            "skills/demo/SKILL.md",
+            "---\nname: beta-v2\ndescription: beta v2\n---\n",
+        )],
     );
     fixture
         .services
@@ -566,6 +607,23 @@ async fn update_keeps_unchanged_servers_running() {
     let alpha_context = find_tool(&tools, "mod_alpha_tools", "context");
     let beta_context = find_tool(&tools, "mod_beta_tools", "context");
     wait_mark(&fixture.services, &beta_context, "beta-v1").await;
+    let info = find_tool(
+        &tools,
+        &format!("wd_workspace_{topic_id}"),
+        "workspace_info",
+    );
+    let list = find_tool(&tools, &format!("wd_fs_{topic_id}"), "list_dir");
+    let skills = find_tool(&tools, &format!("wd_skills_{topic_id}"), "skills_list");
+    let old_root = fs::canonicalize(&beta_v1).expect("resolve beta v1");
+    let new_root = fs::canonicalize(&beta_v2).expect("resolve beta v2");
+    let before = call_tool(
+        &fixture.services,
+        &skills,
+        json!({"dir": old_root.join("skills")}),
+    )
+    .await
+    .expect("list beta v1 skills");
+    assert_eq!(before["skills"][0]["name"], json!("beta-v1"));
 
     fixture
         .services
@@ -573,6 +631,40 @@ async fn update_keeps_unchanged_servers_running() {
         .await
         .expect("update beta");
     wait_mark(&fixture.services, &beta_context, "beta-v2").await;
+    let facts = call_tool(&fixture.services, &info, json!({}))
+        .await
+        .expect("read updated workspace info");
+    let beta = facts["mods"]
+        .as_array()
+        .expect("read mods")
+        .iter()
+        .find(|module| module["name"] == "beta")
+        .expect("find beta");
+    assert_eq!(beta["version"], json!(2));
+    assert_eq!(beta["root"], json!(new_root));
+    for (root, allowed) in [(&old_root, false), (&new_root, true)] {
+        let listing = call_tool(&fixture.services, &list, json!({"path": root}))
+            .await
+            .expect("list a mod root");
+        assert_eq!(listing["error"].is_null(), allowed, "{listing}");
+    }
+    assert!(
+        call_tool(
+            &fixture.services,
+            &skills,
+            json!({"dir": old_root.join("skills")})
+        )
+        .await
+        .is_err()
+    );
+    let after = call_tool(
+        &fixture.services,
+        &skills,
+        json!({"dir": new_root.join("skills")}),
+    )
+    .await
+    .expect("list beta v2 skills");
+    assert_eq!(after["skills"][0]["name"], json!("beta-v2"));
 
     let value = wait_mark(&fixture.services, &alpha_context, "alpha").await;
     assert_eq!(value["mark"], json!("alpha"));
@@ -581,6 +673,12 @@ async fn update_keeps_unchanged_servers_running() {
         log.lines().count(),
         1,
         "an unchanged server must not restart: {log}"
+    );
+
+    assert_eq!(
+        fixture.outlet.builtin_starts(topic_id),
+        3,
+        "publishing must not restart builtin services"
     );
 
     fixture.services.shutdown().await.expect("shutdown");
@@ -880,15 +978,14 @@ async fn builtin_workspace_lists_only_the_enabled_mods() {
     assert_eq!(mods.len(), 1, "only the enabled mod may be listed: {facts}");
     assert_eq!(mods[0]["name"], json!("alpha"));
     assert_eq!(mods[0]["root"], json!(alpha.to_string_lossy()));
-    let roots = facts["roots"].as_array().expect("roots must be an array");
-    assert!(roots.contains(&json!(alpha.to_string_lossy())));
-    assert!(!roots.contains(&json!(beta.to_string_lossy())));
-    let skills = facts["skills"].as_array().expect("skills must be an array");
+    assert_eq!(facts["topic_id"], json!(topic_id));
     assert!(
-        skills
+        !mods
             .iter()
-            .any(|skill| skill["source"] == json!("public"))
+            .any(|module| module["root"] == json!(beta.to_string_lossy()))
     );
+    let skills = facts["skills"].as_array().expect("skills must be an array");
+    assert!(skills.iter().any(|skill| skill["source"].is_null()));
     assert!(skills.iter().any(|skill| skill["source"] == json!("alpha")));
 
     let fs_tools = wait_tools(&fixture.services, topic_id, |tools| {
@@ -981,11 +1078,17 @@ async fn builtin_workspace_lists_only_the_enabled_mods() {
         "the disabled mod root must be rejected: {value}"
     );
 
+    assert_eq!(
+        fixture.outlet.builtin_starts(topic_id),
+        3,
+        "publishing must not restart builtin services"
+    );
+
     fixture.services.shutdown().await.expect("shutdown");
 }
 
 #[tokio::test]
-async fn builtin_skills_rebuilds_when_mods_change() {
+async fn builtin_skills_updates_when_mods_change() {
     let fixture = Fixture::new().await;
     let topic_id = fixture.topic().await;
     let alpha = write_mod(
@@ -1090,6 +1193,12 @@ async fn builtin_skills_rebuilds_when_mods_change() {
         "the beta root must stay on disk after disabling"
     );
 
+    assert_eq!(
+        fixture.outlet.builtin_starts(topic_id),
+        3,
+        "publishing must not restart builtin services"
+    );
+
     fixture.services.shutdown().await.expect("shutdown");
 }
 
@@ -1186,6 +1295,22 @@ async fn release_topic_and_shutdown_close_runtime_state() {
             .await
             .is_err(),
         "a released topic must reject new calls"
+    );
+
+    let tools = declarations(&fixture.services, topic_id).await;
+    let info = find_tool(
+        &tools,
+        &format!("wd_workspace_{topic_id}"),
+        "workspace_info",
+    );
+    let facts = call_tool(&fixture.services, &info, json!({}))
+        .await
+        .expect("read restored workspace info");
+    assert_eq!(facts["topic_id"], json!(topic_id));
+    assert_eq!(
+        fixture.outlet.builtin_starts(topic_id),
+        6,
+        "reusing a released topic must initialize builtin services again"
     );
 
     fixture.services.shutdown().await.expect("shutdown");

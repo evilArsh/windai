@@ -600,7 +600,10 @@ mod tests {
     }
 
     fn snapshot(dir: &TempDir) -> Snapshot {
-        Snapshot::new(vec![dir.path().to_path_buf()])
+        Snapshot::new(vec![
+            fs::canonicalize(dir.path()).expect("normalize the root"),
+        ])
+        .expect("create the snapshot")
     }
 
     #[test]

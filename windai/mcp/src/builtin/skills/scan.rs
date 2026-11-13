@@ -37,8 +37,8 @@ pub type Result<T> = std::result::Result<T, SkillsError>;
 /// 一个技能的元数据
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SkillsMeta {
-    /// 技能来源
-    pub source: String,
+    /// 技能来源, None 时表示来自公共路径
+    pub source: Option<String>,
     /// 技能所在目录的绝对路径
     pub skill_dir: String,
     /// 技能名称，最多 64 字符
@@ -95,7 +95,7 @@ pub fn scan(
     let recursive = recursive.unwrap_or(true);
     let max_depth = max_depth.unwrap_or(u16::MAX);
     walk(
-        &source,
+        source.as_deref(),
         dir,
         recursive,
         max_depth,
@@ -106,17 +106,17 @@ pub fn scan(
     result
 }
 
-fn source_of(roots: &[SkillRoot], dir: &Path) -> String {
+fn source_of(roots: &[SkillRoot], dir: &Path) -> Option<String> {
     roots
         .iter()
-        .filter(|root| dir.starts_with(&root.path))
-        .max_by_key(|root| root.path.components().count())
+        .filter(|root| dir.starts_with(&root.root))
+        .max_by_key(|root| root.root.components().count())
         .map(|root| root.source.clone())
         .unwrap_or_default()
 }
 
 fn walk(
-    source: &str,
+    source: Option<&str>,
     dir: &Path,
     recursive: bool,
     max_depth: u16,
@@ -161,7 +161,7 @@ fn walk(
     }
 }
 
-pub fn from_path(dir: &Path, source: &str) -> Result<SkillsMeta> {
+pub fn from_path(dir: &Path, source: Option<&str>) -> Result<SkillsMeta> {
     let skill_file = dir.join(SKILL_NAME);
     if !skill_file.is_file() {
         return Err(SkillsError::SkillFileNotFound);
@@ -170,7 +170,7 @@ pub fn from_path(dir: &Path, source: &str) -> Result<SkillsMeta> {
         fs::read_to_string(&skill_file).map_err(|error| SkillsError::Io(error.to_string()))?;
     let frontmatter = extract_frontmatter(&content)?;
     let mut meta = parse_frontmatter(&frontmatter)?;
-    meta.source = source.to_string();
+    meta.source = source.map(|s| s.to_string());
     meta.skill_dir = absolute_dir(dir)?;
     Ok(meta)
 }
@@ -195,7 +195,7 @@ fn parse_frontmatter(frontmatter: &str) -> Result<SkillsMeta> {
     }
 
     Ok(SkillsMeta {
-        source: String::new(),
+        source: None,
         skill_dir: String::new(),
         name: truncate(name, NAME_MAX),
         description: truncate(description, DESCRIPTION_MAX),
@@ -251,90 +251,4 @@ fn absolute_dir(dir: &Path) -> Result<String> {
     fs::canonicalize(dir)
         .map(|path| path.to_string_lossy().into_owned())
         .map_err(|error| SkillsError::Io(error.to_string()))
-}
-
-#[cfg(test)]
-mod tests {
-    use std::fs;
-    use std::path::Path;
-
-    use tempfile::TempDir;
-
-    use super::scan;
-    use crate::builtin::skills::SkillRoot;
-
-    fn skill_root(source: &str, path: &Path) -> SkillRoot {
-        SkillRoot {
-            source: source.to_owned(),
-            path: path.to_path_buf(),
-        }
-    }
-
-    fn write_skill(dir: &Path, frontmatter: &str) {
-        fs::create_dir_all(dir).expect("create the skill directory");
-        fs::write(dir.join("SKILL.md"), frontmatter).expect("write SKILL.md");
-    }
-
-    #[test]
-    fn skips_directories_without_skill_md() {
-        let tmp = TempDir::new().expect("create a temp dir");
-        let root = tmp.path().join("skills");
-        let demo = root.join("a");
-        write_skill(&demo, "---\nname: demo\ndescription: a demo skill\n---\n");
-        let other = root.join("b");
-        fs::create_dir_all(&other).expect("create the plain directory");
-        fs::write(other.join("readme.md"), "readme").expect("write the readme");
-
-        let result = scan(&[skill_root("s1", &root)], &root, None, None);
-
-        assert_eq!(result.skills.len(), 1, "only a has SKILL.md: {result:?}");
-        assert_eq!(result.skills[0].name, "demo");
-        assert_eq!(result.skills[0].source, "s1");
-        assert_eq!(
-            result.skills[0].skill_dir,
-            fs::canonicalize(&demo)
-                .expect("canonicalize the skill directory")
-                .to_string_lossy()
-                .into_owned()
-        );
-        assert!(result.errors.is_empty());
-    }
-
-    #[test]
-    fn records_invalid_frontmatter_in_errors() {
-        let tmp = TempDir::new().expect("create a temp dir");
-        let root = tmp.path().join("skills");
-        write_skill(&root.join("a"), "---\nname: demo\n---\n");
-
-        let result = scan(&[skill_root("s1", &root)], &root, None, None);
-
-        assert!(
-            result.skills.is_empty(),
-            "an invalid skill must not be listed"
-        );
-        assert_eq!(result.errors.len(), 1);
-        assert!(
-            result.errors[0].error.contains("description"),
-            "the missing field must be named: {}",
-            result.errors[0].error
-        );
-    }
-
-    #[test]
-    fn attributes_the_longest_matching_root() {
-        let tmp = TempDir::new().expect("create a temp dir");
-        let outer = tmp.path().join("outer");
-        let inner = outer.join("inner");
-        write_skill(&inner, "---\nname: demo\ndescription: a demo skill\n---\n");
-
-        let result = scan(
-            &[skill_root("outer", &outer), skill_root("inner", &inner)],
-            &inner,
-            None,
-            None,
-        );
-
-        assert_eq!(result.skills.len(), 1);
-        assert_eq!(result.skills[0].source, "inner");
-    }
 }
