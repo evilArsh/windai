@@ -64,7 +64,7 @@ pub(super) async fn open(options: RuntimeOptions) -> Result<Runtime, RuntimeErro
         services.clone(),
     ));
     let agents = TopicAgents::new(storage.clone(), dispatcher.clone(), runner);
-    let observers: Vec<Arc<dyn Observer>> = vec![dispatcher.clone(), agents.clone()];
+    let observers: Vec<Arc<dyn Observer>> = vec![dispatcher.clone()];
     let weak = observers.iter().map(Arc::downgrade).collect();
     let feed_task = tokio::spawn(feed_runtime.run(weak));
     Ok(Runtime {

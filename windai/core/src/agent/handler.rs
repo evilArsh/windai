@@ -1,3 +1,4 @@
+use super::Deliver;
 use super::events::{
     AgentPersistFailed, AgentSealed, AgentSpawn, AgentStatus, CORE_AGENT_PERSIST_FAILED,
     CORE_AGENT_SEALED, CORE_AGENT_SPAWN, CORE_AGENT_STATUS,
@@ -9,6 +10,7 @@ use super::tree::view::TreeEvent;
 use super::tree::{Domain, NodeId, Phase, Tree};
 use crate::agent::Runner;
 use crate::error::{CoreError, Result};
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
@@ -73,10 +75,6 @@ impl<D: Domain> AgentHandle<D> {
         self.send(Event::CancelRequest { root, origin }).await
     }
 
-    pub async fn deliver(&self, node: NodeId) -> Result<()> {
-        self.send(Event::Deliver { node }).await
-    }
-
     pub fn shutdown(&self) {
         self.cancel.cancel();
     }
@@ -112,6 +110,7 @@ pub struct AgentOptions<D: Domain> {
     pub storage: Storage,
     pub dispatcher: Arc<Dispatcher>,
     pub runner: Arc<dyn Runner<D>>,
+    pub delivery: Option<Arc<dyn Deliver<D>>>,
     pub restored: Vec<NodeSnapshot<D>>,
     pub cancel: CancellationToken,
 }
@@ -120,8 +119,10 @@ pub struct Agent<D: Domain> {
     topic_id: i64,
     storage: Storage,
     dispatcher: Arc<Dispatcher>,
+    delivery: Option<Arc<dyn Deliver<D>>>,
     tree: Tree<D>,
     jobs: Jobs<D>,
+    deferred: VecDeque<Event<D>>,
     event_rx: mpsc::Receiver<Command<D>>,
     cancel: CancellationToken,
 }
@@ -149,8 +150,10 @@ impl<D: Domain> Agent<D> {
             topic_id: options.topic_id,
             storage: options.storage,
             dispatcher: options.dispatcher,
+            delivery: options.delivery,
             tree,
             jobs,
+            deferred: VecDeque::new(),
             event_rx,
             cancel: options.cancel,
         };
@@ -187,8 +190,11 @@ impl<D: Domain> Agent<D> {
     }
 
     async fn apply(&mut self, event: Event<D>) {
-        for effect in self.tree.reduce(event) {
-            self.execute(effect).await;
+        self.deferred.push_back(event);
+        while let Some(event) = self.deferred.pop_front() {
+            for effect in self.tree.reduce(event) {
+                self.execute(effect).await;
+            }
         }
     }
 
@@ -200,6 +206,29 @@ impl<D: Domain> Agent<D> {
                 self.jobs.launch(JobRequest { node, job, input });
             }
             Effect::Stop { node, job } => self.jobs.stop(node, job),
+            Effect::Deliver { node } => self.deliver(node).await,
+        }
+    }
+
+    async fn deliver(&mut self, node: NodeId) {
+        let parent = self.tree.node(node).and_then(|current| current.parent);
+        let outcome = match parent {
+            Some(parent) => match self.delivery.as_ref() {
+                Some(delivery) => delivery.deliver(node, parent).await,
+                None => Ok(None),
+            },
+            None => Ok(None),
+        };
+        match outcome {
+            Ok(Some(delivery)) => {
+                self.deferred.push_back(Event::Enqueue {
+                    node: delivery.node,
+                    spec: delivery.spec,
+                });
+                self.deferred.push_back(Event::Deliver { node });
+            }
+            Ok(None) => self.deferred.push_back(Event::Deliver { node }),
+            Err(error) => log::error!("[agent] delivery for {node} failed: {error}"),
         }
     }
 

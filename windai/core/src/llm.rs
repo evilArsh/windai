@@ -6,7 +6,7 @@ use self::events::{
 use self::rule::{apply_rules, context_of};
 use self::stream::{MessageStream, notify_persisted_block};
 use self::tools::{ExecutedPlan, SpawnAgentAction, denied_result};
-use crate::agent::{Ctx, Input, Outcome, Runner, SpawnRequest};
+use crate::agent::{Ctx, Deliver, Delivery, Input, Outcome, Runner, SpawnRequest};
 use crate::error::CoreError;
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -497,6 +497,56 @@ impl Runner<LlmDomain> for LlmRunner {
             outcome = self.run_inner(ctx.node, ctx.cancel.clone(), input) => outcome,
         }
     }
+}
+#[async_trait::async_trait]
+impl Deliver<LlmDomain> for LlmRunner {
+    async fn deliver(
+        &self,
+        child: i64,
+        parent: i64,
+    ) -> Result<Option<Delivery<LlmDomain>>, CoreError> {
+        let Some(call) = self.storage.spawn_call_of_child(child).await? else {
+            return Ok(None);
+        };
+        if call.result_delivered_at.is_some() {
+            return Ok(None);
+        }
+        let rows = self
+            .storage
+            .list_child_states(parent, &[&call.call_id])
+            .await?;
+        let phase = rows
+            .first()
+            .map(|row| row.phase.as_str())
+            .unwrap_or_default();
+        let reply: String = rows
+            .iter()
+            .filter_map(|row| row.reply_part.as_deref())
+            .collect();
+        let content = content_of(child, phase, &reply);
+        let pending = self
+            .storage
+            .with_tx(async move |tx| {
+                if tx.claim_result_delivery(child).await?.is_none() {
+                    return Ok(None);
+                }
+                tx.insert_background_result(parent, content, child).await
+            })
+            .await?;
+        Ok(pending.map(|pending_id| Delivery {
+            node: parent,
+            spec: LlmSpec::from_pending(parent, pending_id),
+        }))
+    }
+}
+
+fn content_of(child_id: i64, phase: &str, reply: &str) -> Vec<Content> {
+    let text = if phase == "done" && !reply.trim().is_empty() {
+        reply.to_owned()
+    } else {
+        format!("background child {child_id} ended with phase {phase}")
+    };
+    vec![Content::new_text(text)]
 }
 
 fn failure(error: CoreError, message_id: Option<i64>) -> LlmFailure {

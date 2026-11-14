@@ -71,16 +71,16 @@ pub struct Tree<D: Domain> {
 - `insert_node` 拒绝重复 id 与未知父节点；父节点存在时把新节点追加到 `children`。
 - `parent` 为空且 `root` 为空时，该节点成为根。
 - `restore_node` 直接写入 id、父、子、相位、`detached` 与待消费输入；恢复的节点
-  `delivered = true`，`job = None`。
+  `job = None`，终态且 `detached` 的节点 `delivered = false`，其余 `delivered = true`。
 - `children` 的顺序就是插入或恢复时的顺序；`subtree_post_order` 先子后父。
 - `barrier_children(id)` 返回不处于 `detached` 的子节点。等待屏障只看这些子节点。
 - `is_quiescent` 要求全部节点相位终态、待消费输入为空、`delivered = true`。
 - `in_flight_nodes` 返回相位为 `Running` 的节点；`undelivered_nodes` 返回
   `delivered = false` 的节点。
 
-`detached` 节点不进入父节点的等待屏障，但它的终态需要一次 `Deliver` 才能让整棵树静止。
-`Deliver` 由 `wind-runtime` 在后台结果补送处理后发送；重复处理仍发送交付通知，避免树保留
-未完成的交付标记。
+`detached` 节点不进入父节点的等待屏障，但它的终态需要一次交付才能让整棵树静止。
+`owe_delivery` 对这样的节点置 `delivered = false` 并返回 `Effect::Deliver`；`Agent` 调
+`AgentOptions.delivery` 之后归约 `Enqueue` 与 `Deliver`。
 
 ## 相位
 
@@ -135,9 +135,9 @@ pub enum Event<D: Domain> {
 }
 ```
 
-外部输入是 `Spawn`、`Enqueue`、`Resume`、`CancelRequest`、`Deliver`；运行报告是
-`Suspended`、`Spawned`、`Completed`、`Failed`、`Aborted`；`Recovered` 只在启动恢复时
-逐个节点发送。
+外部输入是 `Spawn`、`Enqueue`、`Resume`、`CancelRequest`；`Deliver` 由 `Effect::Deliver`
+的执行结果产生；运行报告是 `Suspended`、`Spawned`、`Completed`、`Failed`、`Aborted`；
+`Recovered` 只在启动恢复时逐个节点发送。
 
 ```rust
 pub enum Effect<D: Domain> {
@@ -145,6 +145,7 @@ pub enum Effect<D: Domain> {
     Stop { node, job },
     Persist { node },
     Publish(TreeEvent<D>),
+    Deliver { node },
 }
 
 pub enum TreeEvent<D: Domain> {
@@ -162,6 +163,7 @@ pub enum TreeEvent<D: Domain> {
 | `Publish` | 把 `TreeEvent` 转成 `core/agent.spawn`、`core/agent.status` 或 `core/agent.sealed` |
 | `Launch` | 派生一个 tokio 任务执行 `Runner::run` |
 | `Stop` | 取消对应任务的令牌 |
+| `Deliver` | 调 `AgentOptions.delivery`；返回输入时先归约 `Enqueue` 再归约 `Deliver` |
 
 ## 归约
 
@@ -201,9 +203,10 @@ pub enum Input<D: Domain> {
 ```text
 job = None
 phase = 终态
-owe_delivery(node)
+delivery = owe_delivery(node)
 Persist
 PhaseChanged
+delivery
 reenter_parent_if_ready(node)
 drain_pending(node)
 ```
@@ -246,25 +249,29 @@ Launch(Idle(specs))
     记下当前 job
     job = None
     phase = Cancelled(origin 或 Ancestor(root))
-    owe_delivery(node)
+    deliveries += owe_delivery(node)
     Persist、PhaseChanged、Stop(job)
+统一追加 deliveries
 最后 reenter_parent_if_ready(root)
 ```
 
 根节点使用请求给出的 `origin`；子孙使用 `CancelOrigin::Ancestor(root)`。子节点先于父节点
 处理，所以父节点唤醒时看到的子节点都已是终态。
 
-`owe_delivery` 只对 `detached` 节点置 `delivered = false`。取消一个后台节点后，父节点
-不会等待它，但整棵树要静止仍需宿主发送 `Deliver`。
+`owe_delivery` 只对 `detached` 节点置 `delivered = false` 并返回 `Effect::Deliver`。取消
+一个后台节点后，父节点不会等待它；交付副作用排在子树其余副作用之后，此时父节点相位已写入
+`cancelled`，交付实现不会再向它写入输入。
 
 ## 恢复
 
 `Agent::run` 在进入事件循环前，对恢复进来的每个节点发送 `Recovered { node }`：
 
 ```text
-phase == Running 且 job == None  → finish_terminal(Aborted)，然后 delivered = true
+phase == Running 且 job == None  → finish_terminal(Aborted)
 其余                              → reenter_parent_if_ready(node)
-                                    若节点已终态 → drain_pending(node)
+                                    若节点已终态:
+                                        drain_pending(node)
+                                        若 delivered == false → Effect::Deliver
 ```
 
 恢复的节点没有在飞任务（`job = None`），因此持久化为 `Running` 的节点必然是上一个进程
@@ -272,7 +279,7 @@ phase == Running 且 job == None  → finish_terminal(Aborted)，然后 delivere
 `Runtime::resume` 答复。
 
 `wind-runtime` 按话题读取 `agent_instances` 与 `agent_pending`，构造
-`AgentOptions.restored` 的 `NodeSnapshot`，并扫描 `spawn_calls` 中未交付的后台终态结果。
+`AgentOptions.restored` 的 `NodeSnapshot`。
 
 ## 运行任务
 
@@ -312,6 +319,7 @@ pub struct AgentOptions<D: Domain> {
     pub storage: Storage,
     pub dispatcher: Arc<Dispatcher>,
     pub runner: Arc<dyn Runner<D>>,
+    pub delivery: Option<Arc<dyn Deliver<D>>>,
     pub restored: Vec<NodeSnapshot<D>>,
     pub cancel: CancellationToken,
 }
@@ -334,7 +342,8 @@ run():
     jobs.shutdown()
 ```
 
-`apply(event)` 调 `tree.reduce(event)`，逐个执行副作用。整个归约与副作用执行在同一个
+`apply(event)` 调 `tree.reduce(event)`，逐个执行副作用；副作用产生的后续事件在 `apply`
+返回前继续归约。整个归约与副作用执行在同一个
 任务里串行，因此同一话题的树状态不会被并发修改。`Runner` 的实际运行在独立任务中。
 
 `AgentHandle`：
@@ -345,11 +354,10 @@ run():
 | `enqueue(node, spec)` | `Enqueue` |
 | `resume(node, expect, input)` | `Resume` |
 | `cancel(root, origin)` | `CancelRequest` |
-| `deliver(node)` | `Deliver` |
 | `shutdown()` | 取消整个 `Agent` 的令牌 |
 | `is_stopped()` / `wait_stopped()` | 读/等待同一个令牌 |
 
-`spawn`、`enqueue`、`resume`、`cancel` 和 `deliver` 在通道满时等待，发送后继续等待
+`spawn`、`enqueue`、`resume` 和 `cancel` 在通道满时等待，发送后继续等待
 Agent 完成该命令的归约及副作用处理。通道或确认端关闭时返回 `CoreError::Closed`。确认不等于
 模型任务完成；相位写入失败仍按「持久化与事件」处理。`shutdown` 只发出取消信号，
 `wind-runtime` 另行持有并等待 Agent 任务，以保证 feed 在 Agent 退出后关闭。
@@ -394,7 +402,7 @@ UPDATE agent_instances SET phase = ?, phase_payload = ? WHERE id = ?
 | 项 | 现状 |
 | --- | --- |
 | 主实例行 | `wind-runtime` 在首次提交时调用 `Storage::ensure_main` 建立 |
-| 后台结果交付 | `wind-runtime` 通过终态观察者与恢复扫描补送父实例输入，并调用 `AgentHandle::deliver` |
+| 后台结果交付 | 树在 `detached` 子节点终态后发出 `Effect::Deliver`；`LlmRunner` 实现 `Deliver`，写父实例的待消费输入 |
 | `core/agent.create` / `terminate` / `cancel` / `tree` | 目录中已声明，没有产生者 |
 | 树装载 | `wind-runtime` 在话题首次使用时从实例行和待消费行构造 `NodeSnapshot`，按需恢复 |
 | 相位持久化失败 | 只记录与发事件；内存中的树继续运行 |

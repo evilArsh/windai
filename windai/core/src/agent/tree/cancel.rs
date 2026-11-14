@@ -16,6 +16,7 @@ impl<D: Domain> Tree<D> {
             return Vec::new();
         }
         let mut effects = Vec::new();
+        let mut deliveries = Vec::new();
         for id in self.subtree_post_order(root) {
             let node_origin = if id == root {
                 origin
@@ -29,7 +30,7 @@ impl<D: Domain> Tree<D> {
             let job = self.job_of(id);
             self.set_job(id, None);
             self.set_phase(id, Phase::Cancelled(node_origin));
-            self.owe_delivery(id);
+            deliveries.extend(self.owe_delivery(id));
             effects.push(Effect::Persist { node: id });
             effects.push(Effect::Publish(TreeEvent::PhaseChanged {
                 node: id,
@@ -39,6 +40,7 @@ impl<D: Domain> Tree<D> {
                 effects.push(Effect::Stop { node: id, job });
             }
         }
+        effects.extend(deliveries);
         effects.extend(self.reenter_parent_if_ready(root));
         effects
     }

@@ -26,6 +26,17 @@ pub struct LlmSpec {
     pub turn_id: Option<i64>,
 }
 
+impl LlmSpec {
+    pub fn from_pending(instance_id: i64, pending_id: i64) -> Self {
+        Self {
+            instance_id,
+            message_id: None,
+            pending_id: Some(pending_id),
+            turn_id: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Suspended {

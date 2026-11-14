@@ -190,6 +190,7 @@ impl<D: Domain> Tree<D> {
         detached: bool,
         pending: Vec<D::Spec>,
     ) {
+        let delivered = !(detached && phase.is_terminal());
         self.nodes.insert(
             id,
             Node {
@@ -200,7 +201,7 @@ impl<D: Domain> Tree<D> {
                 job: None,
                 detached,
                 pending: pending.into(),
-                delivered: true,
+                delivered,
             },
         );
         if parent.is_none() && self.root.is_none() {

@@ -38,7 +38,7 @@ windai 是一个单进程的 agent harness 库。宿主应用通过 `wind-runtim
 | `wind-mod` | wire, event, storage | 清单、包、安装器、资源读取、启用集合、清单 schema |
 | `wind-mcp` | wire, event | MCP 注册表、连接、启动规划、内建 `fs`、`skills` 与 `workspace` 服务 |
 | `wind-core` | wire, event, storage, ai, rule, mod, mcp, script | agent 树、LLM 回合、feed、资源适配、脚本接线 |
-| `wind-runtime` | wire, event, storage, core, mod, mcp, script | 组合根、话题恢复、输入、后台结果交付与关停 |
+| `wind-runtime` | wire, event, storage, core, mod, mcp, script | 组合根、话题恢复、输入与关停 |
 | `wind-tui` | wire, core, storage, runtime | 终端参考宿主：会话选择、事件归约、配置写入与状态展示 |
 
 依赖方向：
@@ -85,7 +85,7 @@ windai 是一个单进程的 agent harness 库。宿主应用通过 `wind-runtim
 
 ```text
 Runtime（宿主持有）
-├─ TopicAgents：会话槽、后台投递队列与工作任务
+├─ TopicAgents：会话槽与工作任务
 ├─ FeedRuntime（任务）
 │  ├─ Hub：命令循环、事件身份、保留窗口、订阅者
 │  └─ Writer（任务）：批量写 event_log
@@ -115,7 +115,7 @@ Runtime（宿主持有）
 | 解释器线程 | `Config::threads`，默认 4 | 固定线程池，一次调用占用一个名额 | 字节码内存缓存 |
 | `Agent` | 每个话题一个 | 单任务归约 | 树、待消费输入 |
 | `Jobs` | 每个运行中的节点一个任务 | `tokio::spawn`，可取消 | 运行中任务的取消令牌 |
-| `TopicAgents` | 每个进程一个 | 会话槽按话题懒建；后台投递由单任务消费 | 会话槽、后台投递队列 |
+| `TopicAgents` | 每个进程一个 | 会话槽按话题懒建 | 会话槽 |
 | `ResourceService` | 每个进程一个 | 发布操作在 `gate` 上串行 | 话题引用、已发布的内建资源 |
 | `Storage` | 句柄可克隆 | 连接池并发 | SQLite 数据库 |
 
@@ -209,6 +209,7 @@ LlmRunner / Installer / Agent / MCP / ScriptRuntime
 | `wind_wire::ModService` | `wind_core::resources::ResourceService` | 提供提示词片段与 mod 版本 |
 | `wind_wire::McpService` | `wind_core::resources::ResourceService` | 列出并调用 MCP 工具 |
 | `wind_core::agent::Runner<D>` | `wind_core::llm::LlmRunner` | 执行一次节点运行 |
+| `wind_core::agent::Deliver<D>` | `wind_core::llm::LlmRunner` | 把后台子实例的终态写成父实例输入 |
 | `wind_core::agent::tree::Domain` | `wind_core::llm::domain::LlmDomain` | 声明运行的输入、挂起、恢复、输出与错误类型 |
 
 `Dispatcher` 同时是 `Observer` 与事件生产入口。`ResourceService` 同时实现 `ModService` 与
@@ -226,9 +227,9 @@ LlmRunner / Installer / Agent / MCP / ScriptRuntime
 | feed 出口 | `feed::open` 建立句柄与待运行的 feed |
 | 脚本与目录 | 建立 `ScriptRuntime::quickjs`，加载 `Roster`，合并六组事件目录并构造 `Dispatcher` |
 | 资源 | 建立 MCP 注册表、`Installer`、`Resources` 与 `ResourceService`；恢复订阅和启用集合 |
-| 执行器 | 建立 `LlmRunner`、话题会话管理器与后台投递工作任务 |
-| 观察者与 feed | 保留 `Dispatcher` 和话题会话管理器的强引用，将弱引用交给 feed 后启动任务 |
-| 话题首次使用 | 从数据库装载实例树与可恢复的待消费输入；扫描未交付的后台终态结果 |
+| 执行器 | 建立 `LlmRunner` 与话题会话管理器 |
+| 观察者与 feed | 保留 `Dispatcher` 的强引用，将弱引用交给 feed 后启动任务 |
+| 话题首次使用 | 从数据库装载实例树与可恢复的待消费输入；终态 `detached` 节点重发交付 |
 
 `Runtime` 的公开方法：
 
@@ -245,15 +246,16 @@ LlmRunner / Installer / Agent / MCP / ScriptRuntime
 | `shutdown()` | 关停并等待全部任务 |
 
 `Runtime::submit` 在会话锁内建立主实例、保存输入并派发，返回 `SubmitAck` 中的话题、实例和
-待消费行标识。受理确认在 Agent 应用命令后返回，派发失败时删除本次待消费行。`Runtime::cancel` 清空目标子树的待消费输入后
-发送取消并等待其应用；`Runtime::resume` 校验外部等待及持久化挂起相位后转发答复。后台结果先以事务
-占位并写入父实例的待消费输入，再通知树完成交付；已取消、失败或中止的父实例不会被补送重启。
+待消费行标识。受理确认在 Agent 应用命令后返回，派发失败时删除本次待消费行。`Runtime::cancel`
+发送取消并等待其应用，再清空目标子树的待消费输入；`Runtime::resume` 校验外部等待及持久化挂起
+相位后转发答复。后台结果由 Agent 在子实例终态后发起交付：先在事务里写入父实例的待消费输入与
+交付标记，再以普通输入归约。已取消、失败或中止的父实例不会被补送重启。
 
 话题恢复按需进行，不在 `open` 时批量装载。运行中的遗留实例转为 `aborted`，挂起实例继续
 等待答复；`failed`、`cancelled`、`aborted` 实例的遗留待消费输入不自动恢复。
 
-关停由 `Runtime::shutdown` 执行：拒绝新操作，等待已进入的操作，关闭资源服务，停止后台
-投递并等待各 Agent 任务，最后关闭 feed 并等待其任务。关停任务独立于调用方的等待过程，
+关停由 `Runtime::shutdown` 执行：拒绝新操作，等待已进入的操作，关闭资源服务，等待各
+Agent 任务，最后关闭 feed 并等待其任务。关停任务独立于调用方的等待过程，
 重复调用等待同一次清理；宿主应在释放 Runtime 前显式关停。
 
 宿主负责提供以下能力：

@@ -1,9 +1,8 @@
-use super::topic::spec;
 use super::{Runtime, RuntimeError, SubmitAck};
 use std::path::Path;
 use std::time::Duration;
 use wind_core::agent::{CancelOrigin, Phase};
-use wind_core::llm::domain::{LlmDomain, WaitAnswer};
+use wind_core::llm::domain::{LlmDomain, LlmSpec, WaitAnswer};
 use wind_core::llm::events::{CORE_INPUT_ACCEPTED, InputAccepted};
 use wind_core::resources::ApplyReport;
 use wind_event::{DispatchCx, Origin, Scope, Source};
@@ -34,7 +33,7 @@ impl Runtime {
             .storage()
             .create_pending(instance_id, PendingKind::User, content, None)
             .await?;
-        let input = spec(instance_id, pending_id);
+        let input = LlmSpec::from_pending(instance_id, pending_id);
         let dispatched = if main.is_none() {
             session.handle.spawn(instance_id, None, input, false).await
         } else {
@@ -83,11 +82,11 @@ impl Runtime {
             })?;
         let session = self.inner.agents.session(topic.id).await?;
         let _gate = session.gate.lock().await;
-        self.storage().close_pending(instance_id).await?;
         session
             .handle
             .cancel(instance_id, CancelOrigin::External)
             .await?;
+        self.storage().close_pending(instance_id).await?;
         Ok(())
     }
 

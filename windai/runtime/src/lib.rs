@@ -1,4 +1,3 @@
-mod background;
 mod directory;
 mod error;
 mod input;

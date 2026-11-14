@@ -436,7 +436,6 @@ ORDER BY b.id
 | `list_child_states(parent_id, call_ids)` | 读子实例的 `mode`、`phase`、`phase_payload` 与回复文本 |
 | `spawn_call_of_child(child_id)` | 按子实例读配对行；`child_id` 唯一 |
 | `claim_result_delivery(child_id)` | 只在 `result_delivered_at` 为空时写入当前时刻，返回是否由本次调用写入 |
-| `list_undelivered_background(topic_id)` | 该话题中 `mode = background`、已终态且未交付的子实例，按 `child_id` 升序 |
 
 `list_child_states` 通过 `spawn_calls` 连接 `agent_instances`，再用
 `json_extract(i.phase_payload, '$.message_id')` 找到子实例当前消息的 `text` 块：
@@ -457,7 +456,7 @@ WHERE s.parent_id = ? AND s.call_id IN (...)
 ORDER BY s.call_id, b.seq
 ```
 
-`spawn_calls.result_delivered_at` 是后台结果的交付标记：`wind-runtime` 在同一事务里插入
+`spawn_calls.result_delivered_at` 是后台结果的交付标记：交付实现在同一事务里插入
 `background_result` 待消费行并写入该列，重复的终态事件不再交付。父实例唤醒时的
 `report_spawns` 不使用该列。
 

@@ -93,54 +93,25 @@ async fn closing_pending_only_deletes_the_target_subtree() {
 }
 
 #[tokio::test]
-async fn result_claim_and_scan_exclude_delivered_live_and_sync_children() {
+async fn result_delivery_claim_happens_once() {
     let (_dir, s, topic) = database().await;
     let root = s.ensure_main(topic, AgentMode::Sync).await.unwrap();
-    let mut terminal = vec![];
-    for (n, (mode, phase)) in [
-        (AgentMode::Background, "done"),
-        (AgentMode::Background, "failed"),
-        (AgentMode::Background, "cancelled"),
-        (AgentMode::Background, "aborted"),
-        (AgentMode::Background, "running"),
-        (AgentMode::Sync, "done"),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let id = child(&s, topic, root, mode, phase).await;
-        s.create_spawn_call_map(root, &format!("call-{n}"), id)
-            .await
-            .unwrap();
-        if n < 4 {
-            terminal.push(id);
-        }
-    }
-    assert_eq!(
-        s.list_undelivered_background(topic).await.unwrap(),
-        terminal
-    );
-    let call = s.spawn_call_of_child(terminal[0]).await.unwrap().unwrap();
+    let child = child(&s, topic, root, AgentMode::Background, "done").await;
+    s.create_spawn_call_map(root, "call", child).await.unwrap();
+    let call = s.spawn_call_of_child(child).await.unwrap().unwrap();
     assert_eq!(call.parent_id, root);
-    assert_eq!(call.call_id, "call-0");
-    assert_eq!(call.child_id, terminal[0]);
+    assert_eq!(call.call_id, "call");
+    assert_eq!(call.child_id, child);
     assert!(call.result_delivered_at.is_none());
-    assert_eq!(
-        s.claim_result_delivery(terminal[0]).await.unwrap(),
-        Some(terminal[0])
-    );
-    assert_eq!(s.claim_result_delivery(terminal[0]).await.unwrap(), None);
+    assert_eq!(s.claim_result_delivery(child).await.unwrap(), Some(child));
+    assert_eq!(s.claim_result_delivery(child).await.unwrap(), None);
     assert!(
-        s.spawn_call_of_child(terminal[0])
+        s.spawn_call_of_child(child)
             .await
             .unwrap()
             .unwrap()
             .result_delivered_at
             .is_some()
-    );
-    assert_eq!(
-        s.list_undelivered_background(topic).await.unwrap(),
-        terminal[1..]
     );
     assert!(s.spawn_call_of_child(-1).await.unwrap().is_none());
 }

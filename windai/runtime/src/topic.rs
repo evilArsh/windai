@@ -1,5 +1,4 @@
 use super::RuntimeError;
-use super::background::DeliveryQueue;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -20,7 +19,6 @@ pub(super) struct TopicAgents {
     runner: Arc<LlmRunner>,
     slots: Mutex<HashMap<i64, Arc<SessionSlot>>>,
     stopped: AtomicBool,
-    pub deliveries: DeliveryQueue,
 }
 
 struct SessionSlot {
@@ -36,21 +34,13 @@ pub(super) struct Session {
 
 impl TopicAgents {
     pub fn new(storage: Storage, dispatcher: Arc<Dispatcher>, runner: Arc<LlmRunner>) -> Arc<Self> {
-        let (deliveries, rx) = DeliveryQueue::new();
-        let agents = Arc::new(Self {
+        Arc::new(Self {
             storage,
             dispatcher,
             runner,
             slots: Mutex::new(HashMap::new()),
             stopped: AtomicBool::new(false),
-            deliveries,
-        });
-        agents.deliveries.start(&agents, rx);
-        agents
-    }
-
-    pub fn is_stopped(&self) -> bool {
-        self.stopped.load(Ordering::SeqCst)
+        })
     }
 
     pub async fn session(&self, topic_id: i64) -> Result<Arc<Session>, RuntimeError> {
@@ -91,12 +81,12 @@ impl TopicAgents {
             .find(|instance| instance.role == AgentRole::Main)
             .map(|instance| instance.id);
         let restored = snapshots(instances, pending);
-        let undelivered = self.storage.list_undelivered_background(topic_id).await?;
         let (agent, handle) = Agent::<LlmDomain>::new(AgentOptions {
             topic_id,
             storage: self.storage.clone(),
             dispatcher: self.dispatcher.clone(),
             runner: self.runner.clone(),
+            delivery: Some(self.runner.clone()),
             restored,
             cancel: CancellationToken::new(),
         });
@@ -107,15 +97,11 @@ impl TopicAgents {
             task: AsyncMutex::new(Some(tokio::spawn(agent.run()))),
         });
         *guard = Some(session.clone());
-        for child in undelivered {
-            self.deliveries.push(child);
-        }
         Ok(session)
     }
 
     pub async fn shutdown(&self) {
         self.stopped.store(true, Ordering::SeqCst);
-        self.deliveries.shutdown().await;
         let slots: Vec<_> = self
             .slots
             .lock()
@@ -151,7 +137,7 @@ fn snapshots(
         inputs
             .entry(row.instance_id)
             .or_default()
-            .push(spec(row.instance_id, row.id));
+            .push(LlmSpec::from_pending(row.instance_id, row.id));
     }
     instances
         .into_iter()
@@ -181,22 +167,15 @@ fn snapshots(
         .collect()
 }
 
-pub(super) fn spec(instance_id: i64, pending_id: i64) -> LlmSpec {
-    LlmSpec {
-        instance_id,
-        message_id: None,
-        pending_id: Some(pending_id),
-        turn_id: None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{Runtime, RuntimeOptions};
     use std::future::poll_fn;
     use std::task::Poll;
+    use std::time::Duration;
     use tempfile::TempDir;
+    use tokio::time::timeout;
     use wind_core::agent::CancelOrigin;
     use wind_core::llm::domain::Suspended;
     use wind_wire::{AppDirs, Content, PendingKind};
@@ -237,6 +216,7 @@ mod tests {
             storage: storage.clone(),
             dispatcher: runtime.inner.dispatcher.clone(),
             runner: runtime.inner.agents.runner.clone(),
+            delivery: None,
             cancel: CancellationToken::new(),
             restored: vec![NodeSnapshot {
                 id: root,
@@ -313,7 +293,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let mut enqueue = Box::pin(handle.enqueue(root, spec(root, pending)));
+        let mut enqueue = Box::pin(handle.enqueue(root, LlmSpec::from_pending(root, pending)));
         let waiting = poll_fn(|cx| Poll::Ready(enqueue.as_mut().poll(cx).is_pending())).await;
         assert!(waiting, "persist reopening before acknowledging the input");
         let task = tokio::spawn(agent.run());
@@ -355,6 +335,82 @@ mod tests {
                 .await
                 .unwrap()
                 .is_empty()
+        );
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn live_child_without_spawn_mapping_still_releases_the_tree() {
+        let tmp = TempDir::new().unwrap();
+        let runtime = Runtime::open(RuntimeOptions::new(AppDirs::under(tmp.path())))
+            .await
+            .unwrap();
+        let storage = runtime.storage();
+        let topic = storage
+            .create_topic(None, "live", None, None, None)
+            .await
+            .unwrap();
+        let root = storage
+            .create_agent_instance(
+                topic,
+                None,
+                AgentRole::Main,
+                Some(AgentMode::Sync),
+                "done",
+                Some(r#"{"message_id":0}"#.into()),
+            )
+            .await
+            .unwrap();
+        let session = runtime.inner.agents.session(topic).await.unwrap();
+        let child = storage
+            .create_agent_instance(
+                topic,
+                Some(root),
+                AgentRole::Child,
+                Some(AgentMode::Background),
+                "running",
+                None,
+            )
+            .await
+            .unwrap();
+        let pending = storage
+            .create_pending(
+                child,
+                PendingKind::User,
+                vec![Content::new_text("child".into())],
+                None,
+            )
+            .await
+            .unwrap();
+        let mut sub = runtime.subscribe().await.unwrap().subscription;
+        session
+            .handle
+            .spawn(
+                child,
+                Some(root),
+                LlmSpec::from_pending(child, pending),
+                true,
+            )
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let event = sub.recv().await.unwrap().unwrap();
+                if event.envelope.name == "core/agent.sealed" {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("release the live child's delivery mark");
+        assert_eq!(
+            storage
+                .get_instance_by_id(child)
+                .await
+                .unwrap()
+                .unwrap()
+                .phase,
+            "failed"
         );
         runtime.shutdown().await.unwrap();
     }

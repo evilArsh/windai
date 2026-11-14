@@ -99,4 +99,7 @@ pub enum Effect<D: Domain> {
         node: NodeId,
     },
     Publish(TreeEvent<D>),
+    Deliver {
+        node: NodeId,
+    },
 }

@@ -2,6 +2,7 @@ pub mod events;
 pub mod handler;
 mod jobs;
 pub(crate) mod tree;
+use crate::error::Result;
 pub use tree::phase::{CancelOrigin, Phase};
 
 use self::tree::{Domain, JobId, NodeId};
@@ -13,6 +14,11 @@ use tokio_util::sync::CancellationToken;
 /// mod系统通过实现这些关键工具使 agent 拥有核心功能。
 /// 系统拥有默认的实现以保证基础功能运转
 pub const SPAWN_AGENT_NAME: &str = "wind_spawn_agent";
+
+pub struct Delivery<D: Domain> {
+    pub node: NodeId,
+    pub spec: D::Spec,
+}
 
 /// 输入的任务
 #[derive(Debug)]
@@ -55,4 +61,9 @@ impl Ctx {
 #[async_trait::async_trait]
 pub trait Runner<D: Domain>: Send + Sync + 'static {
     async fn run(&self, ctx: Ctx, input: Input<D>) -> Outcome<D>;
+}
+
+#[async_trait::async_trait]
+pub trait Deliver<D: Domain>: Send + Sync {
+    async fn deliver(&self, child: NodeId, parent: NodeId) -> Result<Option<Delivery<D>>>;
 }

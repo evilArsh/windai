@@ -1,7 +1,8 @@
+use crate::db::DbDriver;
 use crate::error::Result;
 use crate::utils::{ensure_affected, now_ts};
 use crate::{AgentInstance, ChildStateRow, SpawnCall, Storage};
-use sqlx::{QueryBuilder, Sqlite};
+use sqlx::QueryBuilder;
 use wind_wire::{AgentMode, AgentRole};
 
 impl Storage {
@@ -113,7 +114,7 @@ impl Storage {
         if call_ids.is_empty() {
             return Ok(Vec::new());
         }
-        let mut query = QueryBuilder::<Sqlite>::new(
+        let mut query = QueryBuilder::<DbDriver>::new(
             "SELECT s.call_id,
                     i.id AS child_id,
                     i.mode,
@@ -199,23 +200,5 @@ impl Storage {
             )
             .await?;
         Ok(row.map(|(id,)| id))
-    }
-
-    pub async fn list_undelivered_background(&self, topic_id: i64) -> Result<Vec<i64>> {
-        let rows: Vec<(i64,)> = self
-            .executor
-            .fetch_all(
-                sqlx::query_as(
-                    "SELECT s.child_id FROM spawn_calls s
-             JOIN agent_instances i ON i.id = s.child_id
-             WHERE i.topic_id = ? AND i.mode = 'background'
-               AND s.result_delivered_at IS NULL
-               AND i.phase IN ('done', 'failed', 'cancelled', 'aborted')
-             ORDER BY s.child_id",
-                )
-                .bind(topic_id),
-            )
-            .await?;
-        Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 }

@@ -209,6 +209,7 @@ pub async fn start_agent(
         storage: storage.clone(),
         dispatcher: Arc::clone(&bus.dispatcher),
         runner,
+        delivery: None,
         restored: Vec::new(),
         cancel: CancellationToken::new(),
     });

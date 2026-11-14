@@ -363,12 +363,8 @@ on_event(event):
 ```
 
 `Observer` 是同步方法，实现方只能入队，不得阻塞。`FeedRuntime::run` 接收
-`Vec<Weak<dyn Observer>>`，在每次通知时尝试升级；升级失败即从观察者列表移除。当前有两个
-实现：
-
-- `Dispatcher`：按事件目录与订阅索引把事件转给 mod。
-- `wind-runtime` 的话题会话管理器（`TopicAgents`）：只处理 `core/agent.status`，把后台
-  子实例的终态推入交付队列，由投递任务写入父实例的待消费输入。
+`Vec<Weak<dyn Observer>>`，在每次通知时尝试升级；升级失败即从观察者列表移除。当前只有一个
+实现：`Dispatcher` 按事件目录与订阅索引把事件转给 mod。
 
 ## feed
 

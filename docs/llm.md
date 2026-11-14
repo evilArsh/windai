@@ -115,9 +115,9 @@ INSERT block × N（每块一个 tool_result）
 
 后台子实例（`mode = background`）即使在 `report_spawns` 时已进入终态，也只返回
 `{ "instance_id", "phase": "running" }`：父实例不等它的结果。
-后台实例终止后由 `wind-runtime` 的终态观察者把结果写入父实例的待消费输入
-（`kind = background_result`），并在同一事务里写 `spawn_calls.result_delivered_at`；
-话题会话首次建立时还会扫描未交付的后台终态结果。父实例随后以一次普通输入消费该结果。
+后台实例进入终态后，树发出交付副作用，`LlmRunner` 的交付实现把结果写入父实例的待消费输入
+（`kind = background_result`），并在同一事务里写 `spawn_calls.result_delivered_at`；恢复时
+终态且 `detached` 的节点重发这次交付，由该列保证只交付一次。父实例随后以一次普通输入消费该结果。
 
 后台结果的文本：子实例相位为 `done` 且回复非空时取回复文本，其余情况为
 `background child <id> ended with phase <phase>`。

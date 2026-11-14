@@ -471,19 +471,6 @@ fn version_of(row: &DbRow, column: &str) -> sqlx::Result<u32> {
     })
 }
 
-// #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-// pub struct ModStateEntry {
-//     pub mod_id: i64,
-//     pub scope_kind: String,
-//     /// 全局作用域为 0
-//     pub scope_id: i64,
-//     /// 区分对外状态与私有存储
-//     pub kind: String,
-//     pub key: String,
-//     pub value: Value,
-//     pub updated_at: i64,
-// }
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentInstance {
     pub id: i64,

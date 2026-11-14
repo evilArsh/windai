@@ -204,10 +204,12 @@ impl<D: Domain> Tree<D> {
         Vec::new()
     }
 
-    pub(super) fn owe_delivery(&mut self, node: NodeId) {
-        if self.is_detached(node) {
-            self.set_delivered(node, false);
+    pub(super) fn owe_delivery(&mut self, node: NodeId) -> Option<Effect<D>> {
+        if !self.is_detached(node) {
+            return None;
         }
+        self.set_delivered(node, false);
+        Some(Effect::Deliver { node })
     }
 
     pub(super) fn accepts_job_report(&self, node: NodeId, job: JobId) -> bool {
@@ -217,11 +219,12 @@ impl<D: Domain> Tree<D> {
     pub(super) fn finish_terminal(&mut self, node: NodeId, phase: Phase<D>) -> Vec<Effect<D>> {
         self.set_job(node, None);
         self.set_phase(node, phase.clone());
-        self.owe_delivery(node);
+        let delivery = self.owe_delivery(node);
         let mut effects = vec![
             Effect::Persist { node },
             Effect::Publish(TreeEvent::PhaseChanged { node, to: phase }),
         ];
+        effects.extend(delivery);
         effects.extend(self.reenter_parent_if_ready(node));
         effects.extend(self.drain_pending(node));
         effects
@@ -233,15 +236,14 @@ impl<D: Domain> Tree<D> {
             _ => None,
         };
         match disposition {
-            Some(phase) => {
-                let effects = self.finish_terminal(node, phase);
-                self.set_delivered(node, true);
-                effects
-            }
+            Some(phase) => self.finish_terminal(node, phase),
             None => {
                 let mut effects = self.reenter_parent_if_ready(node);
                 if self.phase(node).is_some_and(Phase::is_terminal) {
                     effects.extend(self.drain_pending(node));
+                    if self.node(node).is_some_and(|current| !current.delivered) {
+                        effects.push(Effect::Deliver { node });
+                    }
                 }
                 effects
             }
