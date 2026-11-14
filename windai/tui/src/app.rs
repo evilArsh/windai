@@ -23,6 +23,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Margin, Rect};
 use ratatui::text::Text;
 use ratatui_textarea::TextArea;
+use std::collections::VecDeque;
 use std::io::{self, Stdout};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -47,6 +48,8 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const LOAD_BUFFER_CAP: usize = 4096;
 const PAGE_LINES: isize = 10;
 const WHEEL_LINES: isize = 3;
+/// 已完成后保留在内存的话题数
+const COMPLETED_TOPIC_CACHE: usize = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -405,6 +408,7 @@ pub struct App {
     runtime: Runtime,
     subscription: Option<Subscription>,
     screen: Screen,
+    completed_sessions: VecDeque<Session>,
     input: TextArea<'static>,
     focus: Focus,
     overlay: Option<Overlay>,
@@ -448,6 +452,7 @@ impl App {
             runtime,
             subscription: Some(opening.subscription),
             screen: Screen::Empty,
+            completed_sessions: VecDeque::new(),
             input,
             focus: Focus::Input,
             overlay: None,
@@ -995,6 +1000,7 @@ impl App {
     }
 
     async fn resubscribe(&mut self) {
+        self.completed_sessions.clear();
         match self.runtime.subscribe().await {
             Ok(opening) => {
                 self.subscription = Some(opening.subscription);
@@ -1016,17 +1022,17 @@ impl App {
             self.buffer_event(event);
             return;
         }
+        if let Scope::Topic { topic_id, .. } = &event.envelope.scope
+            && Some(*topic_id) != self.current_topic_id()
+        {
+            self.invalidate_completed(*topic_id);
+            return;
+        }
         let Screen::Session(session) = &mut self.screen else {
             return;
         };
-        let logged = match &event.envelope.scope {
-            Scope::Global => true,
-            Scope::Topic { topic_id, .. } => *topic_id == session.topic.id,
-        };
-        if !logged {
-            return;
-        }
         reduce::apply(session, &event);
+        self.trim_completed();
         self.dirty = true;
         self.reload_mods_if_needed().await;
     }
@@ -1039,8 +1045,9 @@ impl App {
             Scope::Global => {
                 if let Screen::Session(session) = &mut self.screen {
                     reduce::apply(session, &event);
-                    self.dirty = true;
                 }
+                self.trim_completed();
+                self.dirty = true;
             }
             Scope::Topic {
                 topic_id: event_topic,
@@ -1067,7 +1074,10 @@ impl App {
                     }
                 }
             }
-            _ => {}
+            Scope::Topic {
+                topic_id: event_topic,
+                ..
+            } => self.invalidate_completed(*event_topic),
         }
     }
 
@@ -1113,6 +1123,7 @@ impl App {
                 self.storage_error = Some(format!("load session failed: {error}"));
             }
         }
+        self.trim_completed();
         self.dirty = true;
         self.reload_mods_if_needed().await;
     }
@@ -1252,9 +1263,7 @@ impl App {
     }
 
     fn new_view(&mut self) {
-        if let Some(loading) = self.loading.take() {
-            loading.task.abort();
-        }
+        self.park_current();
         self.screen = Screen::Empty;
         self.input.clear();
         self.overlay = None;
@@ -1330,13 +1339,79 @@ impl App {
 
     fn open_topic(&mut self, topic: Topic) {
         let topic_id = topic.id;
-        self.screen = Screen::Session(Session::new(topic, None));
-        self.begin_load(topic_id);
+        if self.current_topic_id() != Some(topic_id) {
+            let cached = self.take_completed(topic_id);
+            self.park_current();
+            match cached {
+                Some(mut session) => {
+                    session.topic = topic;
+                    session.reload_mods = true;
+                    self.screen = Screen::Session(session);
+                    self.trim_completed();
+                }
+                None => {
+                    self.screen = Screen::Session(Session::new(topic, None));
+                    self.begin_load(topic_id);
+                }
+            }
+        } else if let Screen::Session(session) = &mut self.screen {
+            session.topic = topic;
+            self.trim_completed();
+        }
         self.input.clear();
         self.completion = None;
         self.notice = None;
         self.focus = Focus::Input;
         self.dirty = true;
+    }
+
+    fn is_completed(&self) -> bool {
+        let Screen::Session(session) = &self.screen else {
+            return false;
+        };
+        let Some(main) = session.main else {
+            return false;
+        };
+        !session.nodes.is_empty()
+            && session.nodes.iter().any(|node| node.id == main)
+            && session
+                .nodes
+                .iter()
+                .all(|node| phase_is_terminal(&node.phase))
+    }
+
+    fn trim_completed(&mut self) {
+        let limit = COMPLETED_TOPIC_CACHE.saturating_sub(usize::from(self.is_completed()));
+        while self.completed_sessions.len() > limit {
+            self.completed_sessions.pop_front();
+        }
+    }
+
+    fn park_current(&mut self) {
+        if let Some(loading) = self.loading.take() {
+            loading.task.abort();
+        }
+        if !self.is_completed() {
+            return;
+        }
+        let screen = std::mem::replace(&mut self.screen, Screen::Empty);
+        if let Screen::Session(session) = screen {
+            self.completed_sessions.push_back(session);
+        }
+        self.trim_completed();
+    }
+
+    fn take_completed(&mut self, topic_id: i64) -> Option<Session> {
+        let index = self
+            .completed_sessions
+            .iter()
+            .position(|session| session.topic.id == topic_id)?;
+        self.completed_sessions.remove(index)
+    }
+
+    fn invalidate_completed(&mut self, topic_id: i64) {
+        self.completed_sessions
+            .retain(|session| session.topic.id != topic_id);
     }
 
     async fn open_providers_overlay(&mut self) {
@@ -1451,6 +1526,7 @@ impl App {
                 if let Some(topic) = topic {
                     self.close_overlay();
                     self.open_topic(topic);
+                    self.reload_mods_if_needed().await;
                 }
             }
             _ => {}
@@ -1899,6 +1975,7 @@ impl App {
             .await
             .map_err(|error| format!("load topic failed: {error}"))?
             .ok_or_else(|| format!("topic {topic_id} is missing"))?;
+        self.park_current();
         self.screen = Screen::Session(Session::new(topic, Some(ack.instance_id)));
         self.begin_load(topic_id);
         self.dirty = true;
@@ -2147,6 +2224,91 @@ mod tests {
             let result = load_result(&mut app.loading).await;
             app.finish_load(result).await;
         }
+    }
+
+    fn finished_session(id: i64) -> Session {
+        let mut session = Session::new(topic(id), Some(1));
+        session.nodes.push(NodeView {
+            id: 1,
+            parent_id: None,
+            role: AgentRole::Main,
+            phase: "done".to_owned(),
+            suspended_wait: None,
+            reason: None,
+            sealed: true,
+        });
+        session.messages.push(MessageView::new(id, Role::User));
+        session
+    }
+
+    #[tokio::test]
+    async fn completed_sessions_are_capped_and_evicted_in_lru_order() {
+        let (dir, mut app) = test_app().await;
+        for id in 1..=6 {
+            app.screen = Screen::Session(finished_session(id));
+            app.park_current();
+        }
+        assert_eq!(app.completed_sessions.len(), COMPLETED_TOPIC_CACHE);
+        assert_eq!(
+            app.completed_sessions
+                .front()
+                .map(|session| session.topic.id),
+            Some(2)
+        );
+        assert!(app.take_completed(1).is_none());
+        assert!(app.take_completed(6).is_some());
+        close(app).await;
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn a_topic_event_drops_a_cached_session() {
+        let (dir, mut app) = test_app().await;
+        app.completed_sessions.push_back(finished_session(7));
+        app.accept_event(Arc::new(event(1, 7))).await;
+        assert!(app.completed_sessions.is_empty());
+        close(app).await;
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn a_completed_current_session_reserves_a_cache_slot() {
+        let (dir, mut app) = test_app().await;
+        for id in 1..=5 {
+            app.screen = Screen::Session(finished_session(id));
+            app.park_current();
+        }
+        app.screen = Screen::Session(finished_session(6));
+        app.trim_completed();
+        assert_eq!(app.completed_sessions.len(), COMPLETED_TOPIC_CACHE - 1);
+        assert_eq!(
+            app.completed_sessions
+                .front()
+                .map(|session| session.topic.id),
+            Some(2)
+        );
+        close(app).await;
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn a_cached_session_is_reused_on_resume() {
+        let (dir, mut app) = test_app().await;
+        let mut session = finished_session(7);
+        session.messages.push(MessageView::new(70, Role::Assistant));
+        app.screen = Screen::Session(session);
+        app.park_current();
+        app.open_topic(topic(7));
+        let Screen::Session(session) = &app.screen else {
+            panic!("expected the cached session");
+        };
+        assert_eq!(session.topic.id, 7);
+        assert_eq!(session.messages.len(), 2);
+        assert!(session.reload_mods);
+        assert!(app.loading.is_none());
+        assert!(app.completed_sessions.is_empty());
+        close(app).await;
+        drop(dir);
     }
 
     #[tokio::test]
